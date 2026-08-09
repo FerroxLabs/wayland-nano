@@ -478,3 +478,129 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod nano_tests {
+    //! Track-B exercise tests (not from the donor): the ported legacy capture
+    //! backend end-to-end — the direct equivalent of Track A's baseline
+    //! failure #3 ("legacy capture timed out twice").
+    use super::*;
+    use std::fs;
+
+    fn fixture_dirs(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let tmp = std::env::temp_dir().join(format!("nanok3-cap-{tag}-{}", std::process::id()));
+        let workspace = tmp.join("workspace");
+        let nano_home = tmp.join("nano-home");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&nano_home).unwrap();
+        (workspace, nano_home)
+    }
+
+    #[test]
+    fn workspace_write_capture_echoes_and_exits_without_timeout() {
+        let (workspace, nano_home) = fixture_dirs("echo");
+        let roots = [AbsolutePathBuf::from_absolute_path(&workspace).unwrap()];
+        let result = run_windows_sandbox_capture(
+            &PermissionProfile::workspace_write(),
+            &roots,
+            &nano_home,
+            vec!["cmd.exe".into(), "/c".into(), "echo nanok3-capture".into()],
+            &workspace,
+            HashMap::new(),
+            Some(20_000), // 20s bound: must not come anywhere near a timeout
+            None,
+            false,
+        )
+        .expect("capture spawn");
+
+        assert_eq!(result.exit_code, 0);
+        assert!(!result.timed_out, "capture must not time out");
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(stdout.contains("nanok3-capture"), "stdout: {stdout}");
+        let _ = fs::remove_dir_all(workspace.parent().unwrap());
+    }
+
+    #[test]
+    fn workspace_write_capture_denies_outside_root_write() {
+        let (workspace, nano_home) = fixture_dirs("deny");
+        let outside = workspace.parent().unwrap().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let target = outside.join("denied.txt");
+        let roots = [AbsolutePathBuf::from_absolute_path(&workspace).unwrap()];
+
+        let result = run_windows_sandbox_capture(
+            &PermissionProfile::workspace_write(),
+            &roots,
+            &nano_home,
+            vec![
+                "cmd.exe".into(),
+                "/c".into(),
+                format!("echo data > \"{}\"", target.display()),
+            ],
+            &workspace,
+            HashMap::new(),
+            Some(20_000),
+            None,
+            false,
+        )
+        .expect("capture spawn");
+
+        assert!(!result.timed_out);
+        assert!(
+            !target.exists(),
+            "capture path must enforce workspace write bounds"
+        );
+        let _ = fs::remove_dir_all(workspace.parent().unwrap());
+    }
+
+    #[test]
+    fn capture_cancellation_terminates_fast() {
+        let (workspace, nano_home) = fixture_dirs("cancel");
+        let roots = [AbsolutePathBuf::from_absolute_path(&workspace).unwrap()];
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled2 = std::sync::Arc::clone(&cancelled);
+        let token = crate::WindowsSandboxCancellationToken::new(move || {
+            cancelled2.load(std::sync::atomic::Ordering::SeqCst)
+        });
+
+        let cancel_thread = {
+            let cancelled = std::sync::Arc::clone(&cancelled);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+                cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+        };
+
+        let started = std::time::Instant::now();
+        let result = run_windows_sandbox_capture(
+            &PermissionProfile::workspace_write(),
+            &roots,
+            &nano_home,
+            vec![
+                "cmd.exe".into(),
+                "/c".into(),
+                "ping -t 127.0.0.1 > NUL".into(),
+            ],
+            &workspace,
+            HashMap::new(),
+            None, // no timeout: cancellation must be what ends it
+            Some(token),
+            false,
+        )
+        .expect("capture spawn");
+        let elapsed = started.elapsed();
+        cancel_thread.join().unwrap();
+
+        // NOTE: elapsed includes spawn prep (token + ACL session security),
+        // which dominates on this host (~30s); the cancellation itself fires
+        // at 1.5s into an infinite child. Track A's baseline failure was a
+        // TIMEOUT, i.e. the wait never ended — our bound only guards that.
+        assert!(
+            elapsed < std::time::Duration::from_secs(120),
+            "cancellation path hung ({elapsed:?}) — prep should dominate, not the wait"
+        );
+        assert!(!result.timed_out);
+        assert_ne!(result.exit_code, 0, "cancelled capture must not exit cleanly");
+        let _ = fs::remove_dir_all(workspace.parent().unwrap());
+    }
+}
