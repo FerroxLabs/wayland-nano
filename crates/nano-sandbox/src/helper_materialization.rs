@@ -26,7 +26,7 @@ pub(crate) const BIN_DIRNAME: &str = "bin";
 pub(crate) const RESOURCES_DIRNAME: &str = "nanok3-resources";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum HelperExecutable {
+pub enum HelperExecutable {
     CommandRunner,
 }
 
@@ -52,11 +52,11 @@ enum CopyOutcome {
 
 static HELPER_PATH_CACHE: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
 
-pub(crate) fn helper_bin_dir(codex_home: &Path) -> PathBuf {
+pub fn helper_bin_dir(codex_home: &Path) -> PathBuf {
     sandbox_bin_dir(codex_home)
 }
 
-pub(crate) fn legacy_lookup(kind: HelperExecutable) -> PathBuf {
+pub fn legacy_lookup(kind: HelperExecutable) -> PathBuf {
     if let Ok(exe) = std::env::current_exe()
         && let Some(candidate) = bundled_executable_path_for_exe(&exe, kind.file_name())
     {
@@ -65,7 +65,7 @@ pub(crate) fn legacy_lookup(kind: HelperExecutable) -> PathBuf {
     PathBuf::from(kind.file_name())
 }
 
-pub(crate) fn resolve_helper_for_launch(
+pub fn resolve_helper_for_launch(
     kind: HelperExecutable,
     codex_home: &Path,
     log_dir: Option<&Path>,
@@ -126,7 +126,7 @@ pub fn resolve_exe_for_launch(source: &Path, codex_home: &Path) -> PathBuf {
     }
 }
 
-pub(crate) fn copy_helper_if_needed(
+pub fn copy_helper_if_needed(
     kind: HelperExecutable,
     codex_home: &Path,
     log_dir: Option<&Path>,
@@ -197,7 +197,7 @@ fn sibling_source_path(kind: HelperExecutable) -> Result<PathBuf> {
     })
 }
 
-pub(crate) fn bundled_executable_path_for_exe(exe: &Path, file_name: &str) -> Option<PathBuf> {
+pub fn bundled_executable_path_for_exe(exe: &Path, file_name: &str) -> Option<PathBuf> {
     let dir = exe.parent()?;
     let direct_candidate = dir.join(file_name);
     if direct_candidate.is_file() {
