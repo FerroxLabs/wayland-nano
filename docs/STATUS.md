@@ -73,7 +73,13 @@
   keep/port/reject per crate; binary-size and build-time delta
 - Evidence: machine-readable `cargo metadata` closure + decision table
 - Rollback: none (analysis only)
-- Status: pending
+- Status: **done 2026-08-09** — transitive closures measured: sandbox 18
+  crates/86k lines, rollout 23/113k, skills 14/65k; zero optional edges.
+  All sandbox heavies flow through one `codex-otel` edge. Decisions:
+  PORT sandbox semantics w/ otel replaced by facade; EXTRACT-TYPES from
+  codex-protocol; REJECT codex-state + networking stack (nano-egress owns);
+  rollout reference-only. Vendor dir stays out of the build (D3 confirmed
+  by measurement). Binary-size delta pending `nano-sandbox` port.
 
 ## External prerequisites
 
