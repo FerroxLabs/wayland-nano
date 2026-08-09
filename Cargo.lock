@@ -773,6 +773,15 @@ version = "0.1.0"
 [[package]]
 name = "nano-protocol"
 version = "0.1.0"
+dependencies = [
+ "nano-agent",
+ "nano-model",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
 
 [[package]]
 name = "nano-sandbox"
