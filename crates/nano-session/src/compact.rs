@@ -44,7 +44,7 @@ pub fn next_legal_transition(state: &SessionState) -> NextTransition {
 
 /// Builds the replay input for a compacted journal: the compaction ops plus
 /// every envelope not covered by the latest completed compaction.
-pub fn compacted_prefix<'a>(envelopes: &'a [OpEnvelope]) -> Vec<&'a OpEnvelope> {
+pub fn compacted_prefix(envelopes: &[OpEnvelope]) -> Vec<&OpEnvelope> {
     let covered: std::collections::HashSet<&str> = envelopes
         .iter()
         .filter_map(|envelope| match &envelope.op {
