@@ -14,7 +14,11 @@ pub mod telemetry;
 #[cfg(target_os = "windows")]
 mod path_normalization;
 #[cfg(target_os = "windows")]
+pub mod token;
+#[cfg(target_os = "windows")]
 pub mod winutil;
 
 #[cfg(target_os = "windows")]
 pub use path_normalization::{canonical_path_key, canonicalize_path};
+#[cfg(target_os = "windows")]
+pub use token::{LocalSid, world_sid};

@@ -99,6 +99,12 @@
 
 B-ENV-01 (clean-VM rig), then B-FLX-02 in parallel with B-ENV-02.
 
+### B-SBX-02 — token.rs port (done this turn)
+- token.rs + token_tests.rs ported near-verbatim (windows-sys pinned 0.52 to
+  match donor HANDLE semantics; two `# Safety` doc sections added for clippy)
+- 6 tests green incl. real `CreateRestrictedToken` round-trip on this host
+- Next: B-SBX-03 — acl.rs (802 lines)
+
 ### B-SBX-01 — nano-sandbox port increment 1 (foundation)
 - Owner: K3 mainline | Files: `crates/nano-sandbox/src/{lib,telemetry,winutil,path_normalization}.rs`
 - Work: telemetry facade + leaf modules, donor tests retained
