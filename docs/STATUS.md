@@ -97,6 +97,12 @@
 
 ## Next action
 
+**LIVE PROVISIONING (owner elevated action required):** run
+`nanok3-sandbox-setup.exe` provisioning payload from an elevated process to
+create NanoK3Sandbox{Offline,Online} accounts, then the C1.2 full-criterion
+proof (escape probes, ≤5s tree kill, standard user), then C1 claim.
+Former queue:
+
 B-ENV-01 (clean-VM rig), then B-FLX-02 in parallel with B-ENV-02.
 
 ### B-SBX-02 — token.rs port (done this turn)
@@ -110,6 +116,9 @@ B-ENV-01 (clean-VM rig), then B-FLX-02 in parallel with B-ENV-02.
 - B-SBX-06 done: job.rs extraction + process.rs port — LIVE contained spawn +
   whole-tree kill proven on this host (15 tests green)
 - B-SBX-05 done: logging + proc_thread_attr + desktop ported (14 tests green)
+- B-SBX-11 done: THE PORT IS CODE-COMPLETE — every windows-sandbox-rs module
+  + both helper bins (nanok3-sandbox-setup.exe 2.5MB, nanok3-command-runner.exe
+  2.9MB) build native; 137 tests green
 - B-SBX-10 done: elevated backend arm live (runner IPC wired into
   unified_exec router; Elevated/proxy/SID routes active; ConPTY still
   deferred per D8)
