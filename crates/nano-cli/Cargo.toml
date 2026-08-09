@@ -1,0 +1,13 @@
+[package]
+name = "nano-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "nanok3"
+path = "src/main.rs"
+
+[dependencies]
+nano-core = { path = "../nano-core" }

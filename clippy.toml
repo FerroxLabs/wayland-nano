@@ -1,0 +1,9 @@
+# Architecture rule: ALL outbound HTTP flows through nano-egress.
+# Raw reqwest construction anywhere else is a build error.
+# nano-egress opts back in locally with #[allow(clippy::disallowed_methods)]
+# on its client module only. (Pattern proven by wayland-core wcore-egress.)
+disallowed-methods = [
+    { path = "reqwest::Client::new", reason = "all outbound HTTP must go through nano-egress (fail-closed policy gate)" },
+    { path = "reqwest::Client::builder", reason = "all outbound HTTP must go through nano-egress (fail-closed policy gate)" },
+    { path = "reqwest::get", reason = "all outbound HTTP must go through nano-egress (fail-closed policy gate)" },
+]
