@@ -625,7 +625,18 @@ pub fn run_elevated_provisioning_setup(
             "sandbox provisioning setup must be run from an elevated process",
         ));
     }
-    let payload = ElevationPayload {
+    let payload = provisioning_payload(nano_home, real_user, settings);
+    run_setup_exe(&payload, /*needs_elevation*/ false, nano_home)
+}
+
+/// Builds the provisioning payload (ProvisionOnly mode) — factored out so the
+/// owner-review dry-run bin can show exactly what would be sent.
+pub fn provisioning_payload(
+    nano_home: &Path,
+    real_user: &str,
+    settings: WindowsSandboxProvisioningSettings,
+) -> ElevationPayload {
+    ElevationPayload {
         version: SETUP_VERSION,
         offline_username: OFFLINE_USERNAME.to_string(),
         online_username: ONLINE_USERNAME.to_string(),
@@ -641,8 +652,19 @@ pub fn run_elevated_provisioning_setup(
         real_user: real_user.to_string(),
         mode: SetupMode::ProvisionOnly,
         refresh_only: false,
-    };
-    run_setup_exe(&payload, /*needs_elevation*/ false, nano_home)
+    }
+}
+
+/// The provisioning payload as (pretty JSON for review, base64 for launch).
+pub fn provisioning_payload_review(
+    nano_home: &Path,
+    real_user: &str,
+    settings: WindowsSandboxProvisioningSettings,
+) -> Result<(String, String)> {
+    let payload = provisioning_payload(nano_home, real_user, settings);
+    let pretty = serde_json::to_string_pretty(&payload)?;
+    let b64 = BASE64_STANDARD.encode(serde_json::to_vec(&payload)?);
+    Ok((pretty, b64))
 }
 
 pub(crate) fn build_payload_roots(
@@ -755,7 +777,8 @@ fn is_elevated() -> Result<bool> {
 }
 
 #[derive(Serialize)]
-struct ElevationPayload {
+pub struct ElevationPayload {
+    #[allow(missing_docs)]
     version: u32,
     offline_username: String,
     online_username: String,
@@ -779,7 +802,7 @@ struct ElevationPayload {
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "kebab-case")]
-enum SetupMode {
+pub enum SetupMode {
     Full,
     ProvisionOnly,
 }
