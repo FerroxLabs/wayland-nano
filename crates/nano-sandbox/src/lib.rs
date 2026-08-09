@@ -20,7 +20,11 @@ pub mod deny_read_resolver;
 #[cfg(target_os = "windows")]
 pub mod desktop;
 #[cfg(target_os = "windows")]
+pub mod dpapi;
+#[cfg(target_os = "windows")]
 pub mod env;
+#[cfg(target_os = "windows")]
+pub mod identity;
 #[cfg(target_os = "windows")]
 pub mod job;
 #[cfg(target_os = "windows")]

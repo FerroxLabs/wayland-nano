@@ -431,3 +431,17 @@ mod tests {
         assert!(json.contains("\"kind\":\"root\""));
     }
 }
+
+/// Whether an offline sandbox launch reconciles the stored loopback proxy
+/// settings with the current environment or preserves the settings established
+/// by another launch.
+///
+/// Provenance: codex `codex-rs/protocol/src/config_types.rs`
+/// `WindowsSandboxProxySettingsMode` @ 646f7c0a (extracted; serde shape kept).
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WindowsSandboxProxySettingsMode {
+    #[default]
+    Reconcile,
+    Preserve,
+}
