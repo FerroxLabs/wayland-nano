@@ -43,3 +43,6 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-sandbox/src/lib.rs` (`sandbox_dir`) | `codex-rs/windows-sandbox-rs/src/setup.rs` | interim helper at crate root until setup module lands |
 | `crates/nano-sandbox/src/job.rs` | `codex-rs/utils/pty/src/win/job.rs` | extracted per B-VND-01 (not the whole PTY crate); winapi→windows-sys 0.52, filedescriptor→std OwnedHandle, log::warn→tracing::warn; Track-B live tree-kill test added |
 | `crates/nano-sandbox/src/process.rs` | `codex-rs/windows-sandbox-rs/src/process.rs` | `codex_utils_pty::JobObject` → `crate::job::JobObject`; otherwise verbatim |
+| `crates/nano-core/src/abs/mod.rs` | `codex-rs/utils/absolute-path/src/lib.rs` | reduced to consumer-named surface; thread-local deserialization guard dropped (cwd-explicit resolution instead); custom `Deserialize` documented |
+| `crates/nano-core/src/abs/absolutize.rs` | `codex-rs/utils/absolute-path/src/absolutize.rs` (itself MIT-adapted from path-absolutize 3.1.1) | pub(super)→pub(crate); donor tests retained |
+| `crates/nano-core/src/permissions.rs` | `codex-rs/protocol/src/permissions.rs` + `models.rs` | EXTRACT-TYPES layer per B-VND-01: JsonSchema/TS/strum derives dropped (serde shape preserved for config compat); behavioral layer (root getters, narrowing, ReadDenyMatcher) deferred to consumer landing |

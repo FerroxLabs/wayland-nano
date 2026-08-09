@@ -104,6 +104,9 @@ B-ENV-01 (clean-VM rig), then B-FLX-02 in parallel with B-ENV-02.
   match donor HANDLE semantics; two `# Safety` doc sections added for clippy)
 - 6 tests green incl. real `CreateRestrictedToken` round-trip on this host
 - B-SBX-03 done: acl.rs + live deny-write test (077a30d)
+## B-CORE-01 (this commit): nano-core permission type layer — extracted from
+  codex-protocol (serde-compatible); AbsolutePathBuf minimal port; 9 tests green
+
 - B-SBX-06 done: job.rs extraction + process.rs port — LIVE contained spawn +
   whole-tree kill proven on this host (15 tests green)
 - B-SBX-05 done: logging + proc_thread_attr + desktop ported (14 tests green)
