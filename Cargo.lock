@@ -795,6 +795,7 @@ dependencies = [
  "dunce",
  "globset",
  "nano-core",
+ "nano-sandbox",
  "pretty_assertions",
  "regex",
  "tempfile",

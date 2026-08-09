@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+nano-sandbox = { path = "../nano-sandbox" }
 dunce = "1"
 globset = "0.4"
 regex = "1"
