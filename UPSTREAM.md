@@ -77,3 +77,9 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-core/src/permissions.rs` (addition) | `codex-rs/protocol/src/config_types.rs` | `WindowsSandboxLevel` extracted |
 | `crates/nano-sandbox/src/wrapper.rs` (+ tests) | `codex-rs/windows-sandbox-rs/src/wrapper.rs` | imports rewired; `--codex-home` flag → `--nano-home`; codex_home→nano_home; session spawn via unified_exec |
 | `crates/nano-core/src/permissions.rs` (additions) | — | `WindowsSandboxLevel` Display (strum→manual); `Deserialize` on PermissionProfile/ManagedFileSystemPermissions (wrapper argv JSON parses profiles) |
+| `crates/nano-sandbox/src/elevated/{ipc_framed,runner_pipe,runner_client,mod}.rs` | `codex-rs/windows-sandbox-rs/src/elevated/` | imports rewired; codex_home→nano_home wire fields; `nanok3-command-runner.exe` |
+| `crates/nano-sandbox/src/elevated_impl.rs` | `codex-rs/windows-sandbox-rs/src/elevated_impl.rs` | setup::→gather::, crate::windows_impl::CaptureResult→crate::capture::CaptureResult |
+| `crates/nano-sandbox/src/capture.rs` | `codex-rs/windows-sandbox-rs/src/lib.rs` (`mod windows_impl`) | legacy capture backend; non-Windows stub module NOT ported (Windows-only build); super::→crate:: |
+| `crates/nano-sandbox/src/hide_users.rs` | `codex-rs/windows-sandbox-rs/src/hide_users.rs` | verbatim except module path |
+| `crates/nano-sandbox/src/lib.rs` (additions) | `codex-rs/windows-sandbox-rs/src/lib.rs` | `WindowsSandboxCancellationToken` verbatim; elevated re-exports |
+| `crates/nano-sandbox/src/helper_materialization.rs` (test fix) | — | suffix-name test expects nanok3 exe name (recorded branding) |

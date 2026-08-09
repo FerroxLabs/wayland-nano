@@ -22,6 +22,8 @@ pub mod audit;
 #[cfg(target_os = "windows")]
 pub mod cap;
 #[cfg(target_os = "windows")]
+pub mod capture;
+#[cfg(target_os = "windows")]
 pub mod deny_read_acl;
 #[cfg(target_os = "windows")]
 pub mod deny_read_resolver;
@@ -32,11 +34,17 @@ pub mod desktop;
 #[cfg(target_os = "windows")]
 pub mod dpapi;
 #[cfg(target_os = "windows")]
+pub mod elevated;
+#[cfg(target_os = "windows")]
+pub mod elevated_impl;
+#[cfg(target_os = "windows")]
 pub mod env;
 #[cfg(target_os = "windows")]
 pub mod gather;
 #[cfg(target_os = "windows")]
 pub mod helper_materialization;
+#[cfg(target_os = "windows")]
+pub mod hide_users;
 #[cfg(target_os = "windows")]
 pub mod identity;
 #[cfg(target_os = "windows")]
@@ -100,3 +108,39 @@ pub use setup_types::{sandbox_bin_dir, sandbox_secrets_dir, setup_marker_path, s
 
 #[cfg(target_os = "windows")]
 pub use nano_core::permissions::WindowsSandboxProxySettingsMode;
+
+#[cfg(target_os = "windows")]
+pub use elevated::ipc_framed;
+#[cfg(target_os = "windows")]
+pub use elevated::runner_client;
+#[cfg(target_os = "windows")]
+pub use elevated::runner_pipe;
+
+/// Cancellation hook used by Windows sandbox capture backends.
+///
+/// Provenance: codex `windows-sandbox-rs/src/lib.rs` @ 646f7c0a (verbatim).
+#[derive(Clone)]
+pub struct WindowsSandboxCancellationToken {
+    is_cancelled: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+impl WindowsSandboxCancellationToken {
+    /// Creates a token backed by a cancellation predicate.
+    pub fn new(is_cancelled: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self {
+            is_cancelled: std::sync::Arc::new(is_cancelled),
+        }
+    }
+
+    /// Returns whether the caller has requested cancellation.
+    pub fn is_cancelled(&self) -> bool {
+        (self.is_cancelled)()
+    }
+}
+
+impl std::fmt::Debug for WindowsSandboxCancellationToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowsSandboxCancellationToken")
+            .finish_non_exhaustive()
+    }
+}
