@@ -28,6 +28,8 @@ pub mod process;
 #[cfg(target_os = "windows")]
 pub mod resolved_permissions;
 #[cfg(target_os = "windows")]
+pub mod setup_types;
+#[cfg(target_os = "windows")]
 pub mod logging;
 #[cfg(target_os = "windows")]
 pub mod proc_thread_attr;
