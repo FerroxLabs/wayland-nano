@@ -12,6 +12,8 @@
 pub mod telemetry;
 
 #[cfg(target_os = "windows")]
+pub mod acl;
+#[cfg(target_os = "windows")]
 mod path_normalization;
 #[cfg(target_os = "windows")]
 pub mod token;
