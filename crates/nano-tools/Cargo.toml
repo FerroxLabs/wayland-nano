@@ -6,3 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+nano-core = { path = "../nano-core" }
+thiserror = "2"
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"

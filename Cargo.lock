@@ -791,6 +791,12 @@ version = "0.1.0"
 [[package]]
 name = "nano-tools"
 version = "0.1.0"
+dependencies = [
+ "nano-core",
+ "pretty_assertions",
+ "tempfile",
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "num-conv"
