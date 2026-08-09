@@ -141,6 +141,14 @@ impl<'de> Deserialize<'de> for AbsolutePathBuf {
     }
 }
 
+impl std::ops::Deref for AbsolutePathBuf {
+    type Target = PathBuf;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 impl AsRef<Path> for AbsolutePathBuf {
     fn as_ref(&self) -> &Path {
         &self.0
