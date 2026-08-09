@@ -50,6 +50,10 @@ pub mod setup_error;
 #[cfg(target_os = "windows")]
 pub mod setup_exec;
 #[cfg(target_os = "windows")]
+pub mod spawn_types;
+#[cfg(target_os = "windows")]
+pub mod stdio_bridge;
+#[cfg(target_os = "windows")]
 pub mod setup_types;
 #[cfg(target_os = "windows")]
 mod ssh_config_dependencies;

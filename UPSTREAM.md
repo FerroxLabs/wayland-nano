@@ -66,3 +66,5 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-sandbox/src/deny_read_acl.rs` | `codex-rs/windows-sandbox-rs/src/deny_read_acl.rs` | verbatim except module path |
 | `crates/nano-sandbox/src/deny_read_state.rs` | `codex-rs/windows-sandbox-rs/src/deny_read_state.rs` | `crate::setup::sandbox_dir`→`crate::sandbox_dir` |
 | `crates/nano-sandbox/src/audit.rs` | `codex-rs/windows-sandbox-rs/src/audit.rs` | `crate::setup::effective_write_roots_for_permissions`→`crate::gather::...`; otherwise verbatim |
+| `crates/nano-sandbox/src/spawn_types.rs` | `codex-rs/utils/pty/src/process.rs` (surface only) | Nano-owned minimal session abstraction (writer/close/terminate + channels); full ProcessHandle internals intentionally not ported (v1 is non-interactive) |
+| `crates/nano-sandbox/src/stdio_bridge.rs` (+ tests) | `codex-rs/windows-sandbox-rs/src/stdio_bridge.rs` | SpawnedProcess → crate::spawn_types; EOF/drain/Ctrl+C forwarding semantics intact |
