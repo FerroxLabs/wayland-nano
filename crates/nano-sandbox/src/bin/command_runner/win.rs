@@ -306,7 +306,8 @@ fn spawn_ipc_process(req: &SpawnRequest) -> Result<IpcSpawnedProcess> {
     let _ = &req; // conpty_owner removed with tty branch (D8)
     #[allow(unused_variables)]
     let conpty_owner: Option<()> = None;
-    let mut hpc_handle: Option<HANDLE> = None;
+    let hpc_handle: Option<HANDLE> = None;
+    #[allow(unused_assignments)]
     let mut pipe_handles = None;
     let (pi, job, stdout_handle, stderr_handle, stdin_handle) = if req.tty {
         // D8: ConPTY interactive sessions are deferred in v1. Fail closed with
@@ -676,7 +677,7 @@ pub fn main() -> Result<()> {
     if let Ok(mut guard) = hpc_handle.lock() {
         let _ = guard.take();
     }
-    drop(conpty_owner.take());
+    let _ = conpty_owner.take();
 
     if child_stopped {
         if out_thread.join().is_err() {
