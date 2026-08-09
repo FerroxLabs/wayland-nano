@@ -16,6 +16,10 @@ pub mod telemetry;
 #[cfg(target_os = "windows")]
 pub mod acl;
 #[cfg(target_os = "windows")]
+pub mod allow;
+#[cfg(target_os = "windows")]
+pub mod cap;
+#[cfg(target_os = "windows")]
 pub mod deny_read_resolver;
 #[cfg(target_os = "windows")]
 pub mod desktop;
@@ -31,6 +35,8 @@ pub mod job;
 pub mod process;
 #[cfg(target_os = "windows")]
 pub mod resolved_permissions;
+#[cfg(target_os = "windows")]
+pub mod setup_error;
 #[cfg(target_os = "windows")]
 pub mod setup_types;
 #[cfg(target_os = "windows")]

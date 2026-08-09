@@ -233,6 +233,30 @@ pub fn take_bytes_at_char_boundary(s: &str, maxb: usize) -> &str {
     &s[..last_ok]
 }
 
+
+/// Sanitize a tag value to comply with metric tag validation rules.
+///
+/// Provenance: codex `codex-rs/utils/string/src/lib.rs` @ 646f7c0a
+/// (relocated into winutil alongside take_bytes_at_char_boundary).
+pub fn sanitize_metric_tag_value(value: &str) -> String {
+    const MAX_LEN: usize = 256;
+    let sanitized: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches('_');
+    if trimmed.is_empty() {
+        return "empty".to_string();
+    }
+    trimmed.chars().take(MAX_LEN).collect()
+}
+
 #[cfg(test)]
 mod string_tests {
     #[test]

@@ -54,3 +54,7 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-sandbox/src/dpapi.rs` | `codex-rs/windows-sandbox-rs/src/dpapi.rs` | verbatim except module path (machine-scope DPAPI) |
 | `crates/nano-sandbox/src/identity.rs` | `codex-rs/windows-sandbox-rs/src/identity.rs` | PURE readiness layer only (load/select/reconcile); execution entry points deferred to B-SBX-08c with gather_*/run_*; setup::*→setup_types::*, codex_home→nano_home |
 | `crates/nano-core/src/permissions.rs` (addition) | `codex-rs/protocol/src/config_types.rs` | `WindowsSandboxProxySettingsMode` extracted (serde shape kept) |
+| `crates/nano-sandbox/src/allow.rs` | `codex-rs/windows-sandbox-rs/src/allow.rs` | verbatim except test imports rewired + `.codex`→`.nano` in metadata-deny test (recorded branding) |
+| `crates/nano-sandbox/src/cap.rs` | `codex-rs/windows-sandbox-rs/src/cap.rs` | verbatim except module path |
+| `crates/nano-sandbox/src/setup_error.rs` | `codex-rs/windows-sandbox-rs/src/setup_error.rs` | sanitize_metric_tag_value → crate::winutil |
+| `crates/nano-core/src/abs/mod.rs` (addition) | `codex-rs/utils/absolute-path/src/lib.rs` | `From<&Path>`/`From<PathBuf>` parity impls |

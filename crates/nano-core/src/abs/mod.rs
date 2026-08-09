@@ -149,6 +149,22 @@ impl std::ops::Deref for AbsolutePathBuf {
     }
 }
 
+impl From<&Path> for AbsolutePathBuf {
+    /// Resolves against the process current directory (donor parity).
+    fn from(path: &Path) -> Self {
+        Self::resolve_path_against_base(
+            path,
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+        )
+    }
+}
+
+impl From<PathBuf> for AbsolutePathBuf {
+    fn from(path: PathBuf) -> Self {
+        Self::from(path.as_path())
+    }
+}
+
 impl AsRef<Path> for AbsolutePathBuf {
     fn as_ref(&self) -> &Path {
         &self.0
