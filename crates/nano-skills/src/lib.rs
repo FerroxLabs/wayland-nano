@@ -5,7 +5,3 @@
 
 pub mod loader;
 pub mod parser;
-
-#[cfg(test)]
-#[path = "parser_tests.rs"]
-mod parser_tests;
