@@ -102,7 +102,7 @@ pub fn load_users(nano_home: &Path) -> Result<Option<SandboxUsersFile>> {
     }
 }
 
-pub(crate) fn remove_sandbox_users_file(nano_home: &Path, reason: &str) -> Result<()> {
+pub fn remove_sandbox_users_file(nano_home: &Path, reason: &str) -> Result<()> {
     let path = sandbox_users_path(nano_home);
     debug_log(
         &format!("{reason}; deleting {}", path.display()),
@@ -124,7 +124,7 @@ fn decode_password(record: &SandboxUserRecord) -> Result<String> {
     Ok(pwd)
 }
 
-pub(crate) fn select_identity(
+pub fn select_identity(
     network_identity: SandboxNetworkIdentity,
     nano_home: &Path,
 ) -> Result<Option<SandboxIdentity>> {
@@ -149,7 +149,7 @@ pub(crate) fn select_identity(
 
 /// Chooses the desired offline proxy settings: Preserve mode keeps the
 /// existing marker's settings; anything else reconciles from the environment.
-pub(crate) fn desired_offline_proxy_settings(
+pub fn desired_offline_proxy_settings(
     marker: Option<&SetupMarker>,
     proxy_settings_mode: WindowsSandboxProxySettingsMode,
     env_map: &HashMap<String, String>,
