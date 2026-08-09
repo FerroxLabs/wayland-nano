@@ -722,7 +722,18 @@ dependencies = [
 name = "nano-cli"
 version = "0.1.0"
 dependencies = [
+ "dirs-next",
+ "nano-agent",
  "nano-core",
+ "nano-egress",
+ "nano-model",
+ "nano-protocol",
+ "nano-sandbox",
+ "nano-session",
+ "nano-tools",
+ "reqwest",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

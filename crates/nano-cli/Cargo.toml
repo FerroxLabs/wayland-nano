@@ -10,4 +10,17 @@ name = "nanok3"
 path = "src/main.rs"
 
 [dependencies]
+dirs-next = "2"
+nano-agent = { path = "../nano-agent" }
 nano-core = { path = "../nano-core" }
+nano-egress = { path = "../nano-egress" }
+nano-model = { path = "../nano-model" }
+nano-protocol = { path = "../nano-protocol" }
+nano-sandbox = { path = "../nano-sandbox" }
+nano-session = { path = "../nano-session" }
+nano-tools = { path = "../nano-tools" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[dev-dependencies]
+serde_json = "1"

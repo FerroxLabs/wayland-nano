@@ -3,7 +3,7 @@
 ## Current position
 
 - Goal: active (K3 native goal mode; objective = C1→C2→C3 per `../../shared/SCORECARD.md`)
-- Phase: **C1 code-complete; C2 CLAIMED (shared/reviews/C2/trackb-claim.md, 2 deferrals)**; awaiting owner elevated provisioning for C1.2 + C2 promotion decision
+- Phase: **C1 code-complete; C2 CLAIMED; C3 VERTICAL SLICE PASSING (real nanok3 binary over wire protocol, live)**; awaiting owner: C2 promotion + elevated provisioning
 - Checkpoint: C1 ready-to-prove (no claim posted); C2 in progress
 - Last green: workspace-wide tests + clippy `-D warnings` clean, commit HEAD
 - Track A (observed read-only): G0-era sandbox corrections ongoing
@@ -17,6 +17,12 @@
 | C1.2 full criterion | ⏳ **awaiting owner elevated provisioning** | `scripts/provision/README.md`; proof harness green: `scripts/c12-proof/` (8 pass / 0 fail / 2 provisioning-gated skips) |
 | C1.3 session journal | ✅ | 10 kill-boundary tests; torn-tail, unknown-skip, idempotence, compaction equivalence |
 | C1.4/5/6 metrics | ✅ | `docs/metrics/C1-metrics.md`: bins ~1MB, 26s release build, 71-crate production closure |
+
+## C3 (vertical slice passing)
+
+- `nanok3` binary: `doctor` (real self-diagnostics, exit 0) + `protocol-host`.
+- `nano-protocol`: NDJSON wire, honest capabilities, malformed-tolerant codec, ready-first host loop.
+- Vertical slice (`nano-cli/tests/vertical_slice.rs`): simulated Desktop host spawns real binary — ready-first, ping→pong, live framed turn (model read fixture file), clean exit, **zero orphans**.
 
 ## C2 foundations (landed after C1 code-complete)
 
