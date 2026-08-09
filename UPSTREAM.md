@@ -92,3 +92,4 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-sandbox/src/setup_error.rs` (addition) | — | `HelperConptyDeferred` variant (Track-B addition, not donor) |
 | `crates/nano-sandbox/src/resolved_permissions.rs` (D9) | deviation | temp env roots scoped to `TEMP\nanok3-temp` (73s ACL propagation → ~1ms); spawn env points TEMP/TMP at scoped dir; donor tests updated with D9 note |
 | `crates/nano-sandbox/src/env.rs` (addition) | original | `scope_temp_env` — D9 env redirect |
+| `crates/nano-skills/src/parser.rs` (+ tests) | `codex-rs/skills/src/parser.rs` | verbatim except module path (repair pass retained); loader.rs is original Nano code (scoped activation) |
