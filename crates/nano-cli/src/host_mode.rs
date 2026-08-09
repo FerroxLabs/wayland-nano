@@ -6,7 +6,7 @@ use nano_agent::turn::{TurnEngine, TurnState};
 use nano_agent::wiring::{FluxDriver, RealToolExecutor, v1_tool_definitions};
 use nano_egress::client::EgressClient;
 use nano_model::flux_completions::FluxCompletionsClient;
-use nano_model::types::{ModelEvent, Usage};
+use nano_model::types::Usage;
 use nano_protocol::host::{HostConfig, run_host_loop};
 pub use nano_protocol::host::HostExit;
 use nano_protocol::messages::Event;
