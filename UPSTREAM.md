@@ -41,3 +41,5 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-sandbox/src/desktop.rs` | `codex-rs/windows-sandbox-rs/src/desktop.rs` | verbatim except module path |
 | `crates/nano-sandbox/src/winutil.rs` (addition) | `codex-rs/utils/string/src/lib.rs` | `take_bytes_at_char_boundary` relocated into winutil (donor: separate codex-utils-string crate) |
 | `crates/nano-sandbox/src/lib.rs` (`sandbox_dir`) | `codex-rs/windows-sandbox-rs/src/setup.rs` | interim helper at crate root until setup module lands |
+| `crates/nano-sandbox/src/job.rs` | `codex-rs/utils/pty/src/win/job.rs` | extracted per B-VND-01 (not the whole PTY crate); winapi→windows-sys 0.52, filedescriptor→std OwnedHandle, log::warn→tracing::warn; Track-B live tree-kill test added |
+| `crates/nano-sandbox/src/process.rs` | `codex-rs/windows-sandbox-rs/src/process.rs` | `codex_utils_pty::JobObject` → `crate::job::JobObject`; otherwise verbatim |
