@@ -6,12 +6,12 @@
 //! nano_core::permissions; ReadDenyMatcher -> nano_core::policy_engine;
 //! codex_utils_absolute_path -> nano_core::abs. Donor tests retained.
 
+use nano_core::abs::AbsolutePathBuf;
 use nano_core::permissions::FileSystemAccessMode;
 use nano_core::permissions::FileSystemPath;
 use nano_core::permissions::FileSystemSandboxEntry;
 use nano_core::permissions::FileSystemSandboxPolicy;
 use nano_core::policy_engine::ReadDenyMatcher;
-use nano_core::abs::AbsolutePathBuf;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
@@ -198,11 +198,11 @@ fn effective_glob_scan_max_depth(
 mod tests {
     use super::glob_scan_plan;
     use super::resolve_windows_deny_read_paths;
+    use nano_core::abs::AbsolutePathBuf;
     use nano_core::permissions::FileSystemAccessMode;
     use nano_core::permissions::FileSystemPath;
     use nano_core::permissions::FileSystemSandboxEntry;
     use nano_core::permissions::FileSystemSandboxPolicy;
-    use nano_core::abs::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use std::collections::HashSet;
     use std::path::PathBuf;

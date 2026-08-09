@@ -32,9 +32,7 @@ impl NetworkSandboxPolicy {
 /// When two equally specific entries target the same path, we compare these by
 /// conflict precedence rather than by capability breadth: `deny` beats
 /// `write`, and `write` beats `read`.
-#[derive(
-    Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FileSystemAccessMode {
     Read,
@@ -147,11 +145,17 @@ pub struct FileSystemSandboxPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FileSystemPath {
-    Path { path: AbsolutePathBuf },
+    Path {
+        path: AbsolutePathBuf,
+    },
     /// A git-style glob pattern. Pattern entries currently support
     /// FileSystemAccessMode::Deny only.
-    GlobPattern { pattern: String },
-    Special { value: FileSystemSpecialPath },
+    GlobPattern {
+        pattern: String,
+    },
+    Special {
+        value: FileSystemSpecialPath,
+    },
 }
 
 fn read_only_file_system_entries() -> Vec<FileSystemSandboxEntry> {

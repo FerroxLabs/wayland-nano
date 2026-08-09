@@ -8,7 +8,9 @@ use crate::types::{Message, ModelEvent, ModelRequest};
 use nano_egress::client::EgressClient;
 
 fn key() -> Option<String> {
-    std::env::var("FLUX_TEST_KEY").ok().filter(|k| !k.is_empty())
+    std::env::var("FLUX_TEST_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
 }
 
 fn record(name: &str, content: &str) {
@@ -53,10 +55,7 @@ async fn live_complete_non_streaming() {
         "expected ok in text: {text}"
     );
     assert!(response.usage.output_tokens > 0);
-    record(
-        "non_streaming.json",
-        &format!("{:#?}", response.events),
-    );
+    record("non_streaming.json", &format!("{:#?}", response.events));
 }
 
 #[tokio::test]
@@ -97,5 +96,8 @@ async fn live_egress_denies_non_flux_host() {
     // denied before any socket activity (construction fails).
     let egress = EgressClient::flux();
     let result = egress.request(reqwest::Method::GET, "https://api.openai.com/v1/models");
-    assert!(result.is_err(), "non-Flux host must be denied at construction");
+    assert!(
+        result.is_err(),
+        "non-Flux host must be denied at construction"
+    );
 }

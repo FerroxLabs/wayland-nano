@@ -1,0 +1,67 @@
+# NanoK3 (Track B) — native Windows gate workflow.
+# Runs the same justfile entry points as local work. Live tests never run in
+# CI (they need the owner-held Flux credential); evidence fixtures replay
+# instead.
+
+name: nanok3-gate
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  windows-native:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+
+      - name: Install just
+        uses: taiki-e/install-action@just
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: gate-fmt
+        run: just gate-fmt
+        working-directory: nano-k3
+
+      - name: gate-lint
+        run: just gate-lint
+        working-directory: nano-k3
+
+      - name: gate-test
+        run: just gate-test
+        working-directory: nano-k3
+
+      - name: gate-deny
+        run: just gate-deny
+        working-directory: nano-k3
+        continue-on-error: true # advisory until SBOM policy lands
+
+      - name: Evidence manifest
+        if: always()
+        shell: pwsh
+        run: |
+          $manifest = [ordered]@{
+            gate = "ci-windows-native"
+            sha = "${{ github.sha }}"
+            runner = $env:COMPUTERNAME
+            os = "windows-latest"
+            rust = "1.95.0"
+            at = (Get-Date).ToUniversalTime().ToString("o")
+            steps = @("gate-fmt", "gate-lint", "gate-test", "gate-deny(advisory)")
+          }
+          New-Item -ItemType Directory -Force -Path nano-k3/artifacts/evidence/ci | Out-Null
+          $manifest | ConvertTo-Json | Out-File "nano-k3/artifacts/evidence/ci/$($env:GITHUB_RUN_ID)-manifest.json" -Encoding utf8
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-manifest
+          path: nano-k3/artifacts/evidence/ci/

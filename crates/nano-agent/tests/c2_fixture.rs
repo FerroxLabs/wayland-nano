@@ -21,7 +21,9 @@ use nano_tools::fs::FsTools;
 use nano_tools::shell::ShellTool;
 
 fn key() -> Option<String> {
-    std::env::var("FLUX_TEST_KEY").ok().filter(|k| !k.is_empty())
+    std::env::var("FLUX_TEST_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
 }
 
 /// Builds the broken mini-project: math.rs with an inverted add, and a
@@ -84,8 +86,8 @@ async fn c2_fixture_agent_fixes_broken_project_live() {
     let ws = root.join("workspace");
     let home = root.join("nano-home");
 
-    let policy = nano_core::permissions::PermissionProfile::workspace_write()
-        .file_system_sandbox_policy();
+    let policy =
+        nano_core::permissions::PermissionProfile::workspace_write().file_system_sandbox_policy();
     let fs = FsTools::new(policy, &ws);
     let shell = ShellTool::new(&home, &ws);
     let executor = RealToolExecutor::new(fs, shell, &ws);
@@ -157,8 +159,8 @@ async fn c2_cancellation_stops_turn_at_boundary() {
     let root = broken_project("cancel");
     let ws = root.join("workspace");
     let home = root.join("nano-home");
-    let policy = nano_core::permissions::PermissionProfile::workspace_write()
-        .file_system_sandbox_policy();
+    let policy =
+        nano_core::permissions::PermissionProfile::workspace_write().file_system_sandbox_policy();
     let fs = FsTools::new(policy, &ws);
     let shell = ShellTool::new(&home, &ws);
     let executor = RealToolExecutor::new(fs, shell, &ws);

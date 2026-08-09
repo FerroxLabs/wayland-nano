@@ -16,7 +16,11 @@ pub struct StdioTransport {
 }
 
 impl StdioTransport {
-    pub fn spawn(command: &str, args: &[String], env: &[(String, String)]) -> Result<Self, McpError> {
+    pub fn spawn(
+        command: &str,
+        args: &[String],
+        env: &[(String, String)],
+    ) -> Result<Self, McpError> {
         let mut child = Command::new(command)
             .args(args)
             .envs(env.iter().cloned())
@@ -35,11 +39,7 @@ impl StdioTransport {
     }
 
     #[cfg(test)]
-    pub fn from_pipes(
-        child: Child,
-        stdin: ChildStdin,
-        stdout: ChildStdout,
-    ) -> Self {
+    pub fn from_pipes(child: Child, stdin: ChildStdin, stdout: ChildStdout) -> Self {
         Self {
             child,
             stdin,

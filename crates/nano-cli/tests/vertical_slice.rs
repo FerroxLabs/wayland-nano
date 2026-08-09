@@ -9,7 +9,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 
 fn key() -> Option<String> {
-    std::env::var("FLUX_TEST_KEY").ok().filter(|k| !k.is_empty())
+    std::env::var("FLUX_TEST_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
 }
 
 fn nanok3_bin() -> std::path::PathBuf {
@@ -64,8 +66,7 @@ impl Slice {
 
     fn send(&mut self, command: &serde_json::Value) {
         let stdin = self.stdin.as_mut().expect("stdin open");
-        writeln!(stdin, "{}", serde_json::to_string(command).unwrap())
-            .expect("write command");
+        writeln!(stdin, "{}", serde_json::to_string(command).unwrap()).expect("write command");
         stdin.flush().expect("flush");
     }
 }
@@ -93,7 +94,10 @@ fn vertical_slice_live_turn_through_protocol() {
     let ready = slice.read_frame();
     assert_eq!(ready["type"], "ready", "ready must be the first frame");
     assert!(ready["version"].is_string(), "corpus ready has version");
-    assert!(ready["session_id"].is_string(), "corpus ready has session_id");
+    assert!(
+        ready["session_id"].is_string(),
+        "corpus ready has session_id"
+    );
     assert!(ready["capabilities"]["thinking"].as_bool().unwrap());
     assert!(ready["capabilities"]["tool_approval"].as_bool().unwrap());
     assert!(ready["capabilities"]["mcp"].as_bool().unwrap());
@@ -198,7 +202,10 @@ while ($true) {
 
     let mut slice = Slice::spawn_with_env(
         &workspace,
-        &[("NANOK3_MCP_SERVERS".into(), serde_json::to_string(&spec).unwrap())],
+        &[(
+            "NANOK3_MCP_SERVERS".into(),
+            serde_json::to_string(&spec).unwrap(),
+        )],
     );
 
     let ready = slice.read_frame();
@@ -215,7 +222,9 @@ while ($true) {
     for _ in 0..96 {
         let frame = slice.read_frame();
         match frame["type"].as_str().unwrap_or("") {
-            "tool_request" if frame["tool"]["name"].as_str().unwrap_or("") == "mcp__fake__probe" => {
+            "tool_request"
+                if frame["tool"]["name"].as_str().unwrap_or("") == "mcp__fake__probe" =>
+            {
                 saw_mcp_tool = true;
             }
             "tool_request" => {}
@@ -225,7 +234,10 @@ while ($true) {
             _ => {}
         }
     }
-    assert!(saw_mcp_tool, "model must call the MCP tool through the registry");
+    assert!(
+        saw_mcp_tool,
+        "model must call the MCP tool through the registry"
+    );
     assert!(
         final_text.contains("MCP-MARKER-42"),
         "model must report the MCP marker: {final_text}"

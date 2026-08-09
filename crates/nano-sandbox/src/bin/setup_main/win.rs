@@ -9,7 +9,6 @@ use anyhow::Context;
 use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use nano_sandbox::telemetry::TelemetrySettings;
 use nano_sandbox::SETUP_VERSION;
 use nano_sandbox::SetupErrorCode;
 use nano_sandbox::SetupErrorReport;
@@ -30,6 +29,7 @@ use nano_sandbox::sandbox_dir;
 use nano_sandbox::sandbox_secrets_dir;
 use nano_sandbox::string_from_sid_bytes;
 use nano_sandbox::sync_persistent_deny_read_acls;
+use nano_sandbox::telemetry::TelemetrySettings;
 use nano_sandbox::to_wide;
 use nano_sandbox::workspace_write_cap_sid_for_root;
 use nano_sandbox::workspace_write_root_overlaps_path;
@@ -631,7 +631,9 @@ fn configure_offline_sandbox_network(
     install_wfp_filters(
         &payload.nano_home,
         &payload.offline_username,
-        metrics_sink.as_ref().map(|s| s as &dyn nano_sandbox::telemetry::MetricsSink),
+        metrics_sink
+            .as_ref()
+            .map(|s| s as &dyn nano_sandbox::telemetry::MetricsSink),
         |message| {
             let _ = log_line(log, message);
         },
@@ -1029,12 +1031,12 @@ mod tests {
     use super::WRITE_ROOT_ALLOW_MASK;
     use super::convert_string_sid_to_sid;
     use super::workspace_write_cap_sids_for_path;
-    use nano_sandbox::telemetry::TelemetrySettings;
     use nano_sandbox::ensure_allow_mask_aces;
     use nano_sandbox::ensure_allow_write_aces;
     use nano_sandbox::load_or_create_cap_sids;
     use nano_sandbox::path_mask_allows;
     use nano_sandbox::path_write_aces_need_refresh;
+    use nano_sandbox::telemetry::TelemetrySettings;
     use nano_sandbox::workspace_write_cap_sid_for_root;
     use pretty_assertions::assert_eq;
     use serde_json::json;

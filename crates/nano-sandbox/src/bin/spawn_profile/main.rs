@@ -24,9 +24,14 @@ async fn main() -> anyhow::Result<()> {
 
     let overall = Instant::now();
     let profile = nano_core::permissions::PermissionProfile::workspace_write();
-    let roots = [nano_core::abs::AbsolutePathBuf::from_absolute_path(&workspace)?];
+    let roots = [nano_core::abs::AbsolutePathBuf::from_absolute_path(
+        &workspace,
+    )?];
 
-    println!("=== spawn profile: workspace-write on {} ===", workspace.display());
+    println!(
+        "=== spawn profile: workspace-write on {} ===",
+        workspace.display()
+    );
 
     let (_, overall) = phase("resolve permissions", overall, || {
         nano_sandbox::resolved_permissions::ResolvedWindowsSandboxPermissions::try_from_permission_profile_for_workspace_roots(&profile, &roots)
@@ -53,10 +58,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (_, overall) = phase("session security (token+SIDs)", overall, || {
         nano_sandbox::spawn_prep::prepare_legacy_session_security(
-            true,
-            &nano_home,
-            &workspace,
-            roots_caps,
+            true, &nano_home, &workspace, roots_caps,
         )
         .expect("session security")
     });
@@ -80,7 +82,11 @@ async fn main() -> anyhow::Result<()> {
             &std::collections::HashMap::new(),
         )
     });
-    println!("  allow paths: {}, deny paths: {}", acl_paths.allow.len(), acl_paths.deny.len());
+    println!(
+        "  allow paths: {}, deny paths: {}",
+        acl_paths.allow.len(),
+        acl_paths.deny.len()
+    );
     for p in &acl_paths.allow {
         println!("    allow: {}", p.display());
     }
@@ -129,7 +135,11 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    println!("{:<28} {:>8.1} ms", "TOTAL", overall.elapsed().as_secs_f64() * 1000.0);
+    println!(
+        "{:<28} {:>8.1} ms",
+        "TOTAL",
+        overall.elapsed().as_secs_f64() * 1000.0
+    );
 
     let _ = std::fs::remove_dir_all(tmp.join("workspace").join("file.txt"));
     Ok(())

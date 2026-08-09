@@ -18,9 +18,7 @@ use std::fs::File;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
-pub fn start_runner_pipe_writer(
-    mut pipe_write: File,
-) -> std::sync::mpsc::Sender<FramedMessage> {
+pub fn start_runner_pipe_writer(mut pipe_write: File) -> std::sync::mpsc::Sender<FramedMessage> {
     let (outbound_tx, outbound_rx) = std::sync::mpsc::channel::<FramedMessage>();
     tokio::task::spawn_blocking(move || {
         while let Ok(msg) = outbound_rx.recv() {

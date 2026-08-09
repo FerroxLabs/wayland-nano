@@ -4,9 +4,7 @@
 mod tests {
     use crate::loop_protection::{ProgressSignals, TurnBudget};
     use crate::turn::{ModelDriver, ToolExecutor, TurnEngine, TurnState};
-    use nano_model::types::{
-        ModelError, ModelEvent, ModelRequest, ModelResponse, ToolCall, Usage,
-    };
+    use nano_model::types::{ModelError, ModelEvent, ModelRequest, ModelResponse, ToolCall, Usage};
     use std::sync::Mutex;
 
     #[derive(Debug)]
@@ -28,11 +26,7 @@ mod tests {
     impl ModelDriver for ScriptedModel {
         async fn complete(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError> {
             self.requests.lock().unwrap().push(request.clone());
-            self.responses
-                .lock()
-                .unwrap()
-                .remove(0)
-                .pipe_ok()
+            self.responses.lock().unwrap().remove(0).pipe_ok()
         }
     }
 
@@ -122,8 +116,15 @@ mod tests {
         assert_eq!(
             labels,
             vec![
-                "RECEIVE", "UNDERSTAND", "PLAN", "ACT", "OBSERVE", "UNDERSTAND", "PLAN",
-                "VERIFY", "COMPLETE",
+                "RECEIVE",
+                "UNDERSTAND",
+                "PLAN",
+                "ACT",
+                "OBSERVE",
+                "UNDERSTAND",
+                "PLAN",
+                "VERIFY",
+                "COMPLETE",
             ]
         );
         assert_eq!(result.final_text, "fixed the build");
@@ -131,7 +132,13 @@ mod tests {
         let op_types: Vec<String> = result
             .ops
             .iter()
-            .map(|e| format!("{:?}", e.op).split(' ').next().unwrap_or("").to_string())
+            .map(|e| {
+                format!("{:?}", e.op)
+                    .split(' ')
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            })
             .collect();
         assert!(op_types.iter().any(|t| t.contains("TurnBegin")));
         assert!(op_types.iter().any(|t| t.contains("ToolCall")));
@@ -177,7 +184,11 @@ mod tests {
 
         let result = engine.run_turn("t2", "loop forever").await;
 
-        assert!(matches!(result.state, TurnState::Stopped(_)), "{:?}", result.state);
+        assert!(
+            matches!(result.state, TurnState::Stopped(_)),
+            "{:?}",
+            result.state
+        );
     }
 
     #[tokio::test]
@@ -189,11 +200,26 @@ mod tests {
         };
         let model = ScriptedModel::new(vec![
             tool_response(call.clone()),
-            tool_response(ToolCall { id: "c2".into(), ..call.clone() }),
-            tool_response(ToolCall { id: "c3".into(), ..call.clone() }),
-            tool_response(ToolCall { id: "c4".into(), ..call.clone() }),
-            tool_response(ToolCall { id: "c5".into(), ..call.clone() }),
-            tool_response(ToolCall { id: "c6".into(), ..call }),
+            tool_response(ToolCall {
+                id: "c2".into(),
+                ..call.clone()
+            }),
+            tool_response(ToolCall {
+                id: "c3".into(),
+                ..call.clone()
+            }),
+            tool_response(ToolCall {
+                id: "c4".into(),
+                ..call.clone()
+            }),
+            tool_response(ToolCall {
+                id: "c5".into(),
+                ..call.clone()
+            }),
+            tool_response(ToolCall {
+                id: "c6".into(),
+                ..call
+            }),
             text_response("never reached"),
         ]);
         let tools = RecordingTools {
@@ -211,7 +237,11 @@ mod tests {
 
         let result = engine.run_turn("t3", "make no progress").await;
 
-        assert!(matches!(result.state, TurnState::Stopped(_)), "{:?}", result.state);
+        assert!(
+            matches!(result.state, TurnState::Stopped(_)),
+            "{:?}",
+            result.state
+        );
         assert!(
             matches!(result.state, TurnState::Stopped(ref r) if r.contains("no observable progress")),
             "{:?}",

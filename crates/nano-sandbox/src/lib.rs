@@ -50,31 +50,31 @@ pub mod identity;
 #[cfg(target_os = "windows")]
 pub mod job;
 #[cfg(target_os = "windows")]
+pub mod logging;
+#[cfg(target_os = "windows")]
+mod path_normalization;
+#[cfg(target_os = "windows")]
+pub mod proc_thread_attr;
+#[cfg(target_os = "windows")]
 pub mod process;
 #[cfg(target_os = "windows")]
 pub mod resolved_permissions;
 #[cfg(target_os = "windows")]
-pub mod setup_error;
-#[cfg(target_os = "windows")]
 pub mod sandbox_utils;
 #[cfg(target_os = "windows")]
+pub mod setup_error;
+#[cfg(target_os = "windows")]
 pub mod setup_exec;
+#[cfg(target_os = "windows")]
+pub mod setup_types;
 #[cfg(target_os = "windows")]
 pub mod spawn_prep;
 #[cfg(target_os = "windows")]
 pub mod spawn_types;
 #[cfg(target_os = "windows")]
-pub mod stdio_bridge;
-#[cfg(target_os = "windows")]
-pub mod setup_types;
-#[cfg(target_os = "windows")]
 mod ssh_config_dependencies;
 #[cfg(target_os = "windows")]
-pub mod logging;
-#[cfg(target_os = "windows")]
-pub mod proc_thread_attr;
-#[cfg(target_os = "windows")]
-mod path_normalization;
+pub mod stdio_bridge;
 #[cfg(target_os = "windows")]
 pub mod token;
 #[cfg(target_os = "windows")]
@@ -84,11 +84,11 @@ pub mod wfp;
 #[cfg(target_os = "windows")]
 pub mod wfp_setup;
 #[cfg(target_os = "windows")]
+pub mod winutil;
+#[cfg(target_os = "windows")]
 pub mod workspace_acl;
 #[cfg(target_os = "windows")]
 pub mod wrapper;
-#[cfg(target_os = "windows")]
-pub mod winutil;
 
 #[cfg(target_os = "windows")]
 pub use path_normalization::canonical_path_key;
@@ -106,7 +106,9 @@ pub fn sandbox_dir(nano_home: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[cfg(target_os = "windows")]
-pub use setup_types::{sandbox_bin_dir, sandbox_secrets_dir, setup_marker_path, sandbox_users_path};
+pub use setup_types::{
+    sandbox_bin_dir, sandbox_secrets_dir, sandbox_users_path, setup_marker_path,
+};
 
 #[cfg(target_os = "windows")]
 pub use nano_core::permissions::WindowsSandboxProxySettingsMode;
@@ -164,9 +166,10 @@ pub use cap::{
     workspace_write_root_contains_path, workspace_write_root_overlaps_path,
 };
 #[cfg(target_os = "windows")]
-pub use capture::{CaptureResult, run_windows_sandbox_capture,
-    run_windows_sandbox_capture_with_filesystem_overrides,
-    run_windows_sandbox_legacy_preflight};
+pub use capture::{
+    CaptureResult, run_windows_sandbox_capture,
+    run_windows_sandbox_capture_with_filesystem_overrides, run_windows_sandbox_legacy_preflight,
+};
 #[cfg(target_os = "windows")]
 pub use deny_read_acl::{apply_deny_read_acls, plan_deny_read_acl_paths};
 #[cfg(target_os = "windows")]
@@ -200,8 +203,8 @@ pub use logging::{
 pub use path_normalization::canonicalize_path;
 #[cfg(target_os = "windows")]
 pub use process::{
-    ConsoleMode, PipeSpawnHandles, StderrMode, StdinMode, create_process_as_user,
-    read_handle_loop, spawn_process_with_pipes,
+    ConsoleMode, PipeSpawnHandles, StderrMode, StdinMode, create_process_as_user, read_handle_loop,
+    spawn_process_with_pipes,
 };
 #[cfg(target_os = "windows")]
 pub use resolved_permissions::{
@@ -214,13 +217,15 @@ pub use setup_error::{
 };
 #[cfg(target_os = "windows")]
 pub use setup_exec::{
-    SandboxSetupRequest, run_elevated_provisioning_setup, run_elevated_setup,
-    run_setup_refresh, run_setup_refresh_with_extra_read_roots,
+    SandboxSetupRequest, run_elevated_provisioning_setup, run_elevated_setup, run_setup_refresh,
+    run_setup_refresh_with_extra_read_roots,
 };
 #[cfg(target_os = "windows")]
 pub use setup_types::{SETUP_VERSION, SetupRootOverrides};
 #[cfg(target_os = "windows")]
 pub use stdio_bridge::forward_sandbox_session_stdio;
+#[cfg(target_os = "windows")]
+pub use telemetry::{MetricsSink, TelemetrySettings};
 #[cfg(target_os = "windows")]
 pub use token::{
     LocalSid, convert_string_sid_to_sid, create_readonly_token_with_cap_from,
@@ -229,18 +234,14 @@ pub use token::{
     create_workspace_write_token_with_caps_from, get_current_token_for_restriction,
 };
 #[cfg(target_os = "windows")]
-pub use unified_exec::{
-    WindowsSandboxSessionRequest, spawn_windows_sandbox_session_for_level,
-};
-#[cfg(target_os = "windows")]
 pub use unified_exec::backends::elevated::spawn_windows_sandbox_session_elevated_for_permission_profile;
 #[cfg(target_os = "windows")]
 pub use unified_exec::backends::legacy::spawn_windows_sandbox_session_legacy;
 #[cfg(target_os = "windows")]
+pub use unified_exec::{WindowsSandboxSessionRequest, spawn_windows_sandbox_session_for_level};
+#[cfg(target_os = "windows")]
 pub use wfp::install_wfp_filters_for_account;
 #[cfg(target_os = "windows")]
 pub use wfp_setup::install_wfp_filters;
-#[cfg(target_os = "windows")]
-pub use telemetry::{MetricsSink, TelemetrySettings};
 #[cfg(target_os = "windows")]
 pub use winutil::{string_from_sid_bytes, to_wide};

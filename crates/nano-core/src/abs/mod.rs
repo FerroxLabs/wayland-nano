@@ -98,7 +98,10 @@ impl AbsolutePathBuf {
 
     pub fn parent(&self) -> Option<Self> {
         self.0.parent().map(|p| {
-            debug_assert!(p.is_absolute(), "parent of AbsolutePathBuf must be absolute");
+            debug_assert!(
+                p.is_absolute(),
+                "parent of AbsolutePathBuf must be absolute"
+            );
             Self(p.to_path_buf())
         })
     }
@@ -125,7 +128,6 @@ impl AbsolutePathBuf {
         self.0.clone()
     }
 }
-
 
 impl<'de> Deserialize<'de> for AbsolutePathBuf {
     /// Paths deserialize by resolving against the process current directory,

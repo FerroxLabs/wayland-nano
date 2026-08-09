@@ -60,7 +60,10 @@ fn emit_wfp_setup_metric(
             let tags: &[(&str, &str)] = match error_tag.as_deref() {
                 Some(error) => {
                     error_owned = error.to_string();
-                    &[("target_account", target_account.as_str()), ("message", error_owned.as_str())]
+                    &[
+                        ("target_account", target_account.as_str()),
+                        ("message", error_owned.as_str()),
+                    ]
                 }
                 None => &[("target_account", target_account.as_str())],
             };

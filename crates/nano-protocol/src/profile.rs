@@ -43,7 +43,8 @@ mod tests {
     #[test]
     fn v1_profile_is_honest_in_corpus_shape() {
         let caps = v1_capabilities();
-        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&caps).unwrap()).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&caps).unwrap()).unwrap();
         assert_eq!(json["thinking"], true);
         assert_eq!(json["tool_approval"], true);
         assert_eq!(json["mcp"], true);

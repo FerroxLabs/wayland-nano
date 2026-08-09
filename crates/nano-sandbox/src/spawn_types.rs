@@ -24,7 +24,8 @@ pub struct SandboxSessionHandle {
 
 impl std::fmt::Debug for SandboxSessionHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SandboxSessionHandle").finish_non_exhaustive()
+        f.debug_struct("SandboxSessionHandle")
+            .finish_non_exhaustive()
     }
 }
 
@@ -99,7 +100,10 @@ mod tests {
 
         session.close_stdin();
         drop(writer);
-        assert!(rx.recv().await.is_none(), "closed stdin must end the channel");
+        assert!(
+            rx.recv().await.is_none(),
+            "closed stdin must end the channel"
+        );
 
         session.request_terminate();
         session.request_terminate(); // one-shot: second call is a no-op

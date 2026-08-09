@@ -8,6 +8,7 @@
 //! byte-identical.
 
 use crate::desktop::LaunchDesktop;
+use crate::job::JobObject;
 use crate::logging;
 use crate::proc_thread_attr::ProcThreadAttributeList;
 use crate::winutil::argv_to_command_line;
@@ -16,7 +17,6 @@ use crate::winutil::to_wide;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
-use crate::job::JobObject;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::windows::io::AsRawHandle;

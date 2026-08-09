@@ -10,11 +10,7 @@ use nano_sandbox::setup_exec::provisioning_payload_review;
 fn main() -> anyhow::Result<()> {
     let nano_home = std::env::var_os("NANOK3_HOME")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs_next::home_dir()
-                .expect("home dir")
-                .join(".nanok3")
-        });
+        .unwrap_or_else(|| dirs_next::home_dir().expect("home dir").join(".nanok3"));
     let real_user = std::env::var("USERNAME").unwrap_or_else(|_| "unknown".into());
     let settings = WindowsSandboxProvisioningSettings {
         proxy_ports: Vec::new(),

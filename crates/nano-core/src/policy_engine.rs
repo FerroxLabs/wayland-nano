@@ -940,9 +940,10 @@ pub fn workspace_write_policy(
     append_default_read_only_project_root_subpath_if_no_explicit_rule(&mut entries, ".agents");
     append_default_read_only_project_root_subpath_if_no_explicit_rule(&mut entries, ".nano");
     for writable_root in writable_roots {
-        for protected_path in
-            default_read_only_subpaths_for_writable_root(writable_root, /*protect_missing*/ false)
-        {
+        for protected_path in default_read_only_subpaths_for_writable_root(
+            writable_root,
+            /*protect_missing*/ false,
+        ) {
             append_default_read_only_path_if_no_explicit_rule(&mut entries, protected_path);
         }
     }
@@ -1017,16 +1018,14 @@ impl FileSystemSandboxPolicy {
                     if let Some(subpath) =
                         crate::permissions::parse_project_roots_glob_pattern(&pattern)
                     {
-                        entries.extend(workspace_roots.iter().map(|root| {
-                            FileSystemSandboxEntry {
-                                path: FileSystemPath::GlobPattern {
-                                    pattern: crate::permissions::resolve_project_roots_glob_pattern(
-                                        subpath, root,
-                                    ),
-                                },
-                                access: entry.access,
-                                missing_path_behavior: entry.missing_path_behavior,
-                            }
+                        entries.extend(workspace_roots.iter().map(|root| FileSystemSandboxEntry {
+                            path: FileSystemPath::GlobPattern {
+                                pattern: crate::permissions::resolve_project_roots_glob_pattern(
+                                    subpath, root,
+                                ),
+                            },
+                            access: entry.access,
+                            missing_path_behavior: entry.missing_path_behavior,
                         }));
                     } else {
                         entries.push(FileSystemSandboxEntry {

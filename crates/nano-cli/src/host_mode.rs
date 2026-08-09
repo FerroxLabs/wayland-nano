@@ -7,8 +7,8 @@ use nano_agent::wiring::{FluxDriver, RealToolExecutor, v1_tool_definitions};
 use nano_egress::client::EgressClient;
 use nano_model::flux_completions::FluxCompletionsClient;
 use nano_model::types::Usage;
-use nano_protocol::host::{HostConfig, run_host_loop};
 pub use nano_protocol::host::HostExit;
+use nano_protocol::host::{HostConfig, run_host_loop};
 use nano_protocol::messages::Event;
 use nano_tools::fs::FsTools;
 use nano_tools::shell::ShellTool;
@@ -51,7 +51,10 @@ fn executor_tool_definitions(
     executor.tool_definitions_from_registry()
 }
 
-pub async fn run(nano_home: &std::path::Path, workspace: &std::path::Path) -> std::io::Result<HostExit> {
+pub async fn run(
+    nano_home: &std::path::Path,
+    workspace: &std::path::Path,
+) -> std::io::Result<HostExit> {
     let Some(api_key) = std::env::var("FLUX_API_KEY")
         .ok()
         .or_else(|| std::env::var("FLUX_TEST_KEY").ok())
@@ -60,8 +63,8 @@ pub async fn run(nano_home: &std::path::Path, workspace: &std::path::Path) -> st
         return Ok(HostExit::Fatal("missing FLUX_API_KEY".into()));
     };
 
-    let policy = nano_core::permissions::PermissionProfile::workspace_write()
-        .file_system_sandbox_policy();
+    let policy =
+        nano_core::permissions::PermissionProfile::workspace_write().file_system_sandbox_policy();
     let fs = FsTools::new(policy, workspace);
     let shell = ShellTool::new(nano_home, workspace);
     let executor = RealToolExecutor::new(fs, shell, workspace);
@@ -121,7 +124,12 @@ pub async fn run(nano_home: &std::path::Path, workspace: &std::path::Path) -> st
             let mut events = Vec::new();
             for op in &result.ops {
                 match &op.op {
-                    nano_session::op::Op::ToolCall { call_id, name, args, .. } => {
+                    nano_session::op::Op::ToolCall {
+                        call_id,
+                        name,
+                        args,
+                        ..
+                    } => {
                         events.push(Event::ToolRunning {
                             call_id: call_id.clone(),
                             msg_id: msg_id.clone(),
@@ -138,13 +146,22 @@ pub async fn run(nano_home: &std::path::Path, workspace: &std::path::Path) -> st
                             },
                         });
                     }
-                    nano_session::op::Op::ToolResult { call_id, ok, output_digest, .. } => {
+                    nano_session::op::Op::ToolResult {
+                        call_id,
+                        ok,
+                        output_digest,
+                        ..
+                    } => {
                         events.push(Event::ToolResult {
                             call_id: call_id.clone(),
                             msg_id: msg_id.clone(),
                             output: output_digest.clone(),
                             output_type: Some("text".into()),
-                            status: if *ok { "success".into() } else { "failure".into() },
+                            status: if *ok {
+                                "success".into()
+                            } else {
+                                "failure".into()
+                            },
                             tool_name: String::new(),
                             metadata: None,
                         });
@@ -153,10 +170,13 @@ pub async fn run(nano_home: &std::path::Path, workspace: &std::path::Path) -> st
                 }
             }
             if !result.final_text.is_empty() {
-                events.insert(0, Event::TextDelta {
-                    msg_id: msg_id.clone(),
-                    text: result.final_text.clone(),
-                });
+                events.insert(
+                    0,
+                    Event::TextDelta {
+                        msg_id: msg_id.clone(),
+                        text: result.final_text.clone(),
+                    },
+                );
             }
             let stop_reason = match result.state {
                 TurnState::Complete => "stop".to_string(),

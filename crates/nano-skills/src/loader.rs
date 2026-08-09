@@ -38,11 +38,12 @@ pub fn load_skill_file(path: &Path) -> Result<Skill, SkillError> {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "unnamed-skill".into())
     };
-    let meta = parse_skill_frontmatter_metadata(&contents, default_name)
-        .map_err(|source| SkillError::Parse {
+    let meta = parse_skill_frontmatter_metadata(&contents, default_name).map_err(|source| {
+        SkillError::Parse {
             path: path.display().to_string(),
             source,
-        })?;
+        }
+    })?;
     let instructions = extract_body(&contents);
     Ok(Skill {
         meta,
@@ -149,7 +150,11 @@ mod tests {
     #[test]
     fn directory_name_is_default_when_name_absent() {
         let tmp = tempfile::tempdir().unwrap();
-        write_skill(tmp.path(), "my-skill", "---\ndescription: Has no name field\n---\nBody\n");
+        write_skill(
+            tmp.path(),
+            "my-skill",
+            "---\ndescription: Has no name field\n---\nBody\n",
+        );
         let skill = load_skill_file(&tmp.path().join("my-skill/SKILL.md")).unwrap();
         assert_eq!(skill.meta.name, "my-skill");
     }

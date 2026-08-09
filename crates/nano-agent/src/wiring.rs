@@ -1,7 +1,7 @@
 //! Production wiring: Flux-backed ModelDriver and tool-backed ToolExecutor.
 
-use crate::turn::{ModelDriver, ToolExecutor, ToolOutcome};
 use crate::loop_protection::ProgressSignals;
+use crate::turn::{ModelDriver, ToolExecutor, ToolOutcome};
 use nano_model::flux_completions::FluxCompletionsClient;
 use nano_model::types::{ModelError, ModelRequest, ModelResponse, ToolCall, ToolDefinition};
 use nano_tools::fs::{FsTools, ReadBounds};
@@ -35,7 +35,8 @@ pub fn v1_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "fs_read".into(),
-            description: "Read a file (bounded). Args: path, optional line_offset, max_lines.".into(),
+            description: "Read a file (bounded). Args: path, optional line_offset, max_lines."
+                .into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -60,7 +61,9 @@ pub fn v1_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "fs_edit".into(),
-            description: "Exact-replacement edit. Args: path, old_string, new_string, optional replace_all.".into(),
+            description:
+                "Exact-replacement edit. Args: path, old_string, new_string, optional replace_all."
+                    .into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -74,7 +77,8 @@ pub fn v1_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "shell".into(),
-            description: "Run a cmd.exe command inside the workspace sandbox. Args: command.".into(),
+            description: "Run a cmd.exe command inside the workspace sandbox. Args: command."
+                .into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -144,8 +148,17 @@ impl ToolExecutor for RealToolExecutor {
                     };
                 };
                 let bounds = ReadBounds {
-                    line_offset: call.arguments.get("line_offset").and_then(|v| v.as_u64()).map(|v| v as usize),
-                    max_lines: call.arguments.get("max_lines").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(1000),
+                    line_offset: call
+                        .arguments
+                        .get("line_offset")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as usize),
+                    max_lines: call
+                        .arguments
+                        .get("max_lines")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as usize)
+                        .unwrap_or(1000),
                     ..Default::default()
                 };
                 match self.fs.read_file(&self.resolve(path), &bounds) {
@@ -172,10 +185,9 @@ impl ToolExecutor for RealToolExecutor {
                 }
             }
             "fs_write" => {
-                let (Some(path), Some(content)) = (
-                    Self::arg_str(call, "path"),
-                    Self::arg_str(call, "content"),
-                ) else {
+                let (Some(path), Some(content)) =
+                    (Self::arg_str(call, "path"), Self::arg_str(call, "content"))
+                else {
                     return ToolOutcome {
                         ok: false,
                         output: "missing path or content".into(),
@@ -215,7 +227,10 @@ impl ToolExecutor for RealToolExecutor {
                     .get("replace_all")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                match self.fs.edit_file(&self.resolve(path), old, new, replace_all) {
+                match self
+                    .fs
+                    .edit_file(&self.resolve(path), old, new, replace_all)
+                {
                     Ok(n) => ToolOutcome {
                         ok: true,
                         output: format!("{n} replacement(s)"),
@@ -259,7 +274,7 @@ impl ToolExecutor for RealToolExecutor {
                                 ..Default::default()
                             },
                         }
-                    },
+                    }
                     Err(err) => ToolOutcome {
                         ok: false,
                         output: err.to_string(),

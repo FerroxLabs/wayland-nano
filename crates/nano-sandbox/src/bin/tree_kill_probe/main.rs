@@ -28,11 +28,7 @@ async fn main() -> anyhow::Result<()> {
     let status = child.wait().await?;
     let elapsed = started.elapsed();
 
-    println!(
-        "TREE_KILL_OK ms={} exit={}",
-        elapsed.as_millis(),
-        status
-    );
+    println!("TREE_KILL_OK ms={} exit={}", elapsed.as_millis(), status);
     if elapsed.as_millis() > 5000 {
         anyhow::bail!("tree kill exceeded 5000ms");
     }

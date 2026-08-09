@@ -6,13 +6,13 @@
 //! engine behavior via nano_core::policy_engine impls. Donor tests retained.
 
 use anyhow::Result;
-use nano_core::permissions::PermissionProfile;
+use nano_core::abs::AbsolutePathBuf;
 use nano_core::permissions::FileSystemPath;
 use nano_core::permissions::FileSystemSandboxEntry;
 use nano_core::permissions::FileSystemSandboxKind;
 use nano_core::permissions::FileSystemSandboxPolicy;
 use nano_core::permissions::NetworkSandboxPolicy;
-use nano_core::abs::AbsolutePathBuf;
+use nano_core::permissions::PermissionProfile;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -221,10 +221,10 @@ fn windows_temp_env_roots(env_map: &HashMap<String, String>) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nano_core::permissions::ManagedFileSystemPermissions;
     use nano_core::permissions::FileSystemAccessMode;
     use nano_core::permissions::FileSystemSandboxEntry;
     use nano_core::permissions::FileSystemSpecialPath;
+    use nano_core::permissions::ManagedFileSystemPermissions;
     use nano_core::permissions::project_roots_glob_pattern;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;

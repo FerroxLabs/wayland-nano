@@ -140,7 +140,11 @@ impl McpClient {
     /// SEMANTICS: if the transport died after the server executed the call,
     /// the retry executes it again. This trade-off is deliberate and
     /// documented — do not hide it.
-    pub fn call_tool(&mut self, name: &str, arguments: serde_json::Value) -> Result<serde_json::Value, McpError> {
+    pub fn call_tool(
+        &mut self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, McpError> {
         match self.call_tool_once(name, &arguments) {
             Ok(result) => Ok(result),
             Err(McpError::Transport(reason)) => {
@@ -156,7 +160,11 @@ impl McpClient {
         }
     }
 
-    fn call_tool_once(&mut self, name: &str, arguments: &serde_json::Value) -> Result<serde_json::Value, McpError> {
+    fn call_tool_once(
+        &mut self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<serde_json::Value, McpError> {
         let request = JsonRpcRequest::new(
             self.next_id(),
             "tools/call",
@@ -227,6 +235,9 @@ while ($true) {
     fn initialize_params_advertise_nanok3() {
         let params = initialize_params();
         assert_eq!(params["clientInfo"]["name"], "nanok3");
-        assert_eq!(params["protocolVersion"], crate::protocol::MCP_PROTOCOL_VERSION);
+        assert_eq!(
+            params["protocolVersion"],
+            crate::protocol::MCP_PROTOCOL_VERSION
+        );
     }
 }

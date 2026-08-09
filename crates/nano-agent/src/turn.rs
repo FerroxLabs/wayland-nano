@@ -144,17 +144,16 @@ impl<'a> TurnEngine<'a> {
         let mut next_id = 0u32;
         let mut emit = |ops: &mut Vec<OpEnvelope>, op: Op| {
             next_id += 1;
-            ops.push(OpEnvelope::new(
-                format!("{turn_id}-{next_id}"),
-                "now",
-                op,
-            ));
+            ops.push(OpEnvelope::new(format!("{turn_id}-{next_id}"), "now", op));
         };
 
-        emit(&mut ops, Op::TurnBegin {
-            turn_id: turn_id.into(),
-            input: input.into(),
-        });
+        emit(
+            &mut ops,
+            Op::TurnBegin {
+                turn_id: turn_id.into(),
+                input: input.into(),
+            },
+        );
 
         let mut history = vec![TurnState::Receive];
         let mut state = TurnState::Receive;
@@ -178,10 +177,13 @@ impl<'a> TurnEngine<'a> {
         loop {
             if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst)) {
                 state = TurnState::Stopped("cancelled by caller".into());
-                emit(&mut ops, Op::TurnEnd {
-                    turn_id: turn_id.into(),
-                    outcome: nano_session::op::TurnOutcome::Cancelled,
-                });
+                emit(
+                    &mut ops,
+                    Op::TurnEnd {
+                        turn_id: turn_id.into(),
+                        outcome: nano_session::op::TurnOutcome::Cancelled,
+                    },
+                );
                 break;
             }
             if let Err(exhausted) = budget_tracker.check(&self.budget) {
@@ -250,10 +252,13 @@ impl<'a> TurnEngine<'a> {
             if tool_calls.is_empty() {
                 // No more actions: verify then complete.
                 transition(&mut state, &mut history, TurnState::Verify);
-                emit(&mut ops, Op::TurnEnd {
-                    turn_id: turn_id.into(),
-                    outcome: nano_session::op::TurnOutcome::Completed,
-                });
+                emit(
+                    &mut ops,
+                    Op::TurnEnd {
+                        turn_id: turn_id.into(),
+                        outcome: nano_session::op::TurnOutcome::Completed,
+                    },
+                );
                 transition(&mut state, &mut history, TurnState::Complete);
                 break;
             }
@@ -287,26 +292,32 @@ impl<'a> TurnEngine<'a> {
                         continue;
                     }
                 }
-                emit(&mut ops, Op::ToolCall {
-                    turn_id: turn_id.into(),
-                    call_id: call.id.clone(),
-                    name: call.name.clone(),
-                    args: call.arguments.clone(),
-                });
+                emit(
+                    &mut ops,
+                    Op::ToolCall {
+                        turn_id: turn_id.into(),
+                        call_id: call.id.clone(),
+                        name: call.name.clone(),
+                        args: call.arguments.clone(),
+                    },
+                );
                 let outcome = self.tools.execute(call);
                 step_progress.files_changed |= outcome.progress.files_changed;
                 step_progress.process_outcome_changed |= outcome.progress.process_outcome_changed;
                 step_progress.new_information |= outcome.progress.new_information;
-                emit(&mut ops, Op::ToolResult {
-                    call_id: call.id.clone(),
-                    ok: outcome.ok,
-                    output_digest: format!("len:{}", outcome.output.len()),
-                    changed_files: if outcome.progress.files_changed {
-                        vec![call.name.clone()]
-                    } else {
-                        vec![]
+                emit(
+                    &mut ops,
+                    Op::ToolResult {
+                        call_id: call.id.clone(),
+                        ok: outcome.ok,
+                        output_digest: format!("len:{}", outcome.output.len()),
+                        changed_files: if outcome.progress.files_changed {
+                            vec![call.name.clone()]
+                        } else {
+                            vec![]
+                        },
                     },
-                });
+                );
                 messages.push(Message {
                     role: nano_model::types::Role::Tool,
                     content: vec![nano_model::types::ContentBlock::ToolResult {
@@ -317,10 +328,13 @@ impl<'a> TurnEngine<'a> {
                 });
             }
             if matches!(state, TurnState::Stopped(_)) {
-                emit(&mut ops, Op::TurnEnd {
-                    turn_id: turn_id.into(),
-                    outcome: nano_session::op::TurnOutcome::Failed,
-                });
+                emit(
+                    &mut ops,
+                    Op::TurnEnd {
+                        turn_id: turn_id.into(),
+                        outcome: nano_session::op::TurnOutcome::Failed,
+                    },
+                );
                 break;
             }
 
@@ -336,13 +350,15 @@ impl<'a> TurnEngine<'a> {
                     ));
                 }
                 ProgressAction::Stop => {
-                    state = TurnState::Stopped(
-                        "no observable progress for 6 consecutive steps".into(),
+                    state =
+                        TurnState::Stopped("no observable progress for 6 consecutive steps".into());
+                    emit(
+                        &mut ops,
+                        Op::TurnEnd {
+                            turn_id: turn_id.into(),
+                            outcome: nano_session::op::TurnOutcome::Failed,
+                        },
                     );
-                    emit(&mut ops, Op::TurnEnd {
-                        turn_id: turn_id.into(),
-                        outcome: nano_session::op::TurnOutcome::Failed,
-                    });
                     break;
                 }
             }

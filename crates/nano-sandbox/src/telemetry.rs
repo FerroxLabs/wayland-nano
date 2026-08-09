@@ -52,11 +52,18 @@ mod tests {
     #[test]
     fn present_sink_receives_metric_and_fields() {
         let rec = Recording(Mutex::new(Vec::new()));
-        emit_safely(Some(&rec), "sandbox.setup.start", &[("identity", "offline")]);
+        emit_safely(
+            Some(&rec),
+            "sandbox.setup.start",
+            &[("identity", "offline")],
+        );
         let got = rec.0.lock().unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, "sandbox.setup.start");
-        assert_eq!(got[0].1, vec![("identity".to_string(), "offline".to_string())]);
+        assert_eq!(
+            got[0].1,
+            vec![("identity".to_string(), "offline".to_string())]
+        );
     }
 }
 

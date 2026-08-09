@@ -114,7 +114,10 @@ mod tests {
             policy.decide(0, &ModelError::Auth("bad key".into())),
             RetryAction::GiveUp
         );
-        assert_eq!(policy.decide(0, &ModelError::Cancelled), RetryAction::GiveUp);
+        assert_eq!(
+            policy.decide(0, &ModelError::Cancelled),
+            RetryAction::GiveUp
+        );
     }
 
     #[test]

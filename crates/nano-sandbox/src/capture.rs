@@ -25,8 +25,8 @@ use crate::spawn_prep::prepare_legacy_session_security;
 use crate::spawn_prep::prepare_legacy_spawn_context;
 use crate::spawn_prep::root_capability_sids;
 use anyhow::Result;
-use nano_core::permissions::PermissionProfile;
 use nano_core::abs::AbsolutePathBuf;
+use nano_core::permissions::PermissionProfile;
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
@@ -191,9 +191,7 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
     let logs_base_dir = common.logs_base_dir.as_deref();
     let uses_write_capabilities = common.uses_write_capabilities;
     if !permissions.has_full_disk_read_access() {
-        anyhow::bail!(
-            "Restricted read-only access requires the elevated Windows sandbox backend"
-        );
+        anyhow::bail!("Restricted read-only access requires the elevated Windows sandbox backend");
     }
     // WRITE_RESTRICTED tokens consult restricting SIDs only for writes, so this
     // backend cannot make capability-SID deny-read ACLs authoritative.
@@ -323,9 +321,8 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
                 &format!("capture failed to terminate process tree: {job_err}"),
                 logs_base_dir,
             );
-            let root_result = unsafe {
-                windows_sys::Win32::System::Threading::TerminateProcess(pi.hProcess, 1)
-            };
+            let root_result =
+                unsafe { windows_sys::Win32::System::Threading::TerminateProcess(pi.hProcess, 1) };
             if root_result == 0 {
                 log_note(
                     &format!("capture failed to terminate root process: {}", unsafe {
@@ -417,8 +414,8 @@ pub fn run_windows_sandbox_legacy_preflight(
 #[cfg(test)]
 mod tests {
     use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
-    use nano_core::permissions::PermissionProfile;
     use nano_core::permissions::NetworkSandboxPolicy;
+    use nano_core::permissions::PermissionProfile;
     use std::collections::HashMap;
     use std::path::Path;
 
@@ -600,7 +597,10 @@ mod nano_tests {
             "cancellation path hung ({elapsed:?}) — prep should dominate, not the wait"
         );
         assert!(!result.timed_out);
-        assert_ne!(result.exit_code, 0, "cancelled capture must not exit cleanly");
+        assert_ne!(
+            result.exit_code, 0,
+            "cancelled capture must not exit cleanly"
+        );
         let _ = fs::remove_dir_all(workspace.parent().unwrap());
     }
 }

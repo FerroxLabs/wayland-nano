@@ -17,8 +17,8 @@
 use anyhow::Result;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use nano_core::permissions::PermissionProfile;
 use nano_core::abs::AbsolutePathBuf;
+use nano_core::permissions::PermissionProfile;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;

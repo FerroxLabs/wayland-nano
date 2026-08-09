@@ -24,9 +24,9 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
-use nano_core::permissions::WindowsSandboxLevel;
-use nano_core::permissions::PermissionProfile;
 use nano_core::abs::AbsolutePathBuf;
+use nano_core::permissions::PermissionProfile;
+use nano_core::permissions::WindowsSandboxLevel;
 
 pub const CODEX_WINDOWS_SANDBOX_ARG1: &str = "--run-as-windows-sandbox";
 
@@ -190,8 +190,8 @@ async fn run_windows_sandbox_wrapper_request(request: WindowsSandboxWrapperReque
     if request.command.is_empty() {
         bail!("missing sandboxed command in windows sandbox wrapper request");
     }
-    let spawned =
-        crate::unified_exec::spawn_windows_sandbox_session_for_level(crate::unified_exec::WindowsSandboxSessionRequest {
+    let spawned = crate::unified_exec::spawn_windows_sandbox_session_for_level(
+        crate::unified_exec::WindowsSandboxSessionRequest {
             permission_profile: &request.permission_profile,
             workspace_roots: request.workspace_roots.as_slice(),
             nano_home: request.nano_home.as_path(),
@@ -211,8 +211,9 @@ async fn run_windows_sandbox_wrapper_request(request: WindowsSandboxWrapperReque
             tty: false,
             stdin_open: true,
             use_private_desktop: request.windows_sandbox_private_desktop,
-        })
-        .await?;
+        },
+    )
+    .await?;
 
     Ok(crate::stdio_bridge::forward_sandbox_session_stdio(spawned).await)
 }
@@ -228,7 +229,8 @@ fn parse_windows_sandbox_wrapper_args(args: Vec<String>) -> Result<WindowsSandbo
     let mut windows_sandbox_private_desktop = false;
     let mut proxy_enforced = false;
     let mut network_proxy_restricting_sid = None;
-    let mut proxy_settings_mode = nano_core::permissions::WindowsSandboxProxySettingsMode::Reconcile;
+    let mut proxy_settings_mode =
+        nano_core::permissions::WindowsSandboxProxySettingsMode::Reconcile;
     let mut read_roots_override = None;
     let mut read_roots_include_platform_defaults = false;
     let mut write_roots_override = None;
@@ -269,7 +271,8 @@ fn parse_windows_sandbox_wrapper_args(args: Vec<String>) -> Result<WindowsSandbo
             }
             PRIVATE_DESKTOP_FLAG => windows_sandbox_private_desktop = true,
             PRESERVE_PROXY_SETTINGS_FLAG => {
-                proxy_settings_mode = nano_core::permissions::WindowsSandboxProxySettingsMode::Preserve;
+                proxy_settings_mode =
+                    nano_core::permissions::WindowsSandboxProxySettingsMode::Preserve;
             }
             PROXY_ENFORCED_FLAG => proxy_enforced = true,
             NETWORK_PROXY_RESTRICTING_SID_FLAG => {
@@ -296,10 +299,7 @@ fn parse_windows_sandbox_wrapper_args(args: Vec<String>) -> Result<WindowsSandbo
 
     let nano_home = nano_home.ok_or_else(|| anyhow!("missing required {NANO_HOME_FLAG}"))?;
     if !nano_home.is_absolute() {
-        bail!(
-            "{NANO_HOME_FLAG} must be absolute: {}",
-            nano_home.display()
-        );
+        bail!("{NANO_HOME_FLAG} must be absolute: {}", nano_home.display());
     }
     let command_cwd = command_cwd.ok_or_else(|| anyhow!("missing required {COMMAND_CWD_FLAG}"))?;
     if workspace_roots.is_empty() {

@@ -18,7 +18,10 @@ pub struct ToolCallKey(String);
 impl ToolCallKey {
     pub fn new(name: &str, arguments: &serde_json::Value) -> Self {
         let canonical = canonical_json(arguments);
-        Self(format!("{name}:{}", serde_json::to_string(&canonical).unwrap_or_default()))
+        Self(format!(
+            "{name}:{}",
+            serde_json::to_string(&canonical).unwrap_or_default()
+        ))
     }
 
     pub fn as_str(&self) -> &str {
@@ -271,7 +274,11 @@ mod tests {
         }
         let other = key("fs_write", serde_json::json!({"path": "x"}));
         assert_eq!(breaker.check(&other), RepeatAction::Allow);
-        assert_eq!(breaker.check(&k), RepeatAction::Allow, "streak resets on key change");
+        assert_eq!(
+            breaker.check(&k),
+            RepeatAction::Allow,
+            "streak resets on key change"
+        );
     }
 
     #[test]

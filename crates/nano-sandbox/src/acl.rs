@@ -867,7 +867,10 @@ mod nano_tests {
         }
         assert!(fs::write(dir.join("blocked.txt"), b"x").is_err());
         let after = path_mask_allows(&dir, &psids, FILE_GENERIC_WRITE, true);
-        assert!(!matches!(after, Ok(true)), "deny must not report allowed: {after:?}");
+        assert!(
+            !matches!(after, Ok(true)),
+            "deny must not report allowed: {after:?}"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

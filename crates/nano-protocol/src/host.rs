@@ -64,11 +64,14 @@ where
     F: FnMut(String, String) -> Fut,
     Fut: std::future::Future<Output = (Vec<Event>, Option<Usage>, String)>,
 {
-    write_frame(writer, &Event::Ready {
-        capabilities: config.capabilities.clone(),
-        session_id: config.session_id.clone(),
-        version: config.runtime_version.clone(),
-    })?;
+    write_frame(
+        writer,
+        &Event::Ready {
+            capabilities: config.capabilities.clone(),
+            session_id: config.session_id.clone(),
+            version: config.runtime_version.clone(),
+        },
+    )?;
 
     let mut buffer = String::new();
     let mut line = String::new();
@@ -97,43 +100,57 @@ where
                 Ok(Command::Stop) => {
                     // v1: stop is advisory between turns (the turn engine's
                     // cancellation is plumbed at the driver level).
-                    write_frame(writer, &Event::Error {
-                        error: ErrorBody {
-                            code: "advisory".into(),
-                            message: "stop acknowledged between turns".into(),
-                            retryable: true,
+                    write_frame(
+                        writer,
+                        &Event::Error {
+                            error: ErrorBody {
+                                code: "advisory".into(),
+                                message: "stop acknowledged between turns".into(),
+                                retryable: true,
+                            },
+                            msg_id: String::new(),
                         },
-                        msg_id: String::new(),
-                    })?;
+                    )?;
                 }
                 Ok(Command::Shutdown) => return Ok(HostExit::ShutdownCommand),
                 Ok(Command::ToolApprove { .. }) | Ok(Command::ToolDeny { .. }) => {
                     // Approval results are routed to the pending turn driver;
                     // v1 headless turns use policy gates, so these are logged
                     // as recoverable no-ops.
-                    write_frame(writer, &Event::Error {
-                        error: ErrorBody {
-                            code: "advisory".into(),
-                            message: "approval received with no pending request".into(),
-                            retryable: true,
+                    write_frame(
+                        writer,
+                        &Event::Error {
+                            error: ErrorBody {
+                                code: "advisory".into(),
+                                message: "approval received with no pending request".into(),
+                                retryable: true,
+                            },
+                            msg_id: String::new(),
                         },
-                        msg_id: String::new(),
-                    })?;
+                    )?;
                 }
                 Ok(Command::ApprovalResume { .. }) => {
-                    write_frame(writer, &Event::Error {
-                        error: ErrorBody {
-                            code: "advisory".into(),
-                            message: "approval resume received with no pending request".into(),
-                            retryable: true,
+                    write_frame(
+                        writer,
+                        &Event::Error {
+                            error: ErrorBody {
+                                code: "advisory".into(),
+                                message: "approval resume received with no pending request".into(),
+                                retryable: true,
+                            },
+                            msg_id: String::new(),
                         },
-                        msg_id: String::new(),
-                    })?;
+                    )?;
                 }
-                Ok(Command::Message { msg_id, content, .. }) => {
-                    write_frame(writer, &Event::StreamStart {
-                        msg_id: msg_id.clone(),
-                    })?;
+                Ok(Command::Message {
+                    msg_id, content, ..
+                }) => {
+                    write_frame(
+                        writer,
+                        &Event::StreamStart {
+                            msg_id: msg_id.clone(),
+                        },
+                    )?;
                     let (events, usage, stop_reason) = run_turn(msg_id.clone(), content).await;
                     for event in events {
                         write_frame(writer, &event)?;
@@ -145,13 +162,16 @@ where
                         cache_write_tokens: None,
                         cost_usd: u.cost_usd,
                     });
-                    write_frame(writer, &Event::StreamEnd {
-                        finish_reason: stop_reason,
-                        msg_id,
-                        usage: usage_frame.clone().unwrap_or_default(),
-                        usage_delta: usage_frame.unwrap_or_default(),
-                        agent_run_id: None,
-                    })?;
+                    write_frame(
+                        writer,
+                        &Event::StreamEnd {
+                            finish_reason: stop_reason,
+                            msg_id,
+                            usage: usage_frame.clone().unwrap_or_default(),
+                            usage_delta: usage_frame.unwrap_or_default(),
+                            agent_run_id: None,
+                        },
+                    )?;
                 }
                 Err(err) => write_error_frame(writer, &err)?,
             }
@@ -165,14 +185,17 @@ fn write_frame<W: Write>(writer: &mut W, event: &Event) -> std::io::Result<()> {
 }
 
 fn write_error_frame<W: Write>(writer: &mut W, err: &ProtocolError) -> std::io::Result<()> {
-    write_frame(writer, &Event::Error {
-        error: ErrorBody {
-            code: "protocol".into(),
-            message: err.to_string(),
-            retryable: true,
+    write_frame(
+        writer,
+        &Event::Error {
+            error: ErrorBody {
+                code: "protocol".into(),
+                message: err.to_string(),
+                retryable: true,
+            },
+            msg_id: String::new(),
         },
-        msg_id: String::new(),
-    })
+    )
 }
 
 #[cfg(test)]
@@ -201,7 +224,8 @@ mod tests {
 
     #[tokio::test]
     async fn ready_first_then_frames_then_clean_exit() {
-        let input = "{\"type\":\"ping\"}\n{\"type\":\"message\",\"msg_id\":\"m1\",\"content\":\"hi\"}\n";
+        let input =
+            "{\"type\":\"ping\"}\n{\"type\":\"message\",\"msg_id\":\"m1\",\"content\":\"hi\"}\n";
         let mut reader = Cursor::new(input.as_bytes());
         let mut output: Vec<u8> = Vec::new();
 
@@ -212,12 +236,18 @@ mod tests {
         assert_eq!(exit, HostExit::StdinClosed);
         let text = String::from_utf8(output).unwrap();
         let lines: Vec<&str> = text.lines().collect();
-        assert!(lines[0].contains("\"type\":\"ready\""), "ready must be first: {text}");
+        assert!(
+            lines[0].contains("\"type\":\"ready\""),
+            "ready must be first: {text}"
+        );
         assert!(text.contains("\"type\":\"pong\""));
         assert!(text.contains("\"type\":\"stream_start\""));
         assert!(text.contains("\"type\":\"text_delta\""));
         assert!(text.contains("\"type\":\"stream_end\""));
-        assert!(lines[1].contains("\"type\":\"pong\""), "pong answers ping promptly");
+        assert!(
+            lines[1].contains("\"type\":\"pong\""),
+            "pong answers ping promptly"
+        );
     }
 
     #[tokio::test]
@@ -233,7 +263,10 @@ mod tests {
         assert_eq!(exit, HostExit::StdinClosed);
         let text = String::from_utf8(output).unwrap();
         assert!(text.contains("\"type\":\"error\""));
-        assert!(text.contains("\"type\":\"pong\""), "loop continued after malformed");
+        assert!(
+            text.contains("\"type\":\"pong\""),
+            "loop continued after malformed"
+        );
     }
 
     #[tokio::test]

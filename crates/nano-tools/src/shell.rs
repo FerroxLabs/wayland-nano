@@ -8,9 +8,9 @@
 //! - outputs are bounded, timeouts enforced, and the result carries the
 //!   shell identity for protocol reporting.
 
-use nano_sandbox::capture::{CaptureResult, run_windows_sandbox_capture};
 use nano_core::abs::AbsolutePathBuf;
 use nano_core::permissions::PermissionProfile;
+use nano_sandbox::capture::{CaptureResult, run_windows_sandbox_capture};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -145,10 +145,18 @@ mod tests {
         let (_tmp, home, ws) = fixture();
         let tool = ShellTool::new(&home, &ws);
         let out = tool
-            .run(ShellKind::Cmd, "echo nanok3-shell", Some(std::time::Duration::from_secs(60)))
+            .run(
+                ShellKind::Cmd,
+                "echo nanok3-shell",
+                Some(std::time::Duration::from_secs(60)),
+            )
             .expect("spawn");
         assert_eq!(out.exit_code, 0);
-        assert!(out.stdout.contains("nanok3-shell"), "stdout: {}", out.stdout);
+        assert!(
+            out.stdout.contains("nanok3-shell"),
+            "stdout: {}",
+            out.stdout
+        );
         assert!(!out.timed_out);
         assert!(matches!(out.shell, ShellKind::Cmd));
     }
@@ -174,7 +182,11 @@ mod tests {
         let (_tmp, home, ws) = fixture();
         let tool = ShellTool::new(&home, &ws);
         let out = tool
-            .run(ShellKind::Cmd, "exit 3", Some(std::time::Duration::from_secs(60)))
+            .run(
+                ShellKind::Cmd,
+                "exit 3",
+                Some(std::time::Duration::from_secs(60)),
+            )
             .expect("spawn");
         assert_eq!(out.exit_code, 3);
     }

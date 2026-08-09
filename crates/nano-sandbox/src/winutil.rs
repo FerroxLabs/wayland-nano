@@ -212,7 +212,6 @@ fn sid_bytes_from_string(sid_str: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-
 /// Take a prefix of `s` no longer than `maxb` bytes, on a char boundary.
 ///
 /// Provenance: ported from Codex `codex-rs/utils/string/src/lib.rs` @
@@ -232,7 +231,6 @@ pub fn take_bytes_at_char_boundary(s: &str, maxb: usize) -> &str {
     }
     &s[..last_ok]
 }
-
 
 /// Sanitize a tag value to comply with metric tag validation rules.
 ///

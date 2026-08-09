@@ -49,9 +49,9 @@ pub fn compute_allow_paths_for_permissions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nano_core::permissions::PermissionProfile;
-    use nano_core::permissions::NetworkSandboxPolicy;
     use nano_core::abs::AbsolutePathBuf;
+    use nano_core::permissions::NetworkSandboxPolicy;
+    use nano_core::permissions::PermissionProfile;
     use std::fs;
     use tempfile::TempDir;
 

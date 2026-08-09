@@ -57,7 +57,11 @@ impl EgressClient {
 
     /// Policy gate + request construction. Returns Err(Denied) before any
     /// socket activity when the policy rejects the URL.
-    pub fn request(&self, method: reqwest::Method, url: &str) -> Result<reqwest::RequestBuilder, EgressError> {
+    pub fn request(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+    ) -> Result<reqwest::RequestBuilder, EgressError> {
         match self.policy.decide(url) {
             EgressDecision::Allow => Ok(self.client.request(method.clone(), url)),
             EgressDecision::Deny => Err(EgressError::Denied {
@@ -118,10 +122,16 @@ mod tests {
     #[test]
     fn error_display_carries_only_observability_fields() {
         let client = EgressClient::flux();
-        let err = client.classify_status("https://api.fluxrouter.ai/v1/chat/completions?key=secret", 402);
+        let err = client.classify_status(
+            "https://api.fluxrouter.ai/v1/chat/completions?key=secret",
+            402,
+        );
         let rendered = err.to_string();
         assert!(rendered.contains("402"));
         assert!(rendered.contains("api.fluxrouter.ai"));
-        assert!(!rendered.contains("secret"), "query must be hashed, not echoed: {rendered}");
+        assert!(
+            !rendered.contains("secret"),
+            "query must be hashed, not echoed: {rendered}"
+        );
     }
 }

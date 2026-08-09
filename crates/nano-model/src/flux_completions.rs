@@ -41,7 +41,11 @@ impl FluxCompletionsClient {
     }
 
     fn endpoint(&self) -> String {
-        format!("{}{}", self.base_url.trim_end_matches('/'), COMPLETIONS_PATH)
+        format!(
+            "{}{}",
+            self.base_url.trim_end_matches('/'),
+            COMPLETIONS_PATH
+        )
     }
 
     pub async fn complete(
@@ -64,10 +68,7 @@ impl FluxCompletionsClient {
                 if status != 200 {
                     return Err(classify_status(status, read_error_body(response).await));
                 }
-                let text = response
-                    .text()
-                    .await
-                    .map_err(classify_transport)?;
+                let text = response.text().await.map_err(classify_transport)?;
                 if request.stream {
                     parse_sse_completion_stream(&text)
                 } else {
@@ -79,7 +80,10 @@ impl FluxCompletionsClient {
             match outcome {
                 Ok(events_response) => return Ok(events_response),
                 Err(err) => match self.retry.decide(attempt, &err) {
-                    crate::retry::RetryAction::Retry { attempt: next, delay_ms } => {
+                    crate::retry::RetryAction::Retry {
+                        attempt: next,
+                        delay_ms,
+                    } => {
                         attempt = next;
                         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                     }
@@ -116,23 +120,13 @@ pub fn classify_status(status: u16, body: String) -> ModelError {
         400 if message.contains("context") || message.contains("token") => {
             ModelError::ContextOverflow(message)
         }
-        s if s >= 500 => ModelError::Server {
-            status: s,
-            message,
-        },
-        s => ModelError::Server {
-            status: s,
-            message,
-        },
+        s if s >= 500 => ModelError::Server { status: s, message },
+        s => ModelError::Server { status: s, message },
     }
 }
 
 pub fn build_request_body(request: &ModelRequest) -> serde_json::Value {
-    let messages: Vec<serde_json::Value> = request
-        .messages
-        .iter()
-        .map(message_to_wire)
-        .collect();
+    let messages: Vec<serde_json::Value> = request.messages.iter().map(message_to_wire).collect();
     let mut body = serde_json::json!({
         "model": request.model,
         "messages": messages,
@@ -142,13 +136,8 @@ pub fn build_request_body(request: &ModelRequest) -> serde_json::Value {
         body["max_tokens"] = serde_json::json!(max_tokens);
     }
     if !request.tools.is_empty() {
-        body["tools"] = serde_json::json!(
-            request
-                .tools
-                .iter()
-                .map(tool_to_wire)
-                .collect::<Vec<_>>()
-        );
+        body["tools"] =
+            serde_json::json!(request.tools.iter().map(tool_to_wire).collect::<Vec<_>>());
         body["tool_choice"] = serde_json::json!("auto");
     }
     body
@@ -191,8 +180,14 @@ fn message_to_wire(message: &Message) -> serde_json::Value {
     if !tool_calls.is_empty() {
         wire["tool_calls"] = serde_json::json!(tool_calls);
     }
-    if let Some(ContentBlock::ToolResult { tool_use_id, content, .. }) =
-        message.content.iter().find(|b| matches!(b, ContentBlock::ToolResult { .. }))
+    if let Some(ContentBlock::ToolResult {
+        tool_use_id,
+        content,
+        ..
+    }) = message
+        .content
+        .iter()
+        .find(|b| matches!(b, ContentBlock::ToolResult { .. }))
     {
         wire["tool_call_id"] = serde_json::json!(tool_use_id);
         wire["content"] = serde_json::json!(content);
@@ -220,8 +215,7 @@ pub fn parse_completion_body(text: &str) -> Result<ModelResponse, ModelError> {
     if let Some(choices) = value.get("choices").and_then(|c| c.as_array()) {
         for choice in choices {
             if let Some(message) = choice.get("message") {
-                if let Some(reasoning) = message.get("reasoning_content").and_then(|r| r.as_str())
-                {
+                if let Some(reasoning) = message.get("reasoning_content").and_then(|r| r.as_str()) {
                     if !reasoning.is_empty() {
                         events.push(ModelEvent::ReasoningDelta(reasoning.to_string()));
                     }
@@ -344,8 +338,7 @@ pub fn parse_sse_completion_stream(text: &str) -> Result<ModelResponse, ModelErr
                             if let Some(name) = function.get("name").and_then(|n| n.as_str()) {
                                 entry.1 = name.to_string();
                             }
-                            if let Some(args) = function.get("arguments").and_then(|a| a.as_str())
-                            {
+                            if let Some(args) = function.get("arguments").and_then(|a| a.as_str()) {
                                 entry.2.push_str(args);
                             }
                         }

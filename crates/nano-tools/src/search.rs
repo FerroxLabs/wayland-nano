@@ -141,9 +141,7 @@ pub type Bounds = ReadBounds;
 mod tests {
     use super::*;
     use nano_core::abs::AbsolutePathBuf;
-    use nano_core::permissions::{
-        FileSystemAccessMode, FileSystemPath, FileSystemSandboxEntry,
-    };
+    use nano_core::permissions::{FileSystemAccessMode, FileSystemPath, FileSystemSandboxEntry};
 
     fn fixture() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
@@ -200,7 +198,11 @@ mod tests {
         let tools = SearchTools::new(policy(&ws), &ws);
         let results = tools.search_content(&ws, "TODO", 100).unwrap();
         assert_eq!(results.len(), 2);
-        assert!(results.iter().any(|(p, line, _)| p.ends_with("main.rs") && *line == 2));
+        assert!(
+            results
+                .iter()
+                .any(|(p, line, _)| p.ends_with("main.rs") && *line == 2)
+        );
     }
 
     #[test]

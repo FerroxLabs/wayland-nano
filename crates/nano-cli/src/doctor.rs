@@ -23,15 +23,15 @@ pub fn run(nano_home: &std::path::Path, out: &mut dyn std::io::Write) -> std::io
     checks.push(Check {
         name: "os",
         status: CheckStatus::Pass,
-        detail: format!(
-            "{} / {}",
-            std::env::consts::OS,
-            std::env::consts::ARCH
-        ),
+        detail: format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH),
     });
 
     checks.push(shell_check("cmd", "cmd.exe", &["/c", "echo nanok3"]));
-    checks.push(shell_check("powershell", "powershell.exe", &["-NoProfile", "-Command", "echo nanok3"]));
+    checks.push(shell_check(
+        "powershell",
+        "powershell.exe",
+        &["-NoProfile", "-Command", "echo nanok3"],
+    ));
 
     let setup_complete = nano_sandbox::identity::sandbox_setup_is_complete(nano_home);
     checks.push(Check {
@@ -143,8 +143,16 @@ fn shell_check(name: &'static str, exe: &str, args: &[&str]) -> Check {
         .map(|o| o.status.success())
         .unwrap_or(false);
     Check {
-        name: if name == "cmd" { "shell-cmd" } else { "shell-powershell" },
-        status: if found { CheckStatus::Pass } else { CheckStatus::Warn },
+        name: if name == "cmd" {
+            "shell-cmd"
+        } else {
+            "shell-powershell"
+        },
+        status: if found {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Warn
+        },
         detail: if found {
             format!("{exe} executes natively")
         } else {
@@ -171,7 +179,10 @@ fn probe_journal(nano_home: &std::path::Path) -> (CheckStatus, String) {
     })();
     match result {
         Ok(1) => (CheckStatus::Pass, "append + read-back verified".into()),
-        Ok(n) => (CheckStatus::Fail, format!("replay returned {n} envelopes (expected 1)")),
+        Ok(n) => (
+            CheckStatus::Fail,
+            format!("replay returned {n} envelopes (expected 1)"),
+        ),
         Err(err) => (CheckStatus::Fail, format!("journal probe failed: {err}")),
     }
 }

@@ -4,9 +4,9 @@
 //! 646f7c0a. Transformation: codex_utils_string::sanitize_metric_tag_value ->
 //! crate::winutil::sanitize_metric_tag_value.
 
+use crate::winutil::sanitize_metric_tag_value;
 use anyhow::Context;
 use anyhow::Result;
-use crate::winutil::sanitize_metric_tag_value;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fs;

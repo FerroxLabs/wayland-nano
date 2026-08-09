@@ -5,8 +5,8 @@
 //! security bypass (stdio children die with the registry — no orphans);
 //! at-least-once retry semantics are surfaced, never hidden.
 
-use crate::turn::ToolExecutor;
 use crate::loop_protection::ProgressSignals;
+use crate::turn::ToolExecutor;
 use crate::turn::ToolOutcome;
 use nano_mcp::client::{McpClient, McpError};
 use nano_mcp::protocol::McpToolDescriptor;

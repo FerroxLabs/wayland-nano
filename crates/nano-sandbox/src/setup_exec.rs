@@ -12,6 +12,7 @@
 
 use crate::allow::AllowDenyPaths;
 use crate::allow::compute_allow_paths_for_permissions;
+use crate::gather::WINDOWS_PLATFORM_DEFAULT_READ_ROOTS;
 use crate::gather::canonical_existing;
 use crate::gather::effective_write_roots_for_setup;
 use crate::gather::expand_user_profile_root;
@@ -20,7 +21,6 @@ use crate::gather::filter_user_profile_root;
 use crate::gather::filter_user_profile_root_exclusions;
 use crate::gather::gather_helper_read_roots;
 use crate::gather::gather_read_roots;
-use crate::gather::WINDOWS_PLATFORM_DEFAULT_READ_ROOTS;
 use crate::helper_materialization::bundled_executable_path_for_exe;
 use crate::identity::sandbox_setup_is_complete;
 use crate::logging::current_log_file_path;
@@ -33,13 +33,13 @@ use crate::setup_error::clear_setup_error_report;
 use crate::setup_error::extract_failure;
 use crate::setup_error::failure;
 use crate::setup_error::read_setup_error_report;
-use crate::setup_types::OfflineProxySettings;
-use crate::setup_types::SetupRootOverrides;
-use crate::setup_types::offline_proxy_settings_from_env;
-use crate::setup_types::SandboxNetworkIdentity;
 use crate::setup_types::OFFLINE_USERNAME;
 use crate::setup_types::ONLINE_USERNAME;
+use crate::setup_types::OfflineProxySettings;
 use crate::setup_types::SETUP_VERSION;
+use crate::setup_types::SandboxNetworkIdentity;
+use crate::setup_types::SetupRootOverrides;
+use crate::setup_types::offline_proxy_settings_from_env;
 use crate::telemetry;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -430,11 +430,7 @@ fn run_setup_exe(
     })
 }
 
-fn run_setup_exe_payload(
-    payload_b64: &str,
-    needs_elevation: bool,
-    nano_home: &Path,
-) -> Result<()> {
+fn run_setup_exe_payload(payload_b64: &str, needs_elevation: bool, nano_home: &Path) -> Result<()> {
     use windows_sys::Win32::System::Threading::GetExitCodeProcess;
     use windows_sys::Win32::System::Threading::INFINITE;
     use windows_sys::Win32::System::Threading::WaitForSingleObject;
@@ -529,9 +525,7 @@ fn run_setup_exe_payload(
     verify_setup_completed(nano_home)?;
     if let Err(err) = clear_setup_error_report(nano_home) {
         log_note(
-            &format!(
-                "setup orchestrator: failed to clear setup_error.json after success: {err}"
-            ),
+            &format!("setup orchestrator: failed to clear setup_error.json after success: {err}"),
             Some(&crate::sandbox_dir(nano_home)),
         );
     }

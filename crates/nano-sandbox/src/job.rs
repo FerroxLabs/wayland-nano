@@ -19,9 +19,9 @@ use tokio::process::Command;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
-use windows_sys::Win32::System::JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
 use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_BREAKAWAY_OK;
 use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+use windows_sys::Win32::System::JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
 use windows_sys::Win32::System::JobObjects::JobObjectExtendedLimitInformation;
 use windows_sys::Win32::System::JobObjects::SetInformationJobObject;
 use windows_sys::Win32::System::JobObjects::TerminateJobObject;
@@ -79,7 +79,9 @@ impl JobObject {
 
     /// Captures an owned process handle before its numeric identifier can be reused.
     pub fn open_process_handle(process_id: u32) -> io::Result<OwnedHandle> {
-        let handle = unsafe { OpenProcess(PROCESS_TERMINATE, /*bInheritHandle*/ 0, process_id) };
+        let handle = unsafe {
+            OpenProcess(PROCESS_TERMINATE, /*bInheritHandle*/ 0, process_id)
+        };
         if handle == 0 {
             return Err(io::Error::last_os_error());
         }
@@ -89,8 +91,9 @@ impl JobObject {
 
     /// Terminates the exact process identified by a previously captured handle.
     pub fn terminate_process_handle(handle: &OwnedHandle) -> io::Result<()> {
-        let terminated =
-            unsafe { TerminateProcess(handle.as_raw_handle() as HANDLE, /*uExitCode*/ 1) };
+        let terminated = unsafe {
+            TerminateProcess(handle.as_raw_handle() as HANDLE, /*uExitCode*/ 1)
+        };
         if terminated == 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -121,7 +124,10 @@ impl JobObject {
     /// completes are not guaranteed to become members of the job.
     pub(crate) fn assign_process(&self, process_handle: RawHandle) -> io::Result<()> {
         let assigned = unsafe {
-            AssignProcessToJobObject(self.handle.as_raw_handle() as HANDLE, process_handle as HANDLE)
+            AssignProcessToJobObject(
+                self.handle.as_raw_handle() as HANDLE,
+                process_handle as HANDLE,
+            )
         };
         if assigned == 0 {
             Err(io::Error::last_os_error())
@@ -223,8 +229,9 @@ impl JobObject {
             return Ok(());
         }
 
-        let terminated =
-            unsafe { TerminateJobObject(self.handle.as_raw_handle() as HANDLE, /*uExitCode*/ 1) };
+        let terminated = unsafe {
+            TerminateJobObject(self.handle.as_raw_handle() as HANDLE, /*uExitCode*/ 1)
+        };
         if terminated == 0 {
             Err(io::Error::last_os_error())
         } else {

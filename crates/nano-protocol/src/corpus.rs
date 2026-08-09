@@ -17,7 +17,8 @@ use crate::messages::{Command, Event};
 use std::path::Path;
 
 #[cfg(test)]
-const CORPUS: &str = "../../../resources/upstreams/wayland-desktop/contracts/wayland-desktop-core/v1";
+const CORPUS: &str =
+    "../../../resources/upstreams/wayland-desktop/contracts/wayland-desktop-core/v1";
 
 /// Command types the Nano v1 profile supports (everything else in the corpus
 /// must be tolerated-as-typed-error, never executed).
@@ -94,9 +95,9 @@ pub fn run_conformance(corpus_root: &Path) -> ConformanceReport {
             }
             Err(_) => {
                 if SUPPORTED_COMMANDS.contains(&stem.as_str()) {
-                    report.violations.push(format!(
-                        "command/{stem}: supported command failed to parse"
-                    ));
+                    report
+                        .violations
+                        .push(format!("command/{stem}: supported command failed to parse"));
                 } else {
                     report.tolerated.push(format!("command/{stem}"));
                 }
@@ -123,9 +124,9 @@ pub fn run_conformance(corpus_root: &Path) -> ConformanceReport {
             }
             Err(_) => {
                 if SUPPORTED_EVENTS.contains(&stem.as_str()) {
-                    report.violations.push(format!(
-                        "event/{stem}: supported event failed to parse"
-                    ));
+                    report
+                        .violations
+                        .push(format!("event/{stem}: supported event failed to parse"));
                 } else {
                     report.rejected_unsupported.push(format!("event/{stem}"));
                 }
@@ -163,10 +164,16 @@ pub fn run_conformance(corpus_root: &Path) -> ConformanceReport {
                 }
             } else {
                 match serde_json::from_str::<Command>(&text) {
-                    Ok(_) => report.adversarial_handled.push(format!("{rel} (accepted-shape)")),
+                    Ok(_) => report
+                        .adversarial_handled
+                        .push(format!("{rel} (accepted-shape)")),
                     Err(_) => match try_parse_event(&text) {
-                        Ok(_) => report.adversarial_handled.push(format!("{rel} (event-shape)")),
-                        Err(_) => report.adversarial_handled.push(format!("{rel} (typed-error)")),
+                        Ok(_) => report
+                            .adversarial_handled
+                            .push(format!("{rel} (event-shape)")),
+                        Err(_) => report
+                            .adversarial_handled
+                            .push(format!("{rel} (typed-error)")),
                     },
                 }
             }
@@ -188,7 +195,10 @@ fn walk_json(dir: &Path) -> Vec<std::path::PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "json" || e == "jsonl") {
+            } else if path
+                .extension()
+                .is_some_and(|e| e == "json" || e == "jsonl")
+            {
                 out.push(path);
             }
         }
@@ -231,9 +241,21 @@ mod tests {
         // The corpus' headline numbers (verified against manifest.json):
         // 11 commands, 39 events. Our profile must accept the supported
         // subset and reject every unsupported event typed.
-        assert_eq!(report.accepted.iter().filter(|a| a.starts_with("command/")).count(), SUPPORTED_COMMANDS.len());
         assert_eq!(
-            report.rejected_unsupported.len() + report.accepted.iter().filter(|a| a.starts_with("event/")).count(),
+            report
+                .accepted
+                .iter()
+                .filter(|a| a.starts_with("command/"))
+                .count(),
+            SUPPORTED_COMMANDS.len()
+        );
+        assert_eq!(
+            report.rejected_unsupported.len()
+                + report
+                    .accepted
+                    .iter()
+                    .filter(|a| a.starts_with("event/"))
+                    .count(),
             39,
             "every one of the 39 event fixtures is accounted for"
         );
@@ -241,7 +263,12 @@ mod tests {
             .unwrap()
             .flatten()
             .filter(|e| e.path().is_dir())
-            .flat_map(|e| std::fs::read_dir(e.path()).unwrap().flatten().collect::<Vec<_>>())
+            .flat_map(|e| {
+                std::fs::read_dir(e.path())
+                    .unwrap()
+                    .flatten()
+                    .collect::<Vec<_>>()
+            })
             .count()
             .max(23); // compat is flat (23 files)
         let adversarial_files: usize = ["anvil", "commands", "events", "policy", "workflow"]

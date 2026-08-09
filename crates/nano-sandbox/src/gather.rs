@@ -340,10 +340,8 @@ mod tests {
         std::fs::create_dir_all(profile.join("work")).expect("create work");
         std::fs::create_dir_all(&other).expect("create other");
 
-        let expanded = expand_user_profile_root_for(
-            vec![profile.clone(), other.clone()],
-            profile.as_path(),
-        );
+        let expanded =
+            expand_user_profile_root_for(vec![profile.clone(), other.clone()], profile.as_path());
 
         assert!(expanded.contains(&profile.join("work")));
         assert!(!expanded.contains(&profile.join(".ssh")));

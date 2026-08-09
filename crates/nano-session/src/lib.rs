@@ -17,7 +17,7 @@ pub mod reader;
 pub mod replay;
 pub mod writer;
 
-pub use op::{Op, OpEnvelope, TurnOutcome, SCHEMA_VERSION};
+pub use op::{Op, OpEnvelope, SCHEMA_VERSION, TurnOutcome};
 pub use reader::{JournalReport, read_journal};
 pub use replay::{CompactionPhase, SessionState};
 pub use writer::JournalWriter;

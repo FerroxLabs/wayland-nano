@@ -55,7 +55,10 @@ pub fn is_sensitive_path(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
-    if SENSITIVE_BASENAMES.iter().any(|b| name.eq_ignore_ascii_case(b)) {
+    if SENSITIVE_BASENAMES
+        .iter()
+        .any(|b| name.eq_ignore_ascii_case(b))
+    {
         return true;
     }
     if name.starts_with(".env.") {
@@ -192,9 +195,7 @@ pub fn resolve_against_cwd(path: &Path, cwd: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nano_core::permissions::{
-        FileSystemAccessMode, FileSystemPath, FileSystemSandboxEntry,
-    };
+    use nano_core::permissions::{FileSystemAccessMode, FileSystemPath, FileSystemSandboxEntry};
 
     fn workspace_policy(workspace: &Path) -> FileSystemSandboxPolicy {
         FileSystemSandboxPolicy::restricted(vec![
@@ -278,7 +279,10 @@ mod tests {
         let (_tmp, ws) = fixture();
         let tools = FsTools::new(workspace_policy(&ws), &ws);
         let file = ws.join("big.txt");
-        let body = (1..=2000).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let body = (1..=2000)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         tools.write_file(&file, &body).unwrap();
         let (content, truncated) = tools
             .read_file(
@@ -316,7 +320,9 @@ mod tests {
             .edit_file(&file, "missing", "x", false)
             .expect_err("zero match");
         assert!(matches!(err, ToolError::Edit(_)));
-        let err = tools.edit_file(&file, "foo", "x", false).expect_err("ambiguous");
+        let err = tools
+            .edit_file(&file, "foo", "x", false)
+            .expect_err("ambiguous");
         assert!(matches!(err, ToolError::Edit(_)));
         let n = tools.edit_file(&file, "foo", "x", true).unwrap();
         assert_eq!(n, 2);

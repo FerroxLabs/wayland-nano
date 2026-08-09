@@ -24,7 +24,9 @@ use std::path::PathBuf;
 pub enum SandboxUnavailable {
     #[error("ConPTY interactive sessions are deferred in v1 (D8): spawn non-interactive instead")]
     ConPtyDeferred,
-    #[error("elevated backend not yet wired (B-SBX-10): restricted-token backend cannot enforce this request")]
+    #[error(
+        "elevated backend not yet wired (B-SBX-10): restricted-token backend cannot enforce this request"
+    )]
     ElevatedBackendPending,
 }
 

@@ -5,8 +5,8 @@
 //! 646f7c0a. Transformations: codex_protocol -> nano_core::permissions;
 //! codex_utils_absolute_path -> nano_core::abs; codex_home -> nano_home.
 
-use nano_core::permissions::PermissionProfile;
 use nano_core::abs::AbsolutePathBuf;
+use nano_core::permissions::PermissionProfile;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -38,6 +38,7 @@ mod windows_impl {
     use crate::env::ensure_non_interactive_pager;
     use crate::env::inherit_path_env;
     use crate::env::normalize_null_device_env;
+    use crate::gather::effective_write_roots_for_permissions;
     use crate::identity::refresh_logon_sandbox_creds;
     use crate::identity::require_logon_sandbox_creds;
     use crate::ipc_framed::EmptyPayload;
@@ -56,7 +57,6 @@ mod windows_impl {
     use crate::runner_client::spawn_runner_transport;
     use crate::sandbox_utils::ensure_nano_home_exists;
     use crate::sandbox_utils::inject_git_safe_directory;
-    use crate::gather::effective_write_roots_for_permissions;
     use crate::token::LocalSid;
     use anyhow::Result;
     use nano_core::abs::AbsolutePathBuf;

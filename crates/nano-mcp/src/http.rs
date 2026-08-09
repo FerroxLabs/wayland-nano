@@ -104,8 +104,7 @@ pub fn parse_response_body(text: &str) -> Result<JsonRpcResponse, McpError> {
             &trimmed[..trimmed.len().min(200)]
         )));
     };
-    serde_json::from_str(&payload)
-        .map_err(|e| McpError::Protocol(format!("bad SSE payload: {e}")))
+    serde_json::from_str(&payload).map_err(|e| McpError::Protocol(format!("bad SSE payload: {e}")))
 }
 
 impl From<nano_egress::client::EgressError> for McpError {
@@ -145,7 +144,9 @@ mod live_tests {
     use crate::protocol::{JsonRpcRequest, initialize_params, tools_list_params};
 
     fn key() -> Option<String> {
-        std::env::var("FLUX_TEST_KEY").ok().filter(|k| !k.is_empty())
+        std::env::var("FLUX_TEST_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
     }
 
     /// Live against api.fluxrouter.ai/mcp/ (trailing slash matters — the
