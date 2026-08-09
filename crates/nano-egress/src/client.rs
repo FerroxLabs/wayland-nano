@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn allowed_request_builds_with_no_secret_echo() {
         let client = EgressClient::flux();
-        client
+        let _builder = client
             .request(
                 reqwest::Method::POST,
                 "https://api.fluxrouter.ai/v1/chat/completions",
