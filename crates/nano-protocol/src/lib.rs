@@ -10,6 +10,7 @@
 //!   as turn progress).
 
 pub mod codec;
+pub mod corpus;
 pub mod host;
 pub mod messages;
 pub mod profile;

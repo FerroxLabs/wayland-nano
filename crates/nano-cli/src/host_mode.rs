@@ -55,18 +55,29 @@ pub async fn run(nano_home: &std::path::Path, workspace: &std::path::Path) -> st
                     nano_session::op::Op::ToolCall { call_id, name, args, .. } => {
                         events.push(Event::ToolRunning {
                             call_id: call_id.clone(),
+                            msg_id: msg_id.clone(),
+                            tool_name: name.clone(),
                         });
                         events.push(Event::ToolRequest {
                             call_id: call_id.clone(),
-                            name: name.clone(),
-                            args: args.clone(),
+                            msg_id: msg_id.clone(),
+                            tool: nano_protocol::messages::ToolRequestBody {
+                                name: name.clone(),
+                                args: args.clone(),
+                                category: None,
+                                description: None,
+                            },
                         });
                     }
                     nano_session::op::Op::ToolResult { call_id, ok, output_digest, .. } => {
                         events.push(Event::ToolResult {
                             call_id: call_id.clone(),
-                            ok: *ok,
+                            msg_id: msg_id.clone(),
                             output: output_digest.clone(),
+                            output_type: Some("text".into()),
+                            status: if *ok { "success".into() } else { "failure".into() },
+                            tool_name: String::new(),
+                            metadata: None,
                         });
                     }
                     _ => {}
@@ -74,6 +85,7 @@ pub async fn run(nano_home: &std::path::Path, workspace: &std::path::Path) -> st
             }
             if !result.final_text.is_empty() {
                 events.insert(0, Event::TextDelta {
+                    msg_id: msg_id.clone(),
                     text: result.final_text.clone(),
                 });
             }

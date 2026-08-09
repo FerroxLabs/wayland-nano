@@ -84,13 +84,13 @@ fn vertical_slice_live_turn_through_protocol() {
     // 1. ready MUST be the first frame, with honest capabilities.
     let ready = slice.read_frame();
     assert_eq!(ready["type"], "ready", "ready must be the first frame");
-    assert_eq!(ready["engine"], "nanok3");
-    assert_eq!(ready["protocol_version"], 1);
-    assert!(ready["capabilities"]["files"].as_bool().unwrap());
-    assert!(ready["capabilities"]["shell"].as_bool().unwrap());
+    assert!(ready["version"].is_string(), "corpus ready has version");
+    assert!(ready["session_id"].is_string(), "corpus ready has session_id");
+    assert!(ready["capabilities"]["thinking"].as_bool().unwrap());
+    assert!(ready["capabilities"]["tool_approval"].as_bool().unwrap());
     assert!(!ready["capabilities"]["mcp"].as_bool().unwrap());
-    let unavailable = ready["capabilities"]["unavailable"].to_string();
-    assert!(unavailable.contains("evolution"), "orchestration absent: {unavailable}");
+    assert!(!ready["capabilities"]["browser_suite"].as_bool().unwrap());
+    assert!(!ready["capabilities"]["computer_use"].as_bool().unwrap());
 
     // 2. ping answers pong promptly (before any turn).
     slice.send(&serde_json::json!({"type": "ping"}));

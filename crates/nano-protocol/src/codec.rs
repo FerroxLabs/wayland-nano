@@ -75,27 +75,13 @@ pub fn decode_complete(input: &str) -> Vec<Result<Command, ProtocolError>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::messages::{Capabilities, Event, ENGINE_ID, PROTOCOL_VERSION};
-    use std::collections::BTreeMap;
+    use crate::messages::Event;
 
     fn ready() -> Event {
         Event::Ready {
-            engine: ENGINE_ID.into(),
-            protocol_version: PROTOCOL_VERSION,
-            runtime_version: "0.1.0".into(),
+            capabilities: crate::profile::v1_capabilities(),
             session_id: "s1".into(),
-            capabilities: Capabilities {
-                files: true,
-                shell: true,
-                streaming: true,
-                thinking: true,
-                approvals: true,
-                mcp: false,
-                skills: false,
-                subagents: 0,
-                unavailable: vec![],
-                extensions: BTreeMap::new(),
-            },
+            version: "0.1.0".into(),
         }
     }
 

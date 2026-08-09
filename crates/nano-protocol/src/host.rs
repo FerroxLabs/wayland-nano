@@ -9,7 +9,7 @@
 //!   so a host-side stall watchdog always sees turn-scoped frames.
 
 use crate::codec::{ProtocolError, decode_commands, encode_event};
-use crate::messages::{Capabilities, Command, Event, UsageFrame};
+use crate::messages::{Command, ErrorBody, Event, NanoCapabilities, UsageFrame};
 use crate::profile::v1_capabilities;
 #[cfg(test)]
 use nano_agent::turn::TurnState;
@@ -19,7 +19,7 @@ use std::io::{BufRead, Write};
 pub struct HostConfig {
     pub runtime_version: String,
     pub session_id: String,
-    pub capabilities: Capabilities,
+    pub capabilities: NanoCapabilities,
 }
 
 impl Default for HostConfig {
@@ -65,11 +65,9 @@ where
     Fut: std::future::Future<Output = (Vec<Event>, Option<Usage>, String)>,
 {
     write_frame(writer, &Event::Ready {
-        engine: crate::messages::ENGINE_ID.into(),
-        protocol_version: crate::messages::PROTOCOL_VERSION,
-        runtime_version: config.runtime_version.clone(),
-        session_id: config.session_id.clone(),
         capabilities: config.capabilities.clone(),
+        session_id: config.session_id.clone(),
+        version: config.runtime_version.clone(),
     })?;
 
     let mut buffer = String::new();
@@ -100,8 +98,12 @@ where
                     // v1: stop is advisory between turns (the turn engine's
                     // cancellation is plumbed at the driver level).
                     write_frame(writer, &Event::Error {
-                        message: "stop acknowledged between turns".into(),
-                        recoverable: true,
+                        error: ErrorBody {
+                            code: "advisory".into(),
+                            message: "stop acknowledged between turns".into(),
+                            retryable: true,
+                        },
+                        msg_id: String::new(),
                     })?;
                 }
                 Ok(Command::Shutdown) => return Ok(HostExit::ShutdownCommand),
@@ -110,11 +112,25 @@ where
                     // v1 headless turns use policy gates, so these are logged
                     // as recoverable no-ops.
                     write_frame(writer, &Event::Error {
-                        message: "approval received with no pending request".into(),
-                        recoverable: true,
+                        error: ErrorBody {
+                            code: "advisory".into(),
+                            message: "approval received with no pending request".into(),
+                            retryable: true,
+                        },
+                        msg_id: String::new(),
                     })?;
                 }
-                Ok(Command::Message { msg_id, content }) => {
+                Ok(Command::ApprovalResume { .. }) => {
+                    write_frame(writer, &Event::Error {
+                        error: ErrorBody {
+                            code: "advisory".into(),
+                            message: "approval resume received with no pending request".into(),
+                            retryable: true,
+                        },
+                        msg_id: String::new(),
+                    })?;
+                }
+                Ok(Command::Message { msg_id, content, .. }) => {
                     write_frame(writer, &Event::StreamStart {
                         msg_id: msg_id.clone(),
                     })?;
@@ -122,14 +138,19 @@ where
                     for event in events {
                         write_frame(writer, &event)?;
                     }
+                    let usage_frame = usage.map(|u| UsageFrame {
+                        input_tokens: u.input_tokens,
+                        output_tokens: u.output_tokens,
+                        cache_read_tokens: u.cached_input_tokens,
+                        cache_write_tokens: None,
+                        cost_usd: u.cost_usd,
+                    });
                     write_frame(writer, &Event::StreamEnd {
+                        finish_reason: stop_reason,
                         msg_id,
-                        stop_reason,
-                        usage: usage.map(|u| UsageFrame {
-                            input_tokens: u.input_tokens,
-                            output_tokens: u.output_tokens,
-                            cost_usd: u.cost_usd,
-                        }),
+                        usage: usage_frame.clone().unwrap_or_default(),
+                        usage_delta: usage_frame.unwrap_or_default(),
+                        agent_run_id: None,
                     })?;
                 }
                 Err(err) => write_error_frame(writer, &err)?,
@@ -145,8 +166,12 @@ fn write_frame<W: Write>(writer: &mut W, event: &Event) -> std::io::Result<()> {
 
 fn write_error_frame<W: Write>(writer: &mut W, err: &ProtocolError) -> std::io::Result<()> {
     write_frame(writer, &Event::Error {
-        message: err.to_string(),
-        recoverable: true,
+        error: ErrorBody {
+            code: "protocol".into(),
+            message: err.to_string(),
+            retryable: true,
+        },
+        msg_id: String::new(),
     })
 }
 
@@ -163,9 +188,12 @@ mod tests {
         }
     }
 
-    async fn fake_turn(_msg_id: String, _content: String) -> (Vec<Event>, Option<Usage>, String) {
+    async fn fake_turn(msg_id: String, _content: String) -> (Vec<Event>, Option<Usage>, String) {
         (
-            vec![Event::TextDelta { text: "done".into() }],
+            vec![Event::TextDelta {
+                msg_id,
+                text: "done".into(),
+            }],
             None,
             "stop".into(),
         )
