@@ -103,7 +103,10 @@ B-ENV-01 (clean-VM rig), then B-FLX-02 in parallel with B-ENV-02.
 - token.rs + token_tests.rs ported near-verbatim (windows-sys pinned 0.52 to
   match donor HANDLE semantics; two `# Safety` doc sections added for clippy)
 - 6 tests green incl. real `CreateRestrictedToken` round-trip on this host
-- B-SBX-03 done: acl.rs ported + live deny-write enforcement test (7 tests green)
+- B-SBX-03 done: acl.rs + live deny-write test (077a30d)
+- B-SBX-04 done: env.rs + wfp.rs + filter_specs ported (9 tests green); workspace
+  edition bumped to 2024 to match donor (let-chains); unsafe_op_in_unsafe_fn
+  allow carried at crate root
 
 ### B-SBX-01 — nano-sandbox port increment 1 (foundation)
 - Owner: K3 mainline | Files: `crates/nano-sandbox/src/{lib,telemetry,winutil,path_normalization}.rs`

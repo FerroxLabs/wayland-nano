@@ -7,6 +7,8 @@
 //! Provenance: ported from OpenAI Codex `codex-rs/windows-sandbox-rs`
 //! @ 646f7c0a (Apache-2.0, see ../../vendor/NOTICE). Per-file donor mapping
 //! and transformations are recorded in ../../UPSTREAM.md.
+// Rust 2024 surfaces this lint across ported donor code; matches the donor crate-root allow.
+#![allow(unsafe_op_in_unsafe_fn)]
 #![cfg_attr(not(target_os = "windows"), allow(unused))]
 
 pub mod telemetry;
@@ -14,9 +16,13 @@ pub mod telemetry;
 #[cfg(target_os = "windows")]
 pub mod acl;
 #[cfg(target_os = "windows")]
+pub mod env;
+#[cfg(target_os = "windows")]
 mod path_normalization;
 #[cfg(target_os = "windows")]
 pub mod token;
+#[cfg(target_os = "windows")]
+pub mod wfp;
 #[cfg(target_os = "windows")]
 pub mod winutil;
 

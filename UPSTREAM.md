@@ -33,3 +33,6 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-sandbox/src/token.rs` | `codex-rs/windows-sandbox-rs/src/token.rs` | verbatim except module path, windows-sys 0.52 pin, 2 added `# Safety` doc sections (clippy `missing_safety_doc`) |
 | `crates/nano-sandbox/src/token_tests.rs` | `codex-rs/windows-sandbox-rs/src/token_tests.rs` | verbatim except module path |
 | `crates/nano-sandbox/src/acl.rs` | `codex-rs/windows-sandbox-rs/src/acl.rs` | verbatim except module path + 5 added `# Safety` doc sections; **plus** Track-B exercise test `nano_tests` (original code) proving deny-write enforcement on a live dir. Donor behavior discovered: after a deny-write ACE on the harness's own SID, `fetch_dacl_handle` fails at open (self-lockout) — by design, deny ACEs must target the sandboxed identity, not the broker |
+| `crates/nano-sandbox/src/env.rs` | `codex-rs/windows-sandbox-rs/src/env.rs` | verbatim except module path; architecture warning added (env proxies are discouragement, not containment) |
+| `crates/nano-sandbox/src/wfp.rs` | `codex-rs/windows-sandbox-rs/src/wfp.rs` | `crate::to_wide` → `crate::winutil::to_wide`; otherwise verbatim; donor tests retained |
+| `crates/nano-sandbox/src/wfp/filter_specs.rs` | `codex-rs/windows-sandbox-rs/src/wfp/filter_specs.rs` | verbatim except module path |
