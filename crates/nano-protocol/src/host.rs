@@ -11,7 +11,8 @@
 use crate::codec::{ProtocolError, decode_commands, encode_event};
 use crate::messages::{Capabilities, Command, Event, UsageFrame};
 use crate::profile::v1_capabilities;
-use nano_agent::turn::{TurnEngine, TurnState};
+#[cfg(test)]
+use nano_agent::turn::TurnState;
 use nano_model::types::Usage;
 use std::io::{BufRead, Write};
 
