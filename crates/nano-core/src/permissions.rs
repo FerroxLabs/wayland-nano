@@ -203,7 +203,7 @@ impl FileSystemSandboxPolicy {
         self.entries.retain(|entry| !entry.skips_missing_path());
     }
 
-    pub(crate) fn has_root_access(&self, predicate: impl Fn(FileSystemAccessMode) -> bool) -> bool {
+    pub fn has_root_access(&self, predicate: impl Fn(FileSystemAccessMode) -> bool) -> bool {
         matches!(self.kind, FileSystemSandboxKind::Restricted)
             && self.entries.iter().any(|entry| {
                 matches!(
