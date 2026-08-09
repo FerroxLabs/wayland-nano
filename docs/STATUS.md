@@ -110,7 +110,10 @@ B-ENV-01 (clean-VM rig), then B-FLX-02 in parallel with B-ENV-02.
 - B-SBX-06 done: job.rs extraction + process.rs port — LIVE contained spawn +
   whole-tree kill proven on this host (15 tests green)
 - B-SBX-05 done: logging + proc_thread_attr + desktop ported (14 tests green)
-- C1.3 done (this commit): nano-session journal — append-only Ops, torn-tail
+- B-SBX-09 done: unified_exec legacy backend — END-TO-END containment proven
+  (restricted spawn echoes; inside-root write ok; outside-root write DENIED;
+  3 tests through full ported stack, ~30s each from ACL/token work)
+- C1.3 done: nano-session journal — append-only Ops, torn-tail
   tolerance, unknown-skip, idempotent ids, stranded-phase reset, compaction
   equivalence (10 tests; design bug caught: compaction carries effect inventory)
 - B-SBX-04 done: env.rs + wfp.rs + filter_specs ported (9 tests green); workspace
