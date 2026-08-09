@@ -95,7 +95,7 @@ mod tests {
         let RetryAction::Retry { delay_ms: d3, .. } = policy.decide(3, &err) else {
             panic!()
         };
-        assert!(d0 >= 500 && d0 < 2000);
+        assert!((500..2000).contains(&d0));
         assert!(d3 > d0);
         let long_policy = RetryPolicy {
             max_attempts: 12,

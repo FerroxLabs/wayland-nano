@@ -6,11 +6,6 @@ use crate::flux_completions::{
 };
 use crate::types::{Message, ModelError, ModelEvent, ModelRequest, Role};
 
-fn fixture(path: &str) -> String {
-    let full = format!("../../../shared/fixtures/flux/{path}");
-    std::fs::read_to_string(&full).unwrap_or_else(|e| panic!("fixture {full}: {e}"))
-}
-
 fn newest_file(dir: &str, suffix: &str) -> String {
     let full = format!("../../../shared/fixtures/flux/{dir}");
     let mut files: Vec<_> = std::fs::read_dir(&full)
