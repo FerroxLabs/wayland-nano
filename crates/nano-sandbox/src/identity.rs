@@ -264,3 +264,162 @@ mod tests {
         );
     }
 }
+
+// ── Execution-bound entry points (B-SBX-08c completion) ─────────────────────
+// Provenance: codex `identity.rs` require_/refresh_logon_sandbox_creds @
+// 646f7c0a. Transformations: gather via crate::gather; execution via
+// crate::setup_exec; setup types via crate::setup_types.
+
+use crate::gather::gather_read_roots;
+use crate::gather::gather_write_roots_for_permissions;
+use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
+use crate::setup_exec::SandboxSetupRequest;
+use crate::setup_exec::run_elevated_setup_with_proxy_settings;
+use crate::setup_exec::run_setup_refresh_with_overrides_and_proxy_settings;
+use crate::setup_types::SetupRootOverrides;
+use std::path::PathBuf;
+
+#[allow(clippy::too_many_arguments)]
+pub fn require_logon_sandbox_creds(
+    permissions: &ResolvedWindowsSandboxPermissions,
+    command_cwd: &Path,
+    env_map: &HashMap<String, String>,
+    nano_home: &Path,
+    read_roots_override: Option<&[PathBuf]>,
+    read_roots_include_platform_defaults: bool,
+    write_roots_override: Option<&[PathBuf]>,
+    deny_read_paths_override: &[PathBuf],
+    deny_write_paths_override: &[PathBuf],
+    proxy_enforced: bool,
+    proxy_settings_mode: WindowsSandboxProxySettingsMode,
+) -> Result<SandboxCreds> {
+    let sandbox_dir = crate::sandbox_dir(nano_home);
+    let needed_read = read_roots_override
+        .map(<[PathBuf]>::to_vec)
+        .unwrap_or_else(|| gather_read_roots(command_cwd, permissions, env_map, nano_home));
+    let needed_write = write_roots_override
+        .map(<[PathBuf]>::to_vec)
+        .unwrap_or_else(|| gather_write_roots_for_permissions(permissions, command_cwd, env_map));
+    let network_identity = SandboxNetworkIdentity::from_permissions(permissions, proxy_enforced);
+    let marker = load_marker(nano_home)?;
+    let desired_offline_proxy_settings = desired_offline_proxy_settings(
+        marker.as_ref(),
+        proxy_settings_mode,
+        env_map,
+        network_identity,
+    );
+    // NOTE: Do not add NANO_HOME/.sandbox to `needed_write`; it must remain
+    // non-writable by the restricted capability token. The setup helper's
+    // `lock_sandbox_dir` grants the sandbox group access without granting the
+    // capability SID.
+    let mut setup_reason: Option<String> = None;
+
+    let mut identity = match marker {
+        Some(marker) if marker.version_matches() => {
+            if let Some(reason) =
+                marker.request_mismatch_reason(network_identity, &desired_offline_proxy_settings)
+            {
+                setup_reason = Some(reason);
+                None
+            } else {
+                let selected = select_identity(network_identity, nano_home)?;
+                if selected.is_none() {
+                    setup_reason = Some(
+                        "sandbox users missing or incompatible with marker version".to_string(),
+                    );
+                }
+                selected
+            }
+        }
+        _ => {
+            setup_reason = Some("sandbox setup marker missing or incompatible".to_string());
+            None
+        }
+    };
+
+    if identity.is_none() {
+        if let Some(reason) = &setup_reason {
+            crate::logging::log_note(
+                &format!("sandbox setup required: {reason}"),
+                Some(&sandbox_dir),
+            );
+        } else {
+            crate::logging::log_note("sandbox setup required", Some(&sandbox_dir));
+        }
+        run_elevated_setup_with_proxy_settings(
+            SandboxSetupRequest {
+                permissions,
+                command_cwd,
+                env_map,
+                nano_home,
+                proxy_enforced,
+            },
+            SetupRootOverrides {
+                read_roots: Some(needed_read.clone()),
+                read_roots_include_platform_defaults,
+                write_roots: Some(needed_write.clone()),
+                deny_read_paths: Some(deny_read_paths_override.to_vec()),
+                deny_write_paths: Some(deny_write_paths_override.to_vec()),
+            },
+            &desired_offline_proxy_settings,
+        )?;
+        identity = select_identity(network_identity, nano_home)?;
+    }
+    // Always refresh ACLs (non-elevated) for current roots via the setup binary.
+    run_setup_refresh_with_overrides_and_proxy_settings(
+        SandboxSetupRequest {
+            permissions,
+            command_cwd,
+            env_map,
+            nano_home,
+            proxy_enforced,
+        },
+        SetupRootOverrides {
+            read_roots: Some(needed_read),
+            read_roots_include_platform_defaults,
+            write_roots: Some(needed_write),
+            deny_read_paths: Some(deny_read_paths_override.to_vec()),
+            deny_write_paths: Some(deny_write_paths_override.to_vec()),
+        },
+        &desired_offline_proxy_settings,
+    )?;
+    let identity = identity.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Windows sandbox setup is missing or out of date; rerun the sandbox setup with elevation"
+        )
+    })?;
+    Ok(SandboxCreds {
+        username: identity.username,
+        password: identity.password,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn refresh_logon_sandbox_creds(
+    permissions: &ResolvedWindowsSandboxPermissions,
+    command_cwd: &Path,
+    env_map: &HashMap<String, String>,
+    nano_home: &Path,
+    read_roots_override: Option<&[PathBuf]>,
+    read_roots_include_platform_defaults: bool,
+    write_roots_override: Option<&[PathBuf]>,
+    deny_read_paths_override: &[PathBuf],
+    deny_write_paths_override: &[PathBuf],
+    proxy_enforced: bool,
+    proxy_settings_mode: WindowsSandboxProxySettingsMode,
+) -> Result<SandboxCreds> {
+    remove_sandbox_users_file(nano_home, "sandbox user login failed")?;
+    require_logon_sandbox_creds(
+        permissions,
+        command_cwd,
+        env_map,
+        nano_home,
+        read_roots_override,
+        read_roots_include_platform_defaults,
+        write_roots_override,
+        deny_read_paths_override,
+        deny_write_paths_override,
+        proxy_enforced,
+        proxy_settings_mode,
+    )
+}

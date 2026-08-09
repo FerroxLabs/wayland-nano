@@ -48,7 +48,11 @@ pub mod resolved_permissions;
 #[cfg(target_os = "windows")]
 pub mod setup_error;
 #[cfg(target_os = "windows")]
+mod sandbox_utils;
+#[cfg(target_os = "windows")]
 pub mod setup_exec;
+#[cfg(target_os = "windows")]
+pub mod spawn_prep;
 #[cfg(target_os = "windows")]
 pub mod spawn_types;
 #[cfg(target_os = "windows")]
@@ -67,6 +71,8 @@ mod path_normalization;
 pub mod token;
 #[cfg(target_os = "windows")]
 pub mod wfp;
+#[cfg(target_os = "windows")]
+pub mod workspace_acl;
 #[cfg(target_os = "windows")]
 pub mod winutil;
 
@@ -87,3 +93,6 @@ pub fn sandbox_dir(nano_home: &std::path::Path) -> std::path::PathBuf {
 
 #[cfg(target_os = "windows")]
 pub use setup_types::{sandbox_bin_dir, sandbox_secrets_dir, setup_marker_path, sandbox_users_path};
+
+#[cfg(target_os = "windows")]
+pub use nano_core::permissions::WindowsSandboxProxySettingsMode;

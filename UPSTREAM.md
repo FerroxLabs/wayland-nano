@@ -68,3 +68,7 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-sandbox/src/audit.rs` | `codex-rs/windows-sandbox-rs/src/audit.rs` | `crate::setup::effective_write_roots_for_permissions`→`crate::gather::...`; otherwise verbatim |
 | `crates/nano-sandbox/src/spawn_types.rs` | `codex-rs/utils/pty/src/process.rs` (surface only) | Nano-owned minimal session abstraction (writer/close/terminate + channels); full ProcessHandle internals intentionally not ported (v1 is non-interactive) |
 | `crates/nano-sandbox/src/stdio_bridge.rs` (+ tests) | `codex-rs/windows-sandbox-rs/src/stdio_bridge.rs` | SpawnedProcess → crate::spawn_types; EOF/drain/Ctrl+C forwarding semantics intact |
+| `crates/nano-sandbox/src/workspace_acl.rs` | `codex-rs/windows-sandbox-rs/src/workspace_acl.rs` | `.codex`→`.nano` (protect_workspace_nano_dir) |
+| `crates/nano-sandbox/src/sandbox_utils.rs` | `codex-rs/windows-sandbox-rs/src/sandbox_utils.rs` | ensure_codex_home_exists→ensure_nano_home_exists |
+| `crates/nano-sandbox/src/identity.rs` (addition) | `codex-rs/windows-sandbox-rs/src/identity.rs` (entry points) | require_/refresh_logon_sandbox_creds landed against gather+setup_exec; NANO_HOME write-protection note carried |
+| `crates/nano-sandbox/src/spawn_prep.rs` | `codex-rs/windows-sandbox-rs/src/spawn_prep.rs` | imports rewired (gather, nano_core); .nano dir protection; donor tests retained |
