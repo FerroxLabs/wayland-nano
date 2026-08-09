@@ -50,43 +50,43 @@ use std::path::PathBuf;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::HANDLE;
 
-pub(crate) struct SpawnContext {
-    pub(crate) permissions: ResolvedWindowsSandboxPermissions,
-    pub(crate) current_dir: PathBuf,
-    pub(crate) logs_base_dir: Option<PathBuf>,
-    pub(crate) uses_write_capabilities: bool,
+pub struct SpawnContext {
+    pub permissions: ResolvedWindowsSandboxPermissions,
+    pub current_dir: PathBuf,
+    pub logs_base_dir: Option<PathBuf>,
+    pub uses_write_capabilities: bool,
 }
 
-pub(crate) struct ElevatedSpawnContext {
-    pub(crate) sandbox_base: PathBuf,
-    pub(crate) logs_base_dir: Option<PathBuf>,
-    pub(crate) sandbox_creds: SandboxCreds,
-    pub(crate) cap_sids: Vec<String>,
+pub struct ElevatedSpawnContext {
+    pub sandbox_base: PathBuf,
+    pub logs_base_dir: Option<PathBuf>,
+    pub sandbox_creds: SandboxCreds,
+    pub cap_sids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SpawnPrepOptions {
-    pub(crate) inherit_path: bool,
-    pub(crate) add_git_safe_directory: bool,
+pub struct SpawnPrepOptions {
+    pub inherit_path: bool,
+    pub add_git_safe_directory: bool,
 }
 
-pub(crate) struct LegacySessionSecurity {
-    pub(crate) h_token: HANDLE,
-    pub(crate) readonly_sid: Option<LocalSid>,
-    pub(crate) readonly_sid_str: Option<String>,
-    pub(crate) write_root_sids: Vec<RootCapabilitySid>,
+pub struct LegacySessionSecurity {
+    pub h_token: HANDLE,
+    pub readonly_sid: Option<LocalSid>,
+    pub readonly_sid_str: Option<String>,
+    pub write_root_sids: Vec<RootCapabilitySid>,
 }
 
-pub(crate) struct RootCapabilitySid {
-    pub(crate) root: PathBuf,
-    pub(crate) sid: LocalSid,
-    pub(crate) sid_str: String,
+pub struct RootCapabilitySid {
+    pub root: PathBuf,
+    pub sid: LocalSid,
+    pub sid_str: String,
 }
 
-pub(crate) struct LegacyAclSids<'a> {
-    pub(crate) readonly_sid: Option<&'a LocalSid>,
-    pub(crate) readonly_sid_str: Option<&'a str>,
-    pub(crate) write_root_sids: &'a [RootCapabilitySid],
+pub struct LegacyAclSids<'a> {
+    pub readonly_sid: Option<&'a LocalSid>,
+    pub readonly_sid_str: Option<&'a str>,
+    pub write_root_sids: &'a [RootCapabilitySid],
 }
 
 fn prepare_spawn_context_common(
@@ -129,7 +129,7 @@ fn prepare_spawn_context_common(
     })
 }
 
-pub(crate) fn prepare_legacy_spawn_context(
+pub fn prepare_legacy_spawn_context(
     permission_profile: &PermissionProfile,
     workspace_roots: &[AbsolutePathBuf],
     codex_home: &Path,
@@ -153,7 +153,7 @@ pub(crate) fn prepare_legacy_spawn_context(
     Ok(common)
 }
 
-pub(crate) fn prepare_legacy_session_security(
+pub fn prepare_legacy_session_security(
     uses_write_capabilities: bool,
     codex_home: &Path,
     cwd: &Path,
@@ -190,7 +190,7 @@ pub(crate) fn prepare_legacy_session_security(
     })
 }
 
-pub(crate) fn legacy_session_capability_roots(
+pub fn legacy_session_capability_roots(
     permissions: &ResolvedWindowsSandboxPermissions,
     current_dir: &Path,
     env_map: &HashMap<String, String>,
@@ -213,7 +213,7 @@ pub(crate) fn legacy_session_capability_roots(
     }
 }
 
-pub(crate) fn root_capability_sids(
+pub fn root_capability_sids(
     codex_home: &Path,
     cwd: &Path,
     allow_paths: impl IntoIterator<Item = PathBuf>,
@@ -256,7 +256,7 @@ fn deny_root_capabilities_for_path<'a>(
     }
 }
 
-pub(crate) fn allow_null_device_for_workspace_write(is_workspace_write: bool) {
+pub fn allow_null_device_for_workspace_write(is_workspace_write: bool) {
     if !is_workspace_write {
         return;
     }
@@ -274,7 +274,7 @@ pub(crate) fn allow_null_device_for_workspace_write(is_workspace_write: bool) {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_legacy_session_acl_rules(
+pub fn apply_legacy_session_acl_rules(
     permissions: &ResolvedWindowsSandboxPermissions,
     codex_home: &Path,
     current_dir: &Path,
@@ -355,7 +355,7 @@ pub(crate) fn apply_legacy_session_acl_rules(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_elevated_spawn_context_for_permissions(
+pub fn prepare_elevated_spawn_context_for_permissions(
     permissions: ResolvedWindowsSandboxPermissions,
     codex_home: &Path,
     cwd: &Path,
@@ -699,9 +699,9 @@ mod tests {
         std::fs::create_dir_all(&sandbox_root).expect("create sandbox root");
 
         let writable_roots = vec![
-            AbsolutePathBuf::try_from(active_root.as_path()).expect("active root"),
-            AbsolutePathBuf::try_from(codex_home.as_path()).expect("codex home"),
-            AbsolutePathBuf::try_from(sandbox_root.as_path()).expect("sandbox root"),
+            AbsolutePathBuf::from(active_root.as_path()),
+            AbsolutePathBuf::from(codex_home.as_path()),
+            AbsolutePathBuf::from(sandbox_root.as_path()),
         ];
         let permission_profile = workspace_profile(
             NetworkSandboxPolicy::Restricted,

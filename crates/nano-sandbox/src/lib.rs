@@ -48,7 +48,7 @@ pub mod resolved_permissions;
 #[cfg(target_os = "windows")]
 pub mod setup_error;
 #[cfg(target_os = "windows")]
-mod sandbox_utils;
+pub mod sandbox_utils;
 #[cfg(target_os = "windows")]
 pub mod setup_exec;
 #[cfg(target_os = "windows")]

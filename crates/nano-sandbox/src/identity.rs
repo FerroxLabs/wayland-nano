@@ -163,108 +163,6 @@ pub fn desired_offline_proxy_settings(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::desired_offline_proxy_settings;
-    use super::remove_sandbox_users_file;
-    use crate::setup_types::OFFLINE_USERNAME;
-    use crate::setup_types::SETUP_VERSION;
-    use crate::setup_types::SandboxNetworkIdentity;
-    use crate::setup_types::SetupMarker;
-    use crate::setup_types::sandbox_users_path;
-    use nano_core::permissions::WindowsSandboxProxySettingsMode;
-    use pretty_assertions::assert_eq;
-    use std::collections::HashMap;
-    use std::fs;
-    use tempfile::TempDir;
-
-    fn marker_with(proxy_ports: Vec<u16>, allow_local_binding: bool) -> SetupMarker {
-        SetupMarker {
-            version: SETUP_VERSION,
-            offline_username: OFFLINE_USERNAME.to_string(),
-            online_username: "online".to_string(),
-            created_at: None,
-            proxy_ports,
-            allow_local_binding,
-        }
-    }
-
-    #[test]
-    fn remove_sandbox_users_file_deletes_existing_file() {
-        let nano_home = TempDir::new().expect("tempdir");
-        let users_path = sandbox_users_path(nano_home.path());
-        fs::create_dir_all(users_path.parent().expect("sandbox secrets dir"))
-            .expect("create sandbox secrets dir");
-        fs::write(&users_path, "users").expect("write users");
-
-        remove_sandbox_users_file(nano_home.path(), "stale creds").expect("remove users");
-        assert!(!users_path.exists());
-    }
-
-    #[test]
-    fn remove_sandbox_users_file_ignores_missing_file() {
-        let nano_home = TempDir::new().expect("tempdir");
-        let users_path = sandbox_users_path(nano_home.path());
-
-        remove_sandbox_users_file(nano_home.path(), "stale creds").expect("remove users");
-        assert!(!users_path.exists());
-    }
-
-    #[test]
-    fn preserving_proxy_settings_uses_the_existing_marker() {
-        let marker = marker_with(vec![7890], true);
-        let env_map = HashMap::from([(
-            "HTTP_PROXY".to_string(),
-            "http://127.0.0.1:8080".to_string(),
-        )]);
-
-        assert_eq!(
-            desired_offline_proxy_settings(
-                Some(&marker),
-                WindowsSandboxProxySettingsMode::Preserve,
-                &env_map,
-                SandboxNetworkIdentity::Offline,
-            ),
-            marker.offline_proxy_settings()
-        );
-        assert_eq!(
-            desired_offline_proxy_settings(
-                Some(&marker),
-                WindowsSandboxProxySettingsMode::Reconcile,
-                &env_map,
-                SandboxNetworkIdentity::Offline,
-            )
-            .proxy_ports,
-            vec![8080]
-        );
-    }
-
-    #[test]
-    fn guardian_preserve_mode_does_not_churn_marker_with_empty_proxy_ports() {
-        let marker = marker_with(vec![3128, 8081], true);
-        let env_map = HashMap::new();
-        let reconciled = desired_offline_proxy_settings(
-            Some(&marker),
-            WindowsSandboxProxySettingsMode::Reconcile,
-            &env_map,
-            SandboxNetworkIdentity::Offline,
-        );
-        assert_eq!(reconciled.proxy_ports, Vec::<u16>::new());
-
-        let desired = desired_offline_proxy_settings(
-            Some(&marker),
-            WindowsSandboxProxySettingsMode::Preserve,
-            &env_map,
-            SandboxNetworkIdentity::Offline,
-        );
-        assert_eq!(desired, marker.offline_proxy_settings());
-        assert_eq!(
-            marker.request_mismatch_reason(SandboxNetworkIdentity::Offline, &desired),
-            None
-        );
-    }
-}
-
 // ── Execution-bound entry points (B-SBX-08c completion) ─────────────────────
 // Provenance: codex `identity.rs` require_/refresh_logon_sandbox_creds @
 // 646f7c0a. Transformations: gather via crate::gather; execution via
@@ -422,4 +320,106 @@ pub fn refresh_logon_sandbox_creds(
         proxy_enforced,
         proxy_settings_mode,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::desired_offline_proxy_settings;
+    use super::remove_sandbox_users_file;
+    use crate::setup_types::OFFLINE_USERNAME;
+    use crate::setup_types::SETUP_VERSION;
+    use crate::setup_types::SandboxNetworkIdentity;
+    use crate::setup_types::SetupMarker;
+    use crate::setup_types::sandbox_users_path;
+    use nano_core::permissions::WindowsSandboxProxySettingsMode;
+    use pretty_assertions::assert_eq;
+    use std::collections::HashMap;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn marker_with(proxy_ports: Vec<u16>, allow_local_binding: bool) -> SetupMarker {
+        SetupMarker {
+            version: SETUP_VERSION,
+            offline_username: OFFLINE_USERNAME.to_string(),
+            online_username: "online".to_string(),
+            created_at: None,
+            proxy_ports,
+            allow_local_binding,
+        }
+    }
+
+    #[test]
+    fn remove_sandbox_users_file_deletes_existing_file() {
+        let nano_home = TempDir::new().expect("tempdir");
+        let users_path = sandbox_users_path(nano_home.path());
+        fs::create_dir_all(users_path.parent().expect("sandbox secrets dir"))
+            .expect("create sandbox secrets dir");
+        fs::write(&users_path, "users").expect("write users");
+
+        remove_sandbox_users_file(nano_home.path(), "stale creds").expect("remove users");
+        assert!(!users_path.exists());
+    }
+
+    #[test]
+    fn remove_sandbox_users_file_ignores_missing_file() {
+        let nano_home = TempDir::new().expect("tempdir");
+        let users_path = sandbox_users_path(nano_home.path());
+
+        remove_sandbox_users_file(nano_home.path(), "stale creds").expect("remove users");
+        assert!(!users_path.exists());
+    }
+
+    #[test]
+    fn preserving_proxy_settings_uses_the_existing_marker() {
+        let marker = marker_with(vec![7890], true);
+        let env_map = HashMap::from([(
+            "HTTP_PROXY".to_string(),
+            "http://127.0.0.1:8080".to_string(),
+        )]);
+
+        assert_eq!(
+            desired_offline_proxy_settings(
+                Some(&marker),
+                WindowsSandboxProxySettingsMode::Preserve,
+                &env_map,
+                SandboxNetworkIdentity::Offline,
+            ),
+            marker.offline_proxy_settings()
+        );
+        assert_eq!(
+            desired_offline_proxy_settings(
+                Some(&marker),
+                WindowsSandboxProxySettingsMode::Reconcile,
+                &env_map,
+                SandboxNetworkIdentity::Offline,
+            )
+            .proxy_ports,
+            vec![8080]
+        );
+    }
+
+    #[test]
+    fn guardian_preserve_mode_does_not_churn_marker_with_empty_proxy_ports() {
+        let marker = marker_with(vec![3128, 8081], true);
+        let env_map = HashMap::new();
+        let reconciled = desired_offline_proxy_settings(
+            Some(&marker),
+            WindowsSandboxProxySettingsMode::Reconcile,
+            &env_map,
+            SandboxNetworkIdentity::Offline,
+        );
+        assert_eq!(reconciled.proxy_ports, Vec::<u16>::new());
+
+        let desired = desired_offline_proxy_settings(
+            Some(&marker),
+            WindowsSandboxProxySettingsMode::Preserve,
+            &env_map,
+            SandboxNetworkIdentity::Offline,
+        );
+        assert_eq!(desired, marker.offline_proxy_settings());
+        assert_eq!(
+            marker.request_mismatch_reason(SandboxNetworkIdentity::Offline, &desired),
+            None
+        );
+    }
 }
