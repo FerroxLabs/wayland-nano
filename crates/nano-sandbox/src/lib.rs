@@ -16,7 +16,13 @@ pub mod telemetry;
 #[cfg(target_os = "windows")]
 pub mod acl;
 #[cfg(target_os = "windows")]
+pub mod desktop;
+#[cfg(target_os = "windows")]
 pub mod env;
+#[cfg(target_os = "windows")]
+pub mod logging;
+#[cfg(target_os = "windows")]
+pub mod proc_thread_attr;
 #[cfg(target_os = "windows")]
 mod path_normalization;
 #[cfg(target_os = "windows")]
@@ -30,3 +36,13 @@ pub mod winutil;
 pub use path_normalization::{canonical_path_key, canonicalize_path};
 #[cfg(target_os = "windows")]
 pub use token::{LocalSid, world_sid};
+
+/// Base directory for sandbox-owned state under a Nano home.
+///
+/// Interim home: lands in this crate root until the `setup` module is ported
+/// (donor location: `setup.rs`). Provenance: Codex
+/// `windows-sandbox-rs/src/setup.rs` @ 646f7c0a (`sandbox_dir`).
+#[cfg(target_os = "windows")]
+pub fn sandbox_dir(nano_home: &std::path::Path) -> std::path::PathBuf {
+    nano_home.join(".sandbox")
+}

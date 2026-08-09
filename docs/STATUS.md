@@ -104,6 +104,7 @@ B-ENV-01 (clean-VM rig), then B-FLX-02 in parallel with B-ENV-02.
   match donor HANDLE semantics; two `# Safety` doc sections added for clippy)
 - 6 tests green incl. real `CreateRestrictedToken` round-trip on this host
 - B-SBX-03 done: acl.rs + live deny-write test (077a30d)
+- B-SBX-05 done: logging + proc_thread_attr + desktop ported (14 tests green)
 - B-SBX-04 done: env.rs + wfp.rs + filter_specs ported (9 tests green); workspace
   edition bumped to 2024 to match donor (let-chains); unsafe_op_in_unsafe_fn
   allow carried at crate root

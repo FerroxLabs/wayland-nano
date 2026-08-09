@@ -36,3 +36,8 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-sandbox/src/env.rs` | `codex-rs/windows-sandbox-rs/src/env.rs` | verbatim except module path; architecture warning added (env proxies are discouragement, not containment) |
 | `crates/nano-sandbox/src/wfp.rs` | `codex-rs/windows-sandbox-rs/src/wfp.rs` | `crate::to_wide` → `crate::winutil::to_wide`; otherwise verbatim; donor tests retained |
 | `crates/nano-sandbox/src/wfp/filter_specs.rs` | `codex-rs/windows-sandbox-rs/src/wfp/filter_specs.rs` | verbatim except module path |
+| `crates/nano-sandbox/src/logging.rs` | `codex-rs/windows-sandbox-rs/src/logging.rs` | module path; string util sourced from winutil; `*_for_codex_home` → `*_for_nano_home` (branding); donor tests retained |
+| `crates/nano-sandbox/src/proc_thread_attr.rs` | `codex-rs/windows-sandbox-rs/src/proc_thread_attr.rs` | verbatim except module path |
+| `crates/nano-sandbox/src/desktop.rs` | `codex-rs/windows-sandbox-rs/src/desktop.rs` | verbatim except module path |
+| `crates/nano-sandbox/src/winutil.rs` (addition) | `codex-rs/utils/string/src/lib.rs` | `take_bytes_at_char_boundary` relocated into winutil (donor: separate codex-utils-string crate) |
+| `crates/nano-sandbox/src/lib.rs` (`sandbox_dir`) | `codex-rs/windows-sandbox-rs/src/setup.rs` | interim helper at crate root until setup module lands |

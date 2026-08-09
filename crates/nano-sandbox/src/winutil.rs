@@ -212,6 +212,36 @@ fn sid_bytes_from_string(sid_str: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+
+/// Take a prefix of `s` no longer than `maxb` bytes, on a char boundary.
+///
+/// Provenance: ported from Codex `codex-rs/utils/string/src/lib.rs` @
+/// 646f7c0a. Transformation: relocated into winutil (donor lives in the
+/// separate codex-utils-string crate).
+pub fn take_bytes_at_char_boundary(s: &str, maxb: usize) -> &str {
+    if s.len() <= maxb {
+        return s;
+    }
+    let mut last_ok = 0;
+    for (i, ch) in s.char_indices() {
+        let nb = i + ch.len_utf8();
+        if nb > maxb {
+            break;
+        }
+        last_ok = nb;
+    }
+    &s[..last_ok]
+}
+
+#[cfg(test)]
+mod string_tests {
+    #[test]
+    fn take_bytes_respects_char_boundaries() {
+        assert_eq!(super::take_bytes_at_char_boundary("aé中", 4), "aé");
+        assert_eq!(super::take_bytes_at_char_boundary("abc", 9), "abc");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::argv_to_command_line;

@@ -9,6 +9,9 @@ rust-version.workspace = true
 anyhow = "1"
 dunce = "1"
 dirs-next = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+rand = { version = "0.8", features = ["std", "small_rng"] }
+tracing-appender = "0.2"
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_Debug",
