@@ -67,6 +67,7 @@ mod tests {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct TelemetrySettings {
     pub environment: String,
+    #[serde(default)]
     pub service_name: String,
 }
 
@@ -74,4 +75,42 @@ pub struct TelemetrySettings {
 /// not wire product analytics into provisioning.
 pub fn global_telemetry_settings() -> Option<TelemetrySettings> {
     None
+}
+
+/// A metrics sink that renders metrics as structured log lines through
+/// `logging::log_note` (daily rolling sandbox log) — the v1 product sink for
+/// the setup helper (facade doc: structured events, not OTel product wiring).
+pub struct LogSink {
+    base_dir: Option<std::path::PathBuf>,
+}
+
+impl LogSink {
+    pub fn new(base_dir: Option<&std::path::Path>) -> Self {
+        Self {
+            base_dir: base_dir.map(std::path::Path::to_path_buf),
+        }
+    }
+}
+
+impl MetricsSink for LogSink {
+    fn emit(&self, metric: &str, fields: &[(&str, &str)]) {
+        let rendered = fields
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        crate::logging::log_note(
+            &format!("metric {metric} {rendered}"),
+            self.base_dir.as_deref(),
+        );
+    }
+}
+
+/// Builds the setup-path metrics hook from payload settings. `None` settings
+/// mean no sink (the donor's default on the library path).
+pub fn sink_from_settings(
+    settings: Option<&TelemetrySettings>,
+    base_dir: Option<&std::path::Path>,
+) -> Option<LogSink> {
+    settings.map(|_| LogSink::new(base_dir))
 }

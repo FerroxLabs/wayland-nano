@@ -17,6 +17,12 @@ base64 = "0.22"
 dirs-next = "2"
 glob = "0.3"
 tempfile = "3"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_WindowsFirewall",
+    "Win32_System_Com",
+    "Win32_System_Variant",
+] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 rand = { version = "0.8", features = ["std", "small_rng"] }
 tracing-appender = "0.2"
@@ -57,3 +63,11 @@ windows-sys = { version = "0.52", features = [
 
 [dev-dependencies]
 pretty_assertions = "1"
+
+[[bin]]
+name = "nanok3-sandbox-setup"
+path = "src/bin/setup_main/main.rs"
+
+[[bin]]
+name = "nanok3-command-runner"
+path = "src/bin/command_runner/main.rs"

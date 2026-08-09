@@ -76,6 +76,9 @@ pub enum SetupErrorCode {
     HelperReadAclHelperSpawnFailed,
     /// Helper failed to lock down sandbox directories via ACLs.
     HelperSandboxLockFailed,
+    /// Helper received a ConPTY/tty spawn request, which v1 defers (D8).
+    /// (Track-B addition, recorded in UPSTREAM.md — not from the donor.)
+    HelperConptyDeferred,
     /// Helper failed for an unmapped or unexpected reason.
     HelperUnknownError,
 }
@@ -112,6 +115,7 @@ impl SetupErrorCode {
             Self::HelperFirewallRuleVerifyFailed => "helper_firewall_rule_verify_failed",
             Self::HelperReadAclHelperSpawnFailed => "helper_read_acl_helper_spawn_failed",
             Self::HelperSandboxLockFailed => "helper_sandbox_lock_failed",
+            Self::HelperConptyDeferred => "helper_conpty_deferred",
             Self::HelperUnknownError => "helper_unknown_error",
         }
     }

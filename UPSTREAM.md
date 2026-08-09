@@ -85,3 +85,8 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-sandbox/src/helper_materialization.rs` (test fix) | — | suffix-name test expects nanok3 exe name (recorded branding) |
 | `crates/nano-sandbox/src/unified_exec/backends/elevated.rs` | `codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs` | runner-IPC spawn against spawn_types; resizer/tty omitted (D8); real_codex_home→real_nano_home wire field |
 | `crates/nano-sandbox/src/unified_exec/backends/windows_common.rs` | `codex-rs/windows-sandbox-rs/src/unified_exec/backends/windows_common.rs` | broadcast→mpsc; WindowsTtyInputNormalizer dropped (tty deferred) |
+| `crates/nano-sandbox/src/bin/setup_main/` | `codex-rs/windows-sandbox-rs/src/bin/setup_main/` | codex_windows_sandbox→nano_sandbox; otel→telemetry facade (LogSink to daily log); nanok3-sandbox-setup.exe; test data NanoK3-branded |
+| `crates/nano-sandbox/src/bin/command_runner/` | `codex-rs/windows-sandbox-rs/src/bin/command_runner/` | JobObject→crate::job; tty branch fails closed with new `HelperConptyDeferred` code (Track-B addition per D8); conpty_owner retyped (always None) |
+| `crates/nano-sandbox/src/telemetry.rs` (additions) | (seam) | `LogSink` + `sink_from_settings`; `service_name` serde-defaulted |
+| `crates/nano-sandbox/src/wfp_setup.rs` | `codex-rs/windows-sandbox-rs/src/wfp_setup.rs` | OTel provider→facade MetricsHook; metric names `nanok3.*` |
+| `crates/nano-sandbox/src/setup_error.rs` (addition) | — | `HelperConptyDeferred` variant (Track-B addition, not donor) |
