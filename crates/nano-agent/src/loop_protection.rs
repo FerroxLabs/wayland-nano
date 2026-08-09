@@ -9,7 +9,6 @@
 //! - budgets per the plan (turns, tool calls, wall time).
 
 use std::collections::BTreeMap;
-use std::collections::VecDeque;
 
 /// Canonical key for a tool call: name + canonicalized arguments
 /// (JSON object keys sorted recursively so {"a":1,"b":2} == {"b":2,"a":1}).

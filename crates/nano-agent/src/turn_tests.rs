@@ -115,6 +115,15 @@ mod tests {
         let result = engine.run_turn("t1", "fix the build").await;
 
         assert_eq!(result.state, TurnState::Complete);
+        // The plan: every state is testable — assert the full path.
+        let labels: Vec<String> = result.history.iter().map(|s| s.label()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "RECEIVE", "UNDERSTAND", "PLAN", "ACT", "OBSERVE", "UNDERSTAND", "PLAN",
+                "VERIFY", "COMPLETE",
+            ]
+        );
         assert_eq!(result.final_text, "fixed the build");
         assert_eq!(tools.calls.lock().unwrap().len(), 1);
         let op_types: Vec<String> = result

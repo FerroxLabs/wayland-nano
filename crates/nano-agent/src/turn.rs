@@ -66,6 +66,8 @@ impl TurnState {
 #[derive(Debug)]
 pub struct TurnResult {
     pub state: TurnState,
+    /// Ordered state transitions (the plan: every state is testable).
+    pub history: Vec<TurnState>,
     pub steps: u32,
     pub tool_calls: u32,
     pub final_text: String,
@@ -97,7 +99,12 @@ impl<'a> TurnEngine<'a> {
             input: input.into(),
         });
 
+        let mut history = vec![TurnState::Receive];
         let mut state = TurnState::Receive;
+        let transition = |state: &mut TurnState, history: &mut Vec<TurnState>, next: TurnState| {
+            *state = next;
+            history.push(state.clone());
+        };
         let mut protection = RepeatBreaker::default();
         let mut progress_tracker = NoProgressTracker::default();
         let mut budget_tracker = BudgetTracker::default();
@@ -106,7 +113,7 @@ impl<'a> TurnEngine<'a> {
         let mut messages = vec![Message::user(input)];
         let mut final_text = String::new();
 
-        state = TurnState::Understand;
+        transition(&mut state, &mut history, TurnState::Understand);
         loop {
             if let Err(exhausted) = budget_tracker.check(&self.budget) {
                 state = TurnState::Stopped(format!("budget exhausted: {exhausted:?}"));
@@ -130,7 +137,7 @@ impl<'a> TurnEngine<'a> {
             };
 
             if matches!(state, TurnState::Understand | TurnState::Replan) {
-                state = TurnState::Plan;
+                transition(&mut state, &mut history, TurnState::Plan);
             }
 
             let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -148,16 +155,16 @@ impl<'a> TurnEngine<'a> {
 
             if tool_calls.is_empty() {
                 // No more actions: verify then complete.
-                state = TurnState::Verify;
+                transition(&mut state, &mut history, TurnState::Verify);
                 emit(&mut ops, Op::TurnEnd {
                     turn_id: turn_id.into(),
                     outcome: nano_session::op::TurnOutcome::Completed,
                 });
-                state = TurnState::Complete;
+                transition(&mut state, &mut history, TurnState::Complete);
                 break;
             }
 
-            state = TurnState::Act;
+            transition(&mut state, &mut history, TurnState::Act);
             let mut step_progress = ProgressSignals::default();
             for call in &tool_calls {
                 budget_tracker.record_tool_call();
@@ -210,13 +217,13 @@ impl<'a> TurnEngine<'a> {
                 break;
             }
 
-            state = TurnState::Observe;
+            transition(&mut state, &mut history, TurnState::Observe);
             match progress_tracker.observe(&step_progress) {
                 ProgressAction::Continue => {
-                    state = TurnState::Understand;
+                    transition(&mut state, &mut history, TurnState::Understand);
                 }
                 ProgressAction::Replan => {
-                    state = TurnState::Replan;
+                    transition(&mut state, &mut history, TurnState::Replan);
                     messages.push(Message::system(
                         "No observable progress in several steps. Stop and reconsider: what is the actual goal, and what is a materially different next action?",
                     ));
@@ -236,6 +243,7 @@ impl<'a> TurnEngine<'a> {
 
         TurnResult {
             state,
+            history,
             steps: budget_tracker.steps_count(),
             tool_calls: budget_tracker.tool_calls_count(),
             final_text,
