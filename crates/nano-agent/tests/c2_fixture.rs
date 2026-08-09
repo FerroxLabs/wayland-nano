@@ -10,11 +10,10 @@
 //! file), never the agent's self-report.
 
 use nano_agent::loop_protection::TurnBudget;
-use nano_agent::turn::{ApprovalDecision, TurnEngine, TurnState};
+use nano_agent::turn::{TurnEngine, TurnState};
 use nano_agent::wiring::{FluxDriver, RealToolExecutor, v1_tool_definitions};
 use nano_egress::client::EgressClient;
 use nano_model::flux_completions::FluxCompletionsClient;
-use nano_model::types::ToolCall;
 use nano_session::reader::read_journal;
 use nano_session::replay::SessionState;
 use nano_session::writer::JournalWriter;
