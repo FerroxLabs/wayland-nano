@@ -285,46 +285,6 @@ pub enum PermissionProfile {
     External { network: NetworkSandboxPolicy },
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn read_only_default_has_root_read_and_no_write() {
-        let policy = FileSystemSandboxPolicy::default();
-        assert!(policy.has_root_access(FileSystemAccessMode::can_read));
-        assert!(!policy.has_root_access(FileSystemAccessMode::can_write));
-        assert!(!policy.has_denied_read_restrictions());
-    }
-
-    #[test]
-    fn deny_entry_marks_restrictions() {
-        let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry::new(
-            FileSystemPath::GlobPattern {
-                pattern: "**/.env".into(),
-            },
-            FileSystemAccessMode::Deny,
-        )]);
-        assert!(policy.has_denied_read_restrictions());
-    }
-
-    #[test]
-    fn access_mode_precedence_ordering() {
-        assert!(FileSystemAccessMode::Deny > FileSystemAccessMode::Write);
-        assert!(FileSystemAccessMode::Write > FileSystemAccessMode::Read);
-    }
-
-    #[test]
-    fn serde_shape_matches_donor() {
-        // Donor compatibility: kebab-case kind, snake_case tagged paths.
-        let policy = FileSystemSandboxPolicy::read_only();
-        let json = serde_json::to_string(&policy).unwrap();
-        assert!(json.contains("\"kind\":\"restricted\""));
-        assert!(json.contains("\"type\":\"special\""));
-        assert!(json.contains("\"kind\":\"root\""));
-    }
-}
-
 impl ManagedFileSystemPermissions {
     pub fn from_sandbox_policy(file_system_sandbox_policy: &FileSystemSandboxPolicy) -> Self {
         match file_system_sandbox_policy.kind {
@@ -429,5 +389,45 @@ impl PermissionProfile {
             self.file_system_sandbox_policy(),
             self.network_sandbox_policy(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_only_default_has_root_read_and_no_write() {
+        let policy = FileSystemSandboxPolicy::default();
+        assert!(policy.has_root_access(FileSystemAccessMode::can_read));
+        assert!(!policy.has_root_access(FileSystemAccessMode::can_write));
+        assert!(!policy.has_denied_read_restrictions());
+    }
+
+    #[test]
+    fn deny_entry_marks_restrictions() {
+        let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry::new(
+            FileSystemPath::GlobPattern {
+                pattern: "**/.env".into(),
+            },
+            FileSystemAccessMode::Deny,
+        )]);
+        assert!(policy.has_denied_read_restrictions());
+    }
+
+    #[test]
+    fn access_mode_precedence_ordering() {
+        assert!(FileSystemAccessMode::Deny > FileSystemAccessMode::Write);
+        assert!(FileSystemAccessMode::Write > FileSystemAccessMode::Read);
+    }
+
+    #[test]
+    fn serde_shape_matches_donor() {
+        // Donor compatibility: kebab-case kind, snake_case tagged paths.
+        let policy = FileSystemSandboxPolicy::read_only();
+        let json = serde_json::to_string(&policy).unwrap();
+        assert!(json.contains("\"kind\":\"restricted\""));
+        assert!(json.contains("\"type\":\"special\""));
+        assert!(json.contains("\"kind\":\"root\""));
     }
 }
