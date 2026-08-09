@@ -107,6 +107,19 @@ impl ApprovalGate for ApproveAll {
 
 impl<'a> TurnEngine<'a> {
     pub async fn run_turn(&self, turn_id: &str, input: &str) -> TurnResult {
+        self.run_turn_cancellable(turn_id, input, None).await
+    }
+
+    /// Runs a turn, checking the cancellation flag between steps. A fired
+    /// flag stops the turn at the next boundary with a typed reason — never
+    /// mid-tool-execution (side effects already applied stay applied and are
+    /// journaled).
+    pub async fn run_turn_cancellable(
+        &self,
+        turn_id: &str,
+        input: &str,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> TurnResult {
         let mut ops: Vec<OpEnvelope> = Vec::new();
         let mut next_id = 0u32;
         let mut emit = |ops: &mut Vec<OpEnvelope>, op: Op| {
@@ -139,6 +152,14 @@ impl<'a> TurnEngine<'a> {
 
         transition(&mut state, &mut history, TurnState::Understand);
         loop {
+            if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst)) {
+                state = TurnState::Stopped("cancelled by caller".into());
+                emit(&mut ops, Op::TurnEnd {
+                    turn_id: turn_id.into(),
+                    outcome: nano_session::op::TurnOutcome::Cancelled,
+                });
+                break;
+            }
             if let Err(exhausted) = budget_tracker.check(&self.budget) {
                 state = TurnState::Stopped(format!("budget exhausted: {exhausted:?}"));
                 break;
@@ -176,6 +197,30 @@ impl<'a> TurnEngine<'a> {
             }
             if !text_parts.is_empty() {
                 final_text = text_parts.join("");
+            }
+
+            // Record the assistant turn BEFORE any tool results: the
+            // completions wire requires assistant(tool_calls) -> tool(result)
+            // ordering, otherwise the model sees incoherent context and
+            // repeats itself (the 20-read loop root cause).
+            if !tool_calls.is_empty() || !text_parts.is_empty() {
+                let mut assistant_content: Vec<nano_model::types::ContentBlock> = Vec::new();
+                if !text_parts.is_empty() {
+                    assistant_content.push(nano_model::types::ContentBlock::Text {
+                        text: final_text.clone(),
+                    });
+                }
+                for call in &tool_calls {
+                    assistant_content.push(nano_model::types::ContentBlock::ToolUse {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        input: call.arguments.clone(),
+                    });
+                }
+                messages.push(Message {
+                    role: nano_model::types::Role::Assistant,
+                    content: assistant_content,
+                });
             }
 
             if tool_calls.is_empty() {

@@ -707,11 +707,14 @@ name = "nano-agent"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "nano-core",
+ "nano-egress",
  "nano-model",
  "nano-session",
  "nano-tools",
  "pretty_assertions",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

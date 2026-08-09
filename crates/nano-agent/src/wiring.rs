@@ -92,6 +92,10 @@ pub struct RealToolExecutor {
     fs: FsTools,
     shell: ShellTool,
     workspace: std::path::PathBuf,
+    /// Dedup state for honest progress signals: re-reading identical content
+    /// or re-running an identical command with identical output is NOT new
+    /// information (the no-progress detector depends on this truth).
+    seen: std::sync::Mutex<std::collections::HashMap<String, u64>>,
 }
 
 impl RealToolExecutor {
@@ -100,7 +104,18 @@ impl RealToolExecutor {
             fs,
             shell,
             workspace: workspace.to_path_buf(),
+            seen: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Returns true when this (kind:key) content digest was NOT seen before.
+    fn mark_and_check_novelty(&self, kind: &str, key: &str, digest_input: &str) -> bool {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        digest_input.hash(&mut hasher);
+        let digest = hasher.finish();
+        let mut seen = self.seen.lock().unwrap();
+        seen.insert(format!("{kind}:{key}"), digest) != Some(digest)
     }
 
     fn arg_str<'a>(call: &'a ToolCall, key: &str) -> Option<&'a str> {
@@ -134,18 +149,21 @@ impl ToolExecutor for RealToolExecutor {
                     ..Default::default()
                 };
                 match self.fs.read_file(&self.resolve(path), &bounds) {
-                    Ok((content, truncated)) => ToolOutcome {
-                        ok: true,
-                        output: if truncated {
-                            format!("{content}\n…[truncated]")
-                        } else {
-                            content
-                        },
-                        progress: ProgressSignals {
-                            new_information: true,
-                            ..Default::default()
-                        },
-                    },
+                    Ok((content, truncated)) => {
+                        let novel = self.mark_and_check_novelty("read", path, &content);
+                        ToolOutcome {
+                            ok: true,
+                            output: if truncated {
+                                format!("{content}\n…[truncated]")
+                            } else {
+                                content
+                            },
+                            progress: ProgressSignals {
+                                new_information: novel,
+                                ..Default::default()
+                            },
+                        }
+                    }
                     Err(err) => ToolOutcome {
                         ok: false,
                         output: err.to_string(),
@@ -226,17 +244,21 @@ impl ToolExecutor for RealToolExecutor {
                     command,
                     Some(std::time::Duration::from_secs(120)),
                 ) {
-                    Ok(out) => ToolOutcome {
-                        ok: out.exit_code == 0,
-                        output: format!(
-                            "exit={}\nstdout:\n{}\nstderr:\n{}",
-                            out.exit_code, out.stdout, out.stderr
-                        ),
-                        progress: ProgressSignals {
-                            process_outcome_changed: true,
-                            new_information: true,
-                            ..Default::default()
-                        },
+                    Ok(out) => {
+                        let digest = format!("{}|{}|{}", out.exit_code, out.stdout, out.stderr);
+                        let novel = self.mark_and_check_novelty("shell", command, &digest);
+                        ToolOutcome {
+                            ok: out.exit_code == 0,
+                            output: format!(
+                                "exit={}\nstdout:\n{}\nstderr:\n{}",
+                                out.exit_code, out.stdout, out.stderr
+                            ),
+                            progress: ProgressSignals {
+                                process_outcome_changed: novel,
+                                new_information: novel,
+                                ..Default::default()
+                            },
+                        }
                     },
                     Err(err) => ToolOutcome {
                         ok: false,
