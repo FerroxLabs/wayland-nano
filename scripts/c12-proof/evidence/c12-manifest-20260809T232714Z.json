@@ -1,0 +1,83 @@
+﻿{
+    "gate":  "C1.2",
+    "track":  "B",
+    "source_sha":  "b05e26a62e87929b75be9411120e800572e68e18",
+    "dirty":  true,
+    "runner":  {
+                   "host":  "SEANDESKTOP",
+                   "os":  "Microsoft Windows 11 Pro",
+                   "arch":  "AMD64",
+                   "user":  "seand",
+                   "elevated":  false
+               },
+    "provisioned":  false,
+    "started_at":  "2026-08-09T16:27:14.2272977Z",
+    "finished_at":  "2026-08-09T16:27:15.8089237Z",
+    "counts":  {
+                   "pass":  6,
+                   "fail":  2,
+                   "skip":  2
+               },
+    "results":  [
+                    {
+                        "probe":  "harness-env",
+                        "status":  "PASS",
+                        "detail":  "host=SEANDESKTOP user=seand provisioned=False",
+                        "at":  "2026-08-09T16:27:14.3105586Z"
+                    },
+                    {
+                        "probe":  "write-inside-root",
+                        "status":  "PASS",
+                        "detail":  "created workspace/allowed.txt",
+                        "at":  "2026-08-09T16:27:14.3245297Z"
+                    },
+                    {
+                        "probe":  "sensitive-read-deny",
+                        "status":  "PASS",
+                        "detail":  "read denied: Access is denied",
+                        "at":  "2026-08-09T16:27:14.3410832Z"
+                    },
+                    {
+                        "probe":  "junction-escape",
+                        "status":  "PASS",
+                        "detail":  "junction write denied",
+                        "at":  "2026-08-09T16:27:14.3523446Z"
+                    },
+                    {
+                        "probe":  "tree-kill-5s",
+                        "status":  "FAIL",
+                        "detail":  "descendant survived job terminate: 57140",
+                        "at":  "2026-08-09T16:27:14.9597278Z"
+                    },
+                    {
+                        "probe":  "process-cleanup",
+                        "status":  "PASS",
+                        "detail":  "no nanok3 helper processes running",
+                        "at":  "2026-08-09T16:27:15.1312338Z"
+                    },
+                    {
+                        "probe":  "network-deny-offline",
+                        "status":  "SKIP",
+                        "detail":  "not provisioned",
+                        "at":  "2026-08-09T16:27:15.1312338Z"
+                    },
+                    {
+                        "probe":  "broker-network-ok",
+                        "status":  "FAIL",
+                        "detail":  "request failed: {\"error\":{\"message\":\"Flux Router error: No api key passed in.\",\"type\":\"auth_error\",\"param\":\"None\",\"code\":\"500\"}}",
+                        "at":  "2026-08-09T16:27:15.5933752Z"
+                    },
+                    {
+                        "probe":  "path-edgecases",
+                        "status":  "PASS",
+                        "detail":  "unicode+longpath:ok; reserved-name:WROTE(unexpected)",
+                        "at":  "2026-08-09T16:27:15.5944703Z"
+                    },
+                    {
+                        "probe":  "setup-idempotent",
+                        "status":  "SKIP",
+                        "detail":  "not provisioned",
+                        "at":  "2026-08-09T16:27:15.5944703Z"
+                    }
+                ]
+}

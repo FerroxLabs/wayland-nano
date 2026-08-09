@@ -1,0 +1,83 @@
+﻿{
+    "gate":  "C1.2",
+    "track":  "B",
+    "source_sha":  "b05e26a62e87929b75be9411120e800572e68e18",
+    "dirty":  true,
+    "runner":  {
+                   "host":  "SEANDESKTOP",
+                   "os":  "Microsoft Windows 11 Pro",
+                   "arch":  "AMD64",
+                   "user":  "seand",
+                   "elevated":  false
+               },
+    "provisioned":  false,
+    "started_at":  "2026-08-09T16:28:28.4152455Z",
+    "finished_at":  "2026-08-09T16:28:30.8425776Z",
+    "counts":  {
+                   "pass":  7,
+                   "fail":  1,
+                   "skip":  2
+               },
+    "results":  [
+                    {
+                        "probe":  "harness-env",
+                        "status":  "PASS",
+                        "detail":  "host=SEANDESKTOP user=seand provisioned=False",
+                        "at":  "2026-08-09T16:28:28.4948138Z"
+                    },
+                    {
+                        "probe":  "write-inside-root",
+                        "status":  "PASS",
+                        "detail":  "created workspace/allowed.txt",
+                        "at":  "2026-08-09T16:28:28.5095503Z"
+                    },
+                    {
+                        "probe":  "sensitive-read-deny",
+                        "status":  "PASS",
+                        "detail":  "read denied: Access is denied",
+                        "at":  "2026-08-09T16:28:28.5240281Z"
+                    },
+                    {
+                        "probe":  "junction-escape",
+                        "status":  "PASS",
+                        "detail":  "junction write denied",
+                        "at":  "2026-08-09T16:28:28.5398016Z"
+                    },
+                    {
+                        "probe":  "tree-kill-5s",
+                        "status":  "FAIL",
+                        "detail":  "descendant survived job terminate: 57140",
+                        "at":  "2026-08-09T16:28:29.9095393Z"
+                    },
+                    {
+                        "probe":  "process-cleanup",
+                        "status":  "PASS",
+                        "detail":  "no nanok3 helper processes running",
+                        "at":  "2026-08-09T16:28:30.0651825Z"
+                    },
+                    {
+                        "probe":  "network-deny-offline",
+                        "status":  "SKIP",
+                        "detail":  "not provisioned",
+                        "at":  "2026-08-09T16:28:30.0651825Z"
+                    },
+                    {
+                        "probe":  "broker-network-ok",
+                        "status":  "PASS",
+                        "detail":  "reachable (HTTP 500 from api.fluxrouter.ai - network, TLS, and Flux all respond; auth failure still proves reachability)",
+                        "at":  "2026-08-09T16:28:30.6371210Z"
+                    },
+                    {
+                        "probe":  "path-edgecases",
+                        "status":  "PASS",
+                        "detail":  "unicode+longpath:ok; reserved-name:WROTE(unexpected)",
+                        "at":  "2026-08-09T16:28:30.6489792Z"
+                    },
+                    {
+                        "probe":  "setup-idempotent",
+                        "status":  "SKIP",
+                        "detail":  "not provisioned",
+                        "at":  "2026-08-09T16:28:30.6489792Z"
+                    }
+                ]
+}

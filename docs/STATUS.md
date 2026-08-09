@@ -97,6 +97,11 @@
 
 ## Next action
 
+**AWAITING OWNER ELEVATED PROVISIONING** (scripts/provision/README.md).
+Everything else for C1 is READY: c12-proof harness green (8 pass / 0 fail /
+2 provisioning-gated skips; tree-kill 4ms; manifest in §8 shape).
+Former queue:
+
 **LIVE PROVISIONING (owner elevated action required):** run
 `nanok3-sandbox-setup.exe` provisioning payload from an elevated process to
 create NanoK3Sandbox{Offline,Online} accounts, then the C1.2 full-criterion

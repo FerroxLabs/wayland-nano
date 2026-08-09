@@ -75,3 +75,7 @@ path = "src/bin/command_runner/main.rs"
 [[bin]]
 name = "nanok3-provision-dry-run"
 path = "src/bin/provision_dry_run/main.rs"
+
+[[bin]]
+name = "nanok3-tree-kill-probe"
+path = "src/bin/tree_kill_probe/main.rs"

@@ -1,0 +1,83 @@
+﻿{
+    "gate":  "C1.2",
+    "track":  "B",
+    "source_sha":  "b05e26a62e87929b75be9411120e800572e68e18",
+    "dirty":  true,
+    "runner":  {
+                   "host":  "SEANDESKTOP",
+                   "os":  "Microsoft Windows 11 Pro",
+                   "arch":  "AMD64",
+                   "user":  "seand",
+                   "elevated":  false
+               },
+    "provisioned":  false,
+    "started_at":  "2026-08-09T16:23:02.1741040Z",
+    "finished_at":  "2026-08-09T16:23:04.6902904Z",
+    "counts":  {
+                   "pass":  5,
+                   "fail":  3,
+                   "skip":  2
+               },
+    "results":  [
+                    {
+                        "probe":  "harness-env",
+                        "status":  "PASS",
+                        "detail":  "host=SEANDESKTOP user=seand provisioned=False",
+                        "at":  "2026-08-09T16:23:02.3715805Z"
+                    },
+                    {
+                        "probe":  "write-inside-root",
+                        "status":  "PASS",
+                        "detail":  "created workspace/allowed.txt",
+                        "at":  "2026-08-09T16:23:02.3849678Z"
+                    },
+                    {
+                        "probe":  "sensitive-read-deny",
+                        "status":  "FAIL",
+                        "detail":  "read of denied file SUCCEEDED",
+                        "at":  "2026-08-09T16:23:02.4003239Z"
+                    },
+                    {
+                        "probe":  "junction-escape",
+                        "status":  "PASS",
+                        "detail":  "junction write denied",
+                        "at":  "2026-08-09T16:23:02.4154090Z"
+                    },
+                    {
+                        "probe":  "tree-kill-5s",
+                        "status":  "FAIL",
+                        "detail":  "descendant survived: 57140",
+                        "at":  "2026-08-09T16:23:03.6735028Z"
+                    },
+                    {
+                        "probe":  "process-cleanup",
+                        "status":  "PASS",
+                        "detail":  "no nanok3 helper processes running",
+                        "at":  "2026-08-09T16:23:03.8386718Z"
+                    },
+                    {
+                        "probe":  "network-deny-offline",
+                        "status":  "SKIP",
+                        "detail":  "not provisioned",
+                        "at":  "2026-08-09T16:23:03.8399486Z"
+                    },
+                    {
+                        "probe":  "broker-network-ok",
+                        "status":  "FAIL",
+                        "detail":  "request failed: The remote server returned an error: (405) Method Not Allowed.",
+                        "at":  "2026-08-09T16:23:04.4608861Z"
+                    },
+                    {
+                        "probe":  "path-edgecases",
+                        "status":  "PASS",
+                        "detail":  "unicode+longpath:ok; reserved-name:WROTE(unexpected)",
+                        "at":  "2026-08-09T16:23:04.4648962Z"
+                    },
+                    {
+                        "probe":  "setup-idempotent",
+                        "status":  "SKIP",
+                        "detail":  "not provisioned",
+                        "at":  "2026-08-09T16:23:04.4654649Z"
+                    }
+                ]
+}
