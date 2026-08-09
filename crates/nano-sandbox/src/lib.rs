@@ -18,9 +18,15 @@ pub mod acl;
 #[cfg(target_os = "windows")]
 pub mod allow;
 #[cfg(target_os = "windows")]
+pub mod audit;
+#[cfg(target_os = "windows")]
 pub mod cap;
 #[cfg(target_os = "windows")]
+pub mod deny_read_acl;
+#[cfg(target_os = "windows")]
 pub mod deny_read_resolver;
+#[cfg(target_os = "windows")]
+pub mod deny_read_state;
 #[cfg(target_os = "windows")]
 pub mod desktop;
 #[cfg(target_os = "windows")]

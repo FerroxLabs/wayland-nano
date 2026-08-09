@@ -63,3 +63,6 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-sandbox/src/ssh_config_dependencies.rs` | `codex-rs/windows-sandbox-rs/src/ssh_config_dependencies.rs` | verbatim except module path |
 | `crates/nano-sandbox/src/setup_exec.rs` | `codex-rs/windows-sandbox-rs/src/setup.rs` (execution half) | orchestration/payload/elevation/singleflight; SETUP_EXE_FILENAME→`nanok3-sandbox-setup.exe` (isolation); otel→`telemetry::TelemetrySettings` facade; codex_home→nano_home; RID consts donor-local |
 | `crates/nano-sandbox/src/gather.rs` (visibility) | — | filter/expand helper fns + platform-defaults const made pub for setup_exec |
+| `crates/nano-sandbox/src/deny_read_acl.rs` | `codex-rs/windows-sandbox-rs/src/deny_read_acl.rs` | verbatim except module path |
+| `crates/nano-sandbox/src/deny_read_state.rs` | `codex-rs/windows-sandbox-rs/src/deny_read_state.rs` | `crate::setup::sandbox_dir`→`crate::sandbox_dir` |
+| `crates/nano-sandbox/src/audit.rs` | `codex-rs/windows-sandbox-rs/src/audit.rs` | `crate::setup::effective_write_roots_for_permissions`→`crate::gather::...`; otherwise verbatim |
