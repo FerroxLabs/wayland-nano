@@ -23,13 +23,20 @@
 
 ### B-ENV-01 — clean-VM rig
 - Owner: K3 mainline | Files: `scripts/clean-sandbox/`
-- Prerequisites: Windows Sandbox feature present (Win11 Pro)
-- Work: `.wsb` profile + bootstrap script; upstreams mapped read-only, scratch
-  RW, Defender on, no dev tools
+- Prerequisites: ~~Windows Sandbox feature~~ **Windows Sandbox client binary not
+  present on host (2026-08-09); optional-feature query needs admin.**
+  Fallback options: (a) owner enables Windows Sandbox or Hyper-V (admin +
+  possible reboot), (b) local standard-user account (`net user`) as the
+  clean-profile context, (c) repro on a second physical Windows machine.
+- Work: clean execution profile + bootstrap; upstreams read-only, scratch RW,
+  Defender on, no dev tools
 - Commands: `scripts/clean-sandbox/launch.ps1`
-- Evidence: sandbox boot log + `whoami`/`ver` capture in `artifacts/evidence/env/`
+- Evidence: boot log + `whoami`/`ver` capture in `artifacts/evidence/env/`
 - Rollback: delete `scripts/clean-sandbox/` (no host state)
-- Status: pending
+- Status: **blocked on environment choice** — recommend (b) standard-user
+  account for B-ENV-02 speed, (a) for the real §8G gate later. Owner
+  preference needed only if admin rights required; will proceed with (b) by
+  default next turn.
 
 ### B-ENV-02 — reproduce Track A baseline failures
 - Owner: K3 mainline | Files: `vendor/codex-windows-sandbox-rs`, `artifacts/evidence/env/`
@@ -52,7 +59,12 @@
 - Evidence: scrubbed bodies + updated `FINDINGS.md`; pass-through verdict
   (gates wire-2 policy per plan v3 §5)
 - Rollback: delete new fixture files
-- Status: pending
+- Status: **done 2026-08-09** — all probes 200; wire-2 gate FAILED (thinking
+  dropped even on pinned claude-sonnet-5; no cache_control creation);
+  recommendation: Completions as single v1 production wire; alias rotation
+  documented (use `flux-pinned-*` for deterministic fixtures); `/mcp/` catalog
+  empty (`tools:[]`). `Retry-After` not observed (no 429 induced — deferred to
+  adversarial batch).
 
 ### B-VND-01 — vendored closure analysis
 - Owner: K3 mainline | Files: `vendor/`, `docs/spikes/donor-closure.md`
