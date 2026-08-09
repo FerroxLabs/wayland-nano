@@ -29,9 +29,9 @@ pub struct ResolvedWindowsSandboxPermissions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WindowsWritableRoot {
-    pub(crate) root: PathBuf,
-    pub(crate) read_only_subpaths: Vec<PathBuf>,
+pub struct WindowsWritableRoot {
+    pub root: PathBuf,
+    pub read_only_subpaths: Vec<PathBuf>,
 }
 
 /// Restricted-token family needed to enforce a Windows permission profile.
@@ -97,27 +97,27 @@ impl ResolvedWindowsSandboxPermissions {
         Ok(permissions)
     }
 
-    pub(crate) fn should_apply_network_block(&self) -> bool {
+    pub fn should_apply_network_block(&self) -> bool {
         !self.network.is_enabled()
     }
 
-    pub(crate) fn network_policy(&self) -> NetworkSandboxPolicy {
+    pub fn network_policy(&self) -> NetworkSandboxPolicy {
         self.network
     }
 
-    pub(crate) fn is_enforceable_by_windows_sandbox(&self) -> bool {
+    pub fn is_enforceable_by_windows_sandbox(&self) -> bool {
         matches!(self.file_system.kind, FileSystemSandboxKind::Restricted)
     }
 
-    pub(crate) fn has_full_disk_read_access(&self) -> bool {
+    pub fn has_full_disk_read_access(&self) -> bool {
         self.file_system.has_full_disk_read_access()
     }
 
-    pub(crate) fn include_platform_defaults(&self) -> bool {
+    pub fn include_platform_defaults(&self) -> bool {
         self.file_system.include_platform_defaults()
     }
 
-    pub(crate) fn readable_roots_for_cwd(&self, cwd: &Path) -> Vec<PathBuf> {
+    pub fn readable_roots_for_cwd(&self, cwd: &Path) -> Vec<PathBuf> {
         self.file_system
             .get_readable_roots_with_cwd(cwd)
             .into_iter()
@@ -125,7 +125,7 @@ impl ResolvedWindowsSandboxPermissions {
             .collect()
     }
 
-    pub(crate) fn uses_write_capabilities_for_cwd(
+    pub fn uses_write_capabilities_for_cwd(
         &self,
         cwd: &Path,
         env_map: &HashMap<String, String>,
@@ -133,7 +133,7 @@ impl ResolvedWindowsSandboxPermissions {
         !self.writable_roots_for_cwd(cwd, env_map).is_empty()
     }
 
-    pub(crate) fn writable_roots_for_cwd(
+    pub fn writable_roots_for_cwd(
         &self,
         cwd: &Path,
         env_map: &HashMap<String, String>,
