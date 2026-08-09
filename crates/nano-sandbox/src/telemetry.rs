@@ -59,3 +59,19 @@ mod tests {
         assert_eq!(got[0].1, vec![("identity".to_string(), "offline".to_string())]);
     }
 }
+
+/// Serializable telemetry settings carried on the setup wire (orchestrator →
+/// elevated helper), replacing the donor's `StatsigMetricsSettings` field.
+/// `None` on all current paths — the helper emits through the facade only
+/// when settings are present.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct TelemetrySettings {
+    pub environment: String,
+    pub service_name: String,
+}
+
+/// Global telemetry settings for setup payloads. None by default — Nano does
+/// not wire product analytics into provisioning.
+pub fn global_telemetry_settings() -> Option<TelemetrySettings> {
+    None
+}
