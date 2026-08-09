@@ -16,7 +16,7 @@ pub struct AllowDenyPaths {
     pub deny: HashSet<PathBuf>,
 }
 
-pub(crate) fn compute_allow_paths_for_permissions(
+pub fn compute_allow_paths_for_permissions(
     permissions: &ResolvedWindowsSandboxPermissions,
     command_cwd: &Path,
     env_map: &HashMap<String, String>,
@@ -95,7 +95,7 @@ mod tests {
         let _ = fs::create_dir_all(&command_cwd);
         let _ = fs::create_dir_all(&extra_root);
 
-        let writable_roots = vec![AbsolutePathBuf::try_from(extra_root.as_path()).unwrap()];
+        let writable_roots = vec![AbsolutePathBuf::from(extra_root.as_path())];
         let permission_profile = workspace_write_profile(
             &writable_roots,
             /*exclude_tmpdir_env_var*/ false,
