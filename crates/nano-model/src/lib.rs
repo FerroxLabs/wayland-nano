@@ -15,6 +15,8 @@ pub mod types;
 
 #[cfg(test)]
 mod fixture_tests;
+#[cfg(test)]
+mod live_smoke;
 
 pub use types::{
     ContentBlock, ModelError, ModelEvent, ModelRequest, ModelResponse, Role, ToolCall,
