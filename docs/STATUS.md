@@ -18,6 +18,14 @@
 - Flux fixture batch 1 → `../../shared/fixtures/flux/FINDINGS.md`: all six DoD
   endpoints live-verified; 3 quirks recorded (per-surface alias routing,
   reasoning-eats-budget, `/mcp` trailing-slash).
+- B-FLX-02 `8f31d76`: streaming/tools/thinking/cache probes; wire-2 gate FAILS
+  (recommend Completions single v1 wire).
+- B-VND-01 `9ce256b`: closure analysis; vendor stays reference-only; port
+  strategy fixed (otel→facade, protocol→extract-types, state/net→reject).
+- B-SBX-01 (this commit): `nano-sandbox` port increment 1 — telemetry facade
+  (replaces codex-otel seam, `MetricsSink` trait), `winutil.rs` +
+  `path_normalization.rs` ported with donor tests; 5 tests green on native
+  Windows, workspace clippy `-D warnings` clean. Ledger updated.
 
 ## Task cards
 
@@ -90,3 +98,10 @@
 ## Next action
 
 B-ENV-01 (clean-VM rig), then B-FLX-02 in parallel with B-ENV-02.
+
+### B-SBX-01 — nano-sandbox port increment 1 (foundation)
+- Owner: K3 mainline | Files: `crates/nano-sandbox/src/{lib,telemetry,winutil,path_normalization}.rs`
+- Work: telemetry facade + leaf modules, donor tests retained
+- Status: done (see Completed evidence)
+- Next: **B-SBX-02** — port `token.rs` (restricted token, 510 lines) and
+  `acl.rs` (DACL allow/deny, 802 lines); both depend only on winutil.

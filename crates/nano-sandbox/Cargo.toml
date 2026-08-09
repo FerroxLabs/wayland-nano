@@ -5,4 +5,15 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-[dependencies]
+[target.'cfg(target_os = "windows")'.dependencies]
+anyhow = "1"
+dunce = "1"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Diagnostics_Debug",
+] }
+
+[dev-dependencies]
+pretty_assertions = "1"

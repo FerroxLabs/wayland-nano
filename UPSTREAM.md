@@ -24,5 +24,9 @@ metadata is not copied; the immutable donor snapshot lives at
 
 ## Adapted-file ledger
 
-Empty at scaffold. Every future adaptation records: destination file, donor
-path/SHA, license, transformation, notice obligation.
+| Destination | Donor path | Transformation |
+|---|---|---|
+| `crates/nano-sandbox/src/lib.rs` | `codex-rs/windows-sandbox-rs/src/lib.rs` | module map reduced to ported subset; public API re-exports deferred until their modules land |
+| `crates/nano-sandbox/src/telemetry.rs` | (seam only — `codex-rs/otel` NOT ported) | original Nano code replacing the `Option<&StatsigMetricsSettings>` hook with a `MetricsSink` trait |
+| `crates/nano-sandbox/src/path_normalization.rs` | `codex-rs/windows-sandbox-rs/src/path_normalization.rs` | verbatim except module path |
+| `crates/nano-sandbox/src/winutil.rs` | `codex-rs/windows-sandbox-rs/src/winutil.rs` | verbatim except module path + windows-sys 0.59 pin; donor tests retained; localization-safe SID note carried forward |
