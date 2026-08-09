@@ -161,7 +161,6 @@ impl McpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use std::process::{Command, Stdio};
 
     /// Spawns a tiny fake MCP server (powershell reading JSON-RPC lines and
