@@ -3,7 +3,7 @@
 ## Current position
 
 - Goal: active (K3 native goal mode; objective = C1→C2→C3 per `../../shared/SCORECARD.md`)
-- Phase: **C1 code-complete + C2 foundations landed**; awaiting owner elevated provisioning for C1.2 full criterion
+- Phase: **C1 code-complete; C2 CLAIMED (shared/reviews/C2/trackb-claim.md, 2 deferrals)**; awaiting owner elevated provisioning for C1.2 + C2 promotion decision
 - Checkpoint: C1 ready-to-prove (no claim posted); C2 in progress
 - Last green: workspace-wide tests + clippy `-D warnings` clean, commit HEAD
 - Track A (observed read-only): G0-era sandbox corrections ongoing
@@ -26,6 +26,6 @@
 
 ## Next actions (in order)
 
-1. **OWNER: elevated provisioning** (dry-run review first: `cargo run -p nano-sandbox --bin nanok3-provision-dry-run`).
+1. **OWNER: C2 promotion decision** (claim posted) + **elevated provisioning** (dry-run review first: `cargo run -p nano-sandbox --bin nanok3-provision-dry-run`).
 2. C1.2 full proof → C1 claim to `shared/reviews/C1/`.
 3. C2: shell tool (via sandbox SpawnSpec), agent loop (turn state machine + loop protection), journal integration.
