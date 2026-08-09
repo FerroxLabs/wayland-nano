@@ -763,6 +763,15 @@ dependencies = [
 [[package]]
 name = "nano-mcp"
 version = "0.1.0"
+dependencies = [
+ "nano-egress",
+ "pretty_assertions",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
 
 [[package]]
 name = "nano-model"
