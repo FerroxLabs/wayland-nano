@@ -26,7 +26,7 @@
   are non-interactive (`tty: false`). The ConPTY path (`portable-pty`/
   `shared_library`/`WinChild` web) is NOT ported; `tty=true` requests fail
   closed with a typed `SandboxUnavailable::ConPtyDeferred` error. The elevated
-  backend (runner IPC) routes fail closed with
-  `SandboxUnavailable::ElevatedBackendPending` until B-SBX-10 lands
-  `elevated/`. Per BUILD_PLAN_V3 P8: unsupported controls are advertised
+  backend LANDED (B-SBX-10b): runner IPC backend arm live, routing
+  Elevated/proxy_enforced/restricting_sid to it. `ElevatedBackendPending`
+  is retained in the error enum for the pre-wiring history only. Per BUILD_PLAN_V3 P8: unsupported controls are advertised
   explicitly and fail closed — never an unsandboxed fallback.

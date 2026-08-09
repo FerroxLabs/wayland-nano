@@ -61,9 +61,26 @@ pub async fn spawn_windows_sandbox_session_for_level(
         || matches!(request.windows_sandbox_level, WindowsSandboxLevel::Elevated)
         || request.network_proxy_restricting_sid.is_some()
     {
-        // The restricted-token backend cannot enforce proxy restriction or
-        // deny-read overrides; those require the elevated runner IPC (B-SBX-10).
-        return Err(SandboxUnavailable::ElevatedBackendPending.into());
+        return backends::elevated::spawn_windows_sandbox_session_elevated_for_permission_profile(
+            request.permission_profile,
+            request.workspace_roots,
+            request.nano_home,
+            request.command,
+            request.cwd,
+            request.env_map,
+            request.proxy_enforced,
+            request.network_proxy_restricting_sid,
+            request.proxy_settings_mode,
+            request.timeout_ms,
+            request.read_roots_override,
+            request.read_roots_include_platform_defaults,
+            request.write_roots_override,
+            request.deny_read_paths_override,
+            request.deny_write_paths_override,
+            request.stdin_open,
+            request.use_private_desktop,
+        )
+        .await;
     }
     if matches!(request.windows_sandbox_level, WindowsSandboxLevel::Disabled) {
         bail!("windows sandbox level is disabled");

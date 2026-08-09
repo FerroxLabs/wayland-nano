@@ -83,3 +83,5 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-sandbox/src/hide_users.rs` | `codex-rs/windows-sandbox-rs/src/hide_users.rs` | verbatim except module path |
 | `crates/nano-sandbox/src/lib.rs` (additions) | `codex-rs/windows-sandbox-rs/src/lib.rs` | `WindowsSandboxCancellationToken` verbatim; elevated re-exports |
 | `crates/nano-sandbox/src/helper_materialization.rs` (test fix) | — | suffix-name test expects nanok3 exe name (recorded branding) |
+| `crates/nano-sandbox/src/unified_exec/backends/elevated.rs` | `codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs` | runner-IPC spawn against spawn_types; resizer/tty omitted (D8); real_codex_home→real_nano_home wire field |
+| `crates/nano-sandbox/src/unified_exec/backends/windows_common.rs` | `codex-rs/windows-sandbox-rs/src/unified_exec/backends/windows_common.rs` | broadcast→mpsc; WindowsTtyInputNormalizer dropped (tty deferred) |

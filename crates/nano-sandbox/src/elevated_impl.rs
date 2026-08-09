@@ -197,7 +197,7 @@ mod windows_impl {
                 permission_profile: permission_profile.clone(),
                 workspace_roots: workspace_roots.to_vec(),
                 nano_home: sandbox_base.clone(),
-                real_codex_home: nano_home.to_path_buf(),
+                real_nano_home: nano_home.to_path_buf(),
                 cap_sids,
                 network_proxy_restricting_sid,
                 timeout_ms,
