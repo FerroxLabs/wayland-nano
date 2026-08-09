@@ -4,3 +4,4 @@
 //! processes go through nano-platform SpawnSpec only.
 
 pub mod fs;
+pub mod search;

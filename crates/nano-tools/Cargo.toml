@@ -6,6 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+dunce = "1"
+globset = "0.4"
+regex = "1"
 nano-core = { path = "../nano-core" }
 thiserror = "2"
 
