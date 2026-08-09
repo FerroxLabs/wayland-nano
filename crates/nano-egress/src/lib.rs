@@ -5,6 +5,5 @@
 //! Observability: method/host/port + path_query_sha256 only — headers and
 //! bodies are never logged.
 
-// The only crate permitted to construct HTTP clients.
-#[allow(clippy::disallowed_methods)]
-pub mod client {}
+pub mod client;
+pub mod policy;
