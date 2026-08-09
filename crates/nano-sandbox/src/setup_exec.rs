@@ -47,7 +47,6 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use nano_core::abs::AbsolutePathBuf;
 use nano_core::permissions::PermissionProfile;
-use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -788,8 +787,6 @@ enum SetupMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pretty_assertions::assert_eq;
-    use tempfile::TempDir;
 
     #[test]
     fn singleflight_shares_one_leader_result() {
