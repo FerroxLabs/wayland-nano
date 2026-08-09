@@ -19,6 +19,7 @@ use crate::cap::workspace_write_root_overlaps_path;
 use crate::cap::workspace_write_root_specificity;
 use crate::deny_read_state::sync_persistent_deny_read_acls;
 use crate::env::apply_no_network_to_env;
+use crate::env::scope_temp_env;
 use crate::env::ensure_non_interactive_pager;
 use crate::env::inherit_path_env;
 use crate::env::normalize_null_device_env;
@@ -150,6 +151,7 @@ pub fn prepare_legacy_spawn_context(
     if common.permissions.should_apply_network_block() {
         apply_no_network_to_env(env_map)?;
     }
+    scope_temp_env(env_map);
     Ok(common)
 }
 

@@ -30,3 +30,11 @@
   Elevated/proxy_enforced/restricting_sid to it. `ElevatedBackendPending`
   is retained in the error enum for the pre-wiring history only. Per BUILD_PLAN_V3 P8: unsupported controls are advertised
   explicitly and fail closed — never an unsandboxed fallback.
+- **D9 — Scoped temp roots (performance-critical deviation).** The donor
+  grants inheritable write ACEs on the whole TEMP tree per workspace; Windows
+  propagates that across thousands of existing children — measured 73,000ms
+  cold on this host via nanok3-spawn-profile (vs 14ms warm). D9 scopes temp
+  env roots to `TEMP\nanok3-temp` and points TEMP/TMP at it in spawn env.
+  Measured result: cold spawn ACL phase 73,000ms → 42ms; unified_exec
+  end-to-end suite 100s → 0.14s. Semantics preserved (sandbox gets a writable
+  temp space); donor tests updated to the scoped expectation.

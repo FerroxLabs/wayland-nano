@@ -220,9 +220,10 @@ mod tests {
             &env_map,
         );
 
+        // D9: temp env root is scoped to the nanok3-temp child.
         let expected_allow: HashSet<PathBuf> = [
             dunce::canonicalize(&command_cwd).unwrap(),
-            dunce::canonicalize(&temp_dir).unwrap(),
+            dunce::canonicalize(&temp_dir).unwrap().join("nanok3-temp"),
         ]
         .into_iter()
         .collect();

@@ -90,3 +90,5 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-sandbox/src/telemetry.rs` (additions) | (seam) | `LogSink` + `sink_from_settings`; `service_name` serde-defaulted |
 | `crates/nano-sandbox/src/wfp_setup.rs` | `codex-rs/windows-sandbox-rs/src/wfp_setup.rs` | OTel provider→facade MetricsHook; metric names `nanok3.*` |
 | `crates/nano-sandbox/src/setup_error.rs` (addition) | — | `HelperConptyDeferred` variant (Track-B addition, not donor) |
+| `crates/nano-sandbox/src/resolved_permissions.rs` (D9) | deviation | temp env roots scoped to `TEMP\nanok3-temp` (73s ACL propagation → ~1ms); spawn env points TEMP/TMP at scoped dir; donor tests updated with D9 note |
+| `crates/nano-sandbox/src/env.rs` (addition) | original | `scope_temp_env` — D9 env redirect |

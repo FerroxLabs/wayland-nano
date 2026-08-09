@@ -185,3 +185,19 @@ pub fn apply_no_network_to_env(env_map: &mut HashMap<String, String>) -> Result<
     reorder_pathext_for_stubs(env_map);
     Ok(())
 }
+
+/// Points TEMP/TMP at the Nano-scoped temp dir (D9) so a sandboxed process
+/// gets a writable temp space without granting the whole TEMP tree.
+pub fn scope_temp_env(env_map: &mut HashMap<String, String>) {
+    for key in ["TEMP", "TMP"] {
+        let base = env_map
+            .get(key)
+            .cloned()
+            .or_else(|| env::var_os(key).map(|v| v.to_string_lossy().into_owned()));
+        if let Some(base) = base {
+            let scoped = format!("{base}\nanok3-temp");
+            let _ = std::fs::create_dir_all(&scoped);
+            env_map.insert(key.to_string(), scoped);
+        }
+    }
+}

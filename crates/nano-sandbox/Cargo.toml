@@ -79,3 +79,7 @@ path = "src/bin/provision_dry_run/main.rs"
 [[bin]]
 name = "nanok3-tree-kill-probe"
 path = "src/bin/tree_kill_probe/main.rs"
+
+[[bin]]
+name = "nanok3-spawn-profile"
+path = "src/bin/spawn_profile/main.rs"

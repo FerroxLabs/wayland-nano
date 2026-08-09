@@ -192,6 +192,15 @@ impl ResolvedWindowsSandboxPermissions {
 }
 
 fn windows_temp_env_roots(env_map: &HashMap<String, String>) -> Vec<PathBuf> {
+    // D9 (recorded deviation from the donor): temp env roots are SCOPED to a
+    // Nano-owned child (nanok3-temp under TEMP) instead of the whole TEMP
+    // root.
+    // The donor grants inheritable write ACEs on the full TEMP tree, and
+    // Windows propagates that change across thousands of existing children —
+    // measured 73 seconds cold on this host (nanok3-spawn-profile). The
+    // scoped child propagates across ~zero files. Sandboxed spawns receive
+    // TEMP/TMP pointing at the scoped dir (spawn_prep env policy), so tool
+    // behavior is preserved.
     ["TEMP", "TMP"]
         .into_iter()
         .filter_map(|key| {
@@ -201,6 +210,11 @@ fn windows_temp_env_roots(env_map: &HashMap<String, String>) -> Vec<PathBuf> {
                 .or_else(|| std::env::var_os(key).map(PathBuf::from))
         })
         .filter(|path| path.is_absolute())
+        .map(|path| {
+            let scoped = path.join("nanok3-temp");
+            let _ = std::fs::create_dir_all(&scoped);
+            scoped
+        })
         .collect()
 }
 
@@ -241,8 +255,10 @@ mod tests {
             .map(|root| root.root)
             .collect::<std::collections::HashSet<_>>();
 
+        // D9: the temp env root is scoped to the nanok3-temp child, not the
+        // whole temp root (73s propagation → milliseconds).
         let expected_roots = [
-            temp_dir,
+            temp_dir.join("nanok3-temp"),
             dunce::canonicalize(&cwd).expect("canonicalize cwd"),
         ]
         .into_iter()

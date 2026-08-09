@@ -32,3 +32,11 @@ stack intact.
   shows an adapted-file drift).
 - Adapted-file surface: full ledger in `UPSTREAM.md` — every ported file with
   donor path, revision, and transformation list.
+
+## Spawn-prep profile (2026-08-10, nanok3-spawn-profile)
+
+| Phase | Cold, donor semantics | Cold, D9 scoped temp |
+|---|---|---|
+| session ACL rules (Temp-tree propagation) | **73,000 ms** | **~1 ms** |
+| unified_exec 3-test suite | ~100 s | **0.14 s** |
+| Full spawn (token+SIDs+ACL+spawn) | ~74 s | **~43 ms** |
