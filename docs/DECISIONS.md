@@ -22,3 +22,11 @@
   this STATUS.md as engineering truth + ijfw memory handoff for cross-session
   resume. Functionally mirrors Track A's `/goal` model; evidence formats follow
   `BUILD_PLAN_V3` §8 so gate receipts compare 1:1.
+- **D8 — ConPTY/tty and elevated backend land deliberately late.** v1 spawns
+  are non-interactive (`tty: false`). The ConPTY path (`portable-pty`/
+  `shared_library`/`WinChild` web) is NOT ported; `tty=true` requests fail
+  closed with a typed `SandboxUnavailable::ConPtyDeferred` error. The elevated
+  backend (runner IPC) routes fail closed with
+  `SandboxUnavailable::ElevatedBackendPending` until B-SBX-10 lands
+  `elevated/`. Per BUILD_PLAN_V3 P8: unsupported controls are advertised
+  explicitly and fail closed — never an unsandboxed fallback.

@@ -70,6 +70,8 @@ mod path_normalization;
 #[cfg(target_os = "windows")]
 pub mod token;
 #[cfg(target_os = "windows")]
+pub mod unified_exec;
+#[cfg(target_os = "windows")]
 pub mod wfp;
 #[cfg(target_os = "windows")]
 pub mod workspace_acl;

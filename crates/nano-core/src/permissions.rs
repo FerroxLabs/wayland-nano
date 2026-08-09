@@ -445,3 +445,16 @@ pub enum WindowsSandboxProxySettingsMode {
     Reconcile,
     Preserve,
 }
+
+/// Windows sandbox backend selection.
+///
+/// Provenance: codex `codex-rs/protocol/src/config_types.rs`
+/// `WindowsSandboxLevel` @ 646f7c0a (extracted; serde shape kept).
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WindowsSandboxLevel {
+    #[default]
+    Disabled,
+    RestrictedToken,
+    Elevated,
+}

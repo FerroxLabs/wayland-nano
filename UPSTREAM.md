@@ -72,3 +72,6 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-sandbox/src/sandbox_utils.rs` | `codex-rs/windows-sandbox-rs/src/sandbox_utils.rs` | ensure_codex_home_exists→ensure_nano_home_exists |
 | `crates/nano-sandbox/src/identity.rs` (addition) | `codex-rs/windows-sandbox-rs/src/identity.rs` (entry points) | require_/refresh_logon_sandbox_creds landed against gather+setup_exec; NANO_HOME write-protection note carried |
 | `crates/nano-sandbox/src/spawn_prep.rs` | `codex-rs/windows-sandbox-rs/src/spawn_prep.rs` | imports rewired (gather, nano_core); .nano dir protection; donor tests retained |
+| `crates/nano-sandbox/src/unified_exec/mod.rs` | `codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs` | level routing; tty/elevated fail-closed typed (D8); nano_home naming |
+| `crates/nano-sandbox/src/unified_exec/backends/legacy.rs` | `codex-rs/windows-sandbox-rs/src/unified_exec/backends/legacy.rs` | pipes path only (pty ProcessDriver web → spawn_types); **3 Track-B end-to-end tests**: echo/exit, inside-root write allowed, outside-root write DENIED through full ported stack |
+| `crates/nano-core/src/permissions.rs` (addition) | `codex-rs/protocol/src/config_types.rs` | `WindowsSandboxLevel` extracted |
