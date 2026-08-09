@@ -269,7 +269,7 @@ pub enum ManagedFileSystemPermissions {
 }
 
 /// Canonical active runtime permissions for a conversation, turn, or command.
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PermissionProfile {
     /// Nano owns sandbox construction for this profile.
@@ -457,4 +457,14 @@ pub enum WindowsSandboxLevel {
     Disabled,
     RestrictedToken,
     Elevated,
+}
+
+impl std::fmt::Display for WindowsSandboxLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            WindowsSandboxLevel::Disabled => "disabled",
+            WindowsSandboxLevel::RestrictedToken => "restricted-token",
+            WindowsSandboxLevel::Elevated => "elevated",
+        })
+    }
 }

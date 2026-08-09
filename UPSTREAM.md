@@ -75,3 +75,5 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-sandbox/src/unified_exec/mod.rs` | `codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs` | level routing; tty/elevated fail-closed typed (D8); nano_home naming |
 | `crates/nano-sandbox/src/unified_exec/backends/legacy.rs` | `codex-rs/windows-sandbox-rs/src/unified_exec/backends/legacy.rs` | pipes path only (pty ProcessDriver web → spawn_types); **3 Track-B end-to-end tests**: echo/exit, inside-root write allowed, outside-root write DENIED through full ported stack |
 | `crates/nano-core/src/permissions.rs` (addition) | `codex-rs/protocol/src/config_types.rs` | `WindowsSandboxLevel` extracted |
+| `crates/nano-sandbox/src/wrapper.rs` (+ tests) | `codex-rs/windows-sandbox-rs/src/wrapper.rs` | imports rewired; `--codex-home` flag → `--nano-home`; codex_home→nano_home; session spawn via unified_exec |
+| `crates/nano-core/src/permissions.rs` (additions) | — | `WindowsSandboxLevel` Display (strum→manual); `Deserialize` on PermissionProfile/ManagedFileSystemPermissions (wrapper argv JSON parses profiles) |

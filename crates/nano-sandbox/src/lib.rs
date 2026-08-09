@@ -76,6 +76,8 @@ pub mod wfp;
 #[cfg(target_os = "windows")]
 pub mod workspace_acl;
 #[cfg(target_os = "windows")]
+pub mod wrapper;
+#[cfg(target_os = "windows")]
 pub mod winutil;
 
 #[cfg(target_os = "windows")]
