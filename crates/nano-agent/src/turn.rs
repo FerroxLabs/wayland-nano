@@ -110,6 +110,16 @@ impl<'a> TurnEngine<'a> {
         self.run_turn_cancellable(turn_id, input, None).await
     }
 
+    /// Runs a turn with a prepended context message (e.g. skill activation).
+    pub async fn run_turn_with_context(
+        &self,
+        turn_id: &str,
+        input: &str,
+        context: Option<Message>,
+    ) -> TurnResult {
+        self.run_turn_inner(turn_id, input, context, None).await
+    }
+
     /// Runs a turn, checking the cancellation flag between steps. A fired
     /// flag stops the turn at the next boundary with a typed reason — never
     /// mid-tool-execution (side effects already applied stay applied and are
@@ -118,6 +128,16 @@ impl<'a> TurnEngine<'a> {
         &self,
         turn_id: &str,
         input: &str,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> TurnResult {
+        self.run_turn_inner(turn_id, input, None, cancel).await
+    }
+
+    async fn run_turn_inner(
+        &self,
+        turn_id: &str,
+        input: &str,
+        context: Option<Message>,
         cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> TurnResult {
         let mut ops: Vec<OpEnvelope> = Vec::new();
@@ -147,7 +167,11 @@ impl<'a> TurnEngine<'a> {
         let mut budget_tracker = BudgetTracker::default();
         budget_tracker.start_turn();
 
-        let mut messages = vec![Message::user(input)];
+        let mut messages = Vec::new();
+        if let Some(context) = context {
+            messages.push(context);
+        }
+        messages.push(Message::user(input));
         let mut final_text = String::new();
 
         transition(&mut state, &mut history, TurnState::Understand);

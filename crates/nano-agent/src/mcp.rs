@@ -111,6 +111,11 @@ impl<'a> McpToolExecutor<'a> {
             inner,
         }
     }
+
+    /// The namespaced MCP tool definitions from the registry.
+    pub fn tool_definitions_from_registry(&self) -> Vec<ToolDefinition> {
+        self.registry.lock().unwrap().tool_definitions()
+    }
 }
 
 impl ToolExecutor for McpToolExecutor<'_> {

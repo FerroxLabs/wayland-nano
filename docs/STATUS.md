@@ -18,6 +18,12 @@
 | C1.3 session journal | ✅ | 10 kill-boundary tests; torn-tail, unknown-skip, idempotence, compaction equivalence |
 | C1.4/5/6 metrics | ✅ | `docs/metrics/C1-metrics.md`: bins ~1MB, 26s release build, 71-crate production closure |
 
+## Capabilities flipped after slice proof (2026-08-10)
+
+- `mcp: true` — proven: model called `mcp__fake__probe` through the registry in the live slice; marker returned and reported.
+- `skills: true` (extensions) — proven: skill instruction (SKILLCONFIRMED) visible in model reply in the live slice.
+- The honesty rule held: flags flipped only AFTER end-to-end proof.
+
 ## C3 (vertical slice passing)
 
 - `nanok3` binary: `doctor` (real self-diagnostics, exit 0) + `protocol-host`.

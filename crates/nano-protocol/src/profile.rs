@@ -8,9 +8,13 @@ use crate::messages::NanoCapabilities;
 use std::collections::BTreeMap;
 
 pub fn v1_capabilities() -> NanoCapabilities {
+    // mcp/skills are TRUE because they are proven end-to-end through the
+    // live vertical slice (mcp tool call routed + skill instruction visible
+    // to the model) — the capability honesty rule: flags flip only after
+    // slice proof, never on intent.
     NanoCapabilities {
         cost_attribution: true,
-        mcp: false,
+        mcp: true,
         memory_enabled: false,
         plugins: false,
         streaming_tools: true,
@@ -22,8 +26,14 @@ pub fn v1_capabilities() -> NanoCapabilities {
         computer_use: false,
         modes: vec!["default".into()],
         current_mode: "default".into(),
-        extensions: BTreeMap::new(),
+        extensions: BTreeMap::from([("skills".to_string(), serde_json::json!(true))]),
     }
+}
+
+/// Skills capability (separate flag in the capabilities object — the corpus
+/// shape has no dedicated skills key, so it rides the extensions map).
+pub fn skills_capability() -> serde_json::Value {
+    serde_json::json!(true)
 }
 
 #[cfg(test)]
@@ -36,10 +46,11 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&caps).unwrap()).unwrap();
         assert_eq!(json["thinking"], true);
         assert_eq!(json["tool_approval"], true);
-        assert_eq!(json["mcp"], false);
+        assert_eq!(json["mcp"], true);
         assert_eq!(json["browser_suite"], false);
         assert_eq!(json["computer_use"], false);
         assert_eq!(json["plugins"], false);
+        assert_eq!(json["skills"], true);
         assert_eq!(json["current_mode"], "default");
     }
 }

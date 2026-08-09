@@ -13,6 +13,44 @@ use nano_protocol::messages::Event;
 use nano_tools::fs::FsTools;
 use nano_tools::shell::ShellTool;
 
+/// MCP server specs from NANOK3_MCP_SERVERS: a JSON array of
+/// {"name": str, "command": str, "args": [str]} entries.
+fn mcp_specs_from_env() -> Vec<nano_agent::mcp::McpServerSpec> {
+    let Ok(raw) = std::env::var("NANOK3_MCP_SERVERS") else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Vec<serde_json::Value>>(&raw)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| {
+            Some(nano_agent::mcp::McpServerSpec {
+                name: v.get("name")?.as_str()?.to_string(),
+                command: v.get("command")?.as_str()?.to_string(),
+                args: v
+                    .get("args")
+                    .and_then(|a| a.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                env: vec![],
+            })
+        })
+        .collect()
+}
+
+fn executor_has_registry(executor: &nano_agent::mcp::McpToolExecutor) -> bool {
+    !executor.tool_definitions_from_registry().is_empty()
+}
+
+fn executor_tool_definitions(
+    executor: &nano_agent::mcp::McpToolExecutor,
+) -> Vec<nano_model::types::ToolDefinition> {
+    executor.tool_definitions_from_registry()
+}
+
 pub async fn run(nano_home: &std::path::Path, workspace: &std::path::Path) -> std::io::Result<HostExit> {
     let Some(api_key) = std::env::var("FLUX_API_KEY")
         .ok()
@@ -30,14 +68,38 @@ pub async fn run(nano_home: &std::path::Path, workspace: &std::path::Path) -> st
     let driver = FluxDriver::new(FluxCompletionsClient::new(EgressClient::flux()), api_key);
     let approve_all = nano_agent::turn::ApproveAll;
 
+    // MCP: register configured servers (failures log, never crash the host).
+    let mut registry = nano_agent::mcp::McpRegistry::new();
+    for spec in mcp_specs_from_env() {
+        if let Err(err) = registry.register(spec) {
+            eprintln!("nanok3: MCP server registration failed: {err}");
+        }
+    }
+    let executor = nano_agent::mcp::McpToolExecutor::new(registry, &executor);
+    let mcp_definitions = if executor_has_registry(&executor) {
+        executor_tool_definitions(&executor)
+    } else {
+        vec![]
+    };
+
+    // Skills: default roots are <nano_home>/skills and <workspace>/.nano/skills.
+    let skill_context = nano_agent::skills::prepare_skill_context(&[
+        nano_home.join("skills"),
+        workspace.join(".nano").join("skills"),
+    ]);
+
+    let mut tool_definitions = v1_tool_definitions();
+    tool_definitions.extend(mcp_definitions);
+
     let engine = TurnEngine {
         model: &driver,
         tools: &executor,
         budget: TurnBudget::default(),
         model_name: "flux-auto".into(),
-        tool_definitions: v1_tool_definitions(),
+        tool_definitions,
         approval: Some(&approve_all),
     };
+    let skill_context = std::sync::Arc::new(skill_context);
 
     let config = HostConfig::default();
     let stdin = std::io::stdin();
@@ -47,8 +109,15 @@ pub async fn run(nano_home: &std::path::Path, workspace: &std::path::Path) -> st
 
     run_host_loop(&mut reader, &mut writer, &config, |msg_id, content| {
         let engine = &engine;
+        let skill_context = std::sync::Arc::clone(&skill_context);
         async move {
-            let result = engine.run_turn(&msg_id, &content).await;
+            let result = if let Some(context) = skill_context.as_ref() {
+                engine
+                    .run_turn_with_context(&msg_id, &content, Some(context.clone()))
+                    .await
+            } else {
+                engine.run_turn(&msg_id, &content).await
+            };
             let mut events = Vec::new();
             for op in &result.ops {
                 match &op.op {

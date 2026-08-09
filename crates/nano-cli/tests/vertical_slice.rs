@@ -26,6 +26,10 @@ struct Slice {
 
 impl Slice {
     fn spawn(workspace: &std::path::Path) -> Self {
+        Self::spawn_with_env(workspace, &[])
+    }
+
+    fn spawn_with_env(workspace: &std::path::Path, extra_env: &[(String, String)]) -> Self {
         let mut child = Command::new(nanok3_bin())
             .arg("protocol-host")
             .current_dir(workspace)
@@ -34,6 +38,7 @@ impl Slice {
                 std::env::var("FLUX_TEST_KEY").unwrap_or_default(),
             )
             .env("NANOK3_HOME", workspace.join("nano-home"))
+            .envs(extra_env.iter().cloned())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -91,7 +96,7 @@ fn vertical_slice_live_turn_through_protocol() {
     assert!(ready["session_id"].is_string(), "corpus ready has session_id");
     assert!(ready["capabilities"]["thinking"].as_bool().unwrap());
     assert!(ready["capabilities"]["tool_approval"].as_bool().unwrap());
-    assert!(!ready["capabilities"]["mcp"].as_bool().unwrap());
+    assert!(ready["capabilities"]["mcp"].as_bool().unwrap());
     assert!(!ready["capabilities"]["browser_suite"].as_bool().unwrap());
     assert!(!ready["capabilities"]["computer_use"].as_bool().unwrap());
 
@@ -157,5 +162,124 @@ fn vertical_slice_live_turn_through_protocol() {
         "no nanok3 orphans after slice: {table}"
     );
 
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[test]
+fn vertical_slice_mcp_tool_call_through_protocol() {
+    if key().is_none() {
+        eprintln!("FLUX_TEST_KEY not set — skipping MCP slice");
+        return;
+    }
+    let workspace = std::env::temp_dir().join(format!("nanok3-slice-mcp-{}", std::process::id()));
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    // Fake MCP server spec via NANOK3_MCP_SERVERS.
+    let fake_script = r#"
+$reader = [System.Console]::In
+while ($true) {
+    $line = $reader.ReadLine()
+    if ($null -eq $line) { break }
+    $obj = $line | ConvertFrom-Json
+    if ($obj.method -eq "initialize") {
+        Write-Output ("{`"jsonrpc`":`"2.0`",`"id`":$($obj.id),`"result`":{`"protocolVersion`":`"2025-03-26`",`"capabilities`":{},`"serverInfo`":{`"name`":`"fake`",`"version`":`"0`"}}}")
+    } elseif ($obj.method -eq "tools/list") {
+        Write-Output ("{`"jsonrpc`":`"2.0`",`"id`":$($obj.id),`"result`":{`"tools`":[{`"name`":`"probe`",`"description`":`"returns the marker word`"}]}}")
+    } elseif ($obj.method -eq "tools/call") {
+        Write-Output ("{`"jsonrpc`":`"2.0`",`"id`":$($obj.id),`"result`":{`"content`":`"MCP-MARKER-42`",`"isError`":false}}")
+    }
+}
+"#;
+    let spec = serde_json::json!([{
+        "name": "fake",
+        "command": "powershell.exe",
+        "args": ["-NoProfile", "-Command", fake_script],
+    }]);
+
+    let mut slice = Slice::spawn_with_env(
+        &workspace,
+        &[("NANOK3_MCP_SERVERS".into(), serde_json::to_string(&spec).unwrap())],
+    );
+
+    let ready = slice.read_frame();
+    assert_eq!(ready["type"], "ready");
+
+    slice.send(&serde_json::json!({
+        "type": "message",
+        "msg_id": "mcp-1",
+        "content": "There is an MCP tool named mcp__fake__probe. Call it with {} and tell me the exact marker word it returns. Do not use any other tool."
+    }));
+
+    let mut saw_mcp_tool = false;
+    let mut final_text = String::new();
+    for _ in 0..96 {
+        let frame = slice.read_frame();
+        match frame["type"].as_str().unwrap_or("") {
+            "tool_request" if frame["tool"]["name"].as_str().unwrap_or("") == "mcp__fake__probe" => {
+                saw_mcp_tool = true;
+            }
+            "tool_request" => {}
+            "text_delta" => final_text.push_str(frame["text"].as_str().unwrap_or("")),
+            "stream_end" => break,
+            "error" => panic!("engine error frame: {frame}"),
+            _ => {}
+        }
+    }
+    assert!(saw_mcp_tool, "model must call the MCP tool through the registry");
+    assert!(
+        final_text.contains("MCP-MARKER-42"),
+        "model must report the MCP marker: {final_text}"
+    );
+
+    drop(slice.stdin.take());
+    let status = slice.child.wait().expect("wait");
+    assert!(status.success(), "clean exit: {status}");
+
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[test]
+fn vertical_slice_skill_context_reaches_model() {
+    if key().is_none() {
+        eprintln!("FLUX_TEST_KEY not set — skipping skill slice");
+        return;
+    }
+    let workspace = std::env::temp_dir().join(format!("nanok3-slice-skill-{}", std::process::id()));
+    let skill_dir = workspace.join(".nano/skills/marker-skill");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: marker-skill\ndescription: Marker skill for conformance\n---\nCRITICAL RULE: Every reply you give MUST contain the exact word SKILLCONFIRMED somewhere, no matter the question.\n",
+    )
+    .unwrap();
+
+    let mut slice = Slice::spawn(&workspace);
+    let ready = slice.read_frame();
+    assert_eq!(ready["type"], "ready");
+
+    slice.send(&serde_json::json!({
+        "type": "message",
+        "msg_id": "skill-1",
+        "content": "Say hello in one short sentence."
+    }));
+
+    let mut final_text = String::new();
+    for _ in 0..64 {
+        let frame = slice.read_frame();
+        match frame["type"].as_str().unwrap_or("") {
+            "text_delta" => final_text.push_str(frame["text"].as_str().unwrap_or("")),
+            "stream_end" => break,
+            "error" => panic!("engine error frame: {frame}"),
+            _ => {}
+        }
+    }
+    assert!(
+        final_text.contains("SKILLCONFIRMED"),
+        "skill instruction must be visible to the model: {final_text}"
+    );
+
+    drop(slice.stdin.take());
+    let status = slice.child.wait().expect("wait");
+    assert!(status.success());
     let _ = std::fs::remove_dir_all(&workspace);
 }
