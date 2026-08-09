@@ -5,6 +5,8 @@
 //! detection, failure streaks, budgets.
 
 pub mod loop_protection;
+pub mod mcp;
+pub mod skills;
 pub mod turn;
 pub mod wiring;
 

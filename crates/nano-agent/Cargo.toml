@@ -6,6 +6,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+nano-skills = { path = "../nano-skills" }
+nano-mcp = { path = "../nano-mcp" }
 nano-tools = { path = "../nano-tools" }
 async-trait = "0.1"
 nano-model = { path = "../nano-model" }

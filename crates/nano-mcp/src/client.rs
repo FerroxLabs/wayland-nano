@@ -30,6 +30,7 @@ pub struct McpClient {
     transport: StdioTransport,
     next_id: u64,
     timeout: std::time::Duration,
+    cached_tools: Vec<crate::protocol::McpToolDescriptor>,
 }
 
 impl McpClient {
@@ -43,8 +44,10 @@ impl McpClient {
             transport: StdioTransport::spawn(command, args, env)?,
             next_id: 1,
             timeout: std::time::Duration::from_millis(DEFAULT_TIMEOUT_MS),
+            cached_tools: Vec::new(),
         };
         client.initialize()?;
+        client.cached_tools = client.list_tools()?;
         Ok(client)
     }
 
@@ -54,7 +57,22 @@ impl McpClient {
             transport,
             next_id: 1,
             timeout: std::time::Duration::from_millis(DEFAULT_TIMEOUT_MS),
+            cached_tools: Vec::new(),
         }
+    }
+
+    /// The tools cached at connect time (initialize + tools/list).
+    pub fn cached_tools(&self) -> &[crate::protocol::McpToolDescriptor] {
+        &self.cached_tools
+    }
+
+    /// Mutable-call alias for registry-held clients.
+    pub fn call_tool_mutable(
+        &mut self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, McpError> {
+        self.call_tool(name, arguments)
     }
 
     pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
