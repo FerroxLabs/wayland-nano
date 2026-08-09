@@ -28,6 +28,10 @@ pub mod dpapi;
 #[cfg(target_os = "windows")]
 pub mod env;
 #[cfg(target_os = "windows")]
+pub mod gather;
+#[cfg(target_os = "windows")]
+pub mod helper_materialization;
+#[cfg(target_os = "windows")]
 pub mod identity;
 #[cfg(target_os = "windows")]
 pub mod job;
@@ -39,6 +43,8 @@ pub mod resolved_permissions;
 pub mod setup_error;
 #[cfg(target_os = "windows")]
 pub mod setup_types;
+#[cfg(target_os = "windows")]
+mod ssh_config_dependencies;
 #[cfg(target_os = "windows")]
 pub mod logging;
 #[cfg(target_os = "windows")]
@@ -66,3 +72,6 @@ pub use token::{LocalSid, world_sid};
 pub fn sandbox_dir(nano_home: &std::path::Path) -> std::path::PathBuf {
     nano_home.join(".sandbox")
 }
+
+#[cfg(target_os = "windows")]
+pub use setup_types::{sandbox_bin_dir, sandbox_secrets_dir, setup_marker_path, sandbox_users_path};

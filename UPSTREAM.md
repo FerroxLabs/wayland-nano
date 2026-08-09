@@ -58,3 +58,6 @@ metadata is not copied; the immutable donor snapshot lives at
 | `crates/nano-sandbox/src/cap.rs` | `codex-rs/windows-sandbox-rs/src/cap.rs` | verbatim except module path |
 | `crates/nano-sandbox/src/setup_error.rs` | `codex-rs/windows-sandbox-rs/src/setup_error.rs` | sanitize_metric_tag_value → crate::winutil |
 | `crates/nano-core/src/abs/mod.rs` (addition) | `codex-rs/utils/absolute-path/src/lib.rs` | `From<&Path>`/`From<PathBuf>` parity impls |
+| `crates/nano-sandbox/src/gather.rs` | `codex-rs/windows-sandbox-rs/src/setup.rs` (gather layer) | profile/full-read/write/effective roots + user-profile and sensitive-dir filters; codex_home→nano_home; tests adapted from donor |
+| `crates/nano-sandbox/src/helper_materialization.rs` | `codex-rs/windows-sandbox-rs/src/helper_materialization.rs` | RESOURCES_DIRNAME `codex-resources`→`nanok3-resources` (branding) |
+| `crates/nano-sandbox/src/ssh_config_dependencies.rs` | `codex-rs/windows-sandbox-rs/src/ssh_config_dependencies.rs` | verbatim except module path |
