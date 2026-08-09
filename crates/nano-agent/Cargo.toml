@@ -6,3 +6,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+async-trait = "0.1"
+nano-model = { path = "../nano-model" }
+nano-session = { path = "../nano-session" }
+tokio = { version = "1", features = ["macros", "rt", "time"] }
+serde_json = "1"
+
+[dev-dependencies]
+pretty_assertions = "1"
