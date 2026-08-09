@@ -19,6 +19,7 @@ use nano_egress::client::EgressClient;
 pub const FLUX_BASE: &str = "https://api.fluxrouter.ai";
 pub const COMPLETIONS_PATH: &str = "/v1/chat/completions";
 
+#[derive(Debug)]
 pub struct FluxCompletionsClient {
     egress: EgressClient,
     base_url: String,

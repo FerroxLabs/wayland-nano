@@ -34,6 +34,7 @@ pub enum EgressError {
 }
 
 /// A policy-gated outbound client. Construct once per policy domain.
+#[derive(Debug)]
 pub struct EgressClient {
     client: reqwest::Client,
     policy: EgressPolicy,

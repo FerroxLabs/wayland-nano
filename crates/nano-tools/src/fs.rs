@@ -65,6 +65,7 @@ pub fn is_sensitive_path(path: &Path) -> bool {
     SENSITIVE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
 }
 
+#[derive(Debug)]
 pub struct FsTools {
     policy: FileSystemSandboxPolicy,
     cwd: PathBuf,

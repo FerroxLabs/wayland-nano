@@ -110,6 +110,8 @@ mod tests {
             tools: &tools,
             budget: TurnBudget::default(),
             model_name: "mock".into(),
+            tool_definitions: vec![],
+            approval: None,
         };
 
         let result = engine.run_turn("t1", "fix the build").await;
@@ -169,6 +171,8 @@ mod tests {
             tools: &tools,
             budget: TurnBudget::default(),
             model_name: "mock".into(),
+            tool_definitions: vec![],
+            approval: None,
         };
 
         let result = engine.run_turn("t2", "loop forever").await;
@@ -201,6 +205,8 @@ mod tests {
             tools: &tools,
             budget: TurnBudget::default(),
             model_name: "mock".into(),
+            tool_definitions: vec![],
+            approval: None,
         };
 
         let result = engine.run_turn("t3", "make no progress").await;

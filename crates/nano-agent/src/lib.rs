@@ -6,6 +6,7 @@
 
 pub mod loop_protection;
 pub mod turn;
+pub mod wiring;
 
 #[cfg(test)]
 #[path = "turn_tests.rs"]

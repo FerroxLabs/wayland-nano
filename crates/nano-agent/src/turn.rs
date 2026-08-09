@@ -79,6 +79,30 @@ pub struct TurnEngine<'a> {
     pub tools: &'a dyn ToolExecutor,
     pub budget: TurnBudget,
     pub model_name: String,
+    /// Tool definitions advertised to the model (its tool-call surface).
+    pub tool_definitions: Vec<nano_model::types::ToolDefinition>,
+    /// Approval gate consulted before every side-effecting tool execution.
+    pub approval: Option<&'a dyn ApprovalGate>,
+}
+
+/// Decides whether a tool call may execute. Production prompts via the host;
+/// tests and headless flows use policy-driven implementations.
+pub trait ApprovalGate: Debug + Send + Sync {
+    fn approve(&self, call: &ToolCall) -> ApprovalDecision;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalDecision {
+    Approve,
+    Deny,
+}
+
+#[derive(Debug)]
+pub struct ApproveAll;
+impl ApprovalGate for ApproveAll {
+    fn approve(&self, _call: &ToolCall) -> ApprovalDecision {
+        ApprovalDecision::Approve
+    }
 }
 
 impl<'a> TurnEngine<'a> {
@@ -124,6 +148,7 @@ impl<'a> TurnEngine<'a> {
             let request = ModelRequest {
                 model: self.model_name.clone(),
                 messages: messages.clone(),
+                tools: self.tool_definitions.clone(),
                 max_tokens: Some(4096),
                 stream: false,
                 ..Default::default()
@@ -178,6 +203,19 @@ impl<'a> TurnEngine<'a> {
                     RepeatAction::ForceStop(reason) => {
                         state = TurnState::Stopped(reason);
                         break;
+                    }
+                }
+                if let Some(gate) = self.approval {
+                    if gate.approve(call) == ApprovalDecision::Deny {
+                        messages.push(Message {
+                            role: nano_model::types::Role::Tool,
+                            content: vec![nano_model::types::ContentBlock::ToolResult {
+                                tool_use_id: call.id.clone(),
+                                content: "denied by approval gate".into(),
+                                is_error: true,
+                            }],
+                        });
+                        continue;
                     }
                 }
                 emit(&mut ops, Op::ToolCall {

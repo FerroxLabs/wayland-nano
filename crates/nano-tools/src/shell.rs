@@ -50,6 +50,7 @@ pub enum ShellError {
 
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 
+#[derive(Debug)]
 pub struct ShellTool {
     nano_home: std::path::PathBuf,
     workspace: std::path::PathBuf,

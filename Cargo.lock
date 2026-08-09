@@ -709,6 +709,7 @@ dependencies = [
  "async-trait",
  "nano-model",
  "nano-session",
+ "nano-tools",
  "pretty_assertions",
  "serde_json",
  "tokio",
