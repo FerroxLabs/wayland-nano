@@ -3,7 +3,7 @@
 ## Current position
 
 - Goal: active (K3 native goal mode; objective = C1→C2→C3 per `../../shared/SCORECARD.md`)
-- Phase: **C1 code-complete; C2 CLAIMED; C3 VERTICAL SLICE PASSING (real nanok3 binary over wire protocol, live)**; awaiting owner: C2 promotion + elevated provisioning
+- Phase: **C1 code-complete; C2 + C3 CLAIMED (shared/reviews/C2,C3)**; awaiting owner: C2/C3 promotion decisions + elevated provisioning for C1.2 + C1 claim
 - Checkpoint: C1 ready-to-prove (no claim posted); C2 in progress
 - Last green: workspace-wide tests + clippy `-D warnings` clean, commit HEAD
 - Track A (observed read-only): G0-era sandbox corrections ongoing

@@ -21,6 +21,7 @@ struct Slice {
     child: Child,
     stdin: Option<std::process::ChildStdin>,
     stdout: BufReader<std::process::ChildStdout>,
+    captured: String,
 }
 
 impl Slice {
@@ -44,6 +45,7 @@ impl Slice {
             child,
             stdin,
             stdout,
+            captured: String::new(),
         }
     }
 
@@ -51,6 +53,7 @@ impl Slice {
         let mut line = String::new();
         let n = self.stdout.read_line(&mut line).expect("read frame");
         assert!(n > 0, "engine closed stdout unexpectedly");
+        self.captured.push_str(&line);
         serde_json::from_str(&line).unwrap_or_else(|e| panic!("frame must be JSON: {e}: {line}"))
     }
 
@@ -133,7 +136,14 @@ fn vertical_slice_live_turn_through_protocol() {
         "model must report the file contents it read: {final_text}"
     );
 
-    // 4. stdin close → clean exit, no orphans.
+    // 4. C3.3 canary: the Flux key must appear in NO emitted frame.
+    let key = std::env::var("FLUX_TEST_KEY").unwrap_or_default();
+    assert!(
+        key.is_empty() || !slice.captured.contains(&key),
+        "CANARY VIOLATION: credential leaked into protocol frames"
+    );
+
+    // 5. stdin close → clean exit, no orphans.
     drop(slice.stdin.take());
     let status = slice.child.wait().expect("wait");
     assert!(status.success(), "clean exit on stdin close: {status}");
