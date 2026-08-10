@@ -2,7 +2,27 @@
 
 ## Current position
 
-### 48H SPRINT STATE (2026-08-10, C3 OWNER LEG DONE — live Desktop conversation)
+### 48H SPRINT STATE (2026-08-10, ACP live-I/O rework + full Desktop re-verification)
+- **ACP ADAPTER REWORKED** (9145348): frames now stream DURING the turn
+  (TurnEngine event sink, not batch replay); session/cancel works (reader
+  thread + per-session AtomicBool, stopReason cancelled); ApproveAll replaced
+  by a real ACP session/request_permission bridge (fail-closed deny on
+  reject/malformed/disconnect; read-only tools auto-approve per Desktop
+  Default mode). Proven by tests/acp_live.rs (interleave/cancel/permission).
+- **UNINSTALL COMPLETE** (460f304): secrets file (content-verified), UserList
+  registry values, .sandbox log dir — all fail-closed NanoK3-scoped.
+- **DESKTOP RE-VERIFIED LIVE** (post-rework): read regression PASS; permission
+  round-trip PASS (fs_write card "Allow once / Deny" → Enter → file written,
+  byte-verified); cancel PASS (stop button → no write, session survives).
+  Evidence: shared/reviews/C3/evidence/07-10 + manifest final section.
+  Two Desktop UI nits noted (no cancelled marker; one presentation race).
+- **C1 CLAIM DRAFTED**: shared/reviews/C1/trackb-claim.draft.md — finalizes
+  mechanically after owner provisioning.
+- Ops note: stale target/release/nanok3.exe was held by a stray agent child
+  (file lock); killed + rebuilt. If the release exe ever looks stale, check
+  for stray nanok3.exe processes first.
+
+### Previous state (2026-08-10, C3 OWNER LEG DONE — live Desktop conversation)
 - **C3 LIVE LEG PASS**: real Desktop UI (wl-cdp dev build @ 9f009f81, CDP-driven)
   ran Nano K3 end-to-end, two independent conversations: picker select → fs_read
   tool card → streamed correct answer → completed. Evidence:
