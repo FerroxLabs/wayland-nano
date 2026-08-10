@@ -1,0 +1,95 @@
+﻿{
+    "gate":  "C1.2",
+    "track":  "B",
+    "source_sha":  "2453455a8d96169585bdfedfff90ba61ca17702f",
+    "dirty":  true,
+    "runner":  {
+                   "host":  "SEANDESKTOP",
+                   "os":  "Microsoft Windows 11 Pro",
+                   "arch":  "AMD64",
+                   "user":  "seand",
+                   "elevated":  false
+               },
+    "provisioned":  true,
+    "started_at":  "2026-08-10T06:52:23.1235292Z",
+    "finished_at":  "2026-08-10T06:52:29.2978214Z",
+    "counts":  {
+                   "pass":  9,
+                   "fail":  3,
+                   "skip":  0
+               },
+    "results":  [
+                    {
+                        "probe":  "harness-env",
+                        "status":  "PASS",
+                        "detail":  "host=SEANDESKTOP user=seand provisioned=True",
+                        "at":  "2026-08-10T06:52:23.3158453Z"
+                    },
+                    {
+                        "probe":  "write-inside-root",
+                        "status":  "PASS",
+                        "detail":  "created workspace/allowed.txt",
+                        "at":  "2026-08-10T06:52:23.3253867Z"
+                    },
+                    {
+                        "probe":  "write-outside-root",
+                        "status":  "FAIL",
+                        "detail":  "harness error: Access is denied",
+                        "at":  "2026-08-10T06:52:23.8345396Z"
+                    },
+                    {
+                        "probe":  "sensitive-read-deny",
+                        "status":  "PASS",
+                        "detail":  "read denied: Access is denied",
+                        "at":  "2026-08-10T06:52:23.8558756Z"
+                    },
+                    {
+                        "probe":  "junction-escape",
+                        "status":  "PASS",
+                        "detail":  "junction write denied",
+                        "at":  "2026-08-10T06:52:23.8753022Z"
+                    },
+                    {
+                        "probe":  "tree-kill-5s",
+                        "status":  "PASS",
+                        "detail":  "job terminate killed tree in 1ms; CIM shows no survivors",
+                        "at":  "2026-08-10T06:52:25.3017985Z"
+                    },
+                    {
+                        "probe":  "process-cleanup",
+                        "status":  "PASS",
+                        "detail":  "no nanok3 helper processes running",
+                        "at":  "2026-08-10T06:52:25.5260919Z"
+                    },
+                    {
+                        "probe":  "network-deny-offline",
+                        "status":  "FAIL",
+                        "detail":  "no NanoK3 WFP filters found (netsh wfp show filters)",
+                        "at":  "2026-08-10T06:52:25.5679547Z"
+                    },
+                    {
+                        "probe":  "broker-network-ok",
+                        "status":  "PASS",
+                        "detail":  "reachable (HTTP 500 from api.fluxrouter.ai - network, TLS, and Flux all respond; auth failure still proves reachability)",
+                        "at":  "2026-08-10T06:52:26.2017762Z"
+                    },
+                    {
+                        "probe":  "path-edgecases",
+                        "status":  "PASS",
+                        "detail":  "unicode+longpath:ok; reserved-name:wrote(platform-allows;in-root=contained)",
+                        "at":  "2026-08-10T06:52:26.2017762Z"
+                    },
+                    {
+                        "probe":  "setup-idempotent",
+                        "status":  "PASS",
+                        "detail":  "refresh round-trips (canonical hash stable, created_at re-stamped); tampered marker detected and restored",
+                        "at":  "2026-08-10T06:52:26.2908149Z"
+                    },
+                    {
+                        "probe":  "uninstall-scope",
+                        "status":  "FAIL",
+                        "detail":  "out-of-scope residue: missing-wfp-provider:NanoK3 Windows Sandbox WFP",
+                        "at":  "2026-08-10T06:52:29.0447646Z"
+                    }
+                ]
+}

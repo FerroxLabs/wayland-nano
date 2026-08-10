@@ -7,9 +7,16 @@ process list, network), never Nano's self-report.
 ## Run
 
 ```powershell
-# From D:\Development\waylandnano\nano-k3 — standard user, NO WSL:
+# From D:\Development\waylandnano\nano-k3 — ELEVATED (admin) shell, NO WSL:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\c12-proof\Test-C12Proof.ps1
 ```
+
+**The authoritative run is elevated.** Two probes are admin-gated by the OS,
+not by us: `network-deny-offline` (netsh WFP enumeration is admin-only — and
+it writes XML to a file, not stdout) and `write-outside-root`
+(`Start-Process -Credential` / CreateProcessWithLogonW is admin-gated on this
+box). Unelevated they report `SKIP: requires elevation` — honest, not green.
+Unelevated runs remain useful pre-provisioning to validate the harness itself.
 
 Outputs `scripts/c12-proof/evidence/c12-manifest-<timestamp>.json` in the
 BUILD_PLAN_V3 §8 manifest shape, then prints a PASS/FAIL summary line per probe.

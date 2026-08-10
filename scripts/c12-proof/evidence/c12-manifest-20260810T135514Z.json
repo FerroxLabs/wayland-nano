@@ -1,0 +1,95 @@
+﻿{
+    "gate":  "C1.2",
+    "track":  "B",
+    "source_sha":  "2453455a8d96169585bdfedfff90ba61ca17702f",
+    "dirty":  true,
+    "runner":  {
+                   "host":  "SEANDESKTOP",
+                   "os":  "Microsoft Windows 11 Pro",
+                   "arch":  "AMD64",
+                   "user":  "seand",
+                   "elevated":  true
+               },
+    "provisioned":  true,
+    "started_at":  "2026-08-10T06:55:14.8592435Z",
+    "finished_at":  "2026-08-10T06:55:21.0875322Z",
+    "counts":  {
+                   "pass":  10,
+                   "fail":  2,
+                   "skip":  0
+               },
+    "results":  [
+                    {
+                        "probe":  "harness-env",
+                        "status":  "PASS",
+                        "detail":  "host=SEANDESKTOP user=seand provisioned=True",
+                        "at":  "2026-08-10T06:55:14.9435200Z"
+                    },
+                    {
+                        "probe":  "write-inside-root",
+                        "status":  "PASS",
+                        "detail":  "created workspace/allowed.txt",
+                        "at":  "2026-08-10T06:55:14.9569069Z"
+                    },
+                    {
+                        "probe":  "write-outside-root",
+                        "status":  "PASS",
+                        "detail":  "denied as NanoK3SandboxOffline: Access to the path \u0027C:\\Users\\seand\\AppData\\Local\\Temp\\nanok3-c12-ws\\outside\\nanok3-escape-attempt.txt\u0027 is denied. (oracle: file absent; evidence D:\\Development\\waylandnano\\nano-k3\\scripts\\c12-proof\\evidence\\nanok3-write-outside-root.stdout.log)",
+                        "at":  "2026-08-10T06:55:16.0591433Z"
+                    },
+                    {
+                        "probe":  "sensitive-read-deny",
+                        "status":  "PASS",
+                        "detail":  "read denied: Access is denied",
+                        "at":  "2026-08-10T06:55:16.0762454Z"
+                    },
+                    {
+                        "probe":  "junction-escape",
+                        "status":  "PASS",
+                        "detail":  "junction write denied",
+                        "at":  "2026-08-10T06:55:16.0862117Z"
+                    },
+                    {
+                        "probe":  "tree-kill-5s",
+                        "status":  "PASS",
+                        "detail":  "job terminate killed tree in 2ms; CIM shows no survivors",
+                        "at":  "2026-08-10T06:55:17.5391014Z"
+                    },
+                    {
+                        "probe":  "process-cleanup",
+                        "status":  "PASS",
+                        "detail":  "no nanok3 helper processes running",
+                        "at":  "2026-08-10T06:55:17.7606326Z"
+                    },
+                    {
+                        "probe":  "network-deny-offline",
+                        "status":  "FAIL",
+                        "detail":  "no NanoK3 WFP filters found (netsh wfp show filters)",
+                        "at":  "2026-08-10T06:55:17.9168850Z"
+                    },
+                    {
+                        "probe":  "broker-network-ok",
+                        "status":  "PASS",
+                        "detail":  "reachable (HTTP 500 from api.fluxrouter.ai - network, TLS, and Flux all respond; auth failure still proves reachability)",
+                        "at":  "2026-08-10T06:55:18.3339720Z"
+                    },
+                    {
+                        "probe":  "path-edgecases",
+                        "status":  "PASS",
+                        "detail":  "unicode+longpath:ok; reserved-name:wrote(platform-allows;in-root=contained)",
+                        "at":  "2026-08-10T06:55:18.3416829Z"
+                    },
+                    {
+                        "probe":  "setup-idempotent",
+                        "status":  "PASS",
+                        "detail":  "refresh round-trips (canonical hash stable, created_at re-stamped); tampered marker detected and restored",
+                        "at":  "2026-08-10T06:55:18.4055951Z"
+                    },
+                    {
+                        "probe":  "uninstall-scope",
+                        "status":  "FAIL",
+                        "detail":  "out-of-scope residue: missing-wfp-provider:NanoK3 Windows Sandbox WFP",
+                        "at":  "2026-08-10T06:55:20.8357539Z"
+                    }
+                ]
+}

@@ -21,6 +21,17 @@ $ErrorActionPreference = "Continue"
 $startTime = Get-Date
 $results = [System.Collections.Generic.List[object]]::new()
 
+# WFP state (netsh wfp show ...) requires elevation and writes its XML to a
+# FILE, not stdout — probes below dump to a temp file and grep the file.
+$script:IsElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+function Get-WfpXml([string]$What) {
+    # $What: "filters" | "providers". Returns the dump path, or $null when not elevated.
+    if (-not $script:IsElevated) { return $null }
+    $out = Join-Path $env:TEMP "nanok3-c12-wfp-$What.xml"
+    & netsh wfp show $What file="$out" 2>$null | Out-Null
+    if (Test-Path $out) { $out } else { $null }
+}
+
 function Add-Result([string]$Probe, [string]$Status, [string]$Detail) {
     $script:results.Add([pscustomobject]@{
         probe  = $Probe
@@ -65,6 +76,12 @@ try {
 # the DACL layer (implicit absence of allow, acl.rs) must deny it. Oracle: file absent.
 if (-not $provisioned) {
     Add-Result "write-outside-root" "SKIP" "not provisioned"
+} elseif (-not $script:IsElevated) {
+    # Start-Process -Credential (CreateProcessWithLogonW) is admin-gated on
+    # this box — verified empirically: unelevated launch of even whoami.exe
+    # as the offline account returns Access is denied. The authoritative run
+    # of this probe is the elevated one.
+    Add-Result "write-outside-root" "SKIP" "requires elevation (credential-child launch is admin-gated)"
 } else {
     try {
         Add-Type -AssemblyName System.Security
@@ -162,11 +179,13 @@ if (-not $provisioned) {
     # Track-B filter names are nanok3_wfp_* and the provider is "NanoK3
     # Windows Sandbox WFP", so the case-insensitive NanoK3 match now hits the
     # filter/provider names directly, not just the account-SID condition.
-    $filters = & netsh wfp show filters 2>$null | Select-String -SimpleMatch "NanoK3" -Quiet
-    if ($filters) {
+    $filtersXml = Get-WfpXml "filters"
+    if (-not $filtersXml) {
+        Add-Result "network-deny-offline" "SKIP" "requires elevation (netsh wfp is admin-only)"
+    } elseif (Select-String -Path $filtersXml -SimpleMatch "NanoK3" -Quiet) {
         Add-Result "network-deny-offline" "PASS" "WFP filters present for NanoK3 identity"
     } else {
-        Add-Result "network-deny-offline" "FAIL" "no NanoK3 WFP filters found (netsh wfp show filters)"
+        Add-Result "network-deny-offline" "FAIL" "no NanoK3 WFP filters found ($filtersXml)"
     }
 }
 
@@ -326,11 +345,17 @@ if (-not $provisioned -and -not $PostUninstall) {
             Where-Object { $_.Name -like "nanok3_sandbox_*" } | ForEach-Object { $_.Name })
         foreach ($f in $fw) { $residue += "firewall-rule:$f" }
 
-        if (& netsh wfp show providers 2>$null | Select-String -SimpleMatch "NanoK3" -Quiet) {
-            $residue += "wfp-provider:NanoK3"
-        }
-        if (& netsh wfp show filters 2>$null | Select-String -SimpleMatch "nanok3_" -Quiet) {
-            $residue += "wfp-filters:nanok3_*"
+        $providersXml = Get-WfpXml "providers"
+        $filtersXml = Get-WfpXml "filters"
+        if (-not $providersXml -or -not $filtersXml) {
+            Write-Host "uninstall-scope note: WFP residue check skipped (netsh wfp is admin-only)"
+        } else {
+            if (Select-String -Path $providersXml -SimpleMatch "NanoK3" -Quiet) {
+                $residue += "wfp-provider:NanoK3"
+            }
+            if (Select-String -Path $filtersXml -SimpleMatch "NanoK3" -Quiet) {
+                $residue += "wfp-filters:NanoK3"
+            }
         }
 
         $markerPath = Join-Path $env:USERPROFILE ".nanok3\.sandbox\setup_marker.json"
@@ -387,7 +412,10 @@ if (-not $provisioned -and -not $PostUninstall) {
         foreach ($f in $fw) { if ($knownFw -notcontains $f) { $residue += "unexpected-firewall-rule:$f" } }
         $scope += "firewall=$($fw.Count)/$($knownFw.Count)"
 
-        if (& netsh wfp show providers 2>$null | Select-String -SimpleMatch "NanoK3 Windows Sandbox WFP" -Quiet) {
+        $providersXml = Get-WfpXml "providers"
+        if (-not $providersXml) {
+            $scope += "wfp-provider=skipped(unelevated)"
+        } elseif (Select-String -Path $providersXml -SimpleMatch "NanoK3 Windows Sandbox WFP" -Quiet) {
             $scope += "wfp-provider=present"
         } else {
             $residue += "missing-wfp-provider:NanoK3 Windows Sandbox WFP"

@@ -1,0 +1,95 @@
+﻿{
+    "gate":  "C1.2",
+    "track":  "B",
+    "source_sha":  "2453455a8d96169585bdfedfff90ba61ca17702f",
+    "dirty":  true,
+    "runner":  {
+                   "host":  "SEANDESKTOP",
+                   "os":  "Microsoft Windows 11 Pro",
+                   "arch":  "AMD64",
+                   "user":  "seand",
+                   "elevated":  false
+               },
+    "provisioned":  true,
+    "started_at":  "2026-08-10T06:59:46.5577550Z",
+    "finished_at":  "2026-08-10T06:59:51.6445003Z",
+    "counts":  {
+                   "pass":  10,
+                   "fail":  1,
+                   "skip":  1
+               },
+    "results":  [
+                    {
+                        "probe":  "harness-env",
+                        "status":  "PASS",
+                        "detail":  "host=SEANDESKTOP user=seand provisioned=True",
+                        "at":  "2026-08-10T06:59:46.6636054Z"
+                    },
+                    {
+                        "probe":  "write-inside-root",
+                        "status":  "PASS",
+                        "detail":  "created workspace/allowed.txt",
+                        "at":  "2026-08-10T06:59:46.6741249Z"
+                    },
+                    {
+                        "probe":  "write-outside-root",
+                        "status":  "FAIL",
+                        "detail":  "harness error: Access is denied",
+                        "at":  "2026-08-10T06:59:46.7597900Z"
+                    },
+                    {
+                        "probe":  "sensitive-read-deny",
+                        "status":  "PASS",
+                        "detail":  "read denied: Access is denied",
+                        "at":  "2026-08-10T06:59:46.7771330Z"
+                    },
+                    {
+                        "probe":  "junction-escape",
+                        "status":  "PASS",
+                        "detail":  "junction write denied",
+                        "at":  "2026-08-10T06:59:46.7955967Z"
+                    },
+                    {
+                        "probe":  "tree-kill-5s",
+                        "status":  "PASS",
+                        "detail":  "job terminate killed tree in 1ms; CIM shows no survivors",
+                        "at":  "2026-08-10T06:59:48.2039027Z"
+                    },
+                    {
+                        "probe":  "process-cleanup",
+                        "status":  "PASS",
+                        "detail":  "no nanok3 helper processes running",
+                        "at":  "2026-08-10T06:59:48.3993669Z"
+                    },
+                    {
+                        "probe":  "network-deny-offline",
+                        "status":  "SKIP",
+                        "detail":  "requires elevation (netsh wfp is admin-only)",
+                        "at":  "2026-08-10T06:59:48.4033571Z"
+                    },
+                    {
+                        "probe":  "broker-network-ok",
+                        "status":  "PASS",
+                        "detail":  "reachable (HTTP 500 from api.fluxrouter.ai - network, TLS, and Flux all respond; auth failure still proves reachability)",
+                        "at":  "2026-08-10T06:59:48.9547819Z"
+                    },
+                    {
+                        "probe":  "path-edgecases",
+                        "status":  "PASS",
+                        "detail":  "unicode+longpath:ok; reserved-name:wrote(platform-allows;in-root=contained)",
+                        "at":  "2026-08-10T06:59:48.9572855Z"
+                    },
+                    {
+                        "probe":  "setup-idempotent",
+                        "status":  "PASS",
+                        "detail":  "refresh round-trips (canonical hash stable, created_at re-stamped); tampered marker detected and restored",
+                        "at":  "2026-08-10T06:59:49.0264973Z"
+                    },
+                    {
+                        "probe":  "uninstall-scope",
+                        "status":  "PASS",
+                        "detail":  "all artifacts in scope (accounts=2; group=NanoK3SandboxUsers; services=0+tasks=0; firewall=0/4; wfp-provider=skipped(unelevated); profile=.nanok3-only); run with -PostUninstall after helper uninstall to verify removal",
+                        "at":  "2026-08-10T06:59:51.4022480Z"
+                    }
+                ]
+}
