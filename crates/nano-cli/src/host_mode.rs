@@ -55,7 +55,7 @@ pub async fn run(
     nano_home: &std::path::Path,
     workspace: &std::path::Path,
 ) -> std::io::Result<HostExit> {
-    let Some(api_key) = crate::flux_key::flux_api_key() else {
+    let Some(api_key) = nano_cli::flux_key::flux_api_key() else {
         eprintln!("nanok3: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for protocol-host mode");
         return Ok(HostExit::Fatal("missing FLUX_API_KEY".into()));
     };

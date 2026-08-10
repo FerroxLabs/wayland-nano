@@ -1,9 +1,9 @@
 //! nanok3 — Wayland Nano (Track B) binary: doctor, protocol host.
 
-mod acp_mode;
 mod doctor;
-mod flux_key;
 mod host_mode;
+
+use nano_cli::acp_mode;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

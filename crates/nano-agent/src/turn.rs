@@ -117,7 +117,8 @@ impl<'a> TurnEngine<'a> {
         input: &str,
         context: Option<Message>,
     ) -> TurnResult {
-        self.run_turn_inner(turn_id, input, context, None).await
+        self.run_turn_inner(turn_id, input, context, None, None)
+            .await
     }
 
     /// Runs a turn, checking the cancellation flag between steps. A fired
@@ -130,7 +131,23 @@ impl<'a> TurnEngine<'a> {
         input: &str,
         cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> TurnResult {
-        self.run_turn_inner(turn_id, input, None, cancel).await
+        self.run_turn_inner(turn_id, input, None, cancel, None)
+            .await
+    }
+
+    /// Runs a turn like [`Self::run_turn_cancellable`], additionally invoking
+    /// `sink` with every op the moment it is recorded — before the turn
+    /// completes. Streaming hosts (ACP) use this to forward frames live
+    /// instead of replaying `result.ops` after the fact.
+    pub async fn run_turn_streaming(
+        &self,
+        turn_id: &str,
+        input: &str,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+        sink: &mut dyn FnMut(&OpEnvelope),
+    ) -> TurnResult {
+        self.run_turn_inner(turn_id, input, None, cancel, Some(sink))
+            .await
     }
 
     async fn run_turn_inner(
@@ -139,12 +156,17 @@ impl<'a> TurnEngine<'a> {
         input: &str,
         context: Option<Message>,
         cancel: Option<&std::sync::atomic::AtomicBool>,
+        sink: Option<&mut dyn FnMut(&OpEnvelope)>,
     ) -> TurnResult {
         let mut ops: Vec<OpEnvelope> = Vec::new();
         let mut next_id = 0u32;
+        let mut sink = sink;
         let mut emit = |ops: &mut Vec<OpEnvelope>, op: Op| {
             next_id += 1;
             ops.push(OpEnvelope::new(format!("{turn_id}-{next_id}"), "now", op));
+            if let Some(sink) = sink.as_deref_mut() {
+                sink(ops.last().expect("op just pushed"));
+            }
         };
 
         emit(

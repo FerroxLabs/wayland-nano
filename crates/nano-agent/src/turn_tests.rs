@@ -192,6 +192,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn streaming_sink_sees_each_op_as_it_lands() {
+        use std::sync::Arc;
+
+        // The second model call asserts the sink already saw step 1's
+        // ToolCall/ToolResult — impossible under after-the-fact replay.
+        #[derive(Debug)]
+        struct SinkAssertingModel {
+            seen: Arc<Mutex<Vec<String>>>,
+            calls: Mutex<u32>,
+        }
+        #[async_trait::async_trait]
+        impl ModelDriver for SinkAssertingModel {
+            async fn complete(&self, _request: &ModelRequest) -> Result<ModelResponse, ModelError> {
+                let mut calls = self.calls.lock().unwrap();
+                *calls += 1;
+                if *calls == 1 {
+                    Ok(tool_response(ToolCall {
+                        id: "c1".into(),
+                        name: "fs_read".into(),
+                        arguments: serde_json::json!({"path": "x"}),
+                    }))
+                } else {
+                    let seen = self.seen.lock().unwrap();
+                    assert!(
+                        seen.iter().any(|t| t.contains("ToolCall")),
+                        "sink must see step-1 ToolCall before step 2 starts: {seen:?}"
+                    );
+                    assert!(
+                        seen.iter().any(|t| t.contains("ToolResult")),
+                        "sink must see step-1 ToolResult before step 2 starts: {seen:?}"
+                    );
+                    drop(seen);
+                    Ok(text_response("done"))
+                }
+            }
+        }
+
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let model = SinkAssertingModel {
+            seen: seen.clone(),
+            calls: Mutex::new(0),
+        };
+        let tools = RecordingTools {
+            calls: Mutex::new(Vec::new()),
+            progress: ProgressSignals::default(),
+        };
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            model_name: "mock".into(),
+            tool_definitions: vec![],
+            approval: None,
+        };
+
+        let sink_seen = seen.clone();
+        let mut sink = move |envelope: &nano_session::op::OpEnvelope| {
+            let label = format!("{:?}", envelope.op)
+                .split([' ', '('])
+                .next()
+                .unwrap_or("")
+                .to_string();
+            sink_seen.lock().unwrap().push(label);
+        };
+        let result = engine
+            .run_turn_streaming("t4", "read then reply", None, &mut sink)
+            .await;
+
+        assert_eq!(result.state, TurnState::Complete);
+        let seen = seen.lock().unwrap();
+        // Every journaled op also went through the sink, in order.
+        assert_eq!(seen.len(), result.ops.len());
+        assert!(seen.iter().any(|t| t.contains("TurnBegin")));
+        assert!(seen.iter().any(|t| t.contains("TurnEnd")));
+        // Sanity: labels really came from ops, not an empty stream.
+        assert!(seen.iter().any(|t| t.contains("ToolCall")));
+    }
+
+    #[tokio::test]
     async fn no_progress_stops_turn() {
         let call = ToolCall {
             id: "c1".into(),

@@ -100,7 +100,7 @@ pub fn run(nano_home: &std::path::Path, out: &mut dyn std::io::Write) -> std::io
         },
     });
 
-    let flux_key = crate::flux_key::flux_api_key().is_some();
+    let flux_key = nano_cli::flux_key::flux_api_key().is_some();
     checks.push(Check {
         name: "flux-credential",
         status: if flux_key {
