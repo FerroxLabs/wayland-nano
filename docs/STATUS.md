@@ -17,10 +17,10 @@
   + hash-pinned non-empty state diff, interrupted-call replay branch pinned,
   unified C3 evidence pack (canary 0/7, process inventory, raw protocol/DB
   artifacts), narrative reconciliation, gate logs attached.
-- Final panel state: C1 PROMOTE (both), C3 PROMOTE (both), C2 PROMOTE
-  (claude r3) — codex held C2 solely on C2.4 evidence preservation until
-  `shared/reviews/panel/c2-perf-live.json` (machine-readable live-agent RSS
-  artifact) was produced; confirmation pass in flight at this writing.
+- Final panel state: **UNANIMOUS — PROMOTE on C1, C2, C3 from both judges**
+  (codex's final C2.4 hold closed by `shared/reviews/panel/c2-perf-live.json`,
+  the machine-readable live-agent RSS artifact). Panel orientation:
+  `shared/reviews/panel/README.md`.
 - AWAITING OWNER ONLY: the 3 verdict signatures (C1/C2/C3) per SCORECARD §4.
 - Desktop lane bugs reported (their repo): orphaned custom-agent UI,
   assistants/customAgents spawn-key mismatch, broken `where` cli_check,
