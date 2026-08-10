@@ -26,14 +26,32 @@ pub fn run(nano_home: &std::path::Path, out: &mut dyn std::io::Write) -> std::io
         detail: format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH),
     });
 
-    checks.push(shell_check("cmd", "cmd.exe", &["/c", "echo nanok3"]));
-    checks.push(shell_check(
-        "powershell",
-        "powershell.exe",
-        &["-NoProfile", "-Command", "echo nanok3"],
-    ));
+    #[cfg(windows)]
+    {
+        checks.push(shell_check("cmd", "cmd.exe", &["/c", "echo nanok3"]));
+        checks.push(shell_check(
+            "powershell",
+            "powershell.exe",
+            &["-NoProfile", "-Command", "echo nanok3"],
+        ));
+    }
+    #[cfg(unix)]
+    checks.push(shell_check("sh", "sh", &["-c", "echo nanok3"]));
 
+    #[cfg(windows)]
     let setup_complete = nano_sandbox::identity::sandbox_setup_is_complete(nano_home);
+    #[cfg(unix)]
+    let setup_complete = nano_sandbox::get_platform_sandbox(false).is_some();
+    #[cfg(windows)]
+    let (setup_pass_detail, setup_warn_detail) = (
+        "setup marker + users present (v-matched)",
+        "not provisioned — elevated setup required for elevated/elevated-network flows",
+    );
+    #[cfg(unix)]
+    let (setup_pass_detail, setup_warn_detail) = (
+        "platform sandbox available (seatbelt/seccomp; no provisioning needed)",
+        "no platform sandbox available — shell tool fails closed",
+    );
     checks.push(Check {
         name: "sandbox-provisioning",
         status: if setup_complete {
@@ -42,9 +60,9 @@ pub fn run(nano_home: &std::path::Path, out: &mut dyn std::io::Write) -> std::io
             CheckStatus::Warn
         },
         detail: if setup_complete {
-            "setup marker + users present (v-matched)".into()
+            setup_pass_detail.into()
         } else {
-            "not provisioned — elevated setup required for elevated/elevated-network flows".into()
+            setup_warn_detail.into()
         },
     });
 
