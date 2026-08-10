@@ -1,0 +1,1 @@
+{"model":"flux-fast","max_tokens":2048,"stream":true,"messages":[{"role":"user","content":"Write a long detailed essay about the history of computing, at least 2000 words."}]}

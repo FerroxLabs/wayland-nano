@@ -1,0 +1,21 @@
+data: {"id":"1f75e9a8-1504-4300-b7dc-a66e3f06157a","created":1786323450,"model":"flux-fast","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"","role":"assistant"}}]}
+
+data: {"id":"1f75e9a8-1504-4300-b7dc-a66e3f06157a","object":"chat.completion.chunk","created":1786323450,"model":"flux-fast","choices":[{"index":0,"delta":{}}]}
+
+data: {"id":"1f75e9a8-1504-4300-b7dc-a66e3f06157a","created":1786323450,"model":"flux-fast","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"We"}}]}
+
+data: {"id":"1f75e9a8-1504-4300-b7dc-a66e3f06157a","created":1786323450,"model":"flux-fast","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":" need"}}]}
+
+data: {"id":"1f75e9a8-1504-4300-b7dc-a66e3f06157a","created":1786323450,"model":"flux-fast","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":" answer"}}]}
+
+data: {"id":"1f75e9a8-1504-4300-b7dc-a66e3f06157a","created":1786323450,"model":"flux-fast","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":" user"}}]}
+
+data: {"id":"1f75e9a8-1504-4300-b7dc-a66e3f06157a","created":1786323450,"model":"flux-fast","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":" asks"}}]}
+
+data: {"id":"1f75e9a8-1504-4300-b7dc-a66e3f06157a","created":1786323450,"model":"flux-fast","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":" write"}}]}
+
+data: {"id":"1f75e9a8-1504-4300-b7dc-a66e3f06157a","created":1786323450,"model":"flux-fast","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":" long"}}]}
+
+data: {"id":"1f75e9a8-1504-4300-b7dc-a66e3f06157a","created":1786323450,"model":"flux-fast","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":" detailed"}}]}
+
+data: {"id":"1f75e9a8-1504-4300-b7dc-a66e3f06157a","created":1786323450,"model":"flux-fast","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_

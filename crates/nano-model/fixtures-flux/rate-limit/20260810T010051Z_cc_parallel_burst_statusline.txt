@@ -1,0 +1,3 @@
+wave1: 80 parallel -> 57x200, 23x503, 0x429
+wave2: 120 parallel -> 73x200, 47x503, 0x429
+no Retry-After header on any response; 503 body is edge nginx HTML (non-JSON)

@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":null,"error":{"code":-32002,"message":"invalid bearer token","data":{"reason":"Flux Router error: Malformed API Key passed in. Ensure Key has `Bearer ` prefix."}}}

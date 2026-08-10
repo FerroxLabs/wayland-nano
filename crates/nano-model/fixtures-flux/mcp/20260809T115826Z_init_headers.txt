@@ -1,0 +1,17 @@
+HTTP/1.1 200 OK
+Date: Sun, 09 Aug 2026 11:58:48 GMT
+Content-Type: text/event-stream
+Transfer-Encoding: chunked
+Connection: keep-alive
+Cache-Control: no-cache, no-transform
+mcp-session-id: 34831ab9957d461bb45f28f1a06a4079
+x-frame-options: DENY
+content-security-policy: frame-ancestors 'none'
+x-content-type-options: nosniff
+strict-transport-security: max-age=31536000; includeSubDomains
+Nel: {"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}
+cf-cache-status: DYNAMIC
+Report-To: {"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=3d7XHQ45MYIAGkgDzce%2Fal7vgRjiEBQUE6e84jWxazKu4aeSaZPOljtOReEKD9lIF1bWAfqOeVAuRTexpKRHpNgE0rUz%2FznwULXUHksDBlfZhe%2F5Hxip9%2BGnEA6ZjaSCQbX2YyCyQ1Ww980OXs2q"}]}
+Server: cloudflare
+CF-RAY: a286974dcd3e7b44-BKK
+

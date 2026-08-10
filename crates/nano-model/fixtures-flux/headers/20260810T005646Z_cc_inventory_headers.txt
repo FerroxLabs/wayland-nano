@@ -1,0 +1,61 @@
+HTTP/1.1 200 OK
+Date: Mon, 10 Aug 2026 00:57:33 GMT
+Content-Type: application/json
+Content-Length: 635
+Connection: keep-alive
+x-litellm-call-id: c0764410-27f5-4ae0-92c7-c99ae2176087
+x-litellm-model-id: 5d73369707efdb13e6d6507d1dadb5cb762e91cf43af9b62fd74b23e7b565bf6
+x-litellm-model-api-base: https://api.deepseek.com/v1
+x-litellm-version: 1.92.0
+x-litellm-response-cost: 1.652e-05
+x-litellm-response-cost-original: 1.652e-05
+x-litellm-response-cost-discount-amount: 0.0
+x-litellm-response-cost-margin-amount: 0.0
+x-litellm-response-cost-margin-percent: 0.0
+x-litellm-key-max-budget: 1000000000.0
+x-litellm-key-spend: 25.552680873999968
+x-litellm-response-duration-ms: 1376.3890000000001
+x-litellm-overhead-duration-ms: 41.337
+x-litellm-callback-duration-ms: 0.0
+llm_provider-content-type: application/json
+llm_provider-transfer-encoding: chunked
+llm_provider-connection: keep-alive
+llm_provider-date: Mon, 10 Aug 2026 00:57:31 GMT
+llm_provider-server: elb
+llm_provider-content-encoding: gzip
+llm_provider-vary: origin, access-control-request-method, access-control-request-headers
+llm_provider-access-control-allow-credentials: true
+llm_provider-x-ds-trace-id: 56cce97cb5883fabf75462f269331b58
+llm_provider-strict-transport-security: max-age=31536000; includeSubDomains; preload
+llm_provider-x-content-type-options: nosniff
+llm_provider-x-cache: Miss from cloudfront
+llm_provider-via: 1.1 e92bd5ed15ad2881ff6e8d883af843e8.cloudfront.net (CloudFront)
+llm_provider-x-amz-cf-pop: JFK50-P12
+llm_provider-x-amz-cf-id: 18B-CMkqisxKws6bF20xQUJUXNcScpDobRWfPO8PRKXgMIwYhaU7Iw==
+x-litellm-model-group: deepseek-v4-flash
+x-litellm-attempted-retries: 0
+x-litellm-attempted-fallbacks: 0
+x-flux-engines-applied: r10_11_rtk_compactor,r10_2_semantic_cache,r10_4a_directives
+x-flux-routed-model: deepseek-v4-flash
+x-flux-available: 247802718
+x-flux-held: 31260
+x-flux-loop-engaged: none
+x-flux-model: deepseek-v4-flash
+x-flux-original-model: flux-fast
+x-flux-routed: true
+x-flux-request-id: 95d6f3a6-1b99-42c0-be46-40bdede50826
+x-flux-cost-usd: 0.000146
+x-flux-phase-latency: {"bandit_ms":3.68,"forge_pre_ms":427.56,"forge_post_ms":1385.15,"forge_total_ms":1812.7}
+x-flux-summarization-applied: false
+x-flux-tier-escalated: false
+x-flux-model-window: 1000000
+x-frame-options: DENY
+content-security-policy: frame-ancestors 'none'
+x-content-type-options: nosniff
+strict-transport-security: max-age=31536000; includeSubDomains
+Nel: {"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}
+cf-cache-status: DYNAMIC
+Report-To: {"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=V0FwfNRtibDdaeG2yATVsP1kvR4HRAU6%2FjK9%2FL%2B6%2FXV8uUPUT51LZuN7CW6AohDVWnh8TQ1EYAFowC9BOpE01Bl7sEtLKkC1b0ss0v9jlSWBGZ1vCkoddEaFGtCJ3AVTXOviidJq4OkCclhXDjh1"}]}
+Server: cloudflare
+CF-RAY: a28b0c000f09ee52-BKK
+

@@ -1,5 +1,7 @@
 //! Fixture-replay tests: parse the recorded Flux traffic captured by
-//! scripts/flux-probe (shared/fixtures/flux/) — deterministic, no network.
+//! scripts/flux-probe. Reads the crate's vendored snapshot (fixtures-flux/,
+//! a verbatim copy of shared/fixtures/flux) so standalone checkouts and CI
+//! are self-contained — deterministic, no network.
 
 use crate::flux_completions::{
     build_request_body, classify_status, parse_completion_body, parse_sse_completion_stream,
@@ -7,7 +9,7 @@ use crate::flux_completions::{
 use crate::types::{Message, ModelError, ModelEvent, ModelRequest, Role};
 
 fn newest_file(dir: &str, suffix: &str) -> String {
-    let full = format!("../../../shared/fixtures/flux/{dir}");
+    let full = format!("{}/fixtures-flux/{dir}", env!("CARGO_MANIFEST_DIR"));
     let mut files: Vec<_> = std::fs::read_dir(&full)
         .unwrap_or_else(|e| panic!("fixture dir {full}: {e}"))
         .filter_map(|e| e.ok())

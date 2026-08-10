@@ -1,0 +1,1 @@
+curl pipeline exit (head-close abort): 0

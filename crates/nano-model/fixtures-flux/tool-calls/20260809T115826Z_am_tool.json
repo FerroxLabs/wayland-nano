@@ -1,0 +1,1 @@
+{"id":"msg_4fd7bd6a89ff623bebfb4b7b","type":"message","role":"assistant","model":"qwen-plus","content":[{"type":"tool_use","id":"call_164fb2cf219d46009e0ca8","name":"get_weather","input":{"city":"Paris"}}],"stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":156,"output_tokens":19,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}

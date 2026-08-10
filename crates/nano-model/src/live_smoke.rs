@@ -1,7 +1,10 @@
 //! Live Flux smoke tests — gated on FLUX_TEST_KEY in the environment.
 //! Ignored by default (paid network calls); run explicitly:
 //!   FLUX_TEST_KEY=$(cat ../../.secrets/flux-test-key) cargo test -p nano-model -- --ignored
-//! Results are recorded back into shared/fixtures/flux as live evidence.
+//! Results are recorded as live evidence. In the monorepo layout they land in
+//! shared/fixtures/flux (the evidence store of record); standalone checkouts
+//! write into the crate's vendored snapshot (fixtures-flux/) — copy new
+//! recordings back to shared/fixtures/flux when running from a full checkout.
 
 use crate::flux_completions::FluxCompletionsClient;
 use crate::types::{Message, ModelEvent, ModelRequest};
@@ -14,7 +17,15 @@ fn key() -> Option<String> {
 }
 
 fn record(name: &str, content: &str) {
-    let dir = "../../../shared/fixtures/flux/client-smoke";
+    // Prefer the monorepo evidence store when present; otherwise the vendored
+    // snapshot (standalone checkout / CI). See module header.
+    let shared = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../shared/fixtures/flux/client-smoke");
+    let vendored = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures-flux/client-smoke");
+    let dir = if std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../shared/fixtures/flux")).exists() {
+        shared
+    } else {
+        vendored
+    };
     std::fs::create_dir_all(dir).expect("fixture dir");
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

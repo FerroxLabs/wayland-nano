@@ -1,0 +1,93 @@
+event: response.created
+data: {"response": {"id": "resp_9e9f295749f34b61b467dc4e", "object": "response", "created_at": 1786276712, "model": "flux-fast", "status": "in_progress", "output": []}, "type": "response.created", "sequence_number": 0}
+
+event: response.in_progress
+data: {"response": {"id": "resp_9e9f295749f34b61b467dc4e", "object": "response", "created_at": 1786276712, "model": "flux-fast", "status": "in_progress", "output": []}, "type": "response.in_progress", "sequence_number": 1}
+
+event: response.output_item.added
+data: {"output_index": 0, "item": {"id": "rs_dcd1db13", "type": "reasoning", "status": "in_progress", "summary": [], "encrypted_content": null}, "type": "response.output_item.added", "sequence_number": 2}
+
+event: response.reasoning_summary_text.delta
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "delta": "We", "type": "response.reasoning_summary_text.delta", "sequence_number": 3}
+
+event: response.reasoning_summary_text.delta
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "delta": " need", "type": "response.reasoning_summary_text.delta", "sequence_number": 4}
+
+event: response.reasoning_summary_text.delta
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "delta": " answer", "type": "response.reasoning_summary_text.delta", "sequence_number": 5}
+
+event: response.reasoning_summary_text.delta
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "delta": " simple", "type": "response.reasoning_summary_text.delta", "sequence_number": 6}
+
+event: response.reasoning_summary_text.delta
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "delta": ".", "type": "response.reasoning_summary_text.delta", "sequence_number": 7}
+
+event: response.reasoning_summary_text.delta
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "delta": " Count", "type": "response.reasoning_summary_text.delta", "sequence_number": 8}
+
+event: response.reasoning_summary_text.delta
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "delta": " ", "type": "response.reasoning_summary_text.delta", "sequence_number": 9}
+
+event: response.reasoning_summary_text.delta
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "delta": "1", "type": "response.reasoning_summary_text.delta", "sequence_number": 10}
+
+event: response.reasoning_summary_text.delta
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "delta": " to", "type": "response.reasoning_summary_text.delta", "sequence_number": 11}
+
+event: response.reasoning_summary_text.delta
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "delta": " ", "type": "response.reasoning_summary_text.delta", "sequence_number": 12}
+
+event: response.reasoning_summary_text.delta
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "delta": "3", "type": "response.reasoning_summary_text.delta", "sequence_number": 13}
+
+event: response.reasoning_summary_text.delta
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "delta": " one", "type": "response.reasoning_summary_text.delta", "sequence_number": 14}
+
+event: response.reasoning_summary_text.delta
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "delta": " per", "type": "response.reasoning_summary_text.delta", "sequence_number": 15}
+
+event: response.reasoning_summary_text.delta
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "delta": " line", "type": "response.reasoning_summary_text.delta", "sequence_number": 16}
+
+event: response.reasoning_summary_text.delta
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "delta": ".", "type": "response.reasoning_summary_text.delta", "sequence_number": 17}
+
+event: response.output_item.added
+data: {"output_index": 1, "item": {"id": "msg_3868f437", "type": "message", "role": "assistant", "status": "in_progress", "content": []}, "type": "response.output_item.added", "sequence_number": 18}
+
+event: response.content_part.added
+data: {"item_id": "msg_3868f437", "output_index": 1, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": []}, "type": "response.content_part.added", "sequence_number": 19}
+
+event: response.output_text.delta
+data: {"item_id": "msg_3868f437", "output_index": 1, "content_index": 0, "delta": "1", "type": "response.output_text.delta", "sequence_number": 20}
+
+event: response.output_text.delta
+data: {"item_id": "msg_3868f437", "output_index": 1, "content_index": 0, "delta": "\n", "type": "response.output_text.delta", "sequence_number": 21}
+
+event: response.output_text.delta
+data: {"item_id": "msg_3868f437", "output_index": 1, "content_index": 0, "delta": "2", "type": "response.output_text.delta", "sequence_number": 22}
+
+event: response.output_text.delta
+data: {"item_id": "msg_3868f437", "output_index": 1, "content_index": 0, "delta": "\n", "type": "response.output_text.delta", "sequence_number": 23}
+
+event: response.output_text.delta
+data: {"item_id": "msg_3868f437", "output_index": 1, "content_index": 0, "delta": "3", "type": "response.output_text.delta", "sequence_number": 24}
+
+event: response.reasoning_summary_text.done
+data: {"item_id": "rs_dcd1db13", "output_index": 0, "summary_index": 0, "text": "We need answer simple. Count 1 to 3 one per line.", "type": "response.reasoning_summary_text.done", "sequence_number": 25}
+
+event: response.output_item.done
+data: {"output_index": 0, "item": {"id": "rs_dcd1db13", "type": "reasoning", "status": "completed", "summary": [{"type": "summary_text", "text": "We need answer simple. Count 1 to 3 one per line."}], "encrypted_content": null}, "type": "response.output_item.done", "sequence_number": 26}
+
+event: response.output_text.done
+data: {"item_id": "msg_3868f437", "output_index": 1, "content_index": 0, "text": "1\n2\n3", "type": "response.output_text.done", "sequence_number": 27}
+
+event: response.content_part.done
+data: {"item_id": "msg_3868f437", "output_index": 1, "content_index": 0, "part": {"type": "output_text", "text": "1\n2\n3", "annotations": []}, "type": "response.content_part.done", "sequence_number": 28}
+
+event: response.output_item.done
+data: {"output_index": 1, "item": {"id": "msg_3868f437", "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "1\n2\n3", "annotations": []}]}, "type": "response.output_item.done", "sequence_number": 29}
+
+event: response.completed
+data: {"response": {"id": "resp_9e9f295749f34b61b467dc4e", "object": "response", "created_at": 1786276712, "completed_at": 1786276712, "model": "flux-fast", "status": "completed", "output": [{"id": "rs_dcd1db13", "type": "reasoning", "status": "completed", "summary": [{"type": "summary_text", "text": "We need answer simple. Count 1 to 3 one per line."}], "encrypted_content": null}, {"id": "msg_3868f437", "type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "1\n2\n3", "annotations": []}]}], "usage": {"input_tokens": 96, "output_tokens": 21, "total_tokens": 117, "input_tokens_details": {"cached_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 15}}, "metadata": null, "incomplete_details": null, "error": null, "instructions": null, "max_output_tokens": 512, "temperature": null, "top_p": null, "previous_response_id": null, "reasoning": {"effort": null, "summary": null}, "text": {"format": {"type": "text"}}, "tool_choice": "auto", "tools": [], "store": false, "user": null}, "type": "response.completed", "sequence_number": 30}
+

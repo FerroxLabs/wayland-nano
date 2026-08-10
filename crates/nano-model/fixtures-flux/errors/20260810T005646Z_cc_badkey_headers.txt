@@ -1,0 +1,15 @@
+HTTP/1.1 500 Internal Server Error
+Date: Mon, 10 Aug 2026 00:56:49 GMT
+Content-Type: application/json
+Content-Length: 271
+Connection: keep-alive
+x-frame-options: DENY
+content-security-policy: frame-ancestors 'none'
+x-content-type-options: nosniff
+strict-transport-security: max-age=31536000; includeSubDomains
+Nel: {"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}
+cf-cache-status: DYNAMIC
+Report-To: {"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=N%2FjDCLj8dmxjHYn%2FYNScjRLgPvhTHFsm5dzy7OOF7A9tW%2FcAQKspbzNjLJkj3Otq5Qp%2FFkVKoVX3An9fXDujVsZLqhRt2wkmv3wpFFAY%2ByFhrztR5g0H6zezPCt8SyTSo3jNPsGshSzY0oe%2FjvLU"}]}
+Server: cloudflare
+CF-RAY: a28b0afb7ba17b44-BKK
+

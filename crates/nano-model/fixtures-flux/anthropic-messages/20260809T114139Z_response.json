@@ -1,0 +1,1 @@
+{"id":"msg_2c28e3236291451f5d904230","type":"message","role":"assistant","model":"kimi-k2.6","content":[{"type":"text","text":""}],"stop_reason":"max_tokens","stop_sequence":null,"usage":{"input_tokens":14,"output_tokens":16,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}

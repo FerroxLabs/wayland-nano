@@ -1,0 +1,26 @@
+[
+    ReasoningDelta(
+        "We need to respond exactly \"ok\". No other words.",
+    ),
+    TextDelta(
+        "ok",
+    ),
+    Done {
+        stop_reason: "stop",
+    },
+    Usage(
+        Usage {
+            input_tokens: 90,
+            output_tokens: 14,
+            cached_input_tokens: Some(
+                0,
+            ),
+            reasoning_tokens: Some(
+                12,
+            ),
+            cost_usd: Some(
+                0.000146,
+            ),
+        },
+    ),
+]

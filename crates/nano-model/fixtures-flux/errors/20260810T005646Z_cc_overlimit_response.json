@@ -1,0 +1,1 @@
+{"error":{"message":"context_window_exceeded","type":"None","param":"None","code":"413","provider_specific_fields":{"error":"context_window_exceeded","reason":"Request needs ~10000008 tokens (input + output headroom) but exceeds the context window of every model eligible for this tier.","required_tokens":10000008}}}

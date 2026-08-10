@@ -1,0 +1,74 @@
+[
+    ReasoningDelta(
+        "We",
+    ),
+    ReasoningDelta(
+        " need",
+    ),
+    ReasoningDelta(
+        " answer",
+    ),
+    ReasoningDelta(
+        " simple",
+    ),
+    ReasoningDelta(
+        ".",
+    ),
+    ReasoningDelta(
+        " Count",
+    ),
+    ReasoningDelta(
+        " ",
+    ),
+    ReasoningDelta(
+        "1",
+    ),
+    ReasoningDelta(
+        " to",
+    ),
+    ReasoningDelta(
+        " ",
+    ),
+    ReasoningDelta(
+        "3",
+    ),
+    ReasoningDelta(
+        " one",
+    ),
+    ReasoningDelta(
+        " per",
+    ),
+    ReasoningDelta(
+        " line",
+    ),
+    ReasoningDelta(
+        ".",
+    ),
+    TextDelta(
+        "1",
+    ),
+    TextDelta(
+        "\n",
+    ),
+    TextDelta(
+        "2",
+    ),
+    TextDelta(
+        "\n",
+    ),
+    TextDelta(
+        "3",
+    ),
+    Done {
+        stop_reason: "stop",
+    },
+    Usage(
+        Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cached_input_tokens: None,
+            reasoning_tokens: None,
+            cost_usd: None,
+        },
+    ),
+]

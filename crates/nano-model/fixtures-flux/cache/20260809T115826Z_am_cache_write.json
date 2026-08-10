@@ -1,0 +1,1 @@
+{"id":"msg_08d928c647e9359217b34eb5","type":"message","role":"assistant","model":"MiniMax-M3","content":[{"type":"text","text":"Ok."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":764,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":128}}
