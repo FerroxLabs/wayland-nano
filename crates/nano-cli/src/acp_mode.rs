@@ -8,7 +8,7 @@ use nano_egress::client::EgressClient;
 use nano_model::flux_completions::FluxCompletionsClient;
 use nano_model::types::Usage;
 use nano_protocol::acp::{
-    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, agent_capabilities,
+    JsonRpcRequest, JsonRpcResponse, agent_capabilities,
     agent_message_chunk, prompt_result, session_new_result, tool_call_done, tool_call_update,
 };
 use nano_tools::fs::FsTools;
@@ -119,12 +119,11 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
                 let session_id = active.id.clone();
                 let workspace = active.workspace.clone();
 
-                let (events, usage, stop_reason) =
+                let (_events, usage, stop_reason) =
                     run_acp_turn(&mut writer, &session_id, &workspace, nano_home, &api_key, &text)
                         .await?;
 
                 let _ = usage;
-                let _ = events;
                 write_json(
                     &mut writer,
                     &JsonRpcResponse::ok(request.id, prompt_result(&stop_reason)),
