@@ -238,7 +238,7 @@ README is corrected.
 | G-FLX-3 | Flux MCP `tools/call` | upstream catalog empty (COMP-FLX-011) — mercy-rule deferral, not engineering | Flux adds an invocable tool |
 | G-C2-1 | C2.3: Desktop-facing frame stream + <600s frame-cadence conformance test | **closed**: `streamed_turn_cadence_orders_frames_and_flushes_between_them` in nano-protocol host tests (order + per-frame flush asserted) | — |
 | G-C2-2 | C2.4: cold-start / idle-RSS / active-RSS for the agent path | **closed**: `docs/metrics/C2-metrics.md` via `nanok3-acp-profile` — spawn→ready median 5.41ms, initialize 0.02ms, ~3.16M frames/s codec throughput (measured, repro commands included) | — |
-| G-C3-1 | C3.1 full leg: **real** Desktop launches real runtime (negotiate→…→resume) | Desktop-side engine-kind work in the Desktop repo; engine-side proven (COMP-CLI-002/003); Desktop registration done, awaiting owner live conversation | owner + Desktop lane |
+| G-C3-1 | C3.1 full leg: **real** Desktop launches real runtime (negotiate→…→resume) | **closed** (2026-08-10): live CDP-driven run on dev build (wl-cdp @ 9f009f81) — picker `custom:nanok3` selected, fs_read tool card completed, streamed correct answer, 2 independent conversations. Evidence: `shared/reviews/C3/trackb-desktop-live-evidence.md` + screenshots. 3 Desktop bugs found+reported (orphaned custom-agent UI, assistants/customAgents spawn-key mismatch, broken `where` cli_check) | — |
 | G-CTR-1 | Frozen contract artifacts in `shared/contracts/` (capability profile, journal semantics, Flux endpoint contract, event types) | Track A has not produced them; Track B must adopt verbatim — catalog currently keys off SCORECARD/POINTER/FINDINGS | Track A P1 freeze |
 
 ## Maintenance rules

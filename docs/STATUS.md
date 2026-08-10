@@ -2,7 +2,25 @@
 
 ## Current position
 
-### 48H SPRINT STATE (2026-08-10, swarm-2 landing: bwrap + probes + live-wire fixes)
+### 48H SPRINT STATE (2026-08-10, C3 OWNER LEG DONE — live Desktop conversation)
+- **C3 LIVE LEG PASS**: real Desktop UI (wl-cdp dev build @ 9f009f81, CDP-driven)
+  ran Nano K3 end-to-end, two independent conversations: picker select → fs_read
+  tool card → streamed correct answer → completed. Evidence:
+  `shared/reviews/C3/trackb-desktop-live-evidence.md` + 5 screenshots + ACP
+  transcripts in `shared/reviews/C3/evidence/`. Driver scripts: `../../.tmp/cdp-drive/`.
+- **3 Desktop bugs found + reported** (in the manifest): (1) custom-agent
+  registration UI is orphaned (mount chain dead-ends; both entry links redirect
+  away); (2) spawn path reads `assistants` but detection reads `acp.customAgents`
+  — every custom agent spawns without its args/env (worked around via dual-key
+  registration; one-line Desktop fix suggested); (3) Test Connection's `where`
+  cli_check always fails on Windows absolute paths.
+- CDP recipe for future UI tests: `WAYLAND_CDP_PORT=9243` + scratch
+  `WAYLAND_DEV_PROFILE=WIN-CDP` on the wl-cdp worktree; Chromium ≥136 ignores
+  --remote-debugging-port on default profiles; packaged build fuses block it.
+- Remaining owner actions: elevated provisioning (C1.2), C2/C3 verdict
+  signatures, git remote for the 6-target CI matrix.
+
+### Previous state (2026-08-10, swarm-2 landing: bwrap + probes + live-wire fixes)
 - **BWRAP LANDED**: full modern Linux path (bwrap FS isolation → self re-exec
   `--apply-seccomp-then-exec`) in nanok3-linux-sandbox; bundled/system bwrap
   resolution, WSL1 detection, NANOK3_BWRAP_SHA256 pin. Linux parity code-complete;
