@@ -2,7 +2,31 @@
 
 ## Current position
 
-### 48H SPRINT STATE (2026-08-10, swarm landing: unix parity + adversarial + CI + packaging DONE)
+### 48H SPRINT STATE (2026-08-10, swarm-2 landing: bwrap + probes + live-wire fixes)
+- **BWRAP LANDED**: full modern Linux path (bwrap FS isolation → self re-exec
+  `--apply-seccomp-then-exec`) in nanok3-linux-sandbox; bundled/system bwrap
+  resolution, WSL1 detection, NANOK3_BWRAP_SHA256 pin. Linux parity code-complete;
+  runtime proof awaits hosted Linux leg.
+- **C1.2 HARNESS COMPLETE**: write-outside-root + uninstall-scope probes added
+  (gated, external-oracle); setup-idempotent vacuous-pass FIXED (refresh_marker_only
+  payload + tamper-detection oracle). aux.txt anomaly resolved: NOT a violation —
+  Win11 build 26200 no longer rejects reserved names at create; token+DACL
+  enforcement attaches to the resolved NT object regardless of spelling.
+- **LIVE-WIRE CORRECTIONS** (Flux batch-3 fixtures): auth fail = HTTP 500 +
+  auth_error (was: retried as Server); context overflow = HTTP 413; 429/Retry-After
+  never occurs (burst = edge 503 HTML); no x-wl-* headers (x-flux-*/x-litellm-*
+  instead). nano-model classifier + 4 fixture-replay tests landed. 402 shape
+  unverifiable with test key (documented substitution).
+- **C2 DEBT CLOSED**: frame-cadence test (order + per-frame flush) + C2-metrics.md
+  (spawn→ready 5.41ms median, initialize 0.02ms, ~3.16M frames/s codec throughput).
+- **NPM ACCEPTANCE PASS**: offline clean-prefix install, doctor exit 0, acp
+  initialize handshake, unsupported-platform refusal — packaging/npm/ACCEPTANCE.md.
+- **KNOWN FLAKE (debt)**: one transient red in adversarial_egress under full-
+  workspace parallelism (hostile-listener race); green in 2 consecutive reruns +
+  isolated runs. Harden listeners before trusting CI signal blindly.
+- Workspace: 2 consecutive full-suite runs green, clippy clean.
+
+### Previous state (2026-08-10, swarm landing: unix parity + adversarial + CI + packaging DONE)
 - **UNIX PARITY LANDED** (b68e7a9): macOS seatbelt + Linux landlock/seccomp ported
   into nano-sandbox; cargo check + clippy clean on linux-gnu + apple-darwin targets;
   22 builder tests run on Windows host. bwrap deferred (UPSTREAM.md TODO).
