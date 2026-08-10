@@ -2,7 +2,34 @@
 
 ## Current position
 
-### 48H SPRINT STATE (2026-08-10, C1 CLAIM POSTED — all three checkpoints claimed)
+### 48H SPRINT STATE (2026-08-11, PANEL AUDIT COMPLETE — corrective rounds closed)
+- External panel (codex + claude lenses; gemini disqualified — Google retired
+  the tier) audited the C1/C2/C3 claims adversarially over 4 rounds. Verdicts
+  archived in `shared/reviews/panel/` (codex-verdict.md, claude-verdict.md).
+- Round 1 dispute produced REAL corrective work: C1.2 probes re-aimed at the
+  offline identity (real blocked connect, junction/read denials as
+  NanoK3SandboxOffline), PID-scoped tree-kill, full uninstall lifecycle
+  (caught a stale-binary residue failure, fixed, zero-residue pass),
+  kill-mid-edit artifact, C3 restart→resume oracle via real session/load.
+- Round 3-4: REAL process-kill oracle (TerminateProcess mid-turn, clean-SHA
+  manifest at edb8e62), Desktop-style cadence watchdog (300s semantics, max
+  gap 11.2s), live active-agent RSS 13.6 MiB, C3.4 crash-boundary inventory
+  + hash-pinned non-empty state diff, interrupted-call replay branch pinned,
+  unified C3 evidence pack (canary 0/7, process inventory, raw protocol/DB
+  artifacts), narrative reconciliation, gate logs attached.
+- Final panel state: C1 PROMOTE (both), C3 PROMOTE (both), C2 PROMOTE
+  (claude r3) — codex held C2 solely on C2.4 evidence preservation until
+  `shared/reviews/panel/c2-perf-live.json` (machine-readable live-agent RSS
+  artifact) was produced; confirmation pass in flight at this writing.
+- AWAITING OWNER ONLY: the 3 verdict signatures (C1/C2/C3) per SCORECARD §4.
+- Desktop lane bugs reported (their repo): orphaned custom-agent UI,
+  assistants/customAgents spawn-key mismatch, broken `where` cli_check,
+  detector drops avatar; wl-cdp worktree @ cfc318ab has a transcript-
+  rendering regression (turns persist, nothing renders).
+- Debt: path_mask_allows/dacl_mask_allows ignore deny ACEs (donor semantics;
+  audit whether production deny flow can rely on a false return).
+
+### Previous state (2026-08-10, C1 CLAIM POSTED — all three checkpoints claimed)
 - **C1.2 FULL CRITERION: 12/12 PASS, elevated** (manifest
   `scripts/c12-proof/evidence/c12-manifest-20260810T211025Z.json`). Owner
   provisioned the box (accounts/group/firewall/WFP/marker). Final C1 claim
