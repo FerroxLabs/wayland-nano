@@ -225,9 +225,9 @@ README is corrected.
 
 | Gap ID | Requirement (contract ref) | Why open | Unblocked by |
 |---|---|---|---|
-| G-UNIX-1 | C1.2-equivalent containment on macOS (seatbelt) | **landed** (b68e7a9): `macos_seatbelt` + 3 `.sbpl` profiles ported, 22 builder tests green on host, `aarch64-apple-darwin` check+clippy clean | hosted macOS runner leg (matrix authored) |
-| G-UNIX-2 | C1.2-equivalent containment on Linux (landlock/seccomp, `nanok3-linux-sandbox` helper) | **landed** (b68e7a9 + bwrap pipeline): legacy landlock/seccomp + modern bwrap orchestration ported; `x86_64-unknown-linux-gnu` check+clippy clean; runtime proof pending hosted leg | hosted Linux runner leg (matrix authored) |
-| G-UNIX-3 | 6-target CI matrix (incl. ARM64 Windows — compile-gate only, not claimed without hardware) | **authored** (0ecf88a): win x64/arm64, macos-13/14, ubuntu x64/arm64 in `gate.yml`; not yet pushed to a remote | remote + first hosted run |
+| G-UNIX-1 | C1.2-equivalent containment on macOS (seatbelt) | **closed** (2026-08-10): runtime-proven on hosted macos-14 (arm64) + macos-15-intel (x64) legs — seatbelt enforcement tests green in CI run 31379610255 | — |
+| G-UNIX-2 | C1.2-equivalent containment on Linux (landlock/seccomp, `nanok3-linux-sandbox` helper) | **closed** (2026-08-10): runtime-proven on ubuntu-22.04 x64 + ubuntu-24.04-arm legs (bwrap default path; legacy landlock verified in WSL2); the escape hole CI caught was the profile, not the mechanism — fixed in b2f7ef1 | — |
+| G-UNIX-3 | 6-target CI matrix (incl. ARM64 Windows — compile-gate only, not claimed without hardware) | **closed** (2026-08-10): 6/6 green, run 31379610255 on FerroxLabs/wayland-nano-k3 | — |
 | G-ADV-1 | Adversarial formalization beyond the corpus: Track-B-owned adversarial cases (egress bypass attempts, journal fuzzing, policy confusion) | **closed**: 31 tests in `tests/adversarial_*.rs` (egress/fs/shell/sse); found+fixed 6 real holes (6e44921); corpus adversarial replay (COMP-CORPUS-004) covers Desktop's set | — |
 | G-PKG-1 | NPM packaging acceptance (pack/install/run from packed artifact; signing via NPM per owner) | **closed**: offline clean-prefix install + doctor + acp initialize + negative-platform checks all PASS — `packaging/npm/ACCEPTANCE.md` | — |
 | G-C12-1 | C1.2: write-outside-root probe in the live harness (README promises it) | **implemented** (gated): probe added to `Test-C12Proof.ps1`, external-oracle via sandboxed child; SKIP until provisioned | owner provisioning (runs for real) |

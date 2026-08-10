@@ -2,7 +2,25 @@
 
 ## Current position
 
-### 48H SPRINT STATE (2026-08-10, ACP live-I/O rework + full Desktop re-verification)
+### 48H SPRINT STATE (2026-08-10, CI MATRIX 6/6 GREEN — unix parity runtime-proven)
+- **ALL 6 LEGS GREEN** (run 31379610255, commit b2f7ef1): windows-latest x64,
+  windows-11-arm, macos-14 arm64, macos-15-intel x64, ubuntu-22.04 x64,
+  ubuntu-24.04-arm. Full gate: fmt, clippy -D warnings, complete test suite —
+  including seatbelt/bwrap/landlock RUNTIME enforcement tests and the
+  adversarial containment suite on real macOS/Linux runners. G-UNIX-1/2/3 closed.
+- Shakeout record (12 fixes): retired runner label, missing rustfmt/clippy
+  components, include! path resolution, corpus + flux fixtures vendored
+  (standalone-repo self-containment), doctor/shell cross-platform, 3
+  env-robust test fixes, 2 MCP sh twins, bin-build ordering, ubuntu-24.04
+  userns sysctl, seatbelt carveout determinism.
+- **CONTAINMENT HOLE FOUND + FIXED BY CI** (b2f7ef1): the unix shell tool used
+  donor-default workspace_write() which grants /tmp writes — adversarial
+  escape tests caught it on first real execution. Unix shell profile now
+  excludes TMPDIR//tmp writes. Verified in WSL2 against real bwrap 0.9.0 and
+  legacy landlock. NOTE: unix sandboxed shell can no longer write system temp.
+- CI watcher cron retired on green.
+
+### Previous state (2026-08-10, ACP live-I/O rework + full Desktop re-verification)
 - **ACP ADAPTER REWORKED** (9145348): frames now stream DURING the turn
   (TurnEngine event sink, not batch replay); session/cancel works (reader
   thread + per-session AtomicBool, stopReason cancelled); ApproveAll replaced
