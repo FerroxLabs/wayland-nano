@@ -121,6 +121,9 @@ impl SessionState {
             Op::CompactionCancel { .. } => {
                 self.compaction = Some(CompactionPhase::Idle);
             }
+            // Assistant text is transcript, not execution state: replay cares
+            // about open work and durable effects, not the wording of replies.
+            Op::AssistantText { .. } => {}
             Op::Unknown => {}
         }
     }

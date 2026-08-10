@@ -14,7 +14,9 @@
 use nano_agent::loop_protection::ProgressSignals;
 use nano_agent::turn::{ModelDriver, ToolExecutor, ToolOutcome};
 use nano_cli::acp_mode;
-use nano_model::types::{ModelError, ModelEvent, ModelRequest, ModelResponse, ToolCall, Usage};
+use nano_model::types::{
+    ContentBlock, ModelError, ModelEvent, ModelRequest, ModelResponse, Role, ToolCall, Usage,
+};
 use std::collections::VecDeque;
 use std::io::{BufRead, Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -102,12 +104,14 @@ struct MockDriver {
     script: Arc<Mutex<VecDeque<Step>>>,
     calls: Arc<AtomicU64>,
     release: tokio::sync::watch::Receiver<bool>,
+    requests: Arc<Mutex<Vec<ModelRequest>>>,
 }
 
 #[async_trait::async_trait]
 impl ModelDriver for MockDriver {
-    async fn complete(&self, _request: &ModelRequest) -> Result<ModelResponse, ModelError> {
+    async fn complete(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.requests.lock().unwrap().push(request.clone());
         let step = self
             .script
             .lock()
@@ -185,24 +189,48 @@ struct Harness {
     release: tokio::sync::watch::Sender<bool>,
     driver_calls: Arc<AtomicU64>,
     tool_calls: Arc<Mutex<Vec<ToolCall>>>,
+    model_requests: Arc<Mutex<Vec<ModelRequest>>>,
     handle: Option<std::thread::JoinHandle<std::io::Result<i32>>>,
     next_id: u64,
     session_id: String,
+    /// The initialize response, kept so tests can assert advertised caps.
+    init_response: serde_json::Value,
+}
+
+/// A unique temp dir per harness for the ACP session journals.
+fn temp_sessions_dir(tag: &str) -> std::path::PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir =
+        std::env::temp_dir().join(format!("nanok3-acp-live-{tag}-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp sessions dir");
+    dir
 }
 
 impl Harness {
     fn spawn(script: Vec<Step>) -> Self {
+        Self::spawn_with(script, &temp_sessions_dir("default"), true)
+    }
+
+    /// A fresh serve instance over the SAME sessions dir — the stand-in for a
+    /// process restart. `new_session` mirrors the client's flow: a fresh
+    /// conversation calls session/new; a resuming one goes straight to
+    /// session/load (Desktop's AcpConnection.resumeSession path).
+    fn spawn_with(script: Vec<Step>, sessions_dir: &std::path::Path, new_session: bool) -> Self {
         let (in_tx, in_rx) = std::sync::mpsc::channel::<String>();
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let (release_tx, release_rx) = tokio::sync::watch::channel(false);
         let driver_calls = Arc::new(AtomicU64::new(0));
         let tools = MockTools::default();
         let tool_calls = tools.calls.clone();
+        let model_requests = Arc::new(Mutex::new(Vec::new()));
         let driver = MockDriver {
             script: Arc::new(Mutex::new(script.into())),
             calls: driver_calls.clone(),
             release: release_rx,
+            requests: model_requests.clone(),
         };
+        let sessions_dir = sessions_dir.to_path_buf();
         let handle = std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -219,6 +247,7 @@ impl Harness {
                         tx: out_tx,
                         buf: Vec::new(),
                     },
+                    &sessions_dir,
                     move || driver.clone(),
                     move |_| tools.clone(),
                     "mock",
@@ -232,16 +261,20 @@ impl Harness {
             release: release_tx,
             driver_calls,
             tool_calls,
+            model_requests,
             handle: Some(handle),
             next_id: 1,
             session_id: String::new(),
+            init_response: serde_json::Value::Null,
         };
-        harness.session_id = harness.handshake();
+        harness.init_response = harness.initialize();
+        if new_session {
+            harness.session_id = harness.new_session();
+        }
         harness
     }
 
-    /// initialize + session/new, returning the session id.
-    fn handshake(&mut self) -> String {
+    fn initialize(&mut self) -> serde_json::Value {
         let init = self.request(
             "initialize",
             serde_json::json!({
@@ -250,6 +283,10 @@ impl Harness {
             }),
         );
         assert_eq!(init["result"]["protocolVersion"], 1, "init: {init}");
+        init
+    }
+
+    fn new_session(&mut self) -> String {
         let created = self.request(
             "session/new",
             serde_json::json!({ "cwd": ".", "mcpServers": [] }),
@@ -302,6 +339,21 @@ impl Harness {
             .recv_timeout(TIMEOUT)
             .expect("frame within timeout");
         serde_json::from_str(&line).expect("frame json")
+    }
+
+    /// Blocks until the mock driver has been called `n` times — i.e. the
+    /// engine really is parked inside the nth model call. Gating on this
+    /// (not on a frame's arrival) is what makes the mid-turn cancel tests
+    /// deterministic.
+    fn wait_for_driver_calls(&self, n: u64) {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while self.driver_calls.load(Ordering::SeqCst) < n {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "driver call count {n} not reached within timeout"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// Reads frames until `pred` matches; the matching frame is the last
@@ -429,8 +481,11 @@ fn cancel_mid_turn_answers_cancelled_and_stops_stream() {
     let session_id = client.session_id.clone();
     let prompt_id = client.send_prompt(&session_id, "read everything");
 
-    // First tool frame landed; the model is parked on step 2.
+    // First tool frame landed; wait until the model is REALLY parked inside
+    // the second call (a frame's arrival alone does not prove the engine has
+    // looped around to it — journaling I/O can shift that timing).
     client.read_until(is_tool_call);
+    client.wait_for_driver_calls(2);
 
     // Cancel while the model call is in flight, then let it return.
     client.send(serde_json::json!({
@@ -553,4 +608,168 @@ fn permission_round_trip_denies_write_and_skips_reads() {
         vec!["fs_read".to_string()],
         "malformed permission response must deny (fail-closed): fs_edit never runs"
     );
+}
+
+// ── session/load resume ────────────────────────────────────────────────
+
+/// The honesty gate for `loadSession: true`: a turn journaled by one serve
+/// instance is restored by a NEW serve instance over the same sessions dir
+/// (the process boundary), the replay arrives in order with final statuses,
+/// and the follow-up prompt's model request provably carries the prior
+/// turn's context — resume, not just replay.
+#[test]
+fn session_load_restores_context_across_serve_instances() {
+    let sessions_dir = temp_sessions_dir("resume");
+    let session_id;
+    // First "process": one turn (read + answer), then stdin EOF ends it.
+    {
+        let mut client = Harness::spawn_with(
+            vec![
+                Step::Respond(tool_response(tool_call(
+                    "c1",
+                    "fs_read",
+                    serde_json::json!({"path": "note.txt"}),
+                ))),
+                Step::Respond(text_response("the note says hello")),
+            ],
+            &sessions_dir,
+            true,
+        );
+        session_id = client.session_id.clone();
+        assert_ne!(
+            session_id,
+            format!("nanok3-session-{}", std::process::id()),
+            "session ids must not be pid-based"
+        );
+        let prompt_id = client.send_prompt(&session_id, "what does the note say?");
+        let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id));
+        assert_eq!(frames.last().unwrap()["result"]["stopReason"], "end_turn");
+    } // drop: EOF → clean exit; the journal is all that survives
+
+    // Second "process": same sessions dir, no session/new — straight to load,
+    // exactly Desktop's resume path (AcpConnection.resumeSession).
+    let mut client = Harness::spawn_with(
+        vec![Step::Respond(text_response("you quoted it earlier"))],
+        &sessions_dir,
+        false,
+    );
+    // The capability this whole test justifies advertising.
+    assert_eq!(
+        client.init_response["result"]["agentCapabilities"]["loadSession"], true,
+        "loadSession must only be advertised once resume is proven: {}",
+        client.init_response
+    );
+
+    // Unknown id: typed error, no panic, host stays usable afterwards.
+    let missing = client.request(
+        "session/load",
+        serde_json::json!({
+            "sessionId": "nanok3-session-never-existed",
+            "cwd": ".",
+            "mcpServers": []
+        }),
+    );
+    assert_eq!(
+        missing["error"]["code"], -32602,
+        "unknown session must be a typed error Desktop can fall back on: {missing}"
+    );
+
+    // Known id: replay notifications arrive IN JOURNAL ORDER, before the
+    // load response resolves.
+    let load_id = client.next_id;
+    client.next_id += 1;
+    client.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": load_id,
+        "method": "session/load",
+        "params": { "sessionId": session_id, "cwd": ".", "mcpServers": [] },
+    }));
+    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(load_id));
+    let response = frames.last().unwrap();
+    assert!(
+        response.get("error").is_none() && response.get("result").is_some(),
+        "load of a known session must succeed: {response}"
+    );
+    let replay = &frames[..frames.len() - 1];
+    let kinds: Vec<&str> = replay
+        .iter()
+        .map(|f| {
+            f["params"]["update"]["sessionUpdate"]
+                .as_str()
+                .unwrap_or("not-a-session-update")
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "user_message_chunk",
+            "tool_call",
+            "tool_call_update",
+            "agent_message_chunk"
+        ],
+        "replay frames, in order: {frames:?}"
+    );
+    assert_eq!(
+        replay[0]["params"]["update"]["content"]["text"],
+        "what does the note say?"
+    );
+    assert_eq!(replay[1]["params"]["update"]["toolCallId"], "c1");
+    assert_eq!(replay[1]["params"]["update"]["status"], "completed");
+    assert_eq!(replay[2]["params"]["update"]["toolCallId"], "c1");
+    assert_eq!(replay[2]["params"]["update"]["status"], "completed");
+    assert_eq!(
+        replay[3]["params"]["update"]["content"]["text"],
+        "the note says hello"
+    );
+
+    // The decisive assertion: the NEXT prompt's model request must contain
+    // the prior turn's context — user text, assistant text, tool use and a
+    // (digest-elided) tool result — proving resume, not just replay.
+    let prompt_id = client.send_prompt(&session_id, "what did it say again?");
+    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id));
+    assert_eq!(frames.last().unwrap()["result"]["stopReason"], "end_turn");
+    let requests = client.model_requests.lock().unwrap();
+    assert_eq!(
+        requests.len(),
+        1,
+        "one scripted model call for the follow-up"
+    );
+    let messages = &requests[0].messages;
+    assert!(
+        messages.iter().any(|m| matches!(&m.role, Role::User)
+            && m.content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text } if text == "what does the note say?")
+            )),
+        "prior user turn must be in the model request: {messages:?}"
+    );
+    assert!(
+        messages.iter().any(|m| matches!(&m.role, Role::Assistant)
+            && m.content.iter().any(
+                |b| matches!(b, ContentBlock::Text { text } if text == "the note says hello")
+            )),
+        "prior assistant text must be in the model request: {messages:?}"
+    );
+    assert!(
+        messages.iter().any(|m| m.content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { id, name, .. } if id == "c1" && name == "fs_read"))),
+        "prior tool use must be in the model request: {messages:?}"
+    );
+    assert!(
+        messages.iter().any(|m| matches!(&m.role, Role::Tool)
+            && m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolResult { tool_use_id, is_error, .. } if tool_use_id == "c1" && !is_error))),
+        "prior tool result must be in the model request: {messages:?}"
+    );
+    let last = messages.last().expect("at least the new prompt");
+    assert!(
+        matches!(&last.role, Role::User)
+            && matches!(&last.content[0], ContentBlock::Text { text } if text == "what did it say again?"),
+        "the new prompt must be the final message: {last:?}"
+    );
+    drop(requests);
+
+    drop(client); // EOF → clean exit before the temp dir goes away
+    let _ = std::fs::remove_dir_all(&sessions_dir);
 }

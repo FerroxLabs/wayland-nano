@@ -4,6 +4,8 @@
 //! Evidence-based subset (from Desktop's AcpConnection.ts + @agentclientprotocol/sdk 0.18.2):
 //! - initialize: protocolVersion 1, clientCapabilities.fs
 //! - session/new: {cwd, mcpServers[]} → {sessionId}
+//! - session/load: {sessionId, cwd, mcpServers[]} → {modes} after replaying
+//!   the journaled transcript as session/update notifications
 //! - session/prompt: {sessionId, prompt:[{type:"text",text}]} → {stopReason}
 //! - session/cancel: notification {sessionId}
 //! - session/update: notification {sessionId, update:{sessionUpdate: kind, ...}}
@@ -91,7 +93,7 @@ pub fn agent_capabilities() -> serde_json::Value {
     serde_json::json!({
         "protocolVersion": ACP_PROTOCOL_VERSION,
         "agentCapabilities": {
-            "loadSession": false,
+            "loadSession": true,
             "promptCapabilities": {
                 "text": true,
                 "image": false,
@@ -114,6 +116,35 @@ pub fn session_new_result(session_id: &str) -> serde_json::Value {
             "currentModeId": "default"
         }
     })
+}
+
+/// session/load response. Per the ACP shape Desktop expects
+/// (AcpConnection.ts `loadSession`: "session/load returns
+/// modes/models/configOptions but not sessionId"), the loaded session keeps
+/// the id the client sent, so no sessionId is returned here.
+pub fn session_load_result() -> serde_json::Value {
+    serde_json::json!({
+        "modes": {
+            "availableModes": [{"id": "default", "name": "Default"}],
+            "currentModeId": "default"
+        }
+    })
+}
+
+/// A replayed user message (session/load history restore). Desktop ignores
+/// these (its local DB already shows the user's own messages) but real ACP
+/// agents emit them, so the replay is a faithful transcript.
+pub fn user_message_chunk(session_id: &str, text: &str) -> JsonRpcNotification {
+    JsonRpcNotification::new(
+        "session/update",
+        serde_json::json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "user_message_chunk",
+                "content": { "type": "text", "text": text }
+            }
+        }),
+    )
 }
 
 /// A streamed text chunk (the assistant's reply, incrementally).
@@ -147,6 +178,32 @@ pub fn tool_call_update(
                 "title": name,
                 "kind": tool_kind(name),
                 "status": "in_progress",
+                "rawInput": args
+            }
+        }),
+    )
+}
+
+/// A replayed tool call (session/load history restore): the same `tool_call`
+/// card shape as a live call, but already carrying its final status, since
+/// the work happened in a previous process lifetime.
+pub fn tool_call_replay(
+    session_id: &str,
+    call_id: &str,
+    name: &str,
+    args: &serde_json::Value,
+    ok: bool,
+) -> JsonRpcNotification {
+    JsonRpcNotification::new(
+        "session/update",
+        serde_json::json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": call_id,
+                "title": name,
+                "kind": tool_kind(name),
+                "status": if ok { "completed" } else { "failed" },
                 "rawInput": args
             }
         }),

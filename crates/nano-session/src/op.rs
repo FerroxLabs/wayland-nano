@@ -69,6 +69,15 @@ pub enum Op {
         output_digest: String,
         changed_files: Vec<String>,
     },
+    /// Assistant-visible reply text for a model step. Unlike tool output this
+    /// is content the agent itself produced for the user (it is streamed to
+    /// the client live anyway), so journaling it carries no payload the user
+    /// has not already seen; it is what lets a restored session rebuild the
+    /// assistant side of the conversation.
+    AssistantText {
+        turn_id: String,
+        text: String,
+    },
     TurnEnd {
         turn_id: String,
         outcome: TurnOutcome,

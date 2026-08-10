@@ -12,6 +12,12 @@
 //!   Read-only tools run without prompting, matching Desktop's Default mode
 //!   (read/search kinds are never confirmation-gated there). Any malformed,
 //!   absent, or non-allow response denies the call (fail-closed).
+//! - Every ACP session journals its ops to `<nano_home>/sessions/<id>.jsonl`;
+//!   `session/load` reads that journal, replays the transcript as historical
+//!   `session/update` notifications BEFORE answering, and restores the model
+//!   context so the next prompt continues with full prior history. Tool
+//!   outputs stay digest-only (the journal never carries payloads), so
+//!   restored tool results are marked elided rather than fabricated.
 
 use nano_agent::loop_protection::TurnBudget;
 use nano_agent::turn::{
@@ -20,12 +26,15 @@ use nano_agent::turn::{
 use nano_agent::wiring::{FluxDriver, RealToolExecutor, v1_tool_definitions};
 use nano_egress::client::EgressClient;
 use nano_model::flux_completions::FluxCompletionsClient;
-use nano_model::types::ToolCall;
+use nano_model::types::{ContentBlock, Message, Role, ToolCall};
 use nano_protocol::acp::{
-    JsonRpcResponse, agent_capabilities, agent_message_chunk, prompt_result,
-    request_permission_request, session_new_result, tool_call_done, tool_call_update,
+    JsonRpcNotification, JsonRpcResponse, agent_capabilities, agent_message_chunk, prompt_result,
+    request_permission_request, session_load_result, session_new_result, tool_call_done,
+    tool_call_replay, tool_call_update, user_message_chunk,
 };
 use nano_session::op::{Op, OpEnvelope};
+use nano_session::reader::read_journal;
+use nano_session::writer::JournalWriter;
 use nano_tools::fs::FsTools;
 use nano_tools::shell::ShellTool;
 use std::io::{BufRead, Write};
@@ -56,6 +65,36 @@ struct Session {
     id: String,
     workspace: std::path::PathBuf,
     cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// Append-only journal for this ACP session (`<sessions_dir>/<id>.jsonl`).
+    journal: std::path::PathBuf,
+    /// Turns started in this session (restored from the journal on load), so
+    /// turn ids — and therefore envelope ids — never collide across resumes.
+    turn_counter: u64,
+    /// Conversation context rebuilt from the journal; the next prompt starts
+    /// with these messages so the model sees the full prior history.
+    context: Vec<Message>,
+}
+
+/// ACP session ids are filesystem-safe (they name the journal file) and
+/// unique per session without embedding the pid: nanosecond clock plus a
+/// process-local counter.
+fn new_session_id() -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("nanok3-session-{nanos}-{n}")
+}
+
+/// Session ids name a journal file directly, so anything that could escape
+/// the sessions directory (or not round-trip as a filename) is rejected.
+fn is_fs_safe_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
@@ -67,6 +106,7 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     let reader = std::io::BufReader::new(std::io::stdin());
     let writer = std::io::stdout();
     let home = nano_home.to_path_buf();
+    let sessions = home.join("sessions");
     let make_driver = move || {
         FluxDriver::new(
             FluxCompletionsClient::new(EgressClient::flux()),
@@ -80,16 +120,27 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         let shell = ShellTool::new(&home, workspace);
         RealToolExecutor::new(fs, shell, workspace)
     };
-    serve(reader, writer, make_driver, make_tools, "flux-auto").await
+    serve(
+        reader,
+        writer,
+        &sessions,
+        make_driver,
+        make_tools,
+        "flux-auto",
+    )
+    .await
 }
 
 /// The ACP host loop, generic over the byte streams and the model/tool
 /// factories so integration tests can drive it in-process with scripted
 /// doubles. `make_driver`/`make_tools` build a fresh pair per prompt (tools
-/// are anchored to the session workspace).
+/// are anchored to the session workspace). `sessions_dir` is the journal
+/// root: each ACP session appends its ops to `<sessions_dir>/<id>.jsonl`,
+/// which is what `session/load` later restores from.
 pub async fn serve<R, W, FD, FT, D, T>(
     reader: R,
     writer: W,
+    sessions_dir: &std::path::Path,
     make_driver: FD,
     make_tools: FT,
     model_name: &str,
@@ -189,7 +240,31 @@ where
                                 .and_then(|c| c.as_str())
                                 .map(std::path::PathBuf::from)
                                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-                            let session_id = format!("nanok3-session-{}", std::process::id());
+                            let session_id = new_session_id();
+                            let journal = sessions_dir.join(format!("{session_id}.jsonl"));
+                            // Fail closed: a session we cannot journal is a
+                            // session we could not honestly resume later.
+                            let journaled = JournalWriter::open(&journal).and_then(|mut w| {
+                                w.append(&OpEnvelope::new(
+                                    format!("{session_id}-begin-1"),
+                                    "now",
+                                    Op::SessionBegin {
+                                        session_id: session_id.clone(),
+                                        cwd: cwd.display().to_string(),
+                                    },
+                                ))
+                            });
+                            if let Err(err) = journaled {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32603,
+                                        format!("cannot open session journal: {err}"),
+                                    ),
+                                )?;
+                                continue;
+                            }
                             let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                             *current_cancel.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(cancel.clone());
@@ -197,8 +272,119 @@ where
                                 id: session_id.clone(),
                                 workspace: cwd,
                                 cancel,
+                                journal,
+                                turn_counter: 0,
+                                context: Vec::new(),
                             });
                             write_out(&out, &JsonRpcResponse::ok(id, session_new_result(&session_id)))?;
+                        }
+                        "session/load" => {
+                            if turn.is_some() {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(id, -32602, "turn in progress"),
+                                )?;
+                                continue;
+                            }
+                            let params = params.unwrap_or_default();
+                            let Some(session_id) =
+                                params.get("sessionId").and_then(|s| s.as_str())
+                            else {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32602,
+                                        "session/load requires a sessionId",
+                                    ),
+                                )?;
+                                continue;
+                            };
+                            if !is_fs_safe_session_id(session_id) {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(id, -32602, "invalid session id"),
+                                )?;
+                                continue;
+                            }
+                            let cwd = params
+                                .get("cwd")
+                                .and_then(|c| c.as_str())
+                                .map(std::path::PathBuf::from)
+                                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                            let journal = sessions_dir.join(format!("{session_id}.jsonl"));
+                            // Unknown session: typed error, no fallback theatre —
+                            // Desktop catches this and self-heals via session/new
+                            // (AcpConnection.ts `resumeSession`).
+                            if !journal.exists() {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32602,
+                                        format!("session not found: {session_id}"),
+                                    ),
+                                )?;
+                                continue;
+                            }
+                            // A corrupt journal fails loudly (never silently
+                            // resumes from a partial or forged history).
+                            let report = match read_journal(&journal) {
+                                Ok(report) => report,
+                                Err(err) => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err(
+                                            id,
+                                            -32603,
+                                            format!("session journal unreadable: {err}"),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                            };
+                            // Replay the transcript BEFORE the response: Desktop
+                            // holds its bootstrap gate until session/load
+                            // resolves, so these historical updates are not
+                            // re-persisted as fresh rows.
+                            for notification in replay_frames(session_id, &report.envelopes) {
+                                write_out(&out, &notification)?;
+                            }
+                            let turn_counter = report
+                                .envelopes
+                                .iter()
+                                .filter(|e| matches!(e.op, Op::TurnBegin { .. }))
+                                .count() as u64;
+                            let begin_count = report
+                                .envelopes
+                                .iter()
+                                .filter(|e| matches!(e.op, Op::SessionBegin { .. }))
+                                .count();
+                            // A fresh SessionBegin marks the resume in the
+                            // journal itself (audit trail, and it refreshes cwd).
+                            if let Ok(mut writer) = JournalWriter::open(&journal) {
+                                let _ = writer.append(&OpEnvelope::new(
+                                    format!("{session_id}-begin-{}", begin_count + 1),
+                                    "now",
+                                    Op::SessionBegin {
+                                        session_id: session_id.to_string(),
+                                        cwd: cwd.display().to_string(),
+                                    },
+                                ));
+                            }
+                            let context = messages_from_envelopes(&report.envelopes);
+                            let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                            *current_cancel.lock().unwrap_or_else(|p| p.into_inner()) =
+                                Some(cancel.clone());
+                            session = Some(Session {
+                                id: session_id.to_string(),
+                                workspace: cwd,
+                                cancel,
+                                journal,
+                                turn_counter,
+                                context,
+                            });
+                            write_out(&out, &JsonRpcResponse::ok(id, session_load_result()))?;
                         }
                         "session/prompt" => {
                             if turn.is_some() {
@@ -208,7 +394,7 @@ where
                                 )?;
                                 continue;
                             }
-                            let Some(active) = session.as_ref() else {
+                            let Some(active) = session.as_mut() else {
                                 write_out(
                                     &out,
                                     &JsonRpcResponse::err(id, -32602, "no session: call session/new first"),
@@ -230,6 +416,25 @@ where
                             // A fresh prompt starts un-cancelled; a cancel that
                             // landed between turns must not poison this one.
                             active.cancel.store(false, Ordering::SeqCst);
+                            active.turn_counter += 1;
+                            let turn_id = format!("{}-turn-{}", active.id, active.turn_counter);
+                            let prior_context = active.context.clone();
+                            // Fail closed: a turn we cannot journal is a turn
+                            // that would silently break a later resume.
+                            let journal_writer = match JournalWriter::open(&active.journal) {
+                                Ok(writer) => writer,
+                                Err(err) => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err(
+                                            id,
+                                            -32603,
+                                            format!("cannot open session journal: {err}"),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                            };
                             prompt_id = Some(id);
                             turn_session = active.id.clone();
                             let session_id = active.id.clone();
@@ -262,16 +467,25 @@ where
                                     approval: Some(&gate),
                                 };
                                 let sink_session = session_id.clone();
+                                let mut journal_writer = journal_writer;
                                 let mut sink = move |envelope: &OpEnvelope| {
+                                    // Journal first: the durable record leads
+                                    // the live frame, never the other way.
+                                    if let Err(err) = journal_writer.append(envelope) {
+                                        eprintln!(
+                                            "nanok3: session journal append failed: {err}"
+                                        );
+                                    }
                                     let mut guard =
                                         sink_out.lock().unwrap_or_else(|p| p.into_inner());
                                     let _ =
                                         write_op_frame(&mut *guard, &sink_session, envelope);
                                 };
                                 let result = engine
-                                    .run_turn_streaming(
-                                        &session_id,
+                                    .run_turn_streaming_with_context(
+                                        &turn_id,
                                         &text,
+                                        prior_context,
                                         Some(cancel.as_ref()),
                                         &mut sink,
                                     )
@@ -301,6 +515,21 @@ where
             }, if turn.is_some() => {
                 turn = None;
                 let (final_text, stop_reason) = outcome;
+                // Fold the just-finished turn into the session's context so
+                // the NEXT prompt continues the conversation (same rebuild
+                // path session/load uses — one honest code path).
+                if let Some(active) = session.as_mut()
+                    && active.id == turn_session
+                {
+                    match read_journal(&active.journal) {
+                        Ok(report) => {
+                            active.context = messages_from_envelopes(&report.envelopes);
+                        }
+                        Err(err) => {
+                            eprintln!("nanok3: session journal re-read failed: {err}");
+                        }
+                    }
+                }
                 // A cancel that landed during the turn's final stretch (after
                 // the engine's last flag check) still answers cancelled.
                 let cancel_fired = session
@@ -482,6 +711,121 @@ fn decision_from_response(value: &serde_json::Value) -> ApprovalDecision {
         Some(option) if option.starts_with("allow") => ApprovalDecision::Approve,
         _ => ApprovalDecision::Deny,
     }
+}
+
+/// Builds the `session/load` replay: one notification per historical beat, in
+/// journal order — user chunks (Desktop ignores them; real agents emit them),
+/// tool cards carrying their FINAL status (plus the trailing update with the
+/// output digest), and assistant text chunks. A call whose ToolResult never
+/// journaled (crash mid-call) is replayed as failed so no card hangs
+/// `in_progress` forever.
+fn replay_frames(session_id: &str, envelopes: &[OpEnvelope]) -> Vec<JsonRpcNotification> {
+    let results: std::collections::HashMap<&str, (bool, &str)> = envelopes
+        .iter()
+        .filter_map(|envelope| match &envelope.op {
+            Op::ToolResult {
+                call_id,
+                ok,
+                output_digest,
+                ..
+            } => Some((call_id.as_str(), (*ok, output_digest.as_str()))),
+            _ => None,
+        })
+        .collect();
+    let mut frames = Vec::new();
+    for envelope in envelopes {
+        match &envelope.op {
+            Op::TurnBegin { input, .. } => {
+                frames.push(user_message_chunk(session_id, input));
+            }
+            Op::AssistantText { text, .. } => {
+                frames.push(agent_message_chunk(session_id, text));
+            }
+            Op::ToolCall {
+                call_id,
+                name,
+                args,
+                ..
+            } => match results.get(call_id.as_str()) {
+                Some((ok, digest)) => {
+                    frames.push(tool_call_replay(session_id, call_id, name, args, *ok));
+                    frames.push(tool_call_done(session_id, call_id, *ok, digest));
+                }
+                None => {
+                    frames.push(tool_call_replay(session_id, call_id, name, args, false));
+                }
+            },
+            _ => {}
+        }
+    }
+    frames
+}
+
+/// Rebuilds model-consumable conversation context from journaled ops. Tool
+/// payloads are NOT persisted (digest-only journals), so a restored tool
+/// result carries an explicit elision marker instead of the original output:
+/// the model sees that the call happened and whether it succeeded, never a
+/// fabricated payload.
+fn messages_from_envelopes(envelopes: &[OpEnvelope]) -> Vec<Message> {
+    let mut messages = Vec::new();
+    let mut assistant: Vec<ContentBlock> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let flush_assistant = |messages: &mut Vec<Message>, assistant: &mut Vec<ContentBlock>| {
+        if !assistant.is_empty() {
+            messages.push(Message {
+                role: Role::Assistant,
+                content: std::mem::take(assistant),
+            });
+        }
+    };
+    for envelope in envelopes {
+        if !seen.insert(&envelope.id) {
+            continue; // idempotent fold: duplicate ids never double-apply
+        }
+        match &envelope.op {
+            Op::TurnBegin { input, .. } => {
+                flush_assistant(&mut messages, &mut assistant);
+                messages.push(Message::user(input.clone()));
+            }
+            Op::AssistantText { text, .. } => {
+                assistant.push(ContentBlock::Text { text: text.clone() });
+            }
+            Op::ToolCall {
+                call_id,
+                name,
+                args,
+                ..
+            } => {
+                assistant.push(ContentBlock::ToolUse {
+                    id: call_id.clone(),
+                    name: name.clone(),
+                    input: args.clone(),
+                });
+            }
+            Op::ToolResult {
+                call_id,
+                ok,
+                output_digest,
+                ..
+            } => {
+                flush_assistant(&mut messages, &mut assistant);
+                messages.push(Message {
+                    role: Role::Tool,
+                    content: vec![ContentBlock::ToolResult {
+                        tool_use_id: call_id.clone(),
+                        content: format!(
+                            "[tool output elided from journal: ok={ok}, digest={output_digest}]"
+                        ),
+                        is_error: !ok,
+                    }],
+                });
+            }
+            Op::TurnEnd { .. } => flush_assistant(&mut messages, &mut assistant),
+            _ => {}
+        }
+    }
+    flush_assistant(&mut messages, &mut assistant);
+    messages
 }
 
 /// Writes the ACP `session/update` frame for one journaled op, live.

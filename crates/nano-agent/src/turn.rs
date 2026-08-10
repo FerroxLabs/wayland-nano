@@ -117,7 +117,7 @@ impl<'a> TurnEngine<'a> {
         input: &str,
         context: Option<Message>,
     ) -> TurnResult {
-        self.run_turn_inner(turn_id, input, context, None, None)
+        self.run_turn_inner(turn_id, input, context.into_iter().collect(), None, None)
             .await
     }
 
@@ -131,7 +131,7 @@ impl<'a> TurnEngine<'a> {
         input: &str,
         cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> TurnResult {
-        self.run_turn_inner(turn_id, input, None, cancel, None)
+        self.run_turn_inner(turn_id, input, Vec::new(), cancel, None)
             .await
     }
 
@@ -146,7 +146,22 @@ impl<'a> TurnEngine<'a> {
         cancel: Option<&std::sync::atomic::AtomicBool>,
         sink: &mut dyn FnMut(&OpEnvelope),
     ) -> TurnResult {
-        self.run_turn_inner(turn_id, input, None, cancel, Some(sink))
+        self.run_turn_inner(turn_id, input, Vec::new(), cancel, Some(sink))
+            .await
+    }
+
+    /// Runs a streaming turn whose model context starts with `prior` messages
+    /// (e.g. a conversation rebuilt from the session journal on resume),
+    /// followed by the new user input.
+    pub async fn run_turn_streaming_with_context(
+        &self,
+        turn_id: &str,
+        input: &str,
+        prior: Vec<Message>,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+        sink: &mut dyn FnMut(&OpEnvelope),
+    ) -> TurnResult {
+        self.run_turn_inner(turn_id, input, prior, cancel, Some(sink))
             .await
     }
 
@@ -154,7 +169,7 @@ impl<'a> TurnEngine<'a> {
         &self,
         turn_id: &str,
         input: &str,
-        context: Option<Message>,
+        context: Vec<Message>,
         cancel: Option<&std::sync::atomic::AtomicBool>,
         sink: Option<&mut dyn FnMut(&OpEnvelope)>,
     ) -> TurnResult {
@@ -188,10 +203,7 @@ impl<'a> TurnEngine<'a> {
         let mut budget_tracker = BudgetTracker::default();
         budget_tracker.start_turn();
 
-        let mut messages = Vec::new();
-        if let Some(context) = context {
-            messages.push(context);
-        }
+        let mut messages = context;
         messages.push(Message::user(input));
         let mut final_text = String::new();
 
@@ -269,6 +281,17 @@ impl<'a> TurnEngine<'a> {
                     role: nano_model::types::Role::Assistant,
                     content: assistant_content,
                 });
+                // Journal the reply text so a restored session can rebuild
+                // the assistant side of the transcript.
+                if !text_parts.is_empty() {
+                    emit(
+                        &mut ops,
+                        Op::AssistantText {
+                            turn_id: turn_id.into(),
+                            text: final_text.clone(),
+                        },
+                    );
+                }
             }
 
             if tool_calls.is_empty() {
