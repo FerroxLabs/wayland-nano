@@ -45,3 +45,39 @@ recording probe and asserts: `ready` first, per-event frames in scripted
 order, terminal `stream_end` last, and a flush boundary between every pair
 of frames (no two frames coalesce unflushed). Runs in `cargo test
 -p nano-protocol`, no live model calls.
+
+## ARM64 Windows compile-gate (local cross-check)
+
+Validated 2026-08-10 on the primary truth machine (Win11 Pro x64 host,
+i9-13900KF, Rust 1.95.0 pinned toolchain). Per the standing rule this is a
+**compile-gate only** — no ARM64 binaries were executed and no ARM64 hardware
+claim is made.
+
+| Command | Result |
+|---|---|
+| `rustup target add --toolchain 1.95.0 aarch64-pc-windows-msvc` | PASS (component installed from network) |
+| `cargo check --workspace --target aarch64-pc-windows-msvc` | **PASS** (exit 0, all 12 workspace crates) |
+| `cargo clippy --workspace --target aarch64-pc-windows-msvc --all-targets -- -D warnings` | **PASS** (exit 0, no warnings) |
+
+No source changes were required: no x64-only intrinsics/inline-asm in the
+windows sandbox port, `windows-sys` 0.52 feature gates are arch-neutral, and
+the `.sbpl` `include_str!` paths are macOS-gated.
+
+Environment note: the x64 host has no ARM64-capable C toolchain (VS 2022
+BuildTools carries only x64/x86 tools; no `clang`/`clang-cl`). `ring`
+(via rustls→reqwest) hard-requires `clang` for `aarch64-pc-windows-msvc`
+(`ring/build.rs` forces `clang` on PATH for Windows+AArch64). The gate was
+run with a portable LLVM 18.1.8
+(`clang+llvm-18.1.8-x86_64-pc-windows-msvc.tar.xz`, extracted to a scratch
+dir, deleted after the run) wired in via:
+
+```
+export PATH="<scratch-llvm>/bin:$PATH"                       # provides clang
+export AR_aarch64_pc_windows_msvc='<scratch-llvm>\bin\llvm-ar.exe'
+```
+
+(`llvm-lib.exe` does not work as `AR` here — cc-rs passes ar-style `cq`
+flags; `llvm-ar.exe` accepts them and writes COFF archives.) UCRT/MSVC
+headers were auto-detected by clang from the installed BuildTools +
+Windows SDK 10.0.26100.0. Tests were not run for this target (cannot
+execute ARM64 binaries on this host) — check+clippy only, as specified.
