@@ -301,6 +301,12 @@ fn parse_usage(usage: Option<&serde_json::Value>) -> Usage {
     }
 }
 
+/// Map a parser cap violation to a protocol integrity error (fail-closed:
+/// a hostile stream errors the completion, it is never truncated).
+fn sse_integrity_error(err: crate::sse::SseError) -> ModelError {
+    ModelError::Protocol(format!("sse stream rejected: {err}"))
+}
+
 /// Parse a recorded SSE stream of chat.completion.chunk frames.
 pub fn parse_sse_completion_stream(text: &str) -> Result<ModelResponse, ModelError> {
     let mut parser = SseParser::new();
@@ -311,8 +317,8 @@ pub fn parse_sse_completion_stream(text: &str) -> Result<ModelResponse, ModelErr
     let mut stop_reason = "stop".to_string();
 
     let frames = {
-        let mut all = parser.feed(text);
-        all.extend(parser.finish());
+        let mut all = parser.feed(text).map_err(sse_integrity_error)?;
+        all.extend(parser.finish().map_err(sse_integrity_error)?);
         all
     };
 
