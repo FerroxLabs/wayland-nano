@@ -837,41 +837,269 @@ mod nano_tests {
     //! Track-B exercise tests (not from the donor): prove DACL enforcement
     //! against the real filesystem on the current host.
     use super::*;
+    use crate::token::LocalSid;
+    use crate::token::create_workspace_write_token_with_caps_from;
+    use crate::token::get_current_token_for_restriction;
     use crate::winutil::resolve_sid;
+    use rand::RngCore;
+    use rand::SeedableRng;
+    use rand::rngs::SmallRng;
     use std::fs;
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Security::AccessCheck;
+    use windows_sys::Win32::Security::Authorization::GRANT_ACCESS;
+    use windows_sys::Win32::Security::DuplicateTokenEx;
+    use windows_sys::Win32::Security::GROUP_SECURITY_INFORMATION;
+    use windows_sys::Win32::Security::OWNER_SECURITY_INFORMATION;
+    use windows_sys::Win32::Security::PRIVILEGE_SET;
+    use windows_sys::Win32::Security::SecurityImpersonation;
+    use windows_sys::Win32::Security::TOKEN_DUPLICATE;
+    use windows_sys::Win32::Security::TOKEN_IMPERSONATE;
+    use windows_sys::Win32::Security::TOKEN_QUERY;
+    use windows_sys::Win32::Security::TokenImpersonation;
+    use windows_sys::Win32::System::Threading::SetThreadToken;
+
+    /// Adds an allow ACE with `mask` for `psid` on `path` (test-only mirror
+    /// of `add_deny_ace`, so probe identities start from a known DACL).
+    unsafe fn add_allow_ace(path: &Path, psid: *mut c_void, mask: u32) -> Result<()> {
+        let mut p_sd: *mut c_void = std::ptr::null_mut();
+        let mut p_dacl: *mut ACL = std::ptr::null_mut();
+        let code = GetNamedSecurityInfoW(
+            to_wide(path).as_ptr(),
+            1, // SE_FILE_OBJECT
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut p_dacl,
+            std::ptr::null_mut(),
+            &mut p_sd,
+        );
+        if code != ERROR_SUCCESS {
+            return Err(anyhow!("GetNamedSecurityInfoW failed: {code}"));
+        }
+        let trustee = TRUSTEE_W {
+            pMultipleTrustee: std::ptr::null_mut(),
+            MultipleTrusteeOperation: 0,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_UNKNOWN,
+            ptstrName: psid as *mut u16,
+        };
+        let mut explicit: EXPLICIT_ACCESS_W = std::mem::zeroed();
+        explicit.grfAccessPermissions = mask;
+        explicit.grfAccessMode = GRANT_ACCESS;
+        explicit.grfInheritance = CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE;
+        explicit.Trustee = trustee;
+        let mut p_new_dacl: *mut ACL = std::ptr::null_mut();
+        let code2 = SetEntriesInAclW(1, &explicit, p_dacl, &mut p_new_dacl);
+        if code2 == ERROR_SUCCESS {
+            let code3 = SetNamedSecurityInfoW(
+                to_wide(path).as_ptr() as *mut u16,
+                1, // SE_FILE_OBJECT
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                p_new_dacl,
+                std::ptr::null_mut(),
+            );
+            if !p_new_dacl.is_null() {
+                LocalFree(p_new_dacl as HLOCAL);
+            }
+            if !p_sd.is_null() {
+                LocalFree(p_sd as HLOCAL);
+            }
+            if code3 != ERROR_SUCCESS {
+                return Err(anyhow!("SetNamedSecurityInfoW failed: {code3}"));
+            }
+            return Ok(());
+        }
+        if !p_sd.is_null() {
+            LocalFree(p_sd as HLOCAL);
+        }
+        Err(anyhow!("SetEntriesInAclW failed: {code2}"))
+    }
+
+    /// Builds a non-admin impersonation token carrying `psid_capability` as a
+    /// restricting capability SID — the same restricted-token construction
+    /// the sandbox launcher uses for sandboxed processes (LUA token, max
+    /// privileges stripped, write-restricted).
+    fn non_admin_impersonation_token(psid_capability: *mut c_void) -> Result<HANDLE> {
+        unsafe {
+            let base = get_current_token_for_restriction()?;
+            let restricted = create_workspace_write_token_with_caps_from(base, &[psid_capability]);
+            CloseHandle(base);
+            let restricted = restricted?;
+            let mut impersonation: HANDLE = 0;
+            let ok = DuplicateTokenEx(
+                restricted,
+                TOKEN_QUERY | TOKEN_IMPERSONATE | TOKEN_DUPLICATE,
+                std::ptr::null(),
+                SecurityImpersonation,
+                TokenImpersonation,
+                &mut impersonation,
+            );
+            CloseHandle(restricted);
+            if ok == 0 {
+                return Err(anyhow!("DuplicateTokenEx failed: {}", GetLastError()));
+            }
+            Ok(impersonation)
+        }
+    }
+
+    /// Runs `f` with `token` impersonated on the current thread.
+    fn impersonated<T>(token: HANDLE, f: impl FnOnce() -> T) -> T {
+        unsafe {
+            assert_ne!(
+                SetThreadToken(std::ptr::null(), token),
+                0,
+                "SetThreadToken(impersonate) failed: {}",
+                GetLastError()
+            );
+            let result = f();
+            assert_ne!(
+                SetThreadToken(std::ptr::null(), 0),
+                0,
+                "SetThreadToken(revert) failed: {}",
+                GetLastError()
+            );
+            result
+        }
+    }
+
+    /// Effective access check: does `token` get `desired_mask` on `path`?
+    /// Pure (security descriptor, token) evaluation — the harness process
+    /// opens nothing, so privileges it may hold (e.g. an elevated CI
+    /// runneradmin) cannot skew the result.
+    fn access_check_allows(path: &Path, token: HANDLE, desired_mask: u32) -> Result<bool> {
+        unsafe {
+            let mut p_sd: *mut c_void = std::ptr::null_mut();
+            let mut p_owner: *mut c_void = std::ptr::null_mut();
+            let mut p_group: *mut c_void = std::ptr::null_mut();
+            let mut p_dacl: *mut ACL = std::ptr::null_mut();
+            let code = GetNamedSecurityInfoW(
+                to_wide(path).as_ptr(),
+                1, // SE_FILE_OBJECT
+                OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut p_owner,
+                &mut p_group,
+                &mut p_dacl,
+                std::ptr::null_mut(),
+                &mut p_sd,
+            );
+            if code != ERROR_SUCCESS {
+                return Err(anyhow!("GetNamedSecurityInfoW failed: {code}"));
+            }
+            let mapping = GENERIC_MAPPING {
+                GenericRead: FILE_GENERIC_READ,
+                GenericWrite: FILE_GENERIC_WRITE,
+                GenericExecute: FILE_GENERIC_EXECUTE,
+                GenericAll: FILE_ALL_ACCESS,
+            };
+            let mut privileges = [0u8; 512];
+            let mut privileges_len = privileges.len() as u32;
+            let mut granted: u32 = 0;
+            let mut status: i32 = 0;
+            let ok = AccessCheck(
+                p_sd,
+                token,
+                desired_mask,
+                &mapping,
+                privileges.as_mut_ptr() as *mut PRIVILEGE_SET,
+                &mut privileges_len,
+                &mut granted,
+                &mut status,
+            );
+            LocalFree(p_sd as HLOCAL);
+            if ok == 0 {
+                return Err(anyhow!("AccessCheck failed: {}", GetLastError()));
+            }
+            Ok(status != 0)
+        }
+    }
 
     #[test]
     fn deny_write_ace_blocks_write_and_check_reports_denied() {
         let dir = std::env::temp_dir().join(format!("nanok3-acl-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        // Use the current user's SID: a fresh temp dir's DACL has no Everyone
-        // entry, so an Everyone baseline is meaningless (deny-ACE semantics
-        // still block via token membership, but path_mask_allows checks the
-        // DACL for the SID's own allow entry).
+
+        // Baseline: the harness user can write, and the allow-scan reports it.
         let username = std::env::var("USERNAME").expect("USERNAME env");
         let user = resolve_sid(&username).expect("resolve current-user SID");
         let psid = user.as_ptr() as *mut c_void;
-        let psids = [psid];
+        assert!(path_mask_allows(&dir, &[psid], FILE_GENERIC_WRITE, true).unwrap());
+        fs::write(dir.join("harness-baseline.txt"), b"x").expect("harness baseline write");
 
-        // Baseline: write is allowed.
-        assert!(path_mask_allows(&dir, &psids, FILE_GENERIC_WRITE, true).unwrap());
-
-        // Deny write for the current user -> the OS must enforce it. Note the
-        // self-lockout: after the deny, the harness itself can no longer open
-        // the directory with read|write flags, so `path_mask_allows` may
-        // return Err at open time rather than Ok(false) — both mean denied.
-        // (In the real sandbox flow deny ACEs target the *sandboxed* identity,
-        // not the broker, so the broker keeps its own access.)
+        // Probe identity: a fresh capability-style SID. A fresh temp dir's
+        // DACL has no ACE for it, so every ACE naming it is one this test
+        // added. Denying the probe — instead of the harness user, as an
+        // earlier version of this test did — keeps the harness' own
+        // READ_CONTROL intact, so the post-deny probes behave identically for
+        // a standard user and for an elevated CI runner (runneradmin), whose
+        // privileges would otherwise bypass the harness' self-deny and expose
+        // the stale allow ACE that `path_mask_allows` (an allow-only scan)
+        // still reports. In the real sandbox flow deny ACEs likewise target
+        // the *sandboxed* identity, not the broker.
+        let mut rng = SmallRng::from_entropy();
+        let probe_sid = LocalSid::from_string(&format!(
+            "S-1-5-21-{}-{}-{}-{}",
+            rng.next_u32(),
+            rng.next_u32(),
+            rng.next_u32(),
+            rng.next_u32()
+        ))
+        .expect("valid capability SID string");
+        let probe_psid = probe_sid.as_ptr();
         unsafe {
-            add_deny_write_ace(&dir, psid).expect("add deny-write ACE");
+            add_allow_ace(&dir, probe_psid, FILE_GENERIC_WRITE).expect("add probe allow ACE");
         }
-        assert!(fs::write(dir.join("blocked.txt"), b"x").is_err());
-        let after = path_mask_allows(&dir, &psids, FILE_GENERIC_WRITE, true);
+
+        // Non-admin impersonation token carrying the probe capability SID.
+        let token = non_admin_impersonation_token(probe_psid).expect("restricted token");
+
+        // Probe baseline before the deny: the allow-scan sees the ACE, the
+        // effective check grants write, and the OS lets the token write.
+        assert!(path_mask_allows(&dir, &[probe_psid], FILE_GENERIC_WRITE, true).unwrap());
+        assert!(access_check_allows(&dir, token, FILE_GENERIC_WRITE).unwrap());
+        impersonated(token, || {
+            fs::write(dir.join("probe-baseline.txt"), b"x").expect("probe baseline write")
+        });
+
+        // Deny write for the probe identity.
+        unsafe {
+            add_deny_write_ace(&dir, probe_psid).expect("add deny-write ACE");
+        }
+
+        // DACL level: the deny ACE landed (deny-before-allow ordering is
+        // guaranteed by SetEntriesInAclW).
+        unsafe {
+            let (p_dacl, sd) = fetch_dacl_handle(&dir).expect("fetch DACL after deny");
+            assert!(
+                dacl_has_write_deny_for_sid(p_dacl, probe_psid),
+                "deny-write ACE for the probe SID must be present"
+            );
+            if !sd.is_null() {
+                LocalFree(sd as HLOCAL);
+            }
+        }
+
+        // OS level: the non-admin token bearing the denied capability SID can
+        // no longer write, even though the DACL still carries the probe's
+        // (now overridden) allow ACE.
+        let write_result = impersonated(token, || fs::write(dir.join("blocked.txt"), b"x"));
         assert!(
-            !matches!(after, Ok(true)),
-            "deny must not report allowed: {after:?}"
+            write_result.is_err(),
+            "deny ACE must block the write: {write_result:?}"
         );
 
+        // Effective check: AccessCheck against the non-admin token must
+        // report the write mask denied.
+        let after = access_check_allows(&dir, token, FILE_GENERIC_WRITE).unwrap();
+        assert!(!after, "deny must not report allowed");
+
+        unsafe {
+            CloseHandle(token);
+            revoke_ace(&dir, probe_psid);
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 }

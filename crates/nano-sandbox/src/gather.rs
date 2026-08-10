@@ -354,11 +354,18 @@ mod tests {
         let tmp = TempDir::new().expect("tempdir");
         let nano_home = tmp.path().join("nano-home");
         let keep = tmp.path().join("workspace");
+        // The leaf paths must exist on disk: `canonical_path_key`
+        // (dunce::canonicalize) only expands 8.3 short-name spellings (e.g.
+        // `RUNNER~1` in the windows-latest CI %TEMP%) for paths that exist;
+        // a missing leaf keeps its raw 8.3 spelling and would slip past the
+        // filter's canonical prefix comparison.
         for dir in [
             nano_home.clone(),
             crate::sandbox_dir(&nano_home),
             sandbox_bin_dir(&nano_home),
             sandbox_secrets_dir(&nano_home),
+            sandbox_bin_dir(&nano_home).join("helper"),
+            sandbox_secrets_dir(&nano_home).join("creds"),
             keep.clone(),
         ] {
             std::fs::create_dir_all(&dir).expect("create dir");

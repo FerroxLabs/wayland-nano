@@ -466,6 +466,13 @@ fn create_seatbelt_args_with_read_only_git_and_nano_subpaths() {
     } = populate_tmpdir(tmp.path());
     let cwd = tmp.path().join("cwd");
     fs::create_dir_all(&cwd).expect("create cwd");
+    // Pin the cwd to its canonical spelling. The engine normalizes writable
+    // roots with `dunce::canonicalize` but matches the explicit carveout
+    // entries (`.git`/`.agents`/`.nano`, emitted in `workspace_write_policy`'s
+    // fixed order) by raw path equality, so an 8.3 short-name spelling of
+    // %TEMP% (windows-latest CI: `C:\Users\RUNNER~1\...`) would otherwise
+    // reorder the `WRITABLE_ROOT_0_EXCLUDED_*` parameters.
+    let cwd_canonical = canonical(&cwd);
 
     // Build a policy that only includes the two test roots as writable and
     // does not automatically include defaults TMPDIR or /tmp.
@@ -497,7 +504,7 @@ fn create_seatbelt_args_with_read_only_git_and_nano_subpaths() {
         shell_command.clone(),
         &file_system_policy,
         NetworkSandboxPolicy::Restricted,
-        &cwd,
+        &cwd_canonical,
         &[],
     );
 
@@ -521,9 +528,9 @@ fn create_seatbelt_args_with_read_only_git_and_nano_subpaths() {
         "expected explicit writable root .git/.nano carveouts in policy:\n{policy_text}",
     );
     assert!(
-        policy_text.contains(&seatbelt_protected_metadata_name_requirements(&canonical(
-            &cwd
-        ))),
+        policy_text.contains(&seatbelt_protected_metadata_name_requirements(
+            &cwd_canonical
+        )),
         "expected cwd metadata protection regex requirements in policy:\n{policy_text}",
     );
     assert!(
@@ -540,18 +547,18 @@ fn create_seatbelt_args_with_read_only_git_and_nano_subpaths() {
     );
 
     let expected_definitions = [
-        format!("-DWRITABLE_ROOT_0={}", canonical(&cwd).to_string_lossy()),
+        format!("-DWRITABLE_ROOT_0={}", cwd_canonical.to_string_lossy()),
         format!(
             "-DWRITABLE_ROOT_0_EXCLUDED_0={}",
-            canonical(&cwd).join(".git").display()
+            cwd_canonical.join(".git").display()
         ),
         format!(
             "-DWRITABLE_ROOT_0_EXCLUDED_1={}",
-            canonical(&cwd).join(".agents").display()
+            cwd_canonical.join(".agents").display()
         ),
         format!(
             "-DWRITABLE_ROOT_0_EXCLUDED_2={}",
-            canonical(&cwd).join(".nano").display()
+            cwd_canonical.join(".nano").display()
         ),
         format!(
             "-DWRITABLE_ROOT_1={}",

@@ -196,8 +196,11 @@ mod integration_tests {
 
     #[test]
     fn executor_routes_namespaced_call_to_server() {
-        // Full round-trip through a real stdio fake server (powershell).
-        let script = r#"
+        // Full round-trip through a real stdio fake server (powershell on
+        // Windows, sh on unix — same JSON-RPC line protocol both ways).
+        #[cfg(windows)]
+        let (command, args) = {
+            let script = r#"
 $reader = [System.Console]::In
 while ($true) {
     $line = $reader.ReadLine()
@@ -212,11 +215,37 @@ while ($true) {
     }
 }
 "#;
+            (
+                "powershell.exe".to_string(),
+                vec![
+                    "-NoProfile".to_string(),
+                    "-Command".to_string(),
+                    script.to_string(),
+                ],
+            )
+        };
+        #[cfg(unix)]
+        let (command, args) = {
+            let script = r#"
+while IFS= read -r line; do
+    id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+    case "$line" in
+        *'"initialize"*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"fake","version":"0"}}}\n' "$id" ;;
+        *'"tools/list"*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"echoes"}]}}\n' "$id" ;;
+        *'"tools/call"*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"content":"pong","isError":false}}\n' "$id" ;;
+    esac
+done
+"#;
+            ("sh".to_string(), vec!["-c".to_string(), script.to_string()])
+        };
         let mut registry = McpRegistry::new();
         let registered = registry.register(McpServerSpec {
             name: "fake".into(),
-            command: "powershell.exe".into(),
-            args: vec!["-NoProfile".into(), "-Command".into(), script.into()],
+            command,
+            args,
             env: vec![],
         });
         assert_eq!(registered.expect("register"), 1);
