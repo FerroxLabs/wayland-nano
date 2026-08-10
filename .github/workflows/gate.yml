@@ -1,7 +1,15 @@
-# NanoK3 (Track B) — native Windows gate workflow.
-# Runs the same justfile entry points as local work. Live tests never run in
-# CI (they need the owner-held Flux credential); evidence fixtures replay
-# instead.
+# NanoK3 (Track B) — native gate workflow, 6-target hosted-runner matrix.
+# Proves macOS / Linux / Windows parity (x64 + ARM64) on the same gate the
+# Windows leg has always run: gate-fmt, gate-lint, gate-test, gate-deny
+# (advisory). Live tests never run in CI (they need the owner-held Flux
+# credential); evidence fixtures replay instead.
+#
+# POST-PORT STATE: the unix legs (macos-*, ubuntu-*) assume the in-flight
+# nano-sandbox unix backend port has landed — including the
+# `nanok3-linux-sandbox` helper binary built on the Linux legs below. Until
+# that port merges, expect the unix legs to fail in gate-lint/gate-test; the
+# matrix is authored for the tree after the port. fail-fast is off so one
+# red leg never cancels the others.
 
 name: nanok3-gate
 
@@ -11,8 +19,24 @@ on:
   pull_request:
 
 jobs:
-  windows-native:
-    runs-on: windows-latest
+  gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            arch: x64
+          - os: windows-11-arm
+            arch: arm64
+          - os: macos-14
+            arch: arm64
+          - os: macos-13
+            arch: x64
+          - os: ubuntu-22.04
+            arch: x64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -39,20 +63,35 @@ jobs:
         run: just gate-test
         working-directory: nano-k3
 
+      # cargo build --workspace builds every workspace bin; on unix this is
+      # what compiles the ported sandbox helpers (nanok3-linux-sandbox and
+      # any macOS seatbelt helper) that gate-test alone may not exercise.
+      - name: Build workspace binaries (unix sandbox helpers)
+        if: runner.os != 'Windows'
+        run: cargo build --workspace --bins
+        working-directory: nano-k3
+
+      # Post-port proof: the Linux sandbox helper binary must exist.
+      - name: Verify nanok3-linux-sandbox helper built
+        if: runner.os == 'Linux'
+        run: test -x target/debug/nanok3-linux-sandbox
+        working-directory: nano-k3
+
       - name: gate-deny
         run: just gate-deny
         working-directory: nano-k3
         continue-on-error: true # advisory until SBOM policy lands
 
-      - name: Evidence manifest
-        if: always()
+      - name: Evidence manifest (Windows)
+        if: always() && runner.os == 'Windows'
         shell: pwsh
         run: |
           $manifest = [ordered]@{
-            gate = "ci-windows-native"
+            gate = "ci-${{ matrix.os }}"
             sha = "${{ github.sha }}"
             runner = $env:COMPUTERNAME
-            os = "windows-latest"
+            os = "${{ matrix.os }}"
+            arch = "${{ matrix.arch }}"
             rust = "1.95.0"
             at = (Get-Date).ToUniversalTime().ToString("o")
             steps = @("gate-fmt", "gate-lint", "gate-test", "gate-deny(advisory)")
@@ -60,8 +99,26 @@ jobs:
           New-Item -ItemType Directory -Force -Path nano-k3/artifacts/evidence/ci | Out-Null
           $manifest | ConvertTo-Json | Out-File "nano-k3/artifacts/evidence/ci/$($env:GITHUB_RUN_ID)-manifest.json" -Encoding utf8
 
+      - name: Evidence manifest (unix)
+        if: always() && runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p nano-k3/artifacts/evidence/ci
+          cat > "nano-k3/artifacts/evidence/ci/${GITHUB_RUN_ID}-manifest.json" <<JSON
+          {
+            "gate": "ci-${{ matrix.os }}",
+            "sha": "${{ github.sha }}",
+            "runner": "$(hostname)",
+            "os": "${{ matrix.os }}",
+            "arch": "${{ matrix.arch }}",
+            "rust": "1.95.0",
+            "at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "steps": ["gate-fmt", "gate-lint", "gate-test", "build-bins", "gate-deny(advisory)"]
+          }
+          JSON
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ci-manifest
+          name: ci-manifest-${{ matrix.os }}
           path: nano-k3/artifacts/evidence/ci/
