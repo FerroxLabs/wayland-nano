@@ -126,20 +126,16 @@ fn unix_socket_dir_params(
 /// append it directly to larger policy blocks.
 fn unix_socket_policy(unix_domain_socket_policy: &UnixDomainSocketPolicy) -> String {
     let socket_params = unix_socket_path_params(unix_domain_socket_policy);
-    let has_unix_socket_access = matches!(
-        unix_domain_socket_policy,
-        UnixDomainSocketPolicy::AllowAll
-    ) || !socket_params.is_empty();
+    let has_unix_socket_access =
+        matches!(unix_domain_socket_policy, UnixDomainSocketPolicy::AllowAll)
+            || !socket_params.is_empty();
     if !has_unix_socket_access {
         return String::new();
     }
 
     let mut policy = String::new();
     policy.push_str("(allow system-socket (socket-domain AF_UNIX))\n");
-    if matches!(
-        unix_domain_socket_policy,
-        UnixDomainSocketPolicy::AllowAll
-    ) {
+    if matches!(unix_domain_socket_policy, UnixDomainSocketPolicy::AllowAll) {
         // Keep AllowAll genuinely broad here; path qualifiers look narrower
         // without a clear macOS behavioral benefit.
         policy.push_str("(allow network-bind (local unix-socket))\n");

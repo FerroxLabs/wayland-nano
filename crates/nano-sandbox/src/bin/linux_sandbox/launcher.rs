@@ -4,7 +4,7 @@
 //!
 //! Provenance: ported from Codex `codex-rs/linux-sandbox/src/launcher.rs`
 //! @ 646f7c0a. Transformations:
-//! - codex_sandboxing::find_system_bwrap_in_path ->
+//! - codex crate `sandboxing::find_system_bwrap_in_path` ->
 //!   nano_sandbox::linux_bwrap::find_system_bwrap_in_path;
 //! - codex_utils_absolute_path -> nano_core::abs;
 //! - unavailable-launcher panic message rebranded to nanok3 resource names.

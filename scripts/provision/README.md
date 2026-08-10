@@ -33,13 +33,35 @@ executes — B-PRV-01.)
 ## Safety notes
 
 - Account names are Track-B namespaced (`NanoK3Sandbox*`) — no collision with
-  Track A's `CodexSandbox*` accounts if those exist.
+  Track A's `CodexSandbox*` accounts if those exist. The same holds for the
+  `NanoK3SandboxUsers` group, `nanok3_sandbox_offline_*` firewall rules, and
+  the `NanoK3 Windows Sandbox WFP` provider/filters (Track-B GUIDs).
 - The helper is idempotent: rerun makes no changes when state matches.
-- Uninstall/teardown is NOT implemented yet — no uninstall mode exists in the
-  setup helper. The proof's `uninstall-scope` probe audits that provisioning
-  residue stays inside the known Nano-owned scope (accounts, group, the 3
-  `codex_sandbox_offline_*` firewall rules, `%USERPROFILE%\.nanok3`).
+- **Previously provisioned dev boxes:** before this rebrand, Track-B
+  provisioning created Codex-branded state (group `CodexSandboxUsers`,
+  `codex_sandbox_offline_*` firewall rules, WFP provider `Codex Windows
+  Sandbox WFP` with donor GUIDs). The new uninstall mode only removes
+  NanoK3-branded state, so any box provisioned before the rebrand should be
+  cleaned of those legacy objects (delete the old group, firewall rules, and
+  WFP provider/filters manually) before re-provisioning.
 - Windows Sandbox feature is NOT required for this path.
+
+## Uninstall (elevated)
+
+The same helper removes ONLY the NanoK3-track machine state (the two
+`NanoK3Sandbox*` accounts, the `NanoK3SandboxUsers` group when its membership
+is exactly the provisioned accounts, the `nanok3_sandbox_*` firewall rules,
+the NanoK3 WFP provider/sublayer/filters, and the setup marker):
+
+```powershell
+# elevated; payload built like the provisioning payload plus "uninstall": true
+target\release\nanok3-sandbox-setup.exe <BASE64_UNINSTALL_PAYLOAD>
+```
+
+Uninstall is fail-closed: every removal is keyed by an exact NanoK3 name or a
+Track-B WFP GUID verified before deletion, and it never touches Track A's
+`CodexSandbox*` / `codex_*` objects. Afterwards, verify with
+`scripts/c12-proof/Test-C12Proof.ps1 -PostUninstall`.
 
 ## After provisioning
 

@@ -333,10 +333,11 @@ fn create_seatbelt_args_allowlists_explicit_unix_socket_paths() {
         ),
         "policy should allow outbound AF_UNIX traffic for explicit socket paths:\n{policy}"
     );
-    let expected_socket_root = normalize_path_for_sandbox(cwd.path().join("nano-browser-use").as_path())
-        .expect("socket root should normalize")
-        .to_string_lossy()
-        .into_owned();
+    let expected_socket_root =
+        normalize_path_for_sandbox(cwd.path().join("nano-browser-use").as_path())
+            .expect("socket root should normalize")
+            .to_string_lossy()
+            .into_owned();
     assert!(
         args.iter()
             .any(|arg| arg == &format!("-DUNIX_SOCKET_PATH_0={expected_socket_root}")),
@@ -407,14 +408,8 @@ fn unix_socket_dir_params_use_stable_param_names() {
     assert_eq!(
         params,
         vec![
-            (
-                "UNIX_SOCKET_PATH_0".to_string(),
-                tmp.path().join("a.sock")
-            ),
-            (
-                "UNIX_SOCKET_PATH_1".to_string(),
-                tmp.path().join("b.sock")
-            ),
+            ("UNIX_SOCKET_PATH_0".to_string(), tmp.path().join("a.sock")),
+            ("UNIX_SOCKET_PATH_1".to_string(), tmp.path().join("b.sock")),
         ]
     );
 }
@@ -526,7 +521,9 @@ fn create_seatbelt_args_with_read_only_git_and_nano_subpaths() {
         "expected explicit writable root .git/.nano carveouts in policy:\n{policy_text}",
     );
     assert!(
-        policy_text.contains(&seatbelt_protected_metadata_name_requirements(&canonical(&cwd))),
+        policy_text.contains(&seatbelt_protected_metadata_name_requirements(&canonical(
+            &cwd
+        ))),
         "expected cwd metadata protection regex requirements in policy:\n{policy_text}",
     );
     assert!(
@@ -536,8 +533,9 @@ fn create_seatbelt_args_with_read_only_git_and_nano_subpaths() {
         "expected populated root metadata protection regex requirements in policy:\n{policy_text}",
     );
     assert!(
-        policy_text
-            .contains(&seatbelt_protected_metadata_name_requirements(&empty_root_canonical)),
+        policy_text.contains(&seatbelt_protected_metadata_name_requirements(
+            &empty_root_canonical
+        )),
         "expected empty root metadata protection regex requirements in policy:\n{policy_text}",
     );
 
@@ -708,8 +706,11 @@ fn create_seatbelt_args_for_cwd_as_git_repo() {
         ..
     } = populate_tmpdir(tmp.path());
 
-    let file_system_policy =
-        workspace_write_policy(&[], /*exclude_tmpdir_env_var*/ false, /*exclude_slash_tmp*/ false);
+    let file_system_policy = workspace_write_policy(
+        &[],
+        /*exclude_tmpdir_env_var*/ false,
+        /*exclude_slash_tmp*/ false,
+    );
 
     let shell_command: Vec<String> = [
         "bash",

@@ -28,10 +28,36 @@ BUILD_PLAN_V3 §8 manifest shape, then prints a PASS/FAIL summary line per probe
 | broker-network-ok | broker reaches Flux | HTTPS 200 |
 | path-edgecases | long path, Unicode, reserved names | create/read |
 | setup-idempotent | marker refresh round-trips; tamper restored | canonical marker hash + readiness rule |
-| uninstall-scope | uninstall removes only Nano state | residue scan |
+| uninstall-scope | provisioning residue in scope / uninstall removes only Nano state | residue scan (two modes, see below) |
 
 Probes requiring provisioned identities self-skip with `SKIP: not provisioned`
 so the harness is also runnable pre-provisioning to validate the harness itself.
+
+## Uninstall-scope probe modes
+
+Default (run while provisioned): asserts every Nano-owned artifact stays
+inside the known scope — `NanoK3Sandbox{Offline,Online}` accounts,
+`NanoK3SandboxUsers` group, the `nanok3_sandbox_offline_*` firewall rules,
+the `NanoK3 Windows Sandbox WFP` provider + `nanok3_wfp_*` filters, and
+`%USERPROFILE%\.nanok3` — with no services, scheduled tasks, or stray
+profile-root files.
+
+Post-uninstall (run after teardown): asserts every one of those artifacts is
+gone. Teardown is the setup helper itself with an `uninstall: true` payload
+(same base64 CLI contract as provisioning), run elevated:
+
+```powershell
+# elevated; payload built like the provisioning payload plus "uninstall": true
+target\release\nanok3-sandbox-setup.exe <BASE64_UNINSTALL_PAYLOAD>
+
+# then, unelevated:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\c12-proof\Test-C12Proof.ps1 -PostUninstall
+```
+
+The helper's uninstall is fail-closed on exact NanoK3 identities (account
+name prefix, exact group membership, exact firewall rule names, Track-B WFP
+GUIDs whose display names are verified before deletion) and removes nothing
+else — Track A's `CodexSandbox*`/`codex_*` objects are never touched.
 
 ## Known limitations / platform notes
 
@@ -58,11 +84,13 @@ so the harness is also runnable pre-provisioning to validate the harness itself.
   Child exit 43 = denied (expected), 42 = wrote (FAIL). stdout/stderr are
   captured to `nanok3-write-outside-root.{stdout,stderr}.log` in the evidence
   dir as the denial evidence.
-- **uninstall-scope audits provisioning residue only** — the setup helper has
-  no uninstall mode yet; when one ships, extend the probe to a post-uninstall
-  scan. Provisioning artifacts keep legacy `Codex*` branding for everything
-  except the accounts: group `CodexSandboxUsers`, firewall rules
-  `codex_sandbox_offline_*`, WFP provider `Codex Windows Sandbox WFP`.
+- **uninstall-scope** has two modes (see "Uninstall-scope probe modes"
+  above). The default mode audits provisioning residue; `-PostUninstall`
+  audits that the helper's `uninstall: true` run removed all NanoK3 machine
+  state. Provisioning artifacts are Track-B namespaced: group
+  `NanoK3SandboxUsers`, firewall rules `nanok3_sandbox_offline_*`, WFP
+  provider `NanoK3 Windows Sandbox WFP` with `nanok3_wfp_*` filters (Track-B
+  GUIDs, distinct from the donor's).
 - `setup-idempotent` builds a base64 setup payload with
   `refresh_marker_only: true` (schema field in
   `crates/nano-sandbox/src/bin/setup_main/win.rs`) and invokes

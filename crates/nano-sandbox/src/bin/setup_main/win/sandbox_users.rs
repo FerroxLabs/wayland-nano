@@ -22,10 +22,15 @@ use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::NetworkManagement::NetManagement::LOCALGROUP_INFO_1;
 use windows_sys::Win32::NetworkManagement::NetManagement::LOCALGROUP_MEMBERS_INFO_3;
+use windows_sys::Win32::NetworkManagement::NetManagement::MAX_PREFERRED_LENGTH;
 use windows_sys::Win32::NetworkManagement::NetManagement::NERR_Success;
+use windows_sys::Win32::NetworkManagement::NetManagement::NetApiBufferFree;
 use windows_sys::Win32::NetworkManagement::NetManagement::NetLocalGroupAdd;
 use windows_sys::Win32::NetworkManagement::NetManagement::NetLocalGroupAddMembers;
+use windows_sys::Win32::NetworkManagement::NetManagement::NetLocalGroupDel;
+use windows_sys::Win32::NetworkManagement::NetManagement::NetLocalGroupGetMembers;
 use windows_sys::Win32::NetworkManagement::NetManagement::NetUserAdd;
+use windows_sys::Win32::NetworkManagement::NetManagement::NetUserDel;
 use windows_sys::Win32::NetworkManagement::NetManagement::NetUserSetInfo;
 use windows_sys::Win32::NetworkManagement::NetManagement::UF_DONT_EXPIRE_PASSWD;
 use windows_sys::Win32::NetworkManagement::NetManagement::UF_SCRIPT;
@@ -55,8 +60,8 @@ use nano_sandbox::sandbox_secrets_dir;
 use nano_sandbox::string_from_sid_bytes;
 use nano_sandbox::to_wide;
 
-pub const SANDBOX_USERS_GROUP: &str = "CodexSandboxUsers";
-const SANDBOX_USERS_GROUP_COMMENT: &str = "Codex sandbox internal group (managed)";
+pub const SANDBOX_USERS_GROUP: &str = "NanoK3SandboxUsers";
+const SANDBOX_USERS_GROUP_COMMENT: &str = "NanoK3 sandbox internal group (managed)";
 const SID_ADMINISTRATORS: &str = "S-1-5-32-544";
 const SID_USERS: &str = "S-1-5-32-545";
 const SID_AUTHENTICATED_USERS: &str = "S-1-5-11";
@@ -216,6 +221,181 @@ pub fn ensure_local_group_member(group_name: &str, member_name: &str) -> Result<
         );
     }
     Ok(())
+}
+
+/// True when `username` is a Track-B sandbox account name. Uninstall refuses
+/// to delete anything else (Track A's accounts use a different prefix).
+fn is_nanok3_sandbox_account(username: &str) -> bool {
+    username.starts_with("NanoK3Sandbox")
+}
+
+/// True when a `DOMAIN\name` group-member entry names one of the expected
+/// provisioned accounts (comparison is case-insensitive, domain-agnostic).
+fn member_name_matches_expected(domain_and_name: &str, expected: &[&str]) -> bool {
+    let name = domain_and_name
+        .rsplit('\\')
+        .next()
+        .unwrap_or(domain_and_name);
+    expected.iter().any(|e| name.eq_ignore_ascii_case(e))
+}
+
+/// Removes the Track-B sandbox accounts and the sandbox users group.
+///
+/// Track-B addition (the donor has no teardown). Fail-closed: account names
+/// must carry the NanoK3Sandbox prefix, and the group is deleted only when
+/// every current member is one of the two provisioned accounts — any other
+/// content means the group is not exactly what provisioning created and the
+/// run aborts instead of deleting foreign state. Missing accounts/group are
+/// skipped (idempotent).
+pub fn remove_sandbox_users(
+    offline_username: &str,
+    online_username: &str,
+    log: &mut dyn Write,
+) -> Result<()> {
+    let expected_members = [offline_username, online_username];
+    ensure_group_membership_as_provisioned(&expected_members)?;
+    for username in expected_members {
+        if !is_nanok3_sandbox_account(username) {
+            return Err(anyhow::Error::new(SetupFailure::new(
+                SetupErrorCode::HelperUserDeleteFailed,
+                format!("refusing to delete account {username}: not a NanoK3 sandbox account"),
+            )));
+        }
+        delete_local_user(username, log)?;
+    }
+    delete_sandbox_users_group(log)
+}
+
+/// Verifies the sandbox users group contains only the provisioned accounts
+/// (or does not exist). Anything else aborts the uninstall.
+fn ensure_group_membership_as_provisioned(expected_members: &[&str; 2]) -> Result<()> {
+    let members = local_group_member_names(SANDBOX_USERS_GROUP)?;
+    let unexpected = members
+        .iter()
+        .filter(|member| !member_name_matches_expected(member, expected_members))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unexpected.is_empty() {
+        return Err(anyhow::Error::new(SetupFailure::new(
+            SetupErrorCode::HelperUsersGroupDeleteFailed,
+            format!(
+                "refusing to delete group {SANDBOX_USERS_GROUP}: unexpected members {unexpected:?}"
+            ),
+        )));
+    }
+    Ok(())
+}
+
+/// Enumerates `DOMAIN\name` members of a local group; an absent group yields
+/// an empty list.
+fn local_group_member_names(group_name: &str) -> Result<Vec<String>> {
+    const NERR_GROUP_NOT_FOUND: u32 = 2220;
+    const ERROR_NO_SUCH_ALIAS: u32 = 1376;
+    const ERROR_MORE_DATA: u32 = 234;
+
+    let group_w = to_wide(OsStr::new(group_name));
+    let mut members = Vec::new();
+    let mut resume: usize = 0;
+    loop {
+        let mut buf: *mut u8 = std::ptr::null_mut();
+        let mut entries_read: u32 = 0;
+        let mut total_entries: u32 = 0;
+        let status = unsafe {
+            NetLocalGroupGetMembers(
+                std::ptr::null(),
+                group_w.as_ptr(),
+                3,
+                &mut buf,
+                MAX_PREFERRED_LENGTH,
+                &mut entries_read,
+                &mut total_entries,
+                &mut resume,
+            )
+        };
+        if status == NERR_GROUP_NOT_FOUND || status == ERROR_NO_SUCH_ALIAS {
+            return Ok(members);
+        }
+        if status != NERR_Success && status != ERROR_MORE_DATA {
+            if !buf.is_null() {
+                unsafe {
+                    NetApiBufferFree(buf as *const c_void);
+                }
+            }
+            return Err(anyhow::Error::new(SetupFailure::new(
+                SetupErrorCode::HelperUsersGroupDeleteFailed,
+                format!("NetLocalGroupGetMembers failed for {group_name}, code {status}"),
+            )));
+        }
+        if !buf.is_null() {
+            let infos = unsafe {
+                std::slice::from_raw_parts(
+                    buf as *const LOCALGROUP_MEMBERS_INFO_3,
+                    entries_read as usize,
+                )
+            };
+            for info in infos {
+                members.push(unsafe { string_from_wide(info.lgrmi3_domainandname) });
+            }
+            unsafe {
+                NetApiBufferFree(buf as *const c_void);
+            }
+        }
+        if status != ERROR_MORE_DATA {
+            break;
+        }
+    }
+    Ok(members)
+}
+
+fn delete_local_user(username: &str, log: &mut dyn Write) -> Result<()> {
+    const NERR_USER_NOT_FOUND: u32 = 2221;
+
+    let name_w = to_wide(OsStr::new(username));
+    let status = unsafe { NetUserDel(std::ptr::null(), name_w.as_ptr()) };
+    if status == NERR_Success {
+        super::log_line(log, &format!("deleted sandbox user {username}"))?;
+        return Ok(());
+    }
+    if status == NERR_USER_NOT_FOUND {
+        return Ok(());
+    }
+    Err(anyhow::Error::new(SetupFailure::new(
+        SetupErrorCode::HelperUserDeleteFailed,
+        format!("NetUserDel failed for {username}, code {status}"),
+    )))
+}
+
+fn delete_sandbox_users_group(log: &mut dyn Write) -> Result<()> {
+    const NERR_GROUP_NOT_FOUND: u32 = 2220;
+    const ERROR_NO_SUCH_ALIAS: u32 = 1376;
+
+    let name_w = to_wide(OsStr::new(SANDBOX_USERS_GROUP));
+    let status = unsafe { NetLocalGroupDel(std::ptr::null(), name_w.as_ptr()) };
+    if status == NERR_Success {
+        super::log_line(log, &format!("deleted local group {SANDBOX_USERS_GROUP}"))?;
+        return Ok(());
+    }
+    if status == NERR_GROUP_NOT_FOUND || status == ERROR_NO_SUCH_ALIAS {
+        return Ok(());
+    }
+    Err(anyhow::Error::new(SetupFailure::new(
+        SetupErrorCode::HelperUsersGroupDeleteFailed,
+        format!("NetLocalGroupDel failed for {SANDBOX_USERS_GROUP}, code {status}"),
+    )))
+}
+
+/// Reads a null-terminated UTF-16 string returned by the Net* APIs.
+unsafe fn string_from_wide(ptr: *mut u16) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+    let mut len = 0;
+    unsafe {
+        while *ptr.add(len) != 0 {
+            len += 1;
+        }
+        String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len))
+    }
 }
 
 pub fn resolve_sid(name: &str) -> Result<Vec<u8>> {
@@ -586,4 +766,45 @@ pub(super) fn commit_setup_marker(
         ))
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_nanok3_sandbox_account;
+    use super::member_name_matches_expected;
+
+    #[test]
+    fn nanok3_account_guard_accepts_track_b_names() {
+        assert!(is_nanok3_sandbox_account("NanoK3SandboxOffline"));
+        assert!(is_nanok3_sandbox_account("NanoK3SandboxOnline"));
+    }
+
+    #[test]
+    fn nanok3_account_guard_rejects_track_a_and_foreign_names() {
+        // Track-A and built-in accounts must never pass the uninstall guard.
+        assert!(!is_nanok3_sandbox_account("CodexSandboxOffline"));
+        assert!(!is_nanok3_sandbox_account("Administrator"));
+        assert!(!is_nanok3_sandbox_account("nanok3sandboxoffline"));
+    }
+
+    #[test]
+    fn member_match_strips_domain_and_ignores_case() {
+        let expected = ["NanoK3SandboxOffline", "NanoK3SandboxOnline"];
+        assert!(member_name_matches_expected(
+            "DESKTOP\\NanoK3SandboxOffline",
+            &expected
+        ));
+        assert!(member_name_matches_expected(
+            "nanok3sandboxonline",
+            &expected
+        ));
+        assert!(!member_name_matches_expected(
+            "DESKTOP\\CodexSandboxOffline",
+            &expected
+        ));
+        assert!(!member_name_matches_expected(
+            "DESKTOP\\Administrator",
+            &expected
+        ));
+    }
 }

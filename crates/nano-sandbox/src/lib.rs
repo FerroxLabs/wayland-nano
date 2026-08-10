@@ -17,12 +17,12 @@ pub mod telemetry;
 // construction, so they also compile in test builds on every host to
 // maximize cross-platform test coverage; only the spawned helpers are
 // platform-bound.
-#[cfg(any(target_os = "macos", test))]
-pub mod macos_seatbelt;
-#[cfg(any(target_os = "linux", test))]
-pub mod linux_landlock;
 #[cfg(any(target_os = "linux", test))]
 pub mod linux_bwrap;
+#[cfg(any(target_os = "linux", test))]
+pub mod linux_landlock;
+#[cfg(any(target_os = "macos", test))]
+pub mod macos_seatbelt;
 
 /// Sandbox backend selected for the current platform.
 ///
@@ -297,5 +297,7 @@ pub use unified_exec::{WindowsSandboxSessionRequest, spawn_windows_sandbox_sessi
 pub use wfp::install_wfp_filters_for_account;
 #[cfg(target_os = "windows")]
 pub use wfp_setup::install_wfp_filters;
+#[cfg(target_os = "windows")]
+pub use wfp_setup::uninstall_wfp_filters;
 #[cfg(target_os = "windows")]
 pub use winutil::{string_from_sid_bytes, to_wide};

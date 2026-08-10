@@ -27,10 +27,12 @@ use nano_sandbox::path_write_aces_need_refresh;
 use nano_sandbox::sandbox_bin_dir;
 use nano_sandbox::sandbox_dir;
 use nano_sandbox::sandbox_secrets_dir;
+use nano_sandbox::setup_marker_path;
 use nano_sandbox::string_from_sid_bytes;
 use nano_sandbox::sync_persistent_deny_read_acls;
 use nano_sandbox::telemetry::TelemetrySettings;
 use nano_sandbox::to_wide;
+use nano_sandbox::uninstall_wfp_filters;
 use nano_sandbox::workspace_write_cap_sid_for_root;
 use nano_sandbox::workspace_write_root_overlaps_path;
 use nano_sandbox::write_setup_error_report;
@@ -107,6 +109,10 @@ struct Payload {
     refresh_only: bool,
     #[serde(default)]
     refresh_marker_only: bool,
+    /// Track-B addition: remove the NanoK3-track machine state (accounts,
+    /// group, firewall rules, WFP objects, setup marker) and nothing else.
+    #[serde(default)]
+    uninstall: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
@@ -484,6 +490,9 @@ fn real_main() -> Result<()> {
 }
 
 fn run_setup(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
+    if payload.uninstall {
+        return run_uninstall(payload, log, sbx_dir);
+    }
     if payload.refresh_marker_only {
         return run_refresh_marker_only(payload, log);
     }
@@ -505,6 +514,77 @@ fn run_setup(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<(
             payload.allow_local_binding,
         )?;
     }
+    Ok(())
+}
+
+// Uninstall path (Track-B addition — the donor has no teardown): removes ONLY
+// NanoK3-track machine state — the two NanoK3Sandbox* accounts, the
+// NanoK3SandboxUsers group (only when its membership is exactly the
+// provisioned accounts), the nanok3_sandbox_* firewall rules, the NanoK3 WFP
+// provider/sublayer/filters, and the setup marker. Track A's Codex* objects
+// are never touched: every removal is keyed by an exact NanoK3 name or a
+// Track-B WFP GUID whose identity is verified before deletion, and any
+// mismatch aborts the run (fail-closed). Every step tolerates already-absent
+// state, so a rerun after a partial uninstall converges.
+fn run_uninstall(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
+    log_line(log, "uninstall mode: removing NanoK3-track sandbox state")?;
+
+    // Firewall rules first: they reference the offline account SID, so they
+    // must go before the accounts are deleted.
+    let firewall_result = firewall::remove_offline_sandbox_rules(log);
+    if let Err(err) = firewall_result {
+        if extract_setup_failure(&err).is_some() {
+            return Err(err);
+        }
+        return Err(anyhow::Error::new(SetupFailure::new(
+            SetupErrorCode::HelperUninstallFailed,
+            format!("remove offline sandbox firewall rules failed: {err}"),
+        )));
+    }
+
+    // WFP filters also reference the offline account SID.
+    let metrics_sink = nano_sandbox::telemetry::sink_from_settings(
+        payload.otel.as_ref(),
+        Some(&payload.nano_home),
+    );
+    let removed_filters = uninstall_wfp_filters(
+        &payload.nano_home,
+        metrics_sink
+            .as_ref()
+            .map(|s| s as &dyn nano_sandbox::telemetry::MetricsSink),
+        |message| {
+            let _ = log_line(log, message);
+        },
+    )
+    .map_err(|err| {
+        anyhow::Error::new(SetupFailure::new(
+            SetupErrorCode::HelperUninstallFailed,
+            format!("remove NanoK3 WFP objects failed: {err}"),
+        ))
+    })?;
+    log_line(log, &format!("removed {removed_filters} WFP filters"))?;
+
+    sandbox_users::remove_sandbox_users(&payload.offline_username, &payload.online_username, log)?;
+
+    let marker_path = setup_marker_path(&payload.nano_home);
+    match std::fs::remove_file(&marker_path) {
+        Ok(()) => log_line(
+            log,
+            &format!("removed setup marker {}", marker_path.display()),
+        )?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(anyhow::Error::new(SetupFailure::new(
+                SetupErrorCode::HelperUninstallFailed,
+                format!(
+                    "remove setup marker {} failed: {err}",
+                    marker_path.display()
+                ),
+            )));
+        }
+    }
+
+    log_note("setup uninstall completed", Some(sbx_dir));
     Ok(())
 }
 
@@ -1111,6 +1191,29 @@ mod tests {
 
         assert!(payload.refresh_marker_only);
         assert!(!payload.refresh_only);
+        assert_eq!(payload.mode, super::SetupMode::Full);
+    }
+
+    #[test]
+    fn payload_defaults_uninstall_absent() {
+        let payload: Payload = serde_json::from_value(payload_json()).expect("payload");
+
+        assert!(!payload.uninstall);
+    }
+
+    #[test]
+    fn payload_accepts_uninstall() {
+        let mut payload = payload_json();
+        payload["uninstall"] = json!(true);
+        let payload_json = serde_json::to_vec(&payload).expect("serialize payload");
+        // Exercise the same base64 wire contract the CLI entry point uses.
+        let payload_b64 = BASE64.encode(payload_json);
+        let decoded = BASE64.decode(payload_b64).expect("decode payload b64");
+        let payload: Payload = serde_json::from_slice(&decoded).expect("payload");
+
+        assert!(payload.uninstall);
+        assert!(!payload.refresh_only);
+        assert!(!payload.refresh_marker_only);
         assert_eq!(payload.mode, super::SetupMode::Full);
     }
 

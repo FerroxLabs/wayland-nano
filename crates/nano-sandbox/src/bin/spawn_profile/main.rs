@@ -146,7 +146,6 @@ mod win {
         let _ = std::fs::remove_dir_all(tmp.join("workspace").join("file.txt"));
         Ok(())
     }
-
 }
 
 #[cfg(target_os = "windows")]

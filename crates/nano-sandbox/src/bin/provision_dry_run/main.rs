@@ -32,7 +32,6 @@ mod win {
         println!(r"target\release\nanok3-sandbox-setup.exe {b64}");
         Ok(())
     }
-
 }
 
 #[cfg(target_os = "windows")]

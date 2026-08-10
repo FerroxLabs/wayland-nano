@@ -52,6 +52,16 @@ pub enum SetupErrorCode {
     HelperUsersGroupCreateFailed,
     /// Helper failed to create or update a sandbox user account.
     HelperUserCreateOrUpdateFailed,
+    /// Helper failed to delete a sandbox user account during uninstall.
+    /// (Track-B addition — the donor has no teardown.)
+    HelperUserDeleteFailed,
+    /// Helper failed to delete the sandbox users local group during uninstall,
+    /// or refused because its membership did not match the provisioned set.
+    /// (Track-B addition — the donor has no teardown.)
+    HelperUsersGroupDeleteFailed,
+    /// Helper failed during uninstall for a step without a narrower code.
+    /// (Track-B addition — the donor has no teardown.)
+    HelperUninstallFailed,
     /// Helper failed to protect user passwords with DPAPI.
     HelperDpapiProtectFailed,
     /// Helper failed to write the sandbox users secrets file.
@@ -101,6 +111,9 @@ impl SetupErrorCode {
             Self::HelperUserProvisionFailed => "helper_user_provision_failed",
             Self::HelperUsersGroupCreateFailed => "helper_users_group_create_failed",
             Self::HelperUserCreateOrUpdateFailed => "helper_user_create_or_update_failed",
+            Self::HelperUserDeleteFailed => "helper_user_delete_failed",
+            Self::HelperUsersGroupDeleteFailed => "helper_users_group_delete_failed",
+            Self::HelperUninstallFailed => "helper_uninstall_failed",
             Self::HelperDpapiProtectFailed => "helper_dpapi_protect_failed",
             Self::HelperUsersFileWriteFailed => "helper_users_file_write_failed",
             Self::HelperSetupMarkerWriteFailed => "helper_setup_marker_write_failed",

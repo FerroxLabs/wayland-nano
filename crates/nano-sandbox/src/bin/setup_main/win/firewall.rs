@@ -32,17 +32,19 @@ use nano_sandbox::SetupErrorCode;
 use nano_sandbox::SetupFailure;
 
 // This is the stable identifier we use to find/update the rule idempotently.
-// It intentionally does not change between installs.
-const OFFLINE_BLOCK_RULE_NAME: &str = "codex_sandbox_offline_block_outbound";
-const OFFLINE_BLOCK_LOOPBACK_TCP_RULE_NAME: &str = "codex_sandbox_offline_block_loopback_tcp";
-const OFFLINE_BLOCK_LOOPBACK_UDP_RULE_NAME: &str = "codex_sandbox_offline_block_loopback_udp";
+// It intentionally does not change between installs. Track-B namespacing:
+// nanok3_sandbox_* (Track A uses codex_sandbox_* — never touch those).
+const OFFLINE_BLOCK_RULE_NAME: &str = "nanok3_sandbox_offline_block_outbound";
+const OFFLINE_BLOCK_LOOPBACK_TCP_RULE_NAME: &str = "nanok3_sandbox_offline_block_loopback_tcp";
+const OFFLINE_BLOCK_LOOPBACK_UDP_RULE_NAME: &str = "nanok3_sandbox_offline_block_loopback_udp";
 
 // Friendly text shown in the firewall UI.
-const OFFLINE_BLOCK_RULE_FRIENDLY: &str = "Codex Sandbox Offline - Block Non-Loopback Outbound";
+const OFFLINE_BLOCK_RULE_FRIENDLY: &str = "NanoK3 Sandbox Offline - Block Non-Loopback Outbound";
 const OFFLINE_BLOCK_LOOPBACK_TCP_RULE_FRIENDLY: &str =
-    "Codex Sandbox Offline - Block Loopback TCP (Except Proxy)";
-const OFFLINE_BLOCK_LOOPBACK_UDP_RULE_FRIENDLY: &str = "Codex Sandbox Offline - Block Loopback UDP";
-const OFFLINE_PROXY_ALLOW_RULE_NAME: &str = "codex_sandbox_offline_allow_loopback_proxy";
+    "NanoK3 Sandbox Offline - Block Loopback TCP (Except Proxy)";
+const OFFLINE_BLOCK_LOOPBACK_UDP_RULE_FRIENDLY: &str =
+    "NanoK3 Sandbox Offline - Block Loopback UDP";
+const OFFLINE_PROXY_ALLOW_RULE_NAME: &str = "nanok3_sandbox_offline_allow_loopback_proxy";
 const LOOPBACK_REMOTE_ADDRESSES: &str = "127.0.0.0/8,::/127";
 const NON_LOOPBACK_REMOTE_ADDRESSES: &str = "0.0.0.0-126.255.255.255,128.0.0.0-255.255.255.255,::,::2-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff";
 
@@ -208,6 +210,58 @@ pub fn ensure_offline_outbound_block(offline_sid: &str, log: &mut dyn Write) -> 
     }
     result
 }
+
+/// Removes every Track-B (`nanok3_sandbox_*`) firewall rule.
+///
+/// Track-B addition (the donor has no teardown). Deletes are exact-name only
+/// — never pattern matched — so Track A's codex_sandbox_* rules are never
+/// touched. Idempotent: absent rules are skipped.
+pub fn remove_offline_sandbox_rules(log: &mut dyn Write) -> Result<()> {
+    let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    if hr.is_err() {
+        return Err(anyhow::Error::new(SetupFailure::new(
+            SetupErrorCode::HelperFirewallComInitFailed,
+            format!("CoInitializeEx failed: {hr:?}"),
+        )));
+    }
+
+    let result = unsafe {
+        (|| -> Result<()> {
+            let policy: INetFwPolicy2 = CoCreateInstance(&NetFwPolicy2, None, CLSCTX_INPROC_SERVER)
+                .map_err(|err| {
+                    anyhow::Error::new(SetupFailure::new(
+                        SetupErrorCode::HelperFirewallPolicyAccessFailed,
+                        format!("CoCreateInstance NetFwPolicy2 failed: {err:?}"),
+                    ))
+                })?;
+            let rules = policy.Rules().map_err(|err| {
+                anyhow::Error::new(SetupFailure::new(
+                    SetupErrorCode::HelperFirewallPolicyAccessFailed,
+                    format!("INetFwPolicy2::Rules failed: {err:?}"),
+                ))
+            })?;
+
+            for name in OFFLINE_SANDBOX_RULE_NAMES {
+                remove_rule_if_present(&rules, name, log)?;
+            }
+            Ok(())
+        })()
+    };
+
+    unsafe {
+        CoUninitialize();
+    }
+    result
+}
+
+/// Every firewall rule provisioning can create, newest mode first. Uninstall
+/// iterates this exact list and nothing else.
+const OFFLINE_SANDBOX_RULE_NAMES: &[&str] = &[
+    OFFLINE_BLOCK_RULE_NAME,
+    OFFLINE_BLOCK_LOOPBACK_TCP_RULE_NAME,
+    OFFLINE_BLOCK_LOOPBACK_UDP_RULE_NAME,
+    OFFLINE_PROXY_ALLOW_RULE_NAME,
+];
 
 fn remove_rule_if_present(
     rules: &INetFwRules,
@@ -570,6 +624,19 @@ mod tests {
                 spec.protocol,
                 spec.remote_addresses,
                 spec.remote_ports
+            );
+        }
+    }
+
+    #[test]
+    fn firewall_rule_names_are_nanok3_namespaced() {
+        // Track-B firewall rules must keep the nanok3_sandbox_offline_ prefix
+        // so provisioning and uninstall never collide with Track A's
+        // codex_sandbox_offline_* rules on one box.
+        for name in OFFLINE_SANDBOX_RULE_NAMES {
+            assert!(
+                name.starts_with("nanok3_sandbox_offline_"),
+                "rule name {name} lost the Track-B prefix"
             );
         }
     }

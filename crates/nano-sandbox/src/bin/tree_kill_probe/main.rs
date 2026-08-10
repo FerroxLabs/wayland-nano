@@ -36,7 +36,6 @@ mod win {
         }
         Ok(())
     }
-
 }
 
 #[cfg(target_os = "windows")]

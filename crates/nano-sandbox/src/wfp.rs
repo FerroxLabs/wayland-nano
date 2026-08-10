@@ -10,12 +10,15 @@ mod filter_specs;
 use crate::winutil::to_wide;
 use anyhow::Result;
 use std::ffi::OsStr;
+use std::ffi::c_void;
 use std::mem::zeroed;
 use std::ptr::null;
 use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::FWP_E_ALREADY_EXISTS;
 use windows_sys::Win32::Foundation::FWP_E_FILTER_NOT_FOUND;
 use windows_sys::Win32::Foundation::FWP_E_NOT_FOUND;
+use windows_sys::Win32::Foundation::FWP_E_PROVIDER_NOT_FOUND;
+use windows_sys::Win32::Foundation::FWP_E_SUBLAYER_NOT_FOUND;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::HLOCAL;
 use windows_sys::Win32::Foundation::LocalFree;
@@ -49,8 +52,14 @@ use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmEngineC
 use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmEngineOpen0;
 use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmFilterAdd0;
 use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmFilterDeleteByKey0;
+use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmFilterGetByKey0;
+use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmFreeMemory0;
 use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmProviderAdd0;
+use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmProviderDeleteByKey0;
+use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmProviderGetByKey0;
 use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmSubLayerAdd0;
+use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmSubLayerDeleteByKey0;
+use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmSubLayerGetByKey0;
 use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmTransactionAbort0;
 use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmTransactionBegin0;
 use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FwpmTransactionCommit0;
@@ -67,19 +76,22 @@ use filter_specs::ConditionSpec;
 use filter_specs::FILTER_SPECS;
 use filter_specs::FilterSpec;
 
-const SESSION_NAME: &str = "Codex Windows Sandbox WFP";
-const PROVIDER_NAME: &str = "Codex Windows Sandbox WFP";
-const PROVIDER_DESCRIPTION: &str = "Persistent WFP provider for Codex Windows sandbox filters";
-const SUBLAYER_NAME: &str = "Codex Windows Sandbox WFP";
-const SUBLAYER_DESCRIPTION: &str = "Persistent WFP sublayer for Codex Windows sandbox filters";
+const SESSION_NAME: &str = "NanoK3 Windows Sandbox WFP";
+const PROVIDER_NAME: &str = "NanoK3 Windows Sandbox WFP";
+const PROVIDER_DESCRIPTION: &str = "Persistent WFP provider for NanoK3 Windows sandbox filters";
+const SUBLAYER_NAME: &str = "NanoK3 Windows Sandbox WFP";
+const SUBLAYER_DESCRIPTION: &str = "Persistent WFP sublayer for NanoK3 Windows sandbox filters";
 
 // WFP identifies persistent providers, sublayers, and filters by stable GUIDs.
-// These values are Codex-owned identities; do not regenerate them unless we
-// intentionally want to orphan old objects and create a new WFP namespace.
-const PROVIDER_KEY: GUID = GUID::from_u128(0x2e31d31c_3948_4753_9117_e5d1a6496f41);
-const SUBLAYER_KEY: GUID = GUID::from_u128(0xe65054fd_4d32_4c7c_95ef_621f0cf6431a);
+// These values are NanoK3-owned (Track B) identities, deliberately distinct
+// from the donor's Codex GUIDs so both tracks' WFP namespaces coexist on one
+// box and Track-B uninstall can never delete Track-A objects. Do not
+// regenerate them unless we intentionally want to orphan old objects and
+// create a new WFP namespace.
+const PROVIDER_KEY: GUID = GUID::from_u128(0xf66b03a6_a380_409a_9751_d18c4a151e17);
+const SUBLAYER_KEY: GUID = GUID::from_u128(0x9ff7689d_50d3_4eb7_b437_417e1480fb71);
 
-/// Installs the persistent Codex WFP filters for `account`.
+/// Installs the persistent NanoK3 WFP filters for `account`.
 ///
 /// This is intended to run from the already-elevated setup helper. Callers
 /// should treat any returned error as non-fatal to the rest of setup.
@@ -230,7 +242,7 @@ impl Drop for UserMatchCondition {
     }
 }
 
-/// Ensures the persistent Codex WFP provider exists.
+/// Ensures the persistent NanoK3 WFP provider exists.
 fn ensure_provider(engine: HANDLE) -> Result<()> {
     let provider_name = to_wide(OsStr::new(PROVIDER_NAME));
     let provider_description = to_wide(OsStr::new(PROVIDER_DESCRIPTION));
@@ -249,7 +261,7 @@ fn ensure_provider(engine: HANDLE) -> Result<()> {
     ensure_success_or(result, "FwpmProviderAdd0", &[FWP_E_ALREADY_EXISTS as u32])
 }
 
-/// Ensures the persistent Codex sublayer exists under the Codex provider.
+/// Ensures the persistent NanoK3 sublayer exists under the NanoK3 provider.
 fn ensure_sublayer(engine: HANDLE) -> Result<()> {
     let sublayer_name = to_wide(OsStr::new(SUBLAYER_NAME));
     let sublayer_description = to_wide(OsStr::new(SUBLAYER_DESCRIPTION));
@@ -359,6 +371,133 @@ fn delete_filter_if_present(engine: HANDLE, key: &GUID) -> Result<()> {
     )
 }
 
+/// Removes the persistent NanoK3 WFP filters, sublayer, and provider.
+///
+/// Track-B addition (the donor has no teardown). Fail-closed: every object is
+/// looked up by its Track-B GUID and its identity (display name and owning
+/// provider key) is verified before deletion; a mismatch aborts the run and
+/// leaves the object untouched, so this path can never remove Track A's
+/// donor-GUID WFP objects. Absent objects are skipped (idempotent).
+/// Returns the number of filters removed.
+pub fn uninstall_wfp_filters() -> Result<usize> {
+    let engine = Engine::open()?;
+    let mut transaction = engine.begin_transaction()?;
+
+    let mut removed_filter_count = 0;
+    for spec in FILTER_SPECS {
+        if remove_filter_if_verified(engine.handle, spec)? {
+            removed_filter_count += 1;
+        }
+    }
+    remove_sublayer_if_verified(engine.handle)?;
+    remove_provider_if_verified(engine.handle)?;
+
+    transaction.commit()?;
+    Ok(removed_filter_count)
+}
+
+/// Deletes one filter after verifying it belongs to the NanoK3 provider.
+/// Returns Ok(false) when the filter is already absent.
+fn remove_filter_if_verified(engine: HANDLE, spec: &FilterSpec) -> Result<bool> {
+    let mut filter: *mut FWPM_FILTER0 = null_mut();
+    let result = unsafe { FwpmFilterGetByKey0(engine, &spec.key, &mut filter) };
+    if result == FWP_E_FILTER_NOT_FOUND as u32 || result == FWP_E_NOT_FOUND as u32 {
+        return Ok(false);
+    }
+    ensure_success(result, "FwpmFilterGetByKey0")?;
+    let verified = unsafe {
+        let filter_ref = &*filter;
+        let provider_matches =
+            !filter_ref.providerKey.is_null() && guid_eq(&*filter_ref.providerKey, &PROVIDER_KEY);
+        provider_matches && wide_string(filter_ref.displayData.name).starts_with("nanok3_wfp_")
+    };
+    unsafe {
+        FwpmFreeMemory0(&mut filter as *mut *mut FWPM_FILTER0 as *mut *mut c_void);
+    }
+    if !verified {
+        return Err(anyhow::anyhow!(
+            "refusing to delete WFP filter {}: identity mismatch (expected a nanok3_wfp_* filter under the NanoK3 provider)",
+            spec.name
+        ));
+    }
+    delete_filter_if_present(engine, &spec.key)?;
+    Ok(true)
+}
+
+/// Deletes the NanoK3 sublayer after verifying its identity. Absent is fine.
+fn remove_sublayer_if_verified(engine: HANDLE) -> Result<()> {
+    let mut sublayer: *mut FWPM_SUBLAYER0 = null_mut();
+    let result = unsafe { FwpmSubLayerGetByKey0(engine, &SUBLAYER_KEY, &mut sublayer) };
+    if result == FWP_E_SUBLAYER_NOT_FOUND as u32 || result == FWP_E_NOT_FOUND as u32 {
+        return Ok(());
+    }
+    ensure_success(result, "FwpmSubLayerGetByKey0")?;
+    let verified = unsafe {
+        let sublayer_ref = &*sublayer;
+        let provider_matches = !sublayer_ref.providerKey.is_null()
+            && guid_eq(&*sublayer_ref.providerKey, &PROVIDER_KEY);
+        provider_matches && wide_string(sublayer_ref.displayData.name) == SUBLAYER_NAME
+    };
+    unsafe {
+        FwpmFreeMemory0(&mut sublayer as *mut *mut FWPM_SUBLAYER0 as *mut *mut c_void);
+    }
+    if !verified {
+        return Err(anyhow::anyhow!(
+            "refusing to delete WFP sublayer: identity mismatch (expected \"{SUBLAYER_NAME}\" under the NanoK3 provider)"
+        ));
+    }
+    let result = unsafe { FwpmSubLayerDeleteByKey0(engine, &SUBLAYER_KEY) };
+    ensure_success_or(
+        result,
+        "FwpmSubLayerDeleteByKey0",
+        &[FWP_E_SUBLAYER_NOT_FOUND as u32, FWP_E_NOT_FOUND as u32],
+    )
+}
+
+/// Deletes the NanoK3 provider after verifying its identity. Absent is fine.
+fn remove_provider_if_verified(engine: HANDLE) -> Result<()> {
+    let mut provider: *mut FWPM_PROVIDER0 = null_mut();
+    let result = unsafe { FwpmProviderGetByKey0(engine, &PROVIDER_KEY, &mut provider) };
+    if result == FWP_E_PROVIDER_NOT_FOUND as u32 || result == FWP_E_NOT_FOUND as u32 {
+        return Ok(());
+    }
+    ensure_success(result, "FwpmProviderGetByKey0")?;
+    let verified = unsafe { wide_string((*provider).displayData.name) == PROVIDER_NAME };
+    unsafe {
+        FwpmFreeMemory0(&mut provider as *mut *mut FWPM_PROVIDER0 as *mut *mut c_void);
+    }
+    if !verified {
+        return Err(anyhow::anyhow!(
+            "refusing to delete WFP provider: identity mismatch (expected \"{PROVIDER_NAME}\")"
+        ));
+    }
+    let result = unsafe { FwpmProviderDeleteByKey0(engine, &PROVIDER_KEY) };
+    ensure_success_or(
+        result,
+        "FwpmProviderDeleteByKey0",
+        &[FWP_E_PROVIDER_NOT_FOUND as u32, FWP_E_NOT_FOUND as u32],
+    )
+}
+
+/// Reads a null-terminated UTF-16 WFP display string.
+unsafe fn wide_string(ptr: *mut u16) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+    let mut len = 0;
+    unsafe {
+        while *ptr.add(len) != 0 {
+            len += 1;
+        }
+        String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len))
+    }
+}
+
+/// Field-wise GUID comparison (windows-sys 0.52 `GUID` has no `PartialEq`).
+fn guid_eq(a: &GUID, b: &GUID) -> bool {
+    (a.data1, a.data2, a.data3, a.data4) == (b.data1, b.data2, b.data3, b.data4)
+}
+
 fn ensure_success(result: u32, operation: &str) -> Result<()> {
     ensure_success_or(result, operation, &[])
 }
@@ -399,6 +538,8 @@ fn zero_guid() -> GUID {
 #[cfg(test)]
 mod tests {
     use super::FILTER_SPECS;
+    use super::PROVIDER_KEY;
+    use super::SUBLAYER_KEY;
     use pretty_assertions::assert_eq;
     use std::collections::BTreeSet;
 
@@ -425,5 +566,29 @@ mod tests {
             .map(|spec| spec.name)
             .collect::<BTreeSet<_>>();
         assert_eq!(names.len(), FILTER_SPECS.len());
+    }
+
+    #[test]
+    fn filter_names_are_nanok3_namespaced() {
+        // Track-B WFP objects must never share the donor's codex_wfp_* names
+        // so uninstall identity checks can never match Track-A objects.
+        assert!(
+            FILTER_SPECS
+                .iter()
+                .all(|spec| spec.name.starts_with("nanok3_wfp_"))
+        );
+    }
+
+    #[test]
+    fn provider_and_sublayer_keys_do_not_collide_with_filter_keys() {
+        // windows-sys 0.52 GUID has no PartialEq; compare the raw fields.
+        fn key_tuple(guid: &super::GUID) -> (u32, u16, u16, [u8; 8]) {
+            (guid.data1, guid.data2, guid.data3, guid.data4)
+        }
+        assert_ne!(key_tuple(&PROVIDER_KEY), key_tuple(&SUBLAYER_KEY));
+        for spec in FILTER_SPECS {
+            assert_ne!(key_tuple(&spec.key), key_tuple(&PROVIDER_KEY));
+            assert_ne!(key_tuple(&spec.key), key_tuple(&SUBLAYER_KEY));
+        }
     }
 }

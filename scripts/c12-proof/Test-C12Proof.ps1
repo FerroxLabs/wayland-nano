@@ -5,7 +5,11 @@
 [CmdletBinding()]
 param(
     [string]$WorkspaceRoot = "$env:TEMP\nanok3-c12-ws",
-    [string]$EvidenceDir = ""
+    [string]$EvidenceDir = "",
+    # Run the uninstall-scope probe in post-uninstall mode: assert every
+    # NanoK3 machine-state artifact is GONE (run after invoking the setup
+    # helper with an uninstall:true payload).
+    [switch]$PostUninstall
 )
 
 if (-not $EvidenceDir) {
@@ -155,6 +159,9 @@ if (-not $provisioned) {
     # WFP block-all for the offline identity is verified by attempting a
     # loopback-external connect from a token-restricted context. This harness
     # checks the filters exist for the account as the system-level oracle.
+    # Track-B filter names are nanok3_wfp_* and the provider is "NanoK3
+    # Windows Sandbox WFP", so the case-insensitive NanoK3 match now hits the
+    # filter/provider names directly, not just the account-SID condition.
     $filters = & netsh wfp show filters 2>$null | Select-String -SimpleMatch "NanoK3" -Quiet
     if ($filters) {
         Add-Result "network-deny-offline" "PASS" "WFP filters present for NanoK3 identity"
@@ -289,14 +296,50 @@ if (-not $provisioned) {
     }
 }
 
-# ---------- probe: uninstall-scope (requires provisioned) ----------
-# Residue scan: every Nano-owned artifact must live inside the known scope
-# (NanoK3Sandbox* accounts, CodexSandboxUsers group, the 3 codex_sandbox_offline_*
-# firewall rules, %USERPROFILE%\.nanok3). No services, scheduled tasks, or stray
-# profile-root files. NOTE: the setup helper has no uninstall mode yet, so this
-# audits provisioning residue; extend to a post-uninstall scan when one ships.
-if (-not $provisioned) {
+# ---------- probe: uninstall-scope ----------
+# Default mode (run while provisioned): every Nano-owned artifact must live
+# inside the known scope (NanoK3Sandbox* accounts, NanoK3SandboxUsers group,
+# the nanok3_sandbox_offline_* firewall rules, the NanoK3 WFP provider and
+# nanok3_wfp_* filters, %USERPROFILE%\.nanok3). No services, scheduled tasks,
+# or stray profile-root files.
+# -PostUninstall mode (run AFTER `nanok3-sandbox-setup.exe <payload>` with
+# uninstall:true): every piece of that machine state must be GONE — any
+# NanoK3 residue is a FAIL. Track-A (Codex*/codex_*) objects are out of scope
+# in both modes: the helper's uninstall is fail-closed on exact NanoK3
+# identities and never touches them.
+if (-not $provisioned -and -not $PostUninstall) {
     Add-Result "uninstall-scope" "SKIP" "not provisioned"
+} elseif ($PostUninstall) {
+    $residue = @()
+    try {
+        $accounts = @(Get-CimInstance Win32_UserAccount -ErrorAction Stop |
+            Where-Object { $_.LocalAccount -and $_.Name -like "NanoK3*" } |
+            ForEach-Object { $_.Name })
+        foreach ($a in $accounts) { $residue += "account:$a" }
+
+        $group = Get-LocalGroup -Name "NanoK3SandboxUsers" -ErrorAction SilentlyContinue
+        if ($null -ne $group) { $residue += "group:NanoK3SandboxUsers" }
+
+        $fw = @(Get-NetFirewallRule -ErrorAction Stop |
+            Where-Object { $_.Name -like "nanok3_sandbox_*" } | ForEach-Object { $_.Name })
+        foreach ($f in $fw) { $residue += "firewall-rule:$f" }
+
+        if (& netsh wfp show providers 2>$null | Select-String -SimpleMatch "NanoK3" -Quiet) {
+            $residue += "wfp-provider:NanoK3"
+        }
+        if (& netsh wfp show filters 2>$null | Select-String -SimpleMatch "nanok3_" -Quiet) {
+            $residue += "wfp-filters:nanok3_*"
+        }
+
+        $markerPath = Join-Path $env:USERPROFILE ".nanok3\.sandbox\setup_marker.json"
+        if (Test-Path $markerPath) { $residue += "setup-marker" }
+
+        if ($residue.Count -eq 0) {
+            Add-Result "uninstall-scope" "PASS" "post-uninstall scan: no NanoK3 accounts, group, firewall rules, WFP provider/filters, or setup marker remain"
+        } else {
+            Add-Result "uninstall-scope" "FAIL" ("post-uninstall residue: " + ($residue -join ", "))
+        }
+    } catch { Add-Result "uninstall-scope" "FAIL" "post-uninstall scan inconclusive: $_" }
 } else {
     $residue = @()
     $scope = @()
@@ -309,22 +352,30 @@ if (-not $provisioned) {
         foreach ($a in $expectedAccounts) { if ($foundAccounts -notcontains $a) { $residue += "missing-account:$a" } }
         $scope += "accounts=$($foundAccounts.Count)"
 
-        $group = Get-LocalGroup -Name "CodexSandboxUsers" -ErrorAction SilentlyContinue
-        if ($null -eq $group) { $residue += "missing-group:CodexSandboxUsers" } else { $scope += "group=CodexSandboxUsers" }
+        $group = Get-LocalGroup -Name "NanoK3SandboxUsers" -ErrorAction SilentlyContinue
+        if ($null -eq $group) { $residue += "missing-group:NanoK3SandboxUsers" } else { $scope += "group=NanoK3SandboxUsers" }
 
+        # Track-B only: Track A's codex* services/tasks are not this track's
+        # residue and must not flag this probe.
         $svc = @(Get-CimInstance Win32_Service -ErrorAction Stop |
-            Where-Object { $_.Name -match "nanok3|codex.?sandbox" -or $_.PathName -match "nanok3" })
+            Where-Object { $_.Name -match "nanok3" -or $_.PathName -match "nanok3" })
         foreach ($s in $svc) { $residue += "service:$($s.Name)" }
         $tasks = @(Get-ScheduledTask -ErrorAction Stop |
-            Where-Object { $_.TaskName -match "nanok3|codex.?sandbox" })
+            Where-Object { $_.TaskName -match "nanok3" })
         foreach ($t in $tasks) { $residue += "scheduled-task:$($t.TaskName)" }
         $scope += "services=$($svc.Count)+tasks=$($tasks.Count)"
 
-        $knownFw = @("codex_sandbox_offline_block_outbound", "codex_sandbox_offline_block_loopback_tcp", "codex_sandbox_offline_block_loopback_udp")
+        $knownFw = @("nanok3_sandbox_offline_block_outbound", "nanok3_sandbox_offline_block_loopback_tcp", "nanok3_sandbox_offline_block_loopback_udp", "nanok3_sandbox_offline_allow_loopback_proxy")
         $fw = @(Get-NetFirewallRule -ErrorAction Stop |
-            Where-Object { $_.Name -match "nanok3|codex_sandbox" } | ForEach-Object { $_.Name })
+            Where-Object { $_.Name -like "nanok3_sandbox_*" } | ForEach-Object { $_.Name })
         foreach ($f in $fw) { if ($knownFw -notcontains $f) { $residue += "unexpected-firewall-rule:$f" } }
-        $scope += "firewall=$($fw.Count)/3"
+        $scope += "firewall=$($fw.Count)/$($knownFw.Count)"
+
+        if (& netsh wfp show providers 2>$null | Select-String -SimpleMatch "NanoK3 Windows Sandbox WFP" -Quiet) {
+            $scope += "wfp-provider=present"
+        } else {
+            $residue += "missing-wfp-provider:NanoK3 Windows Sandbox WFP"
+        }
 
         $stray = @(Get-ChildItem $env:USERPROFILE -Force -ErrorAction Stop |
             Where-Object { $_.Name -like "*nanok3*" -and $_.Name -ne ".nanok3" })
@@ -332,7 +383,7 @@ if (-not $provisioned) {
         $scope += "profile=.nanok3-only"
 
         if ($residue.Count -eq 0) {
-            Add-Result "uninstall-scope" "PASS" ("all artifacts in scope (" + ($scope -join "; ") + "); provisioning residue only (no uninstall mode shipped)")
+            Add-Result "uninstall-scope" "PASS" ("all artifacts in scope (" + ($scope -join "; ") + "); run with -PostUninstall after helper uninstall to verify removal")
         } else {
             Add-Result "uninstall-scope" "FAIL" ("out-of-scope residue: " + ($residue -join ", "))
         }
