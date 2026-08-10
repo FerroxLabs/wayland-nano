@@ -2,8 +2,16 @@
 //!
 //! Every hostile endpoint is a local TCP listener on 127.0.0.1 — no real
 //! network is ever contacted. "Denied" assertions additionally prove that a
-//! denial produces ZERO socket activity (the listener never sees a
-//! connection), per the crate invariant "deny = no bytes leave".
+//! denial produces ZERO socket activity (the listener never sees a connection
+//! carrying the test's canary), per the crate invariant "deny = no bytes
+//! leave".
+//!
+//! Race hardening: each test drives its listener with a unique canary path
+//! (`/nanok3-canary-<test>-<pid>`). A listener counts a connection as a hit
+//! ONLY when the request head carries that test's canary; stray probes
+//! (AV/EDR port scans, port reuse by another process under full-workspace
+//! parallelism) get a 404 and stay inert instead of producing false-positive
+//! "exfiltration" hits.
 
 use nano_egress::client::{EgressClient, EgressError};
 use nano_egress::policy::EgressPolicy;
@@ -13,21 +21,36 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-/// A hostile endpoint: counts connections and answers each with `handler`.
+/// A hostile endpoint: counts canary-carrying connections and answers each
+/// with `handler`.
 struct HostileListener {
     addr: SocketAddr,
     hits: Arc<AtomicUsize>,
 }
 
-fn spawn_listener(handler: impl Fn(TcpStream, usize) + Send + 'static) -> HostileListener {
+/// Bind an OS-assigned port (port 0 — never a hardcoded port, so tests cannot
+/// collide through TIME_WAIT/reuse) and accept connections in the background.
+/// A connection is only counted (and handed to `handler`) when its request
+/// head contains `canary`; anything else is a stray probe and is dismissed.
+fn spawn_listener(
+    canary: &str,
+    handler: impl Fn(TcpStream, usize) + Send + 'static,
+) -> HostileListener {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("local addr");
+    let canary = canary.to_owned();
     let hits = Arc::new(AtomicUsize::new(0));
     let hits_thread = Arc::clone(&hits);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             match stream {
-                Ok(stream) => {
+                Ok(mut stream) => {
+                    let head = read_head(&mut stream);
+                    if !head.contains(&canary) {
+                        // Stray probe: not this test's traffic — never counted.
+                        respond(&mut stream, "404 Not Found", "", "nanok3-stray-probe");
+                        continue;
+                    }
                     let n = hits_thread.fetch_add(1, Ordering::SeqCst) + 1;
                     handler(stream, n);
                 }
@@ -43,7 +66,8 @@ fn hit_count(listener: &HostileListener) -> usize {
 }
 
 /// Read one HTTP request head; ignore timeouts/truncation (hostile peers).
-fn read_head(stream: &mut TcpStream) {
+/// Returns the raw head for canary matching.
+fn read_head(stream: &mut TcpStream) -> String {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .expect("read timeout");
@@ -60,6 +84,7 @@ fn read_head(stream: &mut TcpStream) {
             }
         }
     }
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 fn respond(stream: &mut TcpStream, status: &str, extra_headers: &str, body: &str) {
@@ -75,12 +100,12 @@ fn respond(stream: &mut TcpStream, status: &str, extra_headers: &str, body: &str
 
 #[tokio::test]
 async fn denied_host_produces_zero_socket_activity() {
-    let hostile = spawn_listener(|mut stream, _| {
-        read_head(&mut stream);
+    let canary = format!("/nanok3-canary-denied-host-{}", std::process::id());
+    let hostile = spawn_listener(&canary, |mut stream, _| {
         respond(&mut stream, "200 OK", "", "nanok3-should-never-see-this");
     });
     let client = EgressClient::flux();
-    let url = format!("http://127.0.0.1:{}/v1/chat/completions", hostile.addr.port());
+    let url = format!("http://127.0.0.1:{}{canary}", hostile.addr.port());
     let err = client
         .request(reqwest::Method::GET, &url)
         .expect_err("non-Flux host must be denied");
@@ -142,18 +167,20 @@ fn flux_allowlist_accepts_only_the_real_host() {
 async fn redirect_to_off_allowlist_host_must_not_be_followed() {
     // Hostile target: only reachable if the client follows a redirect WITHOUT
     // re-checking the egress policy against the redirect target.
-    let exfil = spawn_listener(|mut stream, _| {
-        read_head(&mut stream);
+    let exfil_canary = format!("/nanok3-canary-redirect-exfil-{}", std::process::id());
+    let origin_canary = format!("/nanok3-canary-redirect-origin-{}", std::process::id());
+    let exfil = spawn_listener(&exfil_canary, |mut stream, _| {
         respond(&mut stream, "200 OK", "", "nanok3-exfil-reached");
     });
     let exfil_port = exfil.addr.port();
-    // Allowed origin: redirects every request to the off-allowlist host.
-    let origin = spawn_listener(move |mut stream, _| {
-        read_head(&mut stream);
+    // Allowed origin: redirects every request to the off-allowlist host,
+    // pointing at the exfil listener's canary path so only a real follow
+    // registers as a hit.
+    let origin = spawn_listener(&origin_canary, move |mut stream, _| {
         respond(
             &mut stream,
             "302 Found",
-            &format!("Location: http://127.0.0.1:{exfil_port}/exfil\r\n"),
+            &format!("Location: http://127.0.0.1:{exfil_port}{exfil_canary}\r\n"),
             "",
         );
     });
@@ -161,7 +188,7 @@ async fn redirect_to_off_allowlist_host_must_not_be_followed() {
     // names resolve to the same loopback, so only policy re-checking on the
     // redirect target can stop the exfiltration.
     let client = EgressClient::new(EgressPolicy::new().allow_host("localhost"));
-    let url = format!("http://localhost:{}/start", origin.addr.port());
+    let url = format!("http://localhost:{}{origin_canary}", origin.addr.port());
     let builder = client
         .request(reqwest::Method::GET, &url)
         .expect("allowlisted origin must build");
@@ -179,13 +206,16 @@ async fn redirect_to_off_allowlist_host_must_not_be_followed() {
 async fn redirect_within_allowlisted_host_is_allowed() {
     // Control: proves the harness above can observe a redirect when policy
     // permits it, so a green off-allowlist test is not a false negative.
-    let origin = spawn_listener(move |mut stream, n| {
-        read_head(&mut stream);
+    // Both the initial request and the redirect target use the canary path,
+    // so each follow is distinguishable from stray traffic.
+    let canary = format!("/nanok3-canary-redirect-control-{}", std::process::id());
+    let location = canary.clone();
+    let origin = spawn_listener(&canary, move |mut stream, n| {
         if n == 1 {
             respond(
                 &mut stream,
                 "302 Found",
-                "Location: /final\r\n",
+                &format!("Location: {location}\r\n"),
                 "",
             );
         } else {
@@ -193,7 +223,7 @@ async fn redirect_within_allowlisted_host_is_allowed() {
         }
     });
     let client = EgressClient::new(EgressPolicy::new().allow_host("localhost"));
-    let url = format!("http://localhost:{}/start", origin.addr.port());
+    let url = format!("http://localhost:{}{canary}", origin.addr.port());
     let response = client
         .request(reqwest::Method::GET, &url)
         .expect("allowlisted")
@@ -201,11 +231,12 @@ async fn redirect_within_allowlisted_host_is_allowed() {
         .await
         .expect("send");
     let body = response.text().await.expect("body");
-    assert_eq!(hit_count(&origin), 2, "same-host redirect should be followed");
-    assert!(
-        body.contains("nanok3-redirect-final"),
-        "final body: {body}"
+    assert_eq!(
+        hit_count(&origin),
+        2,
+        "same-host redirect should be followed"
     );
+    assert!(body.contains("nanok3-redirect-final"), "final body: {body}");
 }
 
 // --- Credential/header redaction on error paths ------------------------------
@@ -251,11 +282,24 @@ fn http_status_error_display_redacts_query_and_userinfo_credentials() {
 
 #[tokio::test]
 async fn transport_error_display_redacts_url_credentials() {
-    // A refused connection must not echo the URL (query/userinfo) that a
-    // caller attached credentials to.
-    let probe = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = probe.local_addr().expect("addr").port();
-    drop(probe); // port now (almost certainly) refuses connections
+    // A failed transport must not echo the URL (query/userinfo) or headers
+    // that a caller attached credentials to.
+    //
+    // Hardening choice: instead of "bind port 0, drop, then reuse the port"
+    // (whose close window another process can win under parallel load,
+    // turning a deterministic refusal into a surprise successful request),
+    // the listener stays BOUND and accepts-then-drops every connection
+    // without answering. What this test proves about EgressClient is that
+    // `classify_transport` redacts credentials from ANY transport error, not
+    // specifically ECONNREFUSED — and the accept-then-drop peer yields that
+    // error deterministically while the bound port can never be stolen.
+    let sink = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = sink.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for stream in sink.incoming() {
+            drop(stream); // accept, answer with nothing: deterministic error
+        }
+    });
     let client = EgressClient::new(EgressPolicy::new().allow_host("127.0.0.1"));
     let url = format!("http://127.0.0.1:{port}/v1?api_key=nanok3-transport-secret");
     let err = client
@@ -264,7 +308,7 @@ async fn transport_error_display_redacts_url_credentials() {
         .bearer_auth("nanok3-bearer-secret")
         .send()
         .await
-        .expect_err("refused connection must error");
+        .expect_err("unanswered connection must error");
     let rendered = client.classify_transport(&err).to_string();
     assert!(
         !rendered.contains("nanok3-transport-secret"),
