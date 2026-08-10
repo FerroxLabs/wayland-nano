@@ -21,6 +21,8 @@ pub mod telemetry;
 pub mod macos_seatbelt;
 #[cfg(any(target_os = "linux", test))]
 pub mod linux_landlock;
+#[cfg(any(target_os = "linux", test))]
+pub mod linux_bwrap;
 
 /// Sandbox backend selected for the current platform.
 ///

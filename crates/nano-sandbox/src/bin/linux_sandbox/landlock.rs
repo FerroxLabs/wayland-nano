@@ -1,5 +1,5 @@
 //! In-process Linux sandbox primitives: `no_new_privs`, Landlock filesystem
-//! rules, and the network seccomp filter (legacy enforcement path).
+//! rules, and the network seccomp filter.
 //!
 //! Provenance: ported from Codex `codex-rs/linux-sandbox/src/landlock.rs`
 //! @ 646f7c0a. Transformations:
@@ -11,9 +11,10 @@
 //!   `allow_network_for_proxy` / `proxy_routed_network` params and the
 //!   `ProxyRouted` seccomp mode are not ported; restricted network always
 //!   installs the AF_UNIX-only filter;
-//! - this legacy Landlock path is the ONLY filesystem backend in this pass;
-//!   bubblewrap (`codex-rs/linux-sandbox/src/bwrap.rs`, 2763 lines) is
-//!   intentionally out of scope (TODO: port when the bwrap pipeline lands);
+//! - Landlock is the LEGACY filesystem backend: the default pipeline is
+//!   bubblewrap (`nano_sandbox::linux_bwrap` + this binary's outer stage),
+//!   which is why `apply_permission_profile_to_current_thread` takes
+//!   `apply_landlock_fs` — the bwrap inner stage applies seccomp only;
 //! - `set_no_new_privs(true)` -> `no_new_privs(true)` (landlock 0.4.7
 //!   deprecated the former; same semantics).
 
@@ -49,10 +50,13 @@ use seccompiler::apply_filter;
 /// This function is responsible for:
 /// - enabling `PR_SET_NO_NEW_PRIVS` when restrictions apply,
 /// - installing the network seccomp filter when network access is disabled, and
-/// - installing the legacy Landlock filesystem ruleset.
+/// - installing the legacy Landlock filesystem ruleset when `apply_landlock_fs`
+///   is set (the bubblewrap pipeline owns filesystem isolation itself, so its
+///   inner seccomp stage passes `false`).
 pub(crate) fn apply_permission_profile_to_current_thread(
     permission_profile: &PermissionProfile,
     cwd: &Path,
+    apply_landlock_fs: bool,
 ) -> Result<()> {
     let (file_system_sandbox_policy, network_sandbox_policy) =
         permission_profile.to_runtime_permissions();
@@ -60,7 +64,9 @@ pub(crate) fn apply_permission_profile_to_current_thread(
 
     // `PR_SET_NO_NEW_PRIVS` is required for seccomp, but it also prevents
     // setuid privilege elevation. We only enable it when restrictions apply.
-    if install_network_seccomp || !file_system_sandbox_policy.has_full_disk_write_access() {
+    if install_network_seccomp
+        || (apply_landlock_fs && !file_system_sandbox_policy.has_full_disk_write_access())
+    {
         set_no_new_privs()?;
     }
 
@@ -68,7 +74,7 @@ pub(crate) fn apply_permission_profile_to_current_thread(
         install_network_seccomp_filter_on_current_thread()?;
     }
 
-    if !file_system_sandbox_policy.has_full_disk_write_access() {
+    if apply_landlock_fs && !file_system_sandbox_policy.has_full_disk_write_access() {
         if !file_system_sandbox_policy.has_full_disk_read_access() {
             anyhow::bail!(
                 "Restricted read-only access is not supported by the legacy Linux Landlock filesystem backend."
