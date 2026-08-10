@@ -53,15 +53,12 @@ jobs:
 
       - name: gate-fmt
         run: just gate-fmt
-        working-directory: nano-k3
 
       - name: gate-lint
         run: just gate-lint
-        working-directory: nano-k3
 
       - name: gate-test
         run: just gate-test
-        working-directory: nano-k3
 
       # cargo build --workspace builds every workspace bin; on unix this is
       # what compiles the ported sandbox helpers (nanok3-linux-sandbox and
@@ -69,17 +66,14 @@ jobs:
       - name: Build workspace binaries (unix sandbox helpers)
         if: runner.os != 'Windows'
         run: cargo build --workspace --bins
-        working-directory: nano-k3
 
       # Post-port proof: the Linux sandbox helper binary must exist.
       - name: Verify nanok3-linux-sandbox helper built
         if: runner.os == 'Linux'
         run: test -x target/debug/nanok3-linux-sandbox
-        working-directory: nano-k3
 
       - name: gate-deny
         run: just gate-deny
-        working-directory: nano-k3
         continue-on-error: true # advisory until SBOM policy lands
 
       - name: Evidence manifest (Windows)
