@@ -2,6 +2,21 @@
 
 ## Current position
 
+### 48H SPRINT STATE (2026-08-10, pre-compaction checkpoint)
+- **ACP ADAPTER LIVE** (commit 2eddab7): `nanok3 acp-host` speaks ACP; slice proves
+  initialize v1 → session/new → prompt with streamed updates → end_turn → canary
+  clean → zero orphans. Release binary: target/release/nanok3.exe (6.4MB).
+- **THE DOOR**: Desktop loads custom ACP agents from config `acp.customAgents`
+  with zero Desktop code changes.
+- **NEXT (in order)**: (a) register nanok3 in Desktop config + live conversation;
+  (b) OWNER provisioning → C1.2 → C1 claim; (c) Unix containment port
+  (seatbelt/landlock from Codex); (d) 6-target CI matrix; (e) compliance matrix;
+  (f) adversarial formalization; (g) NPM packaging (signing via NPM per owner).
+- ARM64 Windows: compile-gate only, not claimed without hardware.
+- User directive: NOTHING cut — parity/signing/compliance/adversarial all required.
+
+### Original position
+
 - Goal: active (K3 native goal mode; objective = C1→C2→C3 per `../../shared/SCORECARD.md`)
 - Phase: **C1 code-complete; C2 + C3 CLAIMED (shared/reviews/C2,C3)**; awaiting owner: C2/C3 promotion decisions + elevated provisioning for C1.2 + C1 claim
 - Checkpoint: C1 ready-to-prove (no claim posted); C2 in progress
