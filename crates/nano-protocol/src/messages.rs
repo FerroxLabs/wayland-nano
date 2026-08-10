@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn corpus_fixtures_parse_for_supported_subset() {
         let ready: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../resources/upstreams/wayland-desktop/contracts/wayland-desktop-core/v1/events/ready.json"
+            "../corpus/wayland-desktop-core/v1/events/ready.json"
         ))
         .unwrap();
         assert_eq!(ready["type"], "ready");
@@ -189,7 +189,7 @@ mod tests {
         assert!(caps.get("thinking").is_some());
 
         let tool_request: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../resources/upstreams/wayland-desktop/contracts/wayland-desktop-core/v1/events/tool_request.json"
+            "../corpus/wayland-desktop-core/v1/events/tool_request.json"
         ))
         .unwrap();
         assert_eq!(tool_request["type"], "tool_request");
@@ -211,7 +211,7 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         let corpus: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../resources/upstreams/wayland-desktop/contracts/wayland-desktop-core/v1/events/tool_request.json"
+            "../corpus/wayland-desktop-core/v1/events/tool_request.json"
         ))
         .unwrap();
         assert_eq!(json["type"], corpus["type"]);
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn command_fixtures_parse() {
         let message: Command = serde_json::from_str(include_str!(
-            "../../../../resources/upstreams/wayland-desktop/contracts/wayland-desktop-core/v1/commands/message.json"
+            "../corpus/wayland-desktop-core/v1/commands/message.json"
         ))
         .unwrap();
         assert_eq!(

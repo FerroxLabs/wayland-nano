@@ -17,8 +17,10 @@ use crate::messages::{Command, Event};
 use std::path::Path;
 
 #[cfg(test)]
-const CORPUS: &str =
-    "../../../resources/upstreams/wayland-desktop/contracts/wayland-desktop-core/v1";
+const CORPUS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/corpus/wayland-desktop-core/v1"
+);
 
 /// Command types the Nano v1 profile supports (everything else in the corpus
 /// must be tolerated-as-typed-error, never executed).
