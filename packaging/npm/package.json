@@ -1,0 +1,21 @@
+{
+  "name": "nanok3",
+  "version": "0.1.0-alpha.0",
+  "description": "NanoK3 (Track B) CLI — prebuilt native binary via npm (alpha, unsigned distribution scaffold)",
+  "private": true,
+  "license": "Apache-2.0",
+  "bin": {
+    "nanok3": "bin/nanok3.js"
+  },
+  "scripts": {
+    "postinstall": "node bin/install.js"
+  },
+  "files": [
+    "bin/",
+    "binaries/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -3,3 +3,6 @@
 .secrets/
 *.key
 *.pem
+
+# Staged prebuilt binaries for the npm package (built by packaging/npm/scripts/pack.ps1)
+/packaging/npm/binaries/
