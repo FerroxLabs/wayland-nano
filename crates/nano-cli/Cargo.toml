@@ -9,6 +9,10 @@ rust-version.workspace = true
 name = "nanok3"
 path = "src/main.rs"
 
+[[bin]]
+name = "nanok3-acp-profile"
+path = "src/bin/acp_profile/main.rs"
+
 [dependencies]
 dirs-next = "2"
 nano-agent = { path = "../nano-agent" }

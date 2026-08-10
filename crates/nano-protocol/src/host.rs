@@ -284,6 +284,120 @@ mod tests {
         assert!(!text.contains("stream_end"), "no partial turn frames");
     }
 
+    /// Frame cadence contract (G-C2-1): a streamed turn emits frames in the
+    /// documented order — `ready` first, then `stream_start`, the turn's
+    /// events in scripted order, and the terminal `stream_end` last — and no
+    /// two frames are written without an intervening flush boundary.
+    #[tokio::test]
+    async fn streamed_turn_cadence_orders_frames_and_flushes_between_them() {
+        /// Writer that records the write/flush op stream so the test can
+        /// observe flush boundaries between frames.
+        #[derive(Default)]
+        struct FlushProbe {
+            bytes: Vec<u8>,
+            ops: Vec<&'static str>,
+            chunks: Vec<String>,
+        }
+        impl Write for FlushProbe {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.ops.push("write");
+                self.bytes.extend_from_slice(buf);
+                self.chunks.push(String::from_utf8_lossy(buf).into_owned());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.ops.push("flush");
+                Ok(())
+            }
+        }
+
+        async fn scripted_turn(
+            msg_id: String,
+            _content: String,
+        ) -> (Vec<Event>, Option<Usage>, String) {
+            (
+                vec![
+                    Event::TextDelta {
+                        msg_id: msg_id.clone(),
+                        text: "part one".into(),
+                    },
+                    Event::ToolRunning {
+                        call_id: "c1".into(),
+                        msg_id: msg_id.clone(),
+                        tool_name: "fs_read".into(),
+                    },
+                    Event::ToolResult {
+                        call_id: "c1".into(),
+                        msg_id: msg_id.clone(),
+                        output: "ok".into(),
+                        output_type: Some("text".into()),
+                        status: "success".into(),
+                        tool_name: "fs_read".into(),
+                        metadata: None,
+                    },
+                    Event::TextDelta {
+                        msg_id,
+                        text: "part two".into(),
+                    },
+                ],
+                None,
+                "stop".into(),
+            )
+        }
+
+        let input = "{\"type\":\"message\",\"msg_id\":\"m1\",\"content\":\"go\"}\n";
+        let mut reader = Cursor::new(input.as_bytes());
+        let mut probe = FlushProbe::default();
+
+        let exit = run_host_loop(&mut reader, &mut probe, &config(), scripted_turn)
+            .await
+            .unwrap();
+        assert_eq!(exit, HostExit::StdinClosed);
+
+        // Contract order: ready first, per-event frames in scripted order,
+        // terminal stream_end last with nothing after it.
+        let text = String::from_utf8(probe.bytes).unwrap();
+        let types: Vec<String> = text
+            .lines()
+            .map(|line| {
+                let frame: serde_json::Value = serde_json::from_str(line).expect("frame json");
+                frame["type"].as_str().expect("type tag").to_string()
+            })
+            .collect();
+        assert_eq!(
+            types,
+            vec![
+                "ready",
+                "stream_start",
+                "text_delta",
+                "tool_running",
+                "tool_result",
+                "text_delta",
+                "stream_end",
+            ],
+            "frame cadence: {text}"
+        );
+
+        // Flush boundaries: every frame write is followed by a flush before
+        // the next write — no two frames coalesce unflushed.
+        assert_eq!(probe.ops.len() % 2, 0, "each write must pair with a flush");
+        for pair in probe.ops.chunks_exact(2) {
+            assert_eq!(pair, ["write", "flush"], "unflushed frame writes");
+        }
+        assert_eq!(
+            probe.chunks.len(),
+            types.len(),
+            "one flushed chunk per frame"
+        );
+        for chunk in &probe.chunks {
+            assert_eq!(
+                chunk.matches('\n').count(),
+                1,
+                "each flushed chunk is exactly one NDJSON frame: {chunk:?}"
+            );
+        }
+    }
+
     #[test]
     fn turn_state_labels_cover_the_machine() {
         let states = [
