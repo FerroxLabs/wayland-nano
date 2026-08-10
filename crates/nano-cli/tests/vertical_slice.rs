@@ -161,7 +161,13 @@ fn vertical_slice_live_turn_through_protocol() {
     assert!(status.success(), "clean exit on stdin close: {status}");
     // Own-PID check (the orphan criterion): our child must be reaped.
     let probe = std::process::Command::new("tasklist")
-        .args(["/fo", "csv", "/nh", "/fi", &format!("PID eq {}", slice.child_pid)])
+        .args([
+            "/fo",
+            "csv",
+            "/nh",
+            "/fi",
+            &format!("PID eq {}", slice.child_pid),
+        ])
         .output()
         .expect("tasklist");
     let found = String::from_utf8_lossy(&probe.stdout);

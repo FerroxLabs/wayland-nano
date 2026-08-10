@@ -142,7 +142,9 @@ pub fn sanitize_transport_error(err: &reqwest::Error) -> String {
     let leaks_secret = cleaned.contains(url.as_str())
         || (!url.username().is_empty() && cleaned.contains(url.username()))
         || url.password().is_some_and(|p| cleaned.contains(p))
-        || url.query().is_some_and(|q| !q.is_empty() && cleaned.contains(q));
+        || url
+            .query()
+            .is_some_and(|q| !q.is_empty() && cleaned.contains(q));
     if leaks_secret {
         format!(
             "transport error: {} path_query_sha256={}",

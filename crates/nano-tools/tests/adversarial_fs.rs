@@ -105,7 +105,11 @@ fn write_through_dotdot_chain_is_denied() {
             "{} denied with wrong variant: {err:?}",
             attempt.display()
         );
-        assert!(!escape.exists(), "{} escaped the workspace", attempt.display());
+        assert!(
+            !escape.exists(),
+            "{} escaped the workspace",
+            attempt.display()
+        );
     }
 }
 
@@ -164,10 +168,7 @@ fn read_through_dir_link_into_denied_dir_is_denied() {
     }
     let tools = FsTools::new(deny_read_policy(&outside), &ws);
     let err = tools
-        .read_file(
-            &link.join("nanok3-secret.txt"),
-            &ReadBounds::default(),
-        )
+        .read_file(&link.join("nanok3-secret.txt"), &ReadBounds::default())
         .expect_err("read through link into denied dir must be denied");
     assert!(
         matches!(err, ToolError::ReadDenied(_)),
@@ -244,10 +245,7 @@ fn ntfs_junction_read_into_denied_dir_is_denied() {
     assert!(status.status.success(), "mklink /J failed");
     let tools = FsTools::new(deny_read_policy(&outside), &ws);
     let err = tools
-        .read_file(
-            &junction.join("nanok3-secret.txt"),
-            &ReadBounds::default(),
-        )
+        .read_file(&junction.join("nanok3-secret.txt"), &ReadBounds::default())
         .expect_err("read through junction into denied dir must be denied");
     assert!(
         matches!(err, ToolError::ReadDenied(_)),

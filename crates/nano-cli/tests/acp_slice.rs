@@ -8,7 +8,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 fn key() -> Option<String> {
-    std::env::var("FLUX_TEST_KEY").ok().filter(|k| !k.is_empty())
+    std::env::var("FLUX_TEST_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
 }
 
 struct AcpSlice {
@@ -106,7 +108,10 @@ fn acp_slice_live_prompt_through_desktop_protocol() {
     let result = &init["result"];
     assert_eq!(result["protocolVersion"], 1, "init: {init}");
     assert_eq!(result["agentInfo"]["name"], "nanok3");
-    assert_eq!(result["agentCapabilities"]["promptCapabilities"]["text"], true);
+    assert_eq!(
+        result["agentCapabilities"]["promptCapabilities"]["text"],
+        true
+    );
 
     // 2. session/new → sessionId.
     let created = slice.request(
@@ -127,7 +132,10 @@ fn acp_slice_live_prompt_through_desktop_protocol() {
             "prompt": [{ "type": "text", "text": "Read note.txt with fs_read and reply with its exact contents. Do not use any other tool." }]
         }),
     );
-    assert_eq!(answer["result"]["stopReason"], "end_turn", "answer: {answer}");
+    assert_eq!(
+        answer["result"]["stopReason"], "end_turn",
+        "answer: {answer}"
+    );
 
     let captured = slice.captured.clone();
     assert!(
@@ -155,7 +163,13 @@ fn acp_slice_live_prompt_through_desktop_protocol() {
     let status = slice.child.wait().expect("wait");
     assert!(status.success(), "clean exit: {status}");
     let probe = Command::new("tasklist")
-        .args(["/fo", "csv", "/nh", "/fi", &format!("PID eq {}", slice.child_pid)])
+        .args([
+            "/fo",
+            "csv",
+            "/nh",
+            "/fi",
+            &format!("PID eq {}", slice.child_pid),
+        ])
         .output()
         .expect("tasklist");
     assert!(

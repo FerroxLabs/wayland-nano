@@ -57,7 +57,12 @@ impl AcpChild {
         )
     }
 
-    fn round_trip(&mut self, id: u64, method: &str, params: serde_json::Value) -> serde_json::Value {
+    fn round_trip(
+        &mut self,
+        id: u64,
+        method: &str,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
         let request = serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -200,7 +205,11 @@ fn frame_throughput(turns: usize, events_per_turn: usize) -> (u64, f64) {
                 },
             });
         }
-        (events, Option::<nano_model::types::Usage>::None, "stop".into())
+        (
+            events,
+            Option::<nano_model::types::Usage>::None,
+            "stop".into(),
+        )
     };
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -209,7 +218,10 @@ fn frame_throughput(turns: usize, events_per_turn: usize) -> (u64, f64) {
         .expect("tokio runtime");
     runtime.block_on(async {
         let mut reader = std::io::Cursor::new(input.into_bytes());
-        let mut sink = CountingSink { frames: 0, bytes: 0 };
+        let mut sink = CountingSink {
+            frames: 0,
+            bytes: 0,
+        };
         let config = nano_protocol::host::HostConfig {
             runtime_version: "profile".into(),
             session_id: "s-profile".into(),
@@ -240,7 +252,10 @@ fn main() {
     println!("binary: {}", nanok3_exe().display());
 
     stats("spawn→ready (cold process)", spawn_to_ready(&workspace, 10));
-    stats("initialize handshake (warm)", warm_initialize(&workspace, 50));
+    stats(
+        "initialize handshake (warm)",
+        warm_initialize(&workspace, 50),
+    );
 
     let (frames, seconds) = frame_throughput(50, 100);
     println!(

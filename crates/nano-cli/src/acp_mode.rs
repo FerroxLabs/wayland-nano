@@ -8,8 +8,8 @@ use nano_egress::client::EgressClient;
 use nano_model::flux_completions::FluxCompletionsClient;
 use nano_model::types::Usage;
 use nano_protocol::acp::{
-    JsonRpcRequest, JsonRpcResponse, agent_capabilities,
-    agent_message_chunk, prompt_result, session_new_result, tool_call_done, tool_call_update,
+    JsonRpcRequest, JsonRpcResponse, agent_capabilities, agent_message_chunk, prompt_result,
+    session_new_result, tool_call_done, tool_call_update,
 };
 use nano_tools::fs::FsTools;
 use nano_tools::shell::ShellTool;
@@ -22,9 +22,7 @@ struct Session {
 
 pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     let Some(api_key) = crate::flux_key::flux_api_key() else {
-        eprintln!(
-            "nanok3: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for acp-host mode"
-        );
+        eprintln!("nanok3: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for acp-host mode");
         return Ok(2);
     };
 
@@ -99,7 +97,11 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
                 let Some(active) = session.as_ref() else {
                     write_json(
                         &mut writer,
-                        &JsonRpcResponse::err(request.id, -32602, "no session: call session/new first"),
+                        &JsonRpcResponse::err(
+                            request.id,
+                            -32602,
+                            "no session: call session/new first",
+                        ),
                     )?;
                     continue;
                 };
@@ -118,9 +120,15 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
                 let session_id = active.id.clone();
                 let workspace = active.workspace.clone();
 
-                let (_events, usage, stop_reason) =
-                    run_acp_turn(&mut writer, &session_id, &workspace, nano_home, &api_key, &text)
-                        .await?;
+                let (_events, usage, stop_reason) = run_acp_turn(
+                    &mut writer,
+                    &session_id,
+                    &workspace,
+                    nano_home,
+                    &api_key,
+                    &text,
+                )
+                .await?;
 
                 let _ = usage;
                 write_json(
@@ -151,8 +159,8 @@ async fn run_acp_turn<W: Write>(
     api_key: &str,
     input: &str,
 ) -> std::io::Result<((), Option<Usage>, String)> {
-    let policy = nano_core::permissions::PermissionProfile::workspace_write()
-        .file_system_sandbox_policy();
+    let policy =
+        nano_core::permissions::PermissionProfile::workspace_write().file_system_sandbox_policy();
     let fs = FsTools::new(policy, workspace);
     let shell = ShellTool::new(nano_home, workspace);
     let executor = RealToolExecutor::new(fs, shell, workspace);
@@ -172,15 +180,18 @@ async fn run_acp_turn<W: Write>(
     for op in &result.ops {
         match &op.op {
             nano_session::op::Op::ToolCall {
-                call_id, name, args, ..
+                call_id,
+                name,
+                args,
+                ..
             } => {
-                write_json(
-                    writer,
-                    &tool_call_update(session_id, call_id, name, args),
-                )?;
+                write_json(writer, &tool_call_update(session_id, call_id, name, args))?;
             }
             nano_session::op::Op::ToolResult {
-                call_id, ok, output_digest, ..
+                call_id,
+                ok,
+                output_digest,
+                ..
             } => {
                 write_json(
                     writer,
@@ -191,10 +202,7 @@ async fn run_acp_turn<W: Write>(
         }
     }
     if !result.final_text.is_empty() {
-        write_json(
-            writer,
-            &agent_message_chunk(session_id, &result.final_text),
-        )?;
+        write_json(writer, &agent_message_chunk(session_id, &result.final_text))?;
     }
 
     let stop_reason = match result.state {

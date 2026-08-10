@@ -131,7 +131,12 @@ pub fn agent_message_chunk(session_id: &str, text: &str) -> JsonRpcNotification 
 }
 
 /// A tool call starting (shown in Desktop as a tool card).
-pub fn tool_call_update(session_id: &str, call_id: &str, name: &str, args: &serde_json::Value) -> JsonRpcNotification {
+pub fn tool_call_update(
+    session_id: &str,
+    call_id: &str,
+    name: &str,
+    args: &serde_json::Value,
+) -> JsonRpcNotification {
     JsonRpcNotification::new(
         "session/update",
         serde_json::json!({
@@ -149,7 +154,12 @@ pub fn tool_call_update(session_id: &str, call_id: &str, name: &str, args: &serd
 }
 
 /// A tool call completing.
-pub fn tool_call_done(session_id: &str, call_id: &str, ok: bool, output: &str) -> JsonRpcNotification {
+pub fn tool_call_done(
+    session_id: &str,
+    call_id: &str,
+    ok: bool,
+    output: &str,
+) -> JsonRpcNotification {
     JsonRpcNotification::new(
         "session/update",
         serde_json::json!({
@@ -215,7 +225,10 @@ mod tests {
         let caps = agent_capabilities();
         assert_eq!(caps["protocolVersion"], 1);
         assert_eq!(caps["agentInfo"]["name"], "nanok3");
-        assert_eq!(caps["agentCapabilities"]["promptCapabilities"]["text"], true);
+        assert_eq!(
+            caps["agentCapabilities"]["promptCapabilities"]["text"],
+            true
+        );
     }
 
     #[test]
@@ -223,7 +236,10 @@ mod tests {
         let chunk = agent_message_chunk("s1", "hello");
         let json = serde_json::to_value(&chunk).unwrap();
         assert_eq!(json["method"], "session/update");
-        assert_eq!(json["params"]["update"]["sessionUpdate"], "agent_message_chunk");
+        assert_eq!(
+            json["params"]["update"]["sessionUpdate"],
+            "agent_message_chunk"
+        );
         assert_eq!(json["params"]["update"]["content"]["text"], "hello");
 
         let tool = tool_call_update("s1", "c1", "shell", &serde_json::json!({"command":"ls"}));
