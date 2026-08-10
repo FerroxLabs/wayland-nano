@@ -2,7 +2,21 @@
 
 ## Current position
 
-### 48H SPRINT STATE (2026-08-10, CI MATRIX 6/6 GREEN — unix parity runtime-proven)
+### 48H SPRINT STATE (2026-08-10, C1 CLAIM POSTED — all three checkpoints claimed)
+- **C1.2 FULL CRITERION: 12/12 PASS, elevated** (manifest
+  `scripts/c12-proof/evidence/c12-manifest-20260810T211025Z.json`). Owner
+  provisioned the box (accounts/group/firewall/WFP/marker). Final C1 claim
+  posted: `shared/reviews/C1/trackb-claim.md`.
+- **ALL THREE CLAIMS POSTED**: C1 (substrate), C2 (`shared/reviews/C2/`),
+  C3 (`shared/reviews/C3/` incl. live-Desktop evidence). Awaiting ONLY owner
+  verdict signatures (3 × trackb-verdict.md).
+- Harness nits recorded in the C1 claim (providers-dump skip detail,
+  firewall Name-vs-DisplayName enumeration) — cosmetic, security probes green.
+- Audit follow-up queued: `path_mask_allows`/`dacl_mask_allows` ignore deny
+  ACEs (donor semantics; evaluate whether production deny flow can rely on
+  a false return — flagged by the env-test fix agent).
+
+### Previous state (2026-08-10, CI MATRIX 6/6 GREEN — unix parity runtime-proven)
 - **ALL 6 LEGS GREEN** (run 31379610255, commit b2f7ef1): windows-latest x64,
   windows-11-arm, macos-14 arm64, macos-15-intel x64, ubuntu-22.04 x64,
   ubuntu-24.04-arm. Full gate: fmt, clippy -D warnings, complete test suite —
