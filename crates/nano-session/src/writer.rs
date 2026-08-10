@@ -22,12 +22,24 @@ pub struct JournalWriter {
 
 impl JournalWriter {
     /// Opens (creating if needed) the journal at `path`, scanning existing ids
-    /// for idempotence. Existing content is never truncated or rewritten.
+    /// for idempotence. Existing content is never rewritten; the single
+    /// exception is a crash-torn tail, which is truncated at open so a
+    /// retried append starts on a fresh line instead of gluing onto torn
+    /// bytes (the retry's trailing newline would demote the glued garbage to
+    /// a malformed MIDDLE line and brick every later restore). An
+    /// integrity-broken middle is never truncated — restore stays fail-loud.
     pub fn open(path: &Path) -> io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let seen_ids = crate::reader::read_journal(path)
+        let bytes = std::fs::read(path).unwrap_or_default();
+        let report = crate::reader::parse_journal_bytes(&bytes);
+        if let Ok(report) = &report
+            && report.torn_tail_at.is_some()
+        {
+            truncate_torn_tail(path, &bytes)?;
+        }
+        let seen_ids = report
             .map(|report| report.envelopes.into_iter().map(|e| e.id).collect())
             .unwrap_or_default();
         let file = OpenOptions::new().create(true).append(true).open(path)?;
@@ -68,4 +80,22 @@ impl JournalWriter {
     pub fn sync(&mut self) -> io::Result<()> {
         self.file.sync_data()
     }
+}
+
+/// Removes a crash-torn final line. `bytes` is the content the reader just
+/// classified as carrying a torn tail, i.e. the newline-free final line is
+/// unrecoverable garbage and every line before it parsed. Truncation keeps
+/// every complete line byte-for-byte and removes exactly that final line —
+/// never a valid record.
+fn truncate_torn_tail(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    // Line boundaries are byte-identical between the raw file and the
+    // reader's lossy view ('\n' is a single byte and cannot occur inside a
+    // multi-byte UTF-8 sequence), so the raw-space torn tail starts right
+    // after the last '\n' (or at 0 when the file holds only the torn line).
+    let keep = bytes
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(0, |index| index + 1);
+    let file = OpenOptions::new().write(true).open(path)?;
+    file.set_len(keep as u64)
 }

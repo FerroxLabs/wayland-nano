@@ -224,3 +224,112 @@ fn writer_is_idempotent_across_reopen() {
     assert_eq!(report.envelopes.len(), 2);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn temp_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("nanok3-journal-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn journal_prefix(take: usize) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for envelope in session_ops().into_iter().take(take) {
+        bytes.extend(serde_json::to_vec(&envelope).unwrap());
+        bytes.push(b'\n');
+    }
+    bytes
+}
+
+#[test]
+fn writer_open_truncates_torn_tail_so_retry_stays_recoverable() {
+    let dir = temp_dir("torn-retry");
+    let path = dir.join("wire.jsonl");
+    let mut bytes = journal_prefix(3);
+    bytes.extend(b"{\"v\":1,\"id\":\"4\",\"ts\":\""); // crash mid-write of id "4"
+    std::fs::write(&path, &bytes).unwrap();
+
+    let mut writer = JournalWriter::open(&path).unwrap();
+    assert!(
+        writer.append(&session_ops()[3]).unwrap(),
+        "torn record never committed, so the retry is a fresh append"
+    );
+    drop(writer);
+
+    let report = crate::reader::read_journal(&path).unwrap();
+    assert!(report.torn_tail_at.is_none(), "torn tail must be gone");
+    assert_eq!(report.envelopes, session_ops()[..4]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn writer_open_truncation_removes_only_torn_bytes() {
+    let dir = temp_dir("torn-prefix");
+    let path = dir.join("wire.jsonl");
+    let prefix = journal_prefix(3);
+    let mut bytes = prefix.clone();
+    bytes.extend(b"{\"v\":1,\"id\":\"4\",\"ts\":\"");
+    std::fs::write(&path, &bytes).unwrap();
+
+    let writer = JournalWriter::open(&path).unwrap();
+    drop(writer);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        prefix,
+        "open must keep every complete record byte-for-byte"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn writer_retry_of_committed_record_after_truncate_still_noops() {
+    // id "4" committed fully; the crash tore the NEXT write (id "5"). After
+    // truncation, retrying id "4" must dedupe and retrying id "5" must land.
+    let dir = temp_dir("torn-dedupe");
+    let path = dir.join("wire.jsonl");
+    let mut bytes = journal_prefix(4);
+    bytes.extend(b"{\"v\":1,\"id\":\"5\",\"ts\":\"");
+    std::fs::write(&path, &bytes).unwrap();
+
+    let mut writer = JournalWriter::open(&path).unwrap();
+    assert!(
+        !writer.append(&session_ops()[3]).unwrap(),
+        "committed record must not double-append"
+    );
+    assert!(
+        writer.append(&session_ops()[4]).unwrap(),
+        "torn record retry must append"
+    );
+    drop(writer);
+
+    let report = crate::reader::read_journal(&path).unwrap();
+    assert_eq!(report.envelopes, session_ops());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn writer_never_truncates_integrity_broken_middle() {
+    let dir = temp_dir("middle-corrupt");
+    let path = dir.join("wire.jsonl");
+    let mut bytes = journal_prefix(2);
+    bytes.extend(b"not json\n");
+    bytes.extend(serde_json::to_vec(&session_ops()[2]).unwrap());
+    bytes.push(b'\n');
+    std::fs::write(&path, &bytes).unwrap();
+
+    assert!(crate::reader::read_journal(&path).is_err());
+    let mut writer = JournalWriter::open(&path).unwrap();
+    writer.append(&session_ops()[3]).unwrap();
+    drop(writer);
+
+    let after = std::fs::read(&path).unwrap();
+    assert!(
+        after.starts_with(&bytes),
+        "an integrity-broken journal must never lose a byte"
+    );
+    assert!(
+        crate::reader::read_journal(&path).is_err(),
+        "restore must stay fail-loud"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
