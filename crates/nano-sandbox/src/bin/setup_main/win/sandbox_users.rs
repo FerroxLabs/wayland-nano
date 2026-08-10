@@ -8,6 +8,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use rand::RngCore;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
+use serde::Deserialize;
 use serde::Serialize;
 use std::ffi::OsStr;
 use std::ffi::c_void;
@@ -345,6 +346,130 @@ fn local_group_member_names(group_name: &str) -> Result<Vec<String>> {
         }
     }
     Ok(members)
+}
+
+/// Track-B addition (the donor has no teardown): removes the Winlogon
+/// SpecialAccounts\UserList values provisioning created to keep the sandbox
+/// accounts off the login screen. Fail-closed: only values named exactly
+/// after NanoK3Sandbox* accounts are touched — a non-NanoK3 name aborts
+/// before any registry write, so Track A's CodexSandbox* values are never
+/// matched. Missing key/values are tolerated (idempotent).
+pub fn remove_hide_user_entries(
+    offline_username: &str,
+    online_username: &str,
+    log: &mut dyn Write,
+) -> Result<()> {
+    for username in [offline_username, online_username] {
+        if !is_nanok3_sandbox_account(username) {
+            return Err(anyhow::Error::new(SetupFailure::new(
+                SetupErrorCode::HelperUninstallFailed,
+                format!(
+                    "refusing to remove UserList value for {username}: not a NanoK3 sandbox account"
+                ),
+            )));
+        }
+    }
+    nano_sandbox::remove_userlist_entries(&[offline_username, online_username]).map_err(|err| {
+        anyhow::Error::new(SetupFailure::new(
+            SetupErrorCode::HelperUninstallFailed,
+            format!("remove Winlogon UserList entries failed: {err}"),
+        ))
+    })?;
+    super::log_line(
+        log,
+        &format!("removed Winlogon UserList values for {offline_username}, {online_username}"),
+    )?;
+    Ok(())
+}
+
+/// Minimal parse shape for verifying a secrets file before deletion. Only the
+/// account names are inspected; the DPAPI blobs are never decoded here.
+#[derive(Deserialize)]
+struct SandboxUsersFileProbe {
+    offline: SandboxUserRecordProbe,
+    online: SandboxUserRecordProbe,
+}
+
+#[derive(Deserialize)]
+struct SandboxUserRecordProbe {
+    username: String,
+}
+
+/// True only when the file parses as a sandbox users file AND both usernames
+/// are exactly the provisioned NanoK3Sandbox* accounts. Anything else
+/// (malformed JSON, Track-A/foreign accounts, a mismatched pair) means the
+/// file is not what provisioning wrote for this payload.
+fn secrets_file_matches_provisioned(bytes: &[u8], offline: &str, online: &str) -> bool {
+    let parsed: SandboxUsersFileProbe = match serde_json::from_slice(bytes) {
+        Ok(parsed) => parsed,
+        Err(_) => return false,
+    };
+    parsed.offline.username == offline
+        && parsed.online.username == online
+        && is_nanok3_sandbox_account(&parsed.offline.username)
+        && is_nanok3_sandbox_account(&parsed.online.username)
+}
+
+/// Track-B addition (the donor has no teardown): removes the DPAPI credential
+/// file provisioning wrote for the sandbox accounts. Fail-closed: the file is
+/// parsed and BOTH usernames must be exactly the provisioned NanoK3Sandbox*
+/// accounts before anything is deleted — a file whose contents do not match
+/// is foreign state and aborts the uninstall untouched. The containing
+/// `.sandbox-secrets` dir is removed only when left empty (other content such
+/// as the `creds` subdir is out of uninstall scope). A missing file is
+/// tolerated (idempotent).
+pub fn remove_sandbox_secrets(
+    nano_home: &Path,
+    offline_username: &str,
+    online_username: &str,
+    log: &mut dyn Write,
+) -> Result<()> {
+    let users_path = sandbox_secrets_dir(nano_home).join("sandbox_users.json");
+    let bytes = match std::fs::read(&users_path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(anyhow::Error::new(SetupFailure::new(
+                SetupErrorCode::HelperUninstallFailed,
+                format!(
+                    "read sandbox secrets file {} failed: {err}",
+                    users_path.display()
+                ),
+            )));
+        }
+    };
+    if !secrets_file_matches_provisioned(&bytes, offline_username, online_username) {
+        return Err(anyhow::Error::new(SetupFailure::new(
+            SetupErrorCode::HelperUninstallFailed,
+            format!(
+                "refusing to delete {}: contents are not the provisioned NanoK3 sandbox accounts",
+                users_path.display()
+            ),
+        )));
+    }
+    std::fs::remove_file(&users_path).map_err(|err| {
+        anyhow::Error::new(SetupFailure::new(
+            SetupErrorCode::HelperUninstallFailed,
+            format!(
+                "remove sandbox secrets file {} failed: {err}",
+                users_path.display()
+            ),
+        ))
+    })?;
+    super::log_line(
+        log,
+        &format!("removed sandbox secrets file {}", users_path.display()),
+    )?;
+    let secrets_dir = sandbox_secrets_dir(nano_home);
+    // Only an empty dir is removed; anything else (non-empty, locked) leaves
+    // the dir in place — only the verified secrets file is in uninstall scope.
+    if let Ok(()) = std::fs::remove_dir(&secrets_dir) {
+        super::log_line(
+            log,
+            &format!("removed empty secrets dir {}", secrets_dir.display()),
+        )?;
+    }
+    Ok(())
 }
 
 fn delete_local_user(username: &str, log: &mut dyn Write) -> Result<()> {
@@ -772,6 +897,22 @@ pub(super) fn commit_setup_marker(
 mod tests {
     use super::is_nanok3_sandbox_account;
     use super::member_name_matches_expected;
+    use super::remove_hide_user_entries;
+    use super::remove_sandbox_secrets;
+    use super::secrets_file_matches_provisioned;
+
+    const OFFLINE: &str = "NanoK3SandboxOffline";
+    const ONLINE: &str = "NanoK3SandboxOnline";
+
+    fn secrets_json(offline: &str, online: &str) -> Vec<u8> {
+        // Placeholder blobs only — no real credentials in tests.
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 5,
+            "offline": { "username": offline, "password": "cGxhY2Vob2xkZXI=" },
+            "online": { "username": online, "password": "cGxhY2Vob2xkZXI=" },
+        }))
+        .expect("serialize secrets")
+    }
 
     #[test]
     fn nanok3_account_guard_accepts_track_b_names() {
@@ -806,5 +947,122 @@ mod tests {
             "DESKTOP\\Administrator",
             &expected
         ));
+    }
+
+    #[test]
+    fn secrets_probe_accepts_exact_provisioned_pair() {
+        let bytes = secrets_json(OFFLINE, ONLINE);
+        assert!(secrets_file_matches_provisioned(&bytes, OFFLINE, ONLINE));
+    }
+
+    #[test]
+    fn secrets_probe_rejects_foreign_and_malformed_content() {
+        // Track-A accounts must never verify.
+        assert!(!secrets_file_matches_provisioned(
+            &secrets_json("CodexSandboxOffline", "CodexSandboxOnline"),
+            OFFLINE,
+            ONLINE
+        ));
+        // A different NanoK3 pair than the payload's is stale foreign state.
+        assert!(!secrets_file_matches_provisioned(
+            &secrets_json(OFFLINE, "NanoK3SandboxOther"),
+            OFFLINE,
+            ONLINE
+        ));
+        // Swapped order is not what provisioning wrote.
+        assert!(!secrets_file_matches_provisioned(
+            &secrets_json(ONLINE, OFFLINE),
+            OFFLINE,
+            ONLINE
+        ));
+        // Malformed JSON does not verify.
+        assert!(!secrets_file_matches_provisioned(
+            b"not json",
+            OFFLINE,
+            ONLINE
+        ));
+    }
+
+    #[test]
+    fn remove_sandbox_secrets_deletes_verified_file_and_empty_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nano_home = temp.path();
+        let secrets_dir = nano_sandbox::sandbox_secrets_dir(nano_home);
+        std::fs::create_dir_all(&secrets_dir).expect("create secrets dir");
+        let users_path = secrets_dir.join("sandbox_users.json");
+        std::fs::write(&users_path, secrets_json(OFFLINE, ONLINE)).expect("write secrets");
+        let mut log: Vec<u8> = Vec::new();
+
+        remove_sandbox_secrets(nano_home, OFFLINE, ONLINE, &mut log).expect("remove secrets");
+
+        assert!(!users_path.exists());
+        assert!(!secrets_dir.exists());
+    }
+
+    #[test]
+    fn remove_sandbox_secrets_keeps_non_empty_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nano_home = temp.path();
+        let secrets_dir = nano_sandbox::sandbox_secrets_dir(nano_home);
+        let creds_dir = secrets_dir.join("creds");
+        std::fs::create_dir_all(&creds_dir).expect("create creds dir");
+        std::fs::write(creds_dir.join("other.json"), b"{}").expect("write other file");
+        let users_path = secrets_dir.join("sandbox_users.json");
+        std::fs::write(&users_path, secrets_json(OFFLINE, ONLINE)).expect("write secrets");
+        let mut log: Vec<u8> = Vec::new();
+
+        remove_sandbox_secrets(nano_home, OFFLINE, ONLINE, &mut log).expect("remove secrets");
+
+        assert!(!users_path.exists());
+        assert!(secrets_dir.exists());
+        assert!(creds_dir.join("other.json").exists());
+    }
+
+    #[test]
+    fn remove_sandbox_secrets_refuses_wrong_content_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nano_home = temp.path();
+        let secrets_dir = nano_sandbox::sandbox_secrets_dir(nano_home);
+        std::fs::create_dir_all(&secrets_dir).expect("create secrets dir");
+        let users_path = secrets_dir.join("sandbox_users.json");
+        // Track-A-shaped content must survive the uninstall untouched.
+        std::fs::write(
+            &users_path,
+            secrets_json("CodexSandboxOffline", "CodexSandboxOnline"),
+        )
+        .expect("write secrets");
+        let mut log: Vec<u8> = Vec::new();
+
+        let err = remove_sandbox_secrets(nano_home, OFFLINE, ONLINE, &mut log)
+            .expect_err("wrong-content file must abort");
+
+        assert!(err.to_string().contains("refusing to delete"));
+        assert!(users_path.exists());
+        assert_eq!(
+            std::fs::read(&users_path).expect("read secrets"),
+            secrets_json("CodexSandboxOffline", "CodexSandboxOnline")
+        );
+    }
+
+    #[test]
+    fn remove_sandbox_secrets_tolerates_missing_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut log: Vec<u8> = Vec::new();
+
+        remove_sandbox_secrets(temp.path(), OFFLINE, ONLINE, &mut log)
+            .expect("missing secrets file is idempotent-ok");
+    }
+
+    #[test]
+    fn remove_hide_user_entries_rejects_track_a_names_before_registry_write() {
+        let mut log: Vec<u8> = Vec::new();
+
+        let err = remove_hide_user_entries("CodexSandboxOffline", ONLINE, &mut log)
+            .expect_err("Track-A name must abort");
+
+        assert!(
+            err.to_string()
+                .contains("refusing to remove UserList value")
+        );
     }
 }

@@ -303,10 +303,12 @@ if (-not $provisioned) {
 # nanok3_wfp_* filters, %USERPROFILE%\.nanok3). No services, scheduled tasks,
 # or stray profile-root files.
 # -PostUninstall mode (run AFTER `nanok3-sandbox-setup.exe <payload>` with
-# uninstall:true): every piece of that machine state must be GONE — any
-# NanoK3 residue is a FAIL. Track-A (Codex*/codex_*) objects are out of scope
-# in both modes: the helper's uninstall is fail-closed on exact NanoK3
-# identities and never touches them.
+# uninstall:true): every piece of that machine state must be GONE — including
+# the DPAPI secrets file (.sandbox-secrets\sandbox_users.json), the .sandbox
+# log dir, and the Winlogon SpecialAccounts\UserList values that hid the
+# sandbox accounts. Any NanoK3 residue is a FAIL. Track-A (Codex*/codex_*)
+# objects are out of scope in both modes: the helper's uninstall is
+# fail-closed on exact NanoK3 identities and never touches them.
 if (-not $provisioned -and -not $PostUninstall) {
     Add-Result "uninstall-scope" "SKIP" "not provisioned"
 } elseif ($PostUninstall) {
@@ -334,8 +336,22 @@ if (-not $provisioned -and -not $PostUninstall) {
         $markerPath = Join-Path $env:USERPROFILE ".nanok3\.sandbox\setup_marker.json"
         if (Test-Path $markerPath) { $residue += "setup-marker" }
 
+        $secretsFile = Join-Path $env:USERPROFILE ".nanok3\.sandbox-secrets\sandbox_users.json"
+        if (Test-Path $secretsFile) { $residue += "sandbox-secrets:sandbox_users.json" }
+
+        $sandboxLogDir = Join-Path $env:USERPROFILE ".nanok3\.sandbox"
+        if (Test-Path $sandboxLogDir) { $residue += "sandbox-log-dir" }
+
+        $userListKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList"
+        if (Test-Path $userListKey) {
+            $userListProps = Get-ItemProperty -Path $userListKey -ErrorAction Stop
+            foreach ($n in @("NanoK3SandboxOffline", "NanoK3SandboxOnline")) {
+                if ($null -ne $userListProps.PSObject.Properties[$n]) { $residue += "winlogon-userlist:$n" }
+            }
+        }
+
         if ($residue.Count -eq 0) {
-            Add-Result "uninstall-scope" "PASS" "post-uninstall scan: no NanoK3 accounts, group, firewall rules, WFP provider/filters, or setup marker remain"
+            Add-Result "uninstall-scope" "PASS" "post-uninstall scan: no NanoK3 accounts, group, firewall rules, WFP provider/filters, setup marker, secrets file, .sandbox log dir, or Winlogon UserList values remain"
         } else {
             Add-Result "uninstall-scope" "FAIL" ("post-uninstall residue: " + ($residue -join ", "))
         }

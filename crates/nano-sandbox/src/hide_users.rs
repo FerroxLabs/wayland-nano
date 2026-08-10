@@ -11,6 +11,7 @@ use anyhow::anyhow;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::path::PathBuf;
+use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN;
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SYSTEM;
@@ -19,11 +20,14 @@ use windows_sys::Win32::Storage::FileSystem::INVALID_FILE_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::SetFileAttributesW;
 use windows_sys::Win32::System::Registry::HKEY;
 use windows_sys::Win32::System::Registry::HKEY_LOCAL_MACHINE;
+use windows_sys::Win32::System::Registry::KEY_SET_VALUE;
 use windows_sys::Win32::System::Registry::KEY_WRITE;
 use windows_sys::Win32::System::Registry::REG_DWORD;
 use windows_sys::Win32::System::Registry::REG_OPTION_NON_VOLATILE;
 use windows_sys::Win32::System::Registry::RegCloseKey;
 use windows_sys::Win32::System::Registry::RegCreateKeyExW;
+use windows_sys::Win32::System::Registry::RegDeleteValueW;
+use windows_sys::Win32::System::Registry::RegOpenKeyExW;
 use windows_sys::Win32::System::Registry::RegSetValueExW;
 
 const USERLIST_KEY_PATH: &str =
@@ -102,6 +106,54 @@ fn hide_users_in_winlogon(usernames: &[String], log_base: &Path) -> anyhow::Resu
                 ),
                 Some(log_base),
             );
+        }
+    }
+    unsafe {
+        RegCloseKey(key);
+    }
+    Ok(())
+}
+
+/// Track-B addition (the donor has no teardown): deletes the UserList values
+/// `hide_users_in_winlogon` created for the given accounts. Only the exact
+/// value names passed in are deleted — the key itself is shared with the OS
+/// and other software and is never removed. A missing key or value is not an
+/// error (idempotent uninstall).
+pub fn remove_userlist_entries(usernames: &[&str]) -> anyhow::Result<()> {
+    if usernames.is_empty() {
+        return Ok(());
+    }
+    let key_path = to_wide(USERLIST_KEY_PATH);
+    let mut key: HKEY = 0;
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            key_path.as_ptr(),
+            0,
+            KEY_SET_VALUE,
+            &mut key,
+        )
+    };
+    if status == ERROR_FILE_NOT_FOUND {
+        return Ok(());
+    }
+    if status != 0 {
+        return Err(anyhow!(
+            "RegOpenKeyExW failed: {status} ({error})",
+            error = format_last_error(status as i32)
+        ));
+    }
+    for username in usernames {
+        let name_w = to_wide(OsStr::new(username));
+        let del = unsafe { RegDeleteValueW(key, name_w.as_ptr()) };
+        if del != 0 && del != ERROR_FILE_NOT_FOUND {
+            unsafe {
+                RegCloseKey(key);
+            }
+            return Err(anyhow!(
+                "RegDeleteValueW failed for {username}: {del} ({error})",
+                error = format_last_error(del as i32)
+            ));
         }
     }
     unsafe {

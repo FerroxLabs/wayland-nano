@@ -51,7 +51,10 @@ executes — B-PRV-01.)
 The same helper removes ONLY the NanoK3-track machine state (the two
 `NanoK3Sandbox*` accounts, the `NanoK3SandboxUsers` group when its membership
 is exactly the provisioned accounts, the `nanok3_sandbox_*` firewall rules,
-the NanoK3 WFP provider/sublayer/filters, and the setup marker):
+the NanoK3 WFP provider/sublayer/filters, the Winlogon
+`SpecialAccounts\UserList` values hiding the sandbox accounts, the DPAPI
+credential file `.sandbox-secrets\sandbox_users.json`, the setup marker, and
+the `.sandbox` log dir):
 
 ```powershell
 # elevated; payload built like the provisioning payload plus "uninstall": true
@@ -60,7 +63,11 @@ target\release\nanok3-sandbox-setup.exe <BASE64_UNINSTALL_PAYLOAD>
 
 Uninstall is fail-closed: every removal is keyed by an exact NanoK3 name or a
 Track-B WFP GUID verified before deletion, and it never touches Track A's
-`CodexSandbox*` / `codex_*` objects. Afterwards, verify with
+`CodexSandbox*` / `codex_*` objects. The secrets file is deleted only after
+being parsed and verified to name exactly the provisioned `NanoK3Sandbox*`
+accounts (a mismatch aborts the run with the file left in place), the
+UserList values are keyed by the exact NanoK3 account names, and the `.sandbox`
+log-dir removal is guarded to the `.nanok3`-scoped path. Afterwards, verify with
 `scripts/c12-proof/Test-C12Proof.ps1 -PostUninstall`.
 
 ## After provisioning

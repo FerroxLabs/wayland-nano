@@ -521,11 +521,15 @@ fn run_setup(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<(
 // NanoK3-track machine state — the two NanoK3Sandbox* accounts, the
 // NanoK3SandboxUsers group (only when its membership is exactly the
 // provisioned accounts), the nanok3_sandbox_* firewall rules, the NanoK3 WFP
-// provider/sublayer/filters, and the setup marker. Track A's Codex* objects
-// are never touched: every removal is keyed by an exact NanoK3 name or a
-// Track-B WFP GUID whose identity is verified before deletion, and any
-// mismatch aborts the run (fail-closed). Every step tolerates already-absent
-// state, so a rerun after a partial uninstall converges.
+// provider/sublayer/filters, the Winlogon UserList values hiding the sandbox
+// accounts, the DPAPI sandbox_users.json secrets file (only after parsing it
+// and verifying it names exactly the provisioned NanoK3Sandbox* accounts),
+// the setup marker, and the .sandbox log dir. Track A's Codex* objects are
+// never touched: every removal is keyed by an exact NanoK3 name, a verified
+// file content, or a Track-B WFP GUID whose identity is verified before
+// deletion, and any mismatch aborts the run (fail-closed). Every step
+// tolerates already-absent state, so a rerun after a partial uninstall
+// converges.
 fn run_uninstall(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
     log_line(log, "uninstall mode: removing NanoK3-track sandbox state")?;
 
@@ -566,6 +570,20 @@ fn run_uninstall(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Resu
 
     sandbox_users::remove_sandbox_users(&payload.offline_username, &payload.online_username, log)?;
 
+    // Login-screen hide entries and DPAPI credential blobs reference the
+    // accounts by name, so they go after the accounts are removed.
+    sandbox_users::remove_hide_user_entries(
+        &payload.offline_username,
+        &payload.online_username,
+        log,
+    )?;
+    sandbox_users::remove_sandbox_secrets(
+        &payload.nano_home,
+        &payload.offline_username,
+        &payload.online_username,
+        log,
+    )?;
+
     let marker_path = setup_marker_path(&payload.nano_home);
     match std::fs::remove_file(&marker_path) {
         Ok(()) => log_line(
@@ -585,7 +603,45 @@ fn run_uninstall(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Resu
     }
 
     log_note("setup uninstall completed", Some(sbx_dir));
+
+    // Last step: the .sandbox log dir itself. The helper's own log file in
+    // this dir is still open; std file handles are opened with delete-sharing,
+    // so removal marks it delete-pending and it disappears when this process
+    // exits.
+    remove_sandbox_log_dir(&payload.nano_home, sbx_dir, log)?;
     Ok(())
+}
+
+/// Track-B addition: removes the `.sandbox` log dir as the final uninstall
+/// step. Fail-closed on scope: the recursive delete only runs when the dir is
+/// exactly `<nano_home>/.sandbox` under a `.nanok3` home — a payload pointing
+/// anywhere else (e.g. at Track A's home) aborts instead of deleting foreign
+/// state. A missing dir is tolerated (idempotent).
+fn remove_sandbox_log_dir(nano_home: &Path, sbx_dir: &Path, log: &mut dyn Write) -> Result<()> {
+    let home_is_nanok3 = nano_home
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case(".nanok3"));
+    if !home_is_nanok3 || sbx_dir != sandbox_dir(nano_home) {
+        return Err(anyhow::Error::new(SetupFailure::new(
+            SetupErrorCode::HelperUninstallFailed,
+            format!(
+                "refusing to remove sandbox log dir {}: not the .nanok3-scoped .sandbox dir",
+                sbx_dir.display()
+            ),
+        )));
+    }
+    log_line(
+        log,
+        &format!("removing sandbox log dir {}", sbx_dir.display()),
+    )?;
+    match std::fs::remove_dir_all(sbx_dir) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(anyhow::Error::new(SetupFailure::new(
+            SetupErrorCode::HelperUninstallFailed,
+            format!("remove sandbox log dir {} failed: {err}", sbx_dir.display()),
+        ))),
+    }
 }
 
 // Marker-refresh-only path: performs exactly the marker steps provisioning
@@ -1461,5 +1517,57 @@ mod tests {
         .expect("deny sids");
 
         assert_eq!(deny_sids, vec![workspace_sid, nested_sid]);
+    }
+
+    #[test]
+    fn remove_sandbox_log_dir_removes_dir_with_open_log_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nano_home = temp.path().join(".nanok3");
+        let sbx_dir = super::sandbox_dir(&nano_home);
+        fs::create_dir_all(&sbx_dir).expect("create sandbox dir");
+        let log_path = sbx_dir.join("sandbox.2026-08-10.log");
+        // Simulate the helper's own still-open log handle: std opens files
+        // with delete-sharing, so the removal marks the open file
+        // delete-pending and the dir can go away before the handle closes.
+        let open_log = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .expect("open log file");
+        let mut log: Vec<u8> = Vec::new();
+
+        super::remove_sandbox_log_dir(&nano_home, &sbx_dir, &mut log).expect("remove log dir");
+
+        assert!(!sbx_dir.exists());
+        drop(open_log);
+    }
+
+    #[test]
+    fn remove_sandbox_log_dir_refuses_non_nanok3_home() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nano_home = temp.path().join("codex-home");
+        let sbx_dir = super::sandbox_dir(&nano_home);
+        fs::create_dir_all(&sbx_dir).expect("create sandbox dir");
+        let mut log: Vec<u8> = Vec::new();
+
+        let err = super::remove_sandbox_log_dir(&nano_home, &sbx_dir, &mut log)
+            .expect_err("non-.nanok3 home must abort");
+
+        assert!(
+            err.to_string()
+                .contains("refusing to remove sandbox log dir")
+        );
+        assert!(sbx_dir.exists());
+    }
+
+    #[test]
+    fn remove_sandbox_log_dir_tolerates_missing_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nano_home = temp.path().join(".nanok3");
+        let sbx_dir = super::sandbox_dir(&nano_home);
+        let mut log: Vec<u8> = Vec::new();
+
+        super::remove_sandbox_log_dir(&nano_home, &sbx_dir, &mut log)
+            .expect("missing dir is idempotent-ok");
     }
 }

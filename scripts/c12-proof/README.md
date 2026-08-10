@@ -43,8 +43,13 @@ the `NanoK3 Windows Sandbox WFP` provider + `nanok3_wfp_*` filters, and
 profile-root files.
 
 Post-uninstall (run after teardown): asserts every one of those artifacts is
-gone. Teardown is the setup helper itself with an `uninstall: true` payload
-(same base64 CLI contract as provisioning), run elevated:
+gone — including the DPAPI secrets file
+(`%USERPROFILE%\.nanok3\.sandbox-secrets\sandbox_users.json`), the
+`%USERPROFILE%\.nanok3\.sandbox` log dir, and the
+`HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList`
+values that hid the sandbox accounts from the login screen. Teardown is the
+setup helper itself with an `uninstall: true` payload (same base64 CLI
+contract as provisioning), run elevated:
 
 ```powershell
 # elevated; payload built like the provisioning payload plus "uninstall": true
@@ -56,8 +61,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\c12-proof\Test-C12Pr
 
 The helper's uninstall is fail-closed on exact NanoK3 identities (account
 name prefix, exact group membership, exact firewall rule names, Track-B WFP
-GUIDs whose display names are verified before deletion) and removes nothing
-else — Track A's `CodexSandbox*`/`codex_*` objects are never touched.
+GUIDs whose display names are verified before deletion, a secrets file that
+is parsed and verified to name exactly the provisioned `NanoK3Sandbox*`
+accounts before deletion, UserList values keyed by exact `NanoK3Sandbox*`
+account names, and a log-dir removal guarded to the `.nanok3`-scoped
+`.sandbox` path) and removes nothing else — Track A's
+`CodexSandbox*`/`codex_*` objects are never touched.
 
 ## Known limitations / platform notes
 
@@ -87,10 +96,12 @@ else — Track A's `CodexSandbox*`/`codex_*` objects are never touched.
 - **uninstall-scope** has two modes (see "Uninstall-scope probe modes"
   above). The default mode audits provisioning residue; `-PostUninstall`
   audits that the helper's `uninstall: true` run removed all NanoK3 machine
-  state. Provisioning artifacts are Track-B namespaced: group
-  `NanoK3SandboxUsers`, firewall rules `nanok3_sandbox_offline_*`, WFP
-  provider `NanoK3 Windows Sandbox WFP` with `nanok3_wfp_*` filters (Track-B
-  GUIDs, distinct from the donor's).
+  state: accounts, group, firewall rules, WFP provider/filters, setup marker,
+  the DPAPI secrets file, the `.sandbox` log dir, and the Winlogon
+  `SpecialAccounts\UserList` hide-values. Provisioning artifacts are Track-B
+  namespaced: group `NanoK3SandboxUsers`, firewall rules
+  `nanok3_sandbox_offline_*`, WFP provider `NanoK3 Windows Sandbox WFP` with
+  `nanok3_wfp_*` filters (Track-B GUIDs, distinct from the donor's).
 - `setup-idempotent` builds a base64 setup payload with
   `refresh_marker_only: true` (schema field in
   `crates/nano-sandbox/src/bin/setup_main/win.rs`) and invokes

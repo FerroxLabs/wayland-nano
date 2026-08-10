@@ -239,7 +239,9 @@ pub use elevated_impl::ElevatedSandboxProfileCaptureRequest;
 #[cfg(target_os = "windows")]
 pub use helper_materialization::{resolve_current_exe_for_launch, resolve_exe_for_launch};
 #[cfg(target_os = "windows")]
-pub use hide_users::{hide_current_user_profile_dir, hide_newly_created_users};
+pub use hide_users::{
+    hide_current_user_profile_dir, hide_newly_created_users, remove_userlist_entries,
+};
 #[cfg(target_os = "windows")]
 pub use identity::{require_logon_sandbox_creds, sandbox_setup_is_complete};
 #[cfg(target_os = "windows")]
