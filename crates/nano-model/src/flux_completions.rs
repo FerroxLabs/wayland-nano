@@ -95,7 +95,9 @@ impl FluxCompletionsClient {
 }
 
 fn classify_transport(err: reqwest::Error) -> ModelError {
-    ModelError::Transport(err.to_string())
+    // Delegate to nano-egress so transport errors never echo userinfo/query
+    // (single redaction path, fail-closed).
+    ModelError::Transport(nano_egress::client::sanitize_transport_error(&err))
 }
 
 async fn read_error_body(response: reqwest::Response) -> String {

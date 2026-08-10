@@ -132,7 +132,38 @@ impl FileSystemSandboxPolicy {
         if self.has_full_disk_write_access() {
             return true;
         }
+        if self.is_write_link_escape(path, cwd) {
+            return false;
+        }
         !self.is_metadata_write_denied(path, cwd)
+    }
+
+    /// Fail-closed reparse-point check for writes: resolves the nearest
+    /// existing ancestor of the target (writes often create new files, so the
+    /// target itself may not exist) so an NTFS junction or symlinked
+    /// directory inside a writable root cannot redirect the write outside
+    /// every writable entry. Policy entries are resolved the same way so
+    /// both sides of the prefix check compare in canonical spelling.
+    fn is_write_link_escape(&self, path: &Path, cwd: &Path) -> bool {
+        let Some(path) = resolve_candidate_path(path, cwd) else {
+            return true;
+        };
+        let effective_path = canonicalize_write_target(&path);
+        if effective_path == path {
+            return false;
+        }
+        !self
+            .resolved_entries_with_cwd(cwd)
+            .into_iter()
+            .map(|entry| ResolvedFileSystemEntry {
+                path: canonicalize_write_target(&entry.path),
+                access: entry.access,
+            })
+            .filter(|entry| effective_path.as_path().starts_with(entry.path.as_path()))
+            .max_by_key(resolved_entry_precedence)
+            .map(|entry| entry.access)
+            .unwrap_or(FileSystemAccessMode::Deny)
+            .can_write()
     }
 
     fn is_metadata_write_denied(&self, path: &Path, cwd: &Path) -> bool {
@@ -605,6 +636,36 @@ fn dedup_absolute_paths(
         }
     }
     deduped
+}
+
+/// Fully resolves the nearest existing ancestor of `path` (the target itself
+/// may not exist yet for writes of new files) and re-appends the remaining
+/// components, so reparse points (NTFS junctions, symlinked directories)
+/// anywhere in the chain are resolved before policy prefix matching.
+///
+/// Unlike [`normalize_effective_absolute_path`] this never preserves logical
+/// spellings through symlinks: write targets must be checked where the write
+/// would actually land. `dunce::canonicalize` keeps the result free of `\\?\`
+/// verbatim prefixes so it compares cleanly against lexical paths.
+fn canonicalize_write_target(path: &AbsolutePathBuf) -> AbsolutePathBuf {
+    let raw_path = path.to_path_buf();
+    for ancestor in raw_path.ancestors() {
+        if std::fs::symlink_metadata(ancestor).is_err() {
+            continue;
+        }
+        let Ok(canonical_ancestor) = dunce::canonicalize(ancestor) else {
+            continue;
+        };
+        let Ok(suffix) = raw_path.strip_prefix(ancestor) else {
+            continue;
+        };
+        if let Ok(canonical_path) =
+            AbsolutePathBuf::from_absolute_path(canonical_ancestor.join(suffix))
+        {
+            return canonical_path;
+        }
+    }
+    path.clone()
 }
 
 fn normalize_effective_absolute_path(path: AbsolutePathBuf) -> AbsolutePathBuf {
