@@ -21,11 +21,10 @@ struct Session {
 }
 
 pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
-    let Some(api_key) = std::env::var("FLUX_API_KEY")
-        .ok()
-        .or_else(|| std::env::var("FLUX_TEST_KEY").ok())
-    else {
-        eprintln!("nanok3: FLUX_API_KEY is required for acp-host mode");
+    let Some(api_key) = crate::flux_key::flux_api_key() else {
+        eprintln!(
+            "nanok3: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for acp-host mode"
+        );
         return Ok(2);
     };
 

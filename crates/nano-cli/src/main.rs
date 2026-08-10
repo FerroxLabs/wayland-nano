@@ -2,6 +2,7 @@
 
 mod acp_mode;
 mod doctor;
+mod flux_key;
 mod host_mode;
 
 fn main() {

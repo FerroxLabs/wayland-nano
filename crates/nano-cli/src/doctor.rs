@@ -100,7 +100,7 @@ pub fn run(nano_home: &std::path::Path, out: &mut dyn std::io::Write) -> std::io
         },
     });
 
-    let flux_key = std::env::var("FLUX_API_KEY").is_ok() || std::env::var("FLUX_TEST_KEY").is_ok();
+    let flux_key = crate::flux_key::flux_api_key().is_some();
     checks.push(Check {
         name: "flux-credential",
         status: if flux_key {
@@ -109,9 +109,9 @@ pub fn run(nano_home: &std::path::Path, out: &mut dyn std::io::Write) -> std::io
             CheckStatus::Warn
         },
         detail: if flux_key {
-            "FLUX_API_KEY present".into()
+            "Flux credential resolvable (env or FLUX_API_KEY_FILE)".into()
         } else {
-            "no FLUX_API_KEY in environment".into()
+            "no FLUX_API_KEY / FLUX_API_KEY_FILE resolvable".into()
         },
     });
 

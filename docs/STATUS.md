@@ -2,13 +2,20 @@
 
 ## Current position
 
-### 48H SPRINT STATE (2026-08-10, pre-compaction checkpoint)
+### 48H SPRINT STATE (2026-08-10, post-compaction: Desktop registration DONE)
 - **ACP ADAPTER LIVE** (commit 2eddab7): `nanok3 acp-host` speaks ACP; slice proves
   initialize v1 → session/new → prompt with streamed updates → end_turn → canary
   clean → zero orphans. Release binary: target/release/nanok3.exe (6.4MB).
-- **THE DOOR**: Desktop loads custom ACP agents from config `acp.customAgents`
-  with zero Desktop code changes.
-- **NEXT (in order)**: (a) register nanok3 in Desktop config + live conversation;
+- **DESKTOP REGISTRATION DONE**: `acp.customAgents` entry `nanok3` written to
+  `%APPDATA%/Wayland/config/wayland-config.txt` (backup: `../../.tmp/wayland-config-backup-20260810-071442.txt`).
+  Launch: `target/release/nanok3.exe acp-host`, env `FLUX_API_KEY_FILE` →
+  `../../.secrets/flux-test-key` (new `flux_key.rs` resolver: env first, then
+  key-file path — secret stays out of the config blob). Exact launch config
+  smoke-verified: initialize handshake clean with file-only credential.
+  **Awaiting owner: fully quit + restart Desktop, pick "Nano K3", run one
+  real prompt.** (Desktop was running during the edit; if the entry vanished,
+  re-apply after quit.)
+- **NEXT (in order)**: (a) OWNER live conversation in Desktop UI;
   (b) OWNER provisioning → C1.2 → C1 claim; (c) Unix containment port
   (seatbelt/landlock from Codex); (d) 6-target CI matrix; (e) compliance matrix;
   (f) adversarial formalization; (g) NPM packaging (signing via NPM per owner).
