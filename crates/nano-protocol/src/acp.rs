@@ -8,6 +8,7 @@
 //! - session/cancel: notification {sessionId}
 //! - session/update: notification {sessionId, update:{sessionUpdate: kind, ...}}
 //! - session/request_permission: agent→host request (approval UI)
+//!
 //! Everything else fails typed (method-not-found), never panics.
 
 use serde::Deserialize;
