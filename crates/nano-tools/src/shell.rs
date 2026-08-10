@@ -20,6 +20,8 @@
 
 #[cfg(windows)]
 use nano_core::abs::AbsolutePathBuf;
+#[cfg(any(unix, test))]
+use nano_core::permissions::NetworkSandboxPolicy;
 use nano_core::permissions::PermissionProfile;
 #[cfg(any(unix, test))]
 use nano_sandbox::SandboxType;
@@ -186,7 +188,7 @@ impl ShellTool {
         timeout: Option<std::time::Duration>,
     ) -> Result<ShellOutput, ShellError> {
         let started = std::time::Instant::now();
-        let profile = PermissionProfile::workspace_write();
+        let profile = unix_workspace_write_profile();
         let platform =
             platform_sandbox_command(unix_shell_argv(command), &profile, &self.workspace)?;
         let result = capture_unix_command(platform, &self.workspace, timeout)?;
@@ -223,6 +225,26 @@ impl ShellTool {
 #[cfg(any(unix, test))]
 fn unix_shell_argv(command: &str) -> Vec<String> {
     vec!["sh".into(), "-c".into(), command.into()]
+}
+
+/// The unix shell profile: workspace-write with the tmp roots EXCLUDED.
+///
+/// `PermissionProfile::workspace_write()` keeps the donor's `:slash_tmp` and
+/// `:tmpdir` writable entries, which resolve to a writable `/tmp` bind (bwrap)
+/// or Landlock RW rule (legacy path) — and the workspace's parent directory
+/// typically lives inside the system temp dir, so those entries let a
+/// "sandboxed" command write outside the workspace (the adversarial escape
+/// tests write exactly there). Containment for this tool is strictly the
+/// workspace, so both tmp roots are excluded here. Deviation from the donor
+/// default recorded in UPSTREAM.md.
+#[cfg(any(unix, test))]
+fn unix_workspace_write_profile() -> PermissionProfile {
+    PermissionProfile::workspace_write_with(
+        &[],
+        NetworkSandboxPolicy::Restricted,
+        /*exclude_tmpdir_env_var*/ true,
+        /*exclude_slash_tmp*/ true,
+    )
 }
 
 /// A fully transformed, sandboxed command line ready to spawn.
@@ -621,6 +643,28 @@ mod tests {
         assert_eq!(
             unix_shell_argv("echo hi"),
             vec!["sh".to_string(), "-c".to_string(), "echo hi".to_string()]
+        );
+    }
+
+    #[test]
+    fn unix_profile_denies_writes_outside_the_workspace() {
+        // The adversarial escape tests write one level above the workspace,
+        // which lives inside the system temp dir on unix. The shell profile
+        // must not make that location writable (donor `workspace_write`
+        // grants `/tmp` + `$TMPDIR`; this tool excludes both).
+        let (tmp, _home, ws) = fixture();
+        let profile = unix_workspace_write_profile();
+        let (file_system_sandbox_policy, _) = profile.to_runtime_permissions();
+        assert!(!file_system_sandbox_policy.has_full_disk_write_access());
+        let inside = ws.join("nanok3-inside-workspace.txt");
+        let outside = tmp.path().join("nanok3-outside-workspace.txt");
+        assert!(
+            file_system_sandbox_policy.can_write_path_with_cwd(&inside, &ws),
+            "workspace must stay writable"
+        );
+        assert!(
+            !file_system_sandbox_policy.can_write_path_with_cwd(&outside, &ws),
+            "workspace sibling under the system temp dir must NOT be writable"
         );
     }
 
