@@ -230,11 +230,11 @@ while ($true) {
 while IFS= read -r line; do
     id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
     case "$line" in
-        *'"initialize"*)
+        *'"initialize"'*)
             printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"fake","version":"0"}}}\n' "$id" ;;
-        *'"tools/list"*)
+        *'"tools/list"'*)
             printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"echoes"}]}}\n' "$id" ;;
-        *'"tools/call"*)
+        *'"tools/call"'*)
             printf '{"jsonrpc":"2.0","id":%s,"result":{"content":"pong","isError":false}}\n' "$id" ;;
     esac
 done
