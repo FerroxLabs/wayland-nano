@@ -756,6 +756,7 @@ dependencies = [
  "nano-session",
  "nano-tools",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
 ]

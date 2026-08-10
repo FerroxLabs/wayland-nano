@@ -9,6 +9,7 @@
 //! - clean shutdown on stdin close; `ping` → `pong` (heartbeats do NOT count
 //!   as turn progress).
 
+pub mod acp;
 pub mod codec;
 pub mod corpus;
 pub mod host;

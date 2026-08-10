@@ -1,5 +1,6 @@
 //! nanok3 — Wayland Nano (Track B) binary: doctor, protocol host.
 
+mod acp_mode;
 mod doctor;
 mod host_mode;
 
@@ -10,6 +11,20 @@ fn main() {
             let nano_home = nano_home();
             let mut out = std::io::stdout();
             doctor::run(&nano_home, &mut out).unwrap_or(2)
+        }
+        Some("acp-host") => {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime");
+            let home = nano_home();
+            match runtime.block_on(acp_mode::run(&home)) {
+                Ok(code) => code,
+                Err(err) => {
+                    eprintln!("nanok3: acp io error: {err}");
+                    2
+                }
+            }
         }
         Some("protocol-host") => {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -36,7 +51,7 @@ fn main() {
             0
         }
         _ => {
-            eprintln!("usage: nanok3 doctor | protocol-host | --version");
+            eprintln!("usage: nanok3 doctor | protocol-host | acp-host | --version");
             2
         }
     };
