@@ -1,12 +1,14 @@
-//! Provenance: ported from Codex `codex-rs/linux-sandbox/src/linux_run_main_tests.rs`
-//! @ 646f7c0a. Transformations:
-//! - managed-proxy tests dropped with the proxy surface;
-//! - `needs_direct_runtime_enforcement` tests dropped (that gate is not
-//!   ported; see main.rs provenance note);
-//! - `codex-linux-sandbox` -> `nanok3-linux-sandbox`; synthetic-mount registry
-//!   dir renamed to the nanok3-* namespace;
-//! - `PermissionProfile::from_runtime_permissions` (legacy constructor) ->
-//!   direct `PermissionProfile::Managed` construction.
+// Provenance: ported from Codex `codex-rs/linux-sandbox/src/linux_run_main_tests.rs`
+// @ 646f7c0a. Transformations:
+// - managed-proxy tests dropped with the proxy surface;
+// - `needs_direct_runtime_enforcement` tests dropped (that gate is not
+//   ported; see main.rs provenance note);
+// - `codex-linux-sandbox` -> `nanok3-linux-sandbox`; synthetic-mount registry
+//   dir renamed to the nanok3-* namespace;
+// - `PermissionProfile::from_runtime_permissions` (legacy constructor) ->
+//   direct `PermissionProfile::Managed` construction.
+// (Plain comments, not //!: this file is pulled in via include! inside
+// mod tests, where inner doc comments are illegal — E0753.)
 
 use super::*;
 use nano_core::abs::AbsolutePathBuf;

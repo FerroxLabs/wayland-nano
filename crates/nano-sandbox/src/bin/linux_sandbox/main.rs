@@ -1406,8 +1406,15 @@ mod linux {
     }
 
     #[cfg(test)]
-    #[path = "../main_tests.rs"]
-    mod tests;
+    mod tests {
+        // include! (not #[path]) because this sits inside an inline module:
+        // #[path] would resolve relative to a notional linux/ directory that
+        // never exists — tolerated lexically on Windows, ENOENT on Linux
+        // (rustfmt/cargo fmt hard error). include! resolves relative to this
+        // physical file. Note: rustfmt does not visit include!d files, so
+        // main_tests.rs is exempt from gate-fmt.
+        include!("main_tests.rs");
+    }
 }
 
 #[cfg(target_os = "linux")]
