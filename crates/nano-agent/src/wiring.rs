@@ -255,7 +255,7 @@ impl ToolExecutor for RealToolExecutor {
                     };
                 };
                 match self.shell.run(
-                    ShellKind::Cmd,
+                    ShellKind::platform_default(),
                     command,
                     Some(std::time::Duration::from_secs(120)),
                 ) {

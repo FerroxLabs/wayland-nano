@@ -45,8 +45,15 @@ pub const MACOS_PATH_TO_SEATBELT_EXECUTABLE: &str = "/usr/bin/sandbox-exec";
 #[derive(Debug, Clone)]
 // Keep allow-all and allowlist modes disjoint so we don't carry ignored state.
 enum UnixDomainSocketPolicy {
+    // Constructed by tests only: the donor paths that produced AllowAll
+    // (managed-network proxy surface) were not ported. Retained so the policy
+    // builder semantics stay donor-complete; the allow keeps non-test builds
+    // (feature-gated downstream builder tests) warning-free.
+    #[allow(dead_code)]
     AllowAll,
-    Restricted { allowed: Vec<AbsolutePathBuf> },
+    Restricted {
+        allowed: Vec<AbsolutePathBuf>,
+    },
 }
 
 impl Default for UnixDomainSocketPolicy {

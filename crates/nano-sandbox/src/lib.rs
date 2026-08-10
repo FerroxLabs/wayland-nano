@@ -14,14 +14,15 @@
 pub mod telemetry;
 
 // Unix containment backends. The policy/argv builders are pure string
-// construction, so they also compile in test builds on every host to
+// construction, so they also compile in test builds on every host — and in
+// downstream crates' test builds via the `unix-argv-builders` feature — to
 // maximize cross-platform test coverage; only the spawned helpers are
 // platform-bound.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", feature = "unix-argv-builders", test))]
 pub mod linux_bwrap;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", feature = "unix-argv-builders", test))]
 pub mod linux_landlock;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", feature = "unix-argv-builders", test))]
 pub mod macos_seatbelt;
 
 /// Sandbox backend selected for the current platform.

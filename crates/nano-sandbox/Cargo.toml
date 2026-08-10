@@ -8,13 +8,22 @@ autobins = false
 
 [dependencies]
 nano-core = { path = "../nano-core" }
-# anyhow/globset are unconditional (not Linux-only) because the bwrap argv
-# builder module compiles under `cfg(any(target_os = "linux", test))` so its
-# pure string-building tests run on every host.
+# anyhow/globset/regex-lite are unconditional (not Linux/macOS-only) because
+# the unix argv/policy builders compile under `cfg(any(target_os = ..., test))`
+# — and under the `unix-argv-builders` feature — so their pure string-building
+# tests run on every host.
 anyhow = "1"
 globset = "0.4"
+regex-lite = "0.1.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[features]
+# Compiles the pure unix argv/policy builders (seatbelt, landlock, bwrap) on
+# non-unix hosts so downstream crates can unit-test their sandbox transform
+# wiring in `cargo test` on any platform. The builders are pure string
+# construction; runtime spawn paths stay platform-bound.
+unix-argv-builders = []
 
 [target.'cfg(target_os = "windows")'.dependencies]
 anyhow = "1"
@@ -70,11 +79,7 @@ windows-sys = { version = "0.52", features = [
 [dev-dependencies]
 pretty_assertions = "1"
 dunce = "1"
-regex-lite = "0.1.8"
 tempfile = "3"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-regex-lite = "0.1.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 anyhow = "1"
