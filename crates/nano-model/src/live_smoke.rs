@@ -19,9 +19,17 @@ fn key() -> Option<String> {
 fn record(name: &str, content: &str) {
     // Prefer the monorepo evidence store when present; otherwise the vendored
     // snapshot (standalone checkout / CI). See module header.
-    let shared = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../shared/fixtures/flux/client-smoke");
+    let shared = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../shared/fixtures/flux/client-smoke"
+    );
     let vendored = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures-flux/client-smoke");
-    let dir = if std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../shared/fixtures/flux")).exists() {
+    let dir = if std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../shared/fixtures/flux"
+    ))
+    .exists()
+    {
         shared
     } else {
         vendored
