@@ -123,6 +123,62 @@ fn error_classification_maps_flux_shapes() {
 }
 
 #[test]
+fn batch3_badkey_500_auth_error_classifies_as_auth_not_retryable() {
+    // Live wire: invalid key → HTTP 500 with error.type=="auth_error"
+    // (FINDINGS.md batch 3 §a2). Must surface as Auth and never be retried.
+    let path = newest_file("errors", "_cc_badkey_response.json");
+    let body = std::fs::read_to_string(&path).unwrap();
+    let err = classify_status(500, body);
+    let ModelError::Auth(message) = &err else {
+        panic!("500 auth_error must classify as Auth: {err:?}");
+    };
+    // The message carries only the SHA-256 digest of the presented key
+    // (`key=<64 hex chars>`), never the key itself.
+    assert!(message.contains("auth") || message.contains("Authentication"));
+    assert_eq!(crate::retry::is_retryable(&err), None);
+}
+
+#[test]
+fn batch3_overlimit_413_classifies_as_context_overflow() {
+    // Live wire: max_tokens over the context window → HTTP 413 with
+    // error.message=="context_window_exceeded" (FINDINGS.md batch 3 §a).
+    let path = newest_file("errors", "_cc_overlimit_response.json");
+    let body = std::fs::read_to_string(&path).unwrap();
+    let err = classify_status(413, body);
+    let ModelError::ContextOverflow(message) = &err else {
+        panic!("413 must classify as ContextOverflow: {err:?}");
+    };
+    assert_eq!(message, "context_window_exceeded");
+    assert_eq!(crate::retry::is_retryable(&err), None);
+}
+
+#[test]
+fn batch3_burst_503_edge_html_classifies_as_retryable_server() {
+    // Live wire: burst load saturates the edge with bare nginx 503 HTML
+    // (non-JSON, no Retry-After) — never 429 (FINDINGS.md batch 3 §b).
+    // This is the retryable failure mode under load.
+    let path = newest_file("rate-limit", "_cc_parallel_burst_503_body.html");
+    let body = std::fs::read_to_string(&path).unwrap();
+    let err = classify_status(503, body);
+    let ModelError::Server { status: 503, .. } = &err else {
+        panic!("503 edge HTML must classify as Server: {err:?}");
+    };
+    assert_eq!(crate::retry::is_retryable(&err), Some(None));
+}
+
+#[test]
+fn non_auth_500_stays_retryable_server() {
+    // Only error.type=="auth_error" reclassifies a 500; a plain internal
+    // error keeps the generic retryable Server shape.
+    let body = r#"{"error":{"message":"upstream exploded","type":"internal_error","code":"500"}}"#;
+    let err = classify_status(500, body.into());
+    let ModelError::Server { status: 500, .. } = &err else {
+        panic!("non-auth 500 must stay Server: {err:?}");
+    };
+    assert_eq!(crate::retry::is_retryable(&err), Some(None));
+}
+
+#[test]
 fn message_roles_wire_correctly() {
     let request = ModelRequest {
         model: "m".into(),
