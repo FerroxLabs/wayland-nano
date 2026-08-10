@@ -11,12 +11,17 @@ process list, network), never Nano's self-report.
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\c12-proof\Test-C12Proof.ps1
 ```
 
-**The authoritative run is elevated.** Two probes are admin-gated by the OS,
-not by us: `network-deny-offline` (netsh WFP enumeration is admin-only — and
-it writes XML to a file, not stdout) and `write-outside-root`
-(`Start-Process -Credential` / CreateProcessWithLogonW is admin-gated on this
-box). Unelevated they report `SKIP: requires elevation` — honest, not green.
-Unelevated runs remain useful pre-provisioning to validate the harness itself.
+**The authoritative run is elevated.** Four containment probes execute as the
+provisioned OFFLINE IDENTITY (`NanoK3SandboxOffline`) via
+`Start-Process -Credential` (CreateProcessWithLogonW), which is admin-gated on
+this box — verified empirically: unelevated launch of even whoami.exe as the
+offline account returns Access is denied. `write-outside-root`,
+`sensitive-read-deny`, `junction-escape`, and `network-deny-offline` therefore
+report `SKIP: requires elevation` unelevated — honest, not green.
+(`netsh wfp` enumeration is also admin-only — and writes XML to a file, not
+stdout — but survives only as a secondary detail line inside
+`network-deny-offline`.) Unelevated runs remain useful pre-provisioning to
+validate the harness itself.
 
 Outputs `scripts/c12-proof/evidence/c12-manifest-<timestamp>.json` in the
 BUILD_PLAN_V3 §8 manifest shape, then prints a PASS/FAIL summary line per probe.
@@ -26,12 +31,12 @@ BUILD_PLAN_V3 §8 manifest shape, then prints a PASS/FAIL summary line per probe
 | Probe | Criterion | Oracle |
 |---|---|---|
 | write-inside-root | workspace write allowed | file exists |
-| write-outside-root | workspace-only writes | file absent |
-| sensitive-read-deny | denied read fails | read throws |
-| junction-escape | junction cannot escape deny | file absent |
-| tree-kill | descendants dead ≤5s | CIM process scan |
+| write-outside-root | workspace-only writes | offline identity denied; file absent (child exit contract 42/43) |
+| sensitive-read-deny | offline identity cannot read outside grants | offline identity read denied (child exit contract 44/45); controls: harness read of same file succeeds, same-user deny-ACL self-test |
+| junction-escape | junction cannot escape deny | offline identity write through junction denied; no file outside root (child exit contract 46/47); control: same junction write succeeds for harness user |
+| tree-kill | descendants dead ≤5s | PID-scoped CIM inventory: none of the probe's recorded descendant PIDs survive |
 | process-cleanup | no orphan helpers | CIM process scan |
-| network-deny (offline identity) | TCP connect fails | socket error |
+| network-deny (offline identity) | offline identity TCP connect fails | real TCP connect to api.fluxrouter.ai:443 as offline identity fails (child exit contract 48/49); control: same connect as harness user succeeds |
 | broker-network-ok | broker reaches Flux | HTTPS 200 |
 | path-edgecases | long path, Unicode, reserved names | create/read |
 | setup-idempotent | marker refresh round-trips; tamper restored | canonical marker hash + readiness rule |
@@ -93,13 +98,36 @@ account names, and a log-dir removal guarded to the `.nanok3`-scoped
   name outside the root is denied like any other path. The probe's original
   "should be rejected" expectation was wrong for this platform and has been
   relabeled accordingly.
-- **write-outside-root** decrypts the offline account credential from
+- **Offline-identity probes** (`write-outside-root`, `sensitive-read-deny`,
+  `junction-escape`, `network-deny-offline`) all execute their attempt as the
+  provisioned `NanoK3SandboxOffline` identity, never as the harness user.
+  They share one pattern (`Get-OfflineCredential` / `Invoke-OfflineChild`):
+  the offline credential is decrypted from
   `%USERPROFILE%\.nanok3\.sandbox-secrets\sandbox_users.json` (DPAPI,
-  current-user scope) in memory only and launches a one-shot child as
-  `NanoK3SandboxOffline` that attempts a write in `$WorkspaceRoot\outside`.
-  Child exit 43 = denied (expected), 42 = wrote (FAIL). stdout/stderr are
-  captured to `nanok3-write-outside-root.{stdout,stderr}.log` in the evidence
-  dir as the denial evidence.
+  current-user scope) **in memory only** — the plaintext is never printed,
+  logged, or persisted — and a one-shot powershell child is launched via
+  `Start-Process -Credential` under a numeric exit-code contract:
+  42/43 write, 44/45 read, 46/47 junction write, 48/49 TCP connect (even =
+  violation, odd = denied/blocked, expected). stdout/stderr are captured to
+  `nanok3-<probe>.{stdout,stderr}.log` in the evidence dir as the denial
+  evidence. Each probe also carries a harness-side control so the denial is
+  attributable to the identity: `sensitive-read-deny` requires the harness
+  user to read the same file successfully (plus the legacy same-user
+  deny-ACL self-test); `junction-escape` requires the harness user's write
+  through the same junction to land; `network-deny-offline` requires the
+  harness user's connect to `api.fluxrouter.ai:443` to succeed. A failed
+  control makes the probe FAIL as inconclusive rather than PASS.
+- **network-deny-offline**'s primary oracle is the real TCP connect attempt
+  as the offline identity. The pre-hardening WFP-XML grep (`netsh wfp show
+  filters`, NanoK3 substring) is kept only as a secondary `wfp-filters=`
+  detail line — filter presence alone never passes the probe.
+- **tree-kill-5s** scopes its survivor inventory to the probe's own tree:
+  while `nanok3-tree-kill-probe.exe` runs, the harness walks
+  `Win32_Process.ParentProcessId` from the probe PID every 100 ms and records
+  every descendant PID observed; after `job.terminate()` none of those
+  recorded PIDs may still exist. An empty recording FAILs the probe (the
+  inventory would be vacuous). The earlier host-wide `ping.exe` scan could
+  misattribute unrelated processes (panel finding #5) and is gone.
 - **uninstall-scope** has two modes (see "Uninstall-scope probe modes"
   above). The default mode audits provisioning residue; `-PostUninstall`
   audits that the helper's `uninstall: true` run removed all NanoK3 machine

@@ -43,6 +43,46 @@ function Add-Result([string]$Probe, [string]$Status, [string]$Detail) {
     Write-Host $line
 }
 
+# ---------- offline-identity child helpers ----------
+# Shared by every containment probe that must execute as the PROVISIONED
+# OFFLINE IDENTITY, not the harness user (pattern proven by write-outside-root):
+# the offline credential is DPAPI-decrypted from
+# %USERPROFILE%\.nanok3\.sandbox-secrets\sandbox_users.json IN MEMORY ONLY —
+# the plaintext is never printed, logged, or persisted — then a one-shot
+# powershell child is launched via Start-Process -Credential under a numeric
+# exit-code child contract with parent-opened redirect logs in the evidence
+# dir as the denial evidence.
+function Get-OfflineCredential {
+    Add-Type -AssemblyName System.Security
+    $secretsPath = Join-Path $env:USERPROFILE ".nanok3\.sandbox-secrets\sandbox_users.json"
+    if (-not (Test-Path $secretsPath)) { throw "secrets file missing at $secretsPath" }
+    $record = (Get-Content $secretsPath -Raw | ConvertFrom-Json).offline
+    $blob = [Convert]::FromBase64String($record.password)
+    $bytes = [Security.Cryptography.ProtectedData]::Unprotect($blob, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+    $secure = [System.Security.SecureString]::new()
+    foreach ($ch in [Text.Encoding]::UTF8.GetChars($bytes)) { $secure.AppendChar($ch) }
+    $bytes = $null; $blob = $null
+    return [pscredential]::new($record.username, $secure)
+}
+
+function Invoke-OfflineChild([pscredential]$Cred, [string]$ChildCmd, [string]$LogBase) {
+    # Returns the exited child process object; stdout/stderr land in
+    # $EvidenceDir\$LogBase.{stdout,stderr}.log.
+    $logOut = Join-Path $EvidenceDir "$LogBase.stdout.log"
+    $logErr = Join-Path $EvidenceDir "$LogBase.stderr.log"
+    return Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -ArgumentList @("-NoProfile", "-NonInteractive", "-Command", $ChildCmd) `
+        -Credential $Cred -NoNewWindow -Wait -PassThru `
+        -RedirectStandardOutput $logOut -RedirectStandardError $logErr
+}
+
+function Get-FirstLogLine([string]$LogBase) {
+    $line = (Get-Content (Join-Path $EvidenceDir "$LogBase.stdout.log") -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($null -eq $line) { return "" }
+    if ($line.Length -gt 120) { $line = $line.Substring(0, 120) }
+    return $line
+}
+
 # ---------- environment ----------
 $setupExe = Join-Path $PSScriptRoot "..\..\target\release\nanok3-sandbox-setup.exe"
 $offlineAccount = "NanoK3SandboxOffline"
@@ -80,85 +120,172 @@ if (-not $provisioned) {
     # Start-Process -Credential (CreateProcessWithLogonW) is admin-gated on
     # this box — verified empirically: unelevated launch of even whoami.exe
     # as the offline account returns Access is denied. The authoritative run
-    # of this probe is the elevated one.
+    # of this probe (and of every offline-identity probe below) is elevated.
     Add-Result "write-outside-root" "SKIP" "requires elevation (credential-child launch is admin-gated)"
 } else {
     try {
-        Add-Type -AssemblyName System.Security
-        $secretsPath = Join-Path $env:USERPROFILE ".nanok3\.sandbox-secrets\sandbox_users.json"
-        if (-not (Test-Path $secretsPath)) { throw "secrets file missing at $secretsPath" }
-        $record = (Get-Content $secretsPath -Raw | ConvertFrom-Json).offline
-        $blob = [Convert]::FromBase64String($record.password)
-        $bytes = [Security.Cryptography.ProtectedData]::Unprotect($blob, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
-        $secure = [System.Security.SecureString]::new()
-        foreach ($ch in [Text.Encoding]::UTF8.GetChars($bytes)) { $secure.AppendChar($ch) }
-        $bytes = $null; $blob = $null
-        $cred = [pscredential]::new($record.username, $secure)
+        $cred = Get-OfflineCredential
 
         $target = Join-Path $outside "nanok3-escape-attempt.txt"
         if (Test-Path $target) { Remove-Item -Force $target }
-        $logOut = Join-Path $EvidenceDir "nanok3-write-outside-root.stdout.log"
-        $logErr = Join-Path $EvidenceDir "nanok3-write-outside-root.stderr.log"
         # child contract: exit 42 = out-of-root write SUCCEEDED (violation), 43 = denied (expected)
         $childCmd = "try { 'escape' | Out-File -LiteralPath '$target' -Encoding utf8 -ErrorAction Stop; exit 42 } catch { Write-Output (`$_.Exception.Message); exit 43 }"
-        $proc = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
-            -ArgumentList @("-NoProfile", "-NonInteractive", "-Command", $childCmd) `
-            -Credential $cred -NoNewWindow -Wait -PassThru `
-            -RedirectStandardOutput $logOut -RedirectStandardError $logErr
+        $proc = Invoke-OfflineChild $cred $childCmd "nanok3-write-outside-root"
         $wrote = Test-Path $target
         if ($wrote -or $proc.ExitCode -eq 42) {
             Add-Result "write-outside-root" "FAIL" "sandboxed write outside root SUCCEEDED (exit=$($proc.ExitCode) file-present=$wrote)"
         } elseif ($proc.ExitCode -eq 43) {
-            $msg = (Get-Content $logOut -ErrorAction SilentlyContinue | Select-Object -First 1)
-            if ($msg.Length -gt 120) { $msg = $msg.Substring(0, 120) }
-            Add-Result "write-outside-root" "PASS" "denied as $($record.username): $msg (oracle: file absent; evidence $logOut)"
+            Add-Result "write-outside-root" "PASS" "denied as $($cred.UserName): $(Get-FirstLogLine 'nanok3-write-outside-root') (oracle: file absent; evidence $EvidenceDir\nanok3-write-outside-root.stdout.log)"
         } else {
-            $err = (Get-Content $logErr -ErrorAction SilentlyContinue | Select-Object -First 1)
+            $err = (Get-Content (Join-Path $EvidenceDir "nanok3-write-outside-root.stderr.log") -ErrorAction SilentlyContinue | Select-Object -First 1)
             Add-Result "write-outside-root" "FAIL" "probe child inconclusive exit=$($proc.ExitCode): $err"
         }
     } catch { Add-Result "write-outside-root" "FAIL" "harness error: $_" }
 }
 
-# ---------- probe: sensitive-read-deny (oracle: read throws) ----------
-$secretFile = Join-Path $denied "secret.env"
-"API_KEY=should-not-read" | Out-File $secretFile -Encoding utf8
-icacls $denied /deny "${env:USERNAME}:(OI)(CI)(R)" | Out-Null
-try {
-    $null = Get-Content $secretFile -ErrorAction Stop
-    Add-Result "sensitive-read-deny" "FAIL" "read of denied file SUCCEEDED"
-} catch {
-    Add-Result "sensitive-read-deny" "PASS" "read denied: $($_.Exception.Message.Split([Environment]::NewLine)[0])"
-}
-icacls $denied /remove:d "${env:USERNAME}" | Out-Null
+# ---------- probe: sensitive-read-deny (oracle: offline identity read denied) ----------
+# Criterion: a file that IS readable by the harness user but lies outside
+# every NanoK3 grant is UNREADABLE by the provisioned offline identity
+# (implicit absence of allow, acl.rs). Controls inside the same probe: (a)
+# the harness user really can read the target, so the denial is attributable
+# to the identity, not a broken fixture; (b) the legacy same-user deny-ACL
+# self-test, kept as an additional control.
+if (-not $provisioned) {
+    Add-Result "sensitive-read-deny" "SKIP" "not provisioned"
+} elseif (-not $script:IsElevated) {
+    Add-Result "sensitive-read-deny" "SKIP" "requires elevation (credential-child launch is admin-gated)"
+} else {
+    try {
+        $cred = Get-OfflineCredential
 
-# ---------- probe: junction-escape (oracle: target not writable through junction) ----------
+        # control (a): harness-readable target outside any NanoK3 grant (the
+        # harness's own temp tree — the offline identity has no ACE in it)
+        $sensDir = Join-Path $ws "sensitive"
+        New-Item -ItemType Directory -Force -Path $sensDir | Out-Null
+        $sensFile = Join-Path $sensDir "harness-only.txt"
+        "harness-readable-fixture" | Out-File $sensFile -Encoding utf8
+        $harnessRead = $false
+        try { $null = Get-Content $sensFile -ErrorAction Stop; $harnessRead = $true } catch {}
+
+        # control (b): legacy same-user deny-ACL self-test
+        $secretFile = Join-Path $denied "secret.env"
+        "API_KEY=should-not-read" | Out-File $secretFile -Encoding utf8
+        icacls $denied /deny "${env:USERNAME}:(OI)(CI)(R)" | Out-Null
+        $aclControl = $false
+        try {
+            $null = Get-Content $secretFile -ErrorAction Stop
+        } catch { $aclControl = $true }
+        icacls $denied /remove:d "${env:USERNAME}" | Out-Null
+
+        # child contract: exit 44 = read SUCCEEDED (violation), 45 = denied (expected)
+        $childCmd = "try { `$null = Get-Content -LiteralPath '$sensFile' -ErrorAction Stop; exit 44 } catch { Write-Output (`$_.Exception.Message); exit 45 }"
+        $proc = Invoke-OfflineChild $cred $childCmd "nanok3-sensitive-read-deny"
+        if ($proc.ExitCode -eq 44) {
+            Add-Result "sensitive-read-deny" "FAIL" "offline identity READ a file outside all grants ($sensFile)"
+        } elseif ($proc.ExitCode -eq 45 -and $harnessRead -and $aclControl) {
+            Add-Result "sensitive-read-deny" "PASS" "denied as $($cred.UserName): $(Get-FirstLogLine 'nanok3-sensitive-read-deny') (controls: harness-read=ok acl-self-test=ok)"
+        } else {
+            Add-Result "sensitive-read-deny" "FAIL" "inconclusive: child exit=$($proc.ExitCode) harness-readable=$harnessRead acl-self-test=$aclControl"
+        }
+    } catch { Add-Result "sensitive-read-deny" "FAIL" "harness error: $_" }
+}
+
+# ---------- probe: junction-escape (oracle: offline identity cannot write through junction) ----------
+# A junction INSIDE the workspace root points OUTSIDE it; the provisioned
+# offline identity must not be able to write through it. Oracle: no file
+# lands at the outside target. Control: the same write through the same
+# junction succeeds for the harness user, proving the junction is functional
+# and the denial is attributable to the identity.
 $junction = Join-Path $ws "junction-to-outside"
 if (-not (Test-Path $junction)) {
     New-Item -ItemType Junction -Path $junction -Target $outside | Out-Null
 }
 $escapeTarget = Join-Path $junction "escaped.txt"
-# deny writes on outside; then attempt write through the junction spelling
-icacls $outside /deny "${env:USERNAME}:(OI)(CI)(W)" | Out-Null
-try {
-    "escape" | Out-File $escapeTarget -Encoding utf8 -ErrorAction Stop
-    Add-Result "junction-escape" "FAIL" "write through junction SUCCEEDED"
-} catch {
-    Add-Result "junction-escape" "PASS" "junction write denied"
-}
-icacls $outside /remove:d "${env:USERNAME}" | Out-Null
-
-# ---------- probe: tree-kill ≤5s (oracle: no descendants in process list) ----------
-$probeExe = Join-Path $PSScriptRoot "..\..\target\debug\nanok3-tree-kill-probe.exe"
-$probeOut = & $probeExe 2>&1 | Out-String
-Start-Sleep -Milliseconds 400
-$survivors = Get-CimInstance Win32_Process -Filter "Name='ping.exe'" -ErrorAction SilentlyContinue
-if (($probeOut -match "TREE_KILL_OK ms=(\d+)") -and ($null -eq $survivors)) {
-    Add-Result "tree-kill-5s" "PASS" "job terminate killed tree in $($Matches[1])ms; CIM shows no survivors"
-} elseif ($null -ne $survivors) {
-    Add-Result "tree-kill-5s" "FAIL" "descendant survived job terminate: $(($survivors | ForEach-Object { $_.ProcessId }) -join ',')"
+$landedFile = Join-Path $outside "escaped.txt"
+if (-not $provisioned) {
+    Add-Result "junction-escape" "SKIP" "not provisioned"
+} elseif (-not $script:IsElevated) {
+    Add-Result "junction-escape" "SKIP" "requires elevation (credential-child launch is admin-gated)"
 } else {
-    Add-Result "tree-kill-5s" "FAIL" "probe output: $probeOut"
+    try {
+        $cred = Get-OfflineCredential
+
+        if (Test-Path $landedFile) { Remove-Item -Force $landedFile }
+        # control: junction functional for the harness user
+        $junctionWorks = $false
+        try {
+            "probe" | Out-File $escapeTarget -Encoding utf8 -ErrorAction Stop
+            $junctionWorks = Test-Path $landedFile
+            Remove-Item -Force $landedFile -ErrorAction SilentlyContinue
+        } catch {}
+
+        # child contract: exit 46 = write through junction SUCCEEDED (violation), 47 = denied (expected)
+        $childCmd = "try { 'escape' | Out-File -LiteralPath '$escapeTarget' -Encoding utf8 -ErrorAction Stop; exit 46 } catch { Write-Output (`$_.Exception.Message); exit 47 }"
+        $proc = Invoke-OfflineChild $cred $childCmd "nanok3-junction-escape"
+        $landed = Test-Path $landedFile
+        if ($proc.ExitCode -eq 46 -or $landed) {
+            Add-Result "junction-escape" "FAIL" "offline identity WROTE through junction outside root (exit=$($proc.ExitCode) file-present=$landed)"
+        } elseif ($proc.ExitCode -eq 47 -and $junctionWorks) {
+            Add-Result "junction-escape" "PASS" "denied as $($cred.UserName): $(Get-FirstLogLine 'nanok3-junction-escape') (oracle: no file at $landedFile; control: junction functional for harness user)"
+        } else {
+            Add-Result "junction-escape" "FAIL" "inconclusive: child exit=$($proc.ExitCode) junction-functional=$junctionWorks file-present=$landed"
+        }
+    } catch { Add-Result "junction-escape" "FAIL" "harness error: $_" }
 }
+
+# ---------- probe: tree-kill ≤5s (oracle: recorded descendant PIDs gone) ----------
+# PID-scoped: while the probe runs, inventory its descendant tree from CIM
+# (ParentProcessId walk rooted at the probe PID); after job.terminate none of
+# THOSE recorded PIDs may survive. A host-wide ping.exe scan would
+# misattribute unrelated processes (panel finding #5).
+$probeExe = Join-Path $PSScriptRoot "..\..\target\debug\nanok3-tree-kill-probe.exe"
+try {
+    if (-not (Test-Path $probeExe)) { throw "probe binary missing at $probeExe" }
+    $probeLogOut = Join-Path $EvidenceDir "nanok3-tree-kill-probe.stdout.log"
+    $probeLogErr = Join-Path $EvidenceDir "nanok3-tree-kill-probe.stderr.log"
+    $probeProc = Start-Process -FilePath $probeExe -NoNewWindow -PassThru `
+        -RedirectStandardOutput $probeLogOut -RedirectStandardError $probeLogErr
+    $descendantPids = @{}
+    while (-not $probeProc.HasExited) {
+        $all = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId -ErrorAction SilentlyContinue)
+        $byParent = @{}
+        foreach ($p in $all) {
+            $ppid = [int]$p.ParentProcessId
+            if (-not $byParent.ContainsKey($ppid)) { $byParent[$ppid] = @() }
+            $byParent[$ppid] += [int]$p.ProcessId
+        }
+        $queue = [System.Collections.Generic.Queue[int]]::new()
+        $queue.Enqueue([int]$probeProc.Id)
+        while ($queue.Count -gt 0) {
+            $cur = $queue.Dequeue()
+            foreach ($kid in @($byParent[$cur])) {
+                if ($null -ne $kid) {
+                    if (-not $descendantPids.ContainsKey($kid)) { $descendantPids[$kid] = $true }
+                    $queue.Enqueue($kid)
+                }
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    $probeOut = (Get-Content $probeLogOut -Raw -ErrorAction SilentlyContinue)
+    $known = @($descendantPids.Keys)
+    $survivors = @()
+    if ($known.Count -gt 0) {
+        $survivors = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $descendantPids.ContainsKey([int]$_.ProcessId) })
+    }
+    $ms = $null
+    if ($probeOut -match "TREE_KILL_OK ms=(\d+)") { $ms = $Matches[1] }
+    if ($known.Count -eq 0) {
+        Add-Result "tree-kill-5s" "FAIL" "no descendant PIDs captured during probe run; PID-scoped inventory unavailable (probe output: $probeOut)"
+    } elseif (-not $ms) {
+        Add-Result "tree-kill-5s" "FAIL" "probe output: $probeOut"
+    } elseif ($survivors.Count -gt 0) {
+        Add-Result "tree-kill-5s" "FAIL" "descendant(s) survived job terminate: $(($survivors | ForEach-Object { $_.Name + ':' + $_.ProcessId }) -join ',')"
+    } else {
+        Add-Result "tree-kill-5s" "PASS" "job terminate killed tree in ${ms}ms; all $($known.Count) recorded descendant PID(s) gone from CIM inventory"
+    }
+} catch { Add-Result "tree-kill-5s" "FAIL" "harness error: $_" }
 
 # ---------- probe: process-cleanup (oracle: no stray nanok3 helpers) ----------
 $strays = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
@@ -170,23 +297,51 @@ if ($null -eq $strays) {
 }
 
 # ---------- probe: network-deny (requires provisioned offline identity) ----------
+# Criterion: a REAL TCP connect to a non-loopback host (api.fluxrouter.ai:443)
+# attempted AS the provisioned offline identity FAILS (WFP block-all for that
+# identity). Control: the same connect as the harness user succeeds — without
+# it, an offline failure could be attributed to a dead network instead of the
+# WFP policy. The WFP filter-presence grep is kept as a secondary detail line.
 if (-not $provisioned) {
     Add-Result "network-deny-offline" "SKIP" "not provisioned"
+} elseif (-not $script:IsElevated) {
+    Add-Result "network-deny-offline" "SKIP" "requires elevation (credential-child launch is admin-gated)"
 } else {
-    # WFP block-all for the offline identity is verified by attempting a
-    # loopback-external connect from a token-restricted context. This harness
-    # checks the filters exist for the account as the system-level oracle.
-    # Track-B filter names are nanok3_wfp_* and the provider is "NanoK3
-    # Windows Sandbox WFP", so the case-insensitive NanoK3 match now hits the
-    # filter/provider names directly, not just the account-SID condition.
-    $filtersXml = Get-WfpXml "filters"
-    if (-not $filtersXml) {
-        Add-Result "network-deny-offline" "SKIP" "requires elevation (netsh wfp is admin-only)"
-    } elseif (Select-String -Path $filtersXml -SimpleMatch "NanoK3" -Quiet) {
-        Add-Result "network-deny-offline" "PASS" "WFP filters present for NanoK3 identity"
-    } else {
-        Add-Result "network-deny-offline" "FAIL" "no NanoK3 WFP filters found ($filtersXml)"
-    }
+    try {
+        $cred = Get-OfflineCredential
+
+        # control: the SAME connect as the harness user must succeed
+        $controlOk = $false
+        $controlErr = ""
+        try {
+            $cc = New-Object System.Net.Sockets.TcpClient
+            $iar = $cc.BeginConnect("api.fluxrouter.ai", 443, $null, $null)
+            if ($iar.AsyncWaitHandle.WaitOne(10000)) { $cc.EndConnect($iar); $controlOk = $cc.Connected }
+            $cc.Close()
+        } catch { $controlErr = $_.Exception.Message }
+
+        # child contract: exit 48 = connect SUCCEEDED (violation), 49 = blocked/failed (expected)
+        $childCmd = "`$c = New-Object System.Net.Sockets.TcpClient; try { `$iar = `$c.BeginConnect('api.fluxrouter.ai', 443, `$null, `$null); if (-not `$iar.AsyncWaitHandle.WaitOne(8000)) { Write-Output 'connect timed out (blocked)'; `$c.Close(); exit 49 }; `$c.EndConnect(`$iar); if (`$c.Connected) { `$c.Close(); exit 48 }; Write-Output 'not connected'; exit 49 } catch { Write-Output (`$_.Exception.Message); exit 49 }"
+        $proc = Invoke-OfflineChild $cred $childCmd "nanok3-network-deny-offline"
+
+        # secondary detail: WFP filters present for the NanoK3 identity
+        $filtersXml = Get-WfpXml "filters"
+        $wfpDetail = "wfp-filters=NOT-FOUND"
+        if ($filtersXml -and (Select-String -Path $filtersXml -SimpleMatch "NanoK3" -Quiet)) {
+            $wfpDetail = "wfp-filters=present"
+        }
+
+        if (-not $controlOk) {
+            Add-Result "network-deny-offline" "FAIL" "inconclusive: harness control connect to api.fluxrouter.ai:443 failed ($controlErr) — an offline failure would prove nothing"
+        } elseif ($proc.ExitCode -eq 48) {
+            Add-Result "network-deny-offline" "FAIL" "offline identity CONNECTED to api.fluxrouter.ai:443 — WFP block-all breached"
+        } elseif ($proc.ExitCode -eq 49) {
+            Add-Result "network-deny-offline" "PASS" "connect denied as $($cred.UserName): $(Get-FirstLogLine 'nanok3-network-deny-offline') (control: harness connect ok; $wfpDetail)"
+        } else {
+            $err = (Get-Content (Join-Path $EvidenceDir "nanok3-network-deny-offline.stderr.log") -ErrorAction SilentlyContinue | Select-Object -First 1)
+            Add-Result "network-deny-offline" "FAIL" "probe child inconclusive exit=$($proc.ExitCode): $err"
+        }
+    } catch { Add-Result "network-deny-offline" "FAIL" "harness error: $_" }
 }
 
 # ---------- probe: broker-network-ok (oracle: Flux models 200) ----------

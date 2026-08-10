@@ -8,3 +8,4 @@
 /packaging/npm/binaries/
 # npm pack tarballs produced inside the package dir
 /packaging/npm/*.tgz
+.ijfw/
