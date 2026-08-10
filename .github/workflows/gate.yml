@@ -60,12 +60,10 @@ jobs:
       - name: gate-lint
         run: just gate-lint
 
-      - name: gate-test
-        run: just gate-test
-
-      # cargo build --workspace builds every workspace bin; on unix this is
-      # what compiles the ported sandbox helpers (nanok3-linux-sandbox and
-      # any macOS seatbelt helper) that gate-test alone may not exercise.
+      # Build all bins BEFORE the tests: the unix shell-tool runtime tests
+      # exec the nanok3-linux-sandbox helper, and `cargo test` only builds
+      # bins of the package under test — the helper must already exist in
+      # target/debug/.
       - name: Build workspace binaries (unix sandbox helpers)
         if: runner.os != 'Windows'
         run: cargo build --workspace --bins
@@ -74,6 +72,9 @@ jobs:
       - name: Verify nanok3-linux-sandbox helper built
         if: runner.os == 'Linux'
         run: test -x target/debug/nanok3-linux-sandbox
+
+      - name: gate-test
+        run: just gate-test
 
       - name: gate-deny
         run: just gate-deny
