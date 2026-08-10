@@ -5,7 +5,9 @@
 //! (`from_absolute_path`, `resolve_path_against_base`, `join`, `parent`,
 //! `as_path`, `into_path_buf`, `to_path_buf`, `canonicalize`). Dropped:
 //! thread-local deserialization guard, JsonSchema/TS derives.
-//! Transformations: module path; `normalize_path_for_platform` inlined.
+//! Transformations: module path; `normalize_path_for_platform` inlined and
+//! extended to reconstruct canonical `\\host\share` UNC spelling from the
+//! `\\?\UNC\` verbatim form (fail-closed policy decision for network paths).
 
 mod absolutize;
 
@@ -23,11 +25,25 @@ pub struct AbsolutePathBuf(PathBuf);
 
 /// Strip the Windows verbatim prefix so lexical comparisons behave.
 /// Provenance: codex-utils-absolute-path `normalize_path_for_platform`.
+///
+/// NanoK3 deviation (fail-closed): `\\?\UNC\host\share\...` is the verbatim
+/// spelling of the UNC path `\\host\share\...`. Stripping the prefix alone
+/// would leave a relative-looking `UNC\...` tail that gets absolutized
+/// against the process cwd, deciding a phantom local path while the OS would
+/// touch the network share. Reconstruct the canonical UNC spelling so both
+/// forms resolve identically.
 fn normalize_path_for_platform(path: &Path) -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         let s = path.to_string_lossy();
         if let Some(rest) = s.strip_prefix(r"\\?\") {
+            if rest
+                .get(..4)
+                .is_some_and(|head| head.eq_ignore_ascii_case(r"UNC\"))
+            {
+                // `head` is 4 ASCII bytes, so `rest[4..]` is a char boundary.
+                return PathBuf::from(format!(r"\\{}", &rest[4..]));
+            }
             return PathBuf::from(rest);
         }
     }

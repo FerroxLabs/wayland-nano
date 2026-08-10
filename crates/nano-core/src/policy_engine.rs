@@ -10,6 +10,9 @@
 //!   carveout exists to keep the agent from self-modifying its own tooling
 //!   config — the Nano equivalent is `.nano`);
 //! - `error!` diagnostics → `tracing::warn!`;
+//! - named ADS spellings (`file:stream`) are normalized to the base file
+//!   before candidate resolution so a deny on a file covers all its streams
+//!   (NanoK3 hardening, no donor counterpart);
 //! - legacy `SandboxPolicy` conversions, semantic-signature/equivalence, and
 //!   `materialize_project_roots_*` intentionally NOT ported (greenfield: no
 //!   legacy config exists; land with a consumer if ever needed).
@@ -456,11 +459,31 @@ fn resolve_entry_path(
 }
 
 fn resolve_candidate_path(path: &Path, cwd: &Path) -> Option<AbsolutePathBuf> {
+    let path = strip_named_stream_suffix(path);
+    let path = path.as_path();
     if path.is_absolute() {
         AbsolutePathBuf::from_absolute_path(path).ok()
     } else {
         Some(AbsolutePathBuf::from_absolute_path(cwd).ok()?.join(path))
     }
+}
+
+/// Strip an NTFS alternate-data-stream suffix (`:name`) from the final path
+/// component so the policy decision is made on the BASE FILE for all of its
+/// streams: a named stream of a denied file is denied along with the file.
+/// Drive-letter colons live in the path prefix, not the final component, and
+/// a colon at the start of the final component has no base name to keep, so
+/// neither is treated as a stream suffix. Windows-only: `:` is an ordinary
+/// filename character elsewhere.
+fn strip_named_stream_suffix(path: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    if let Some(name) = path.file_name().and_then(|name| name.to_str())
+        && let Some(colon) = name.find(':')
+        && colon > 0
+    {
+        return path.with_file_name(&name[..colon]);
+    }
+    path.to_path_buf()
 }
 
 /// Returns true when two config paths refer to the same exact target before
@@ -543,8 +566,12 @@ fn absolute_root_path_for_cwd(cwd: &AbsolutePathBuf) -> AbsolutePathBuf {
 fn normalized_and_canonical_candidates(path: &Path) -> Vec<PathBuf> {
     // Compare the lexical absolute form plus the canonical target when it
     // exists. Missing paths still need the lexical candidate so future-created
-    // denied paths remain blocked by direct tool checks.
+    // denied paths remain blocked by direct tool checks. Named ADS spellings
+    // are reduced to the base file first so spelled and resolved forms agree
+    // and a deny on a file covers all of its streams.
     let mut candidates = Vec::new();
+    let path = strip_named_stream_suffix(path);
+    let path = path.as_path();
 
     if let Ok(normalized) = AbsolutePathBuf::from_absolute_path(path) {
         push_unique(&mut candidates, normalized.to_path_buf());
