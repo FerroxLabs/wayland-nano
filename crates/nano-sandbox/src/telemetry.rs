@@ -87,10 +87,13 @@ pub fn global_telemetry_settings() -> Option<TelemetrySettings> {
 /// A metrics sink that renders metrics as structured log lines through
 /// `logging::log_note` (daily rolling sandbox log) — the v1 product sink for
 /// the setup helper (facade doc: structured events, not OTel product wiring).
+/// Windows-only: it renders through the Windows-ported `logging` module.
+#[cfg(target_os = "windows")]
 pub struct LogSink {
     base_dir: Option<std::path::PathBuf>,
 }
 
+#[cfg(target_os = "windows")]
 impl LogSink {
     pub fn new(base_dir: Option<&std::path::Path>) -> Self {
         Self {
@@ -99,6 +102,7 @@ impl LogSink {
     }
 }
 
+#[cfg(target_os = "windows")]
 impl MetricsSink for LogSink {
     fn emit(&self, metric: &str, fields: &[(&str, &str)]) {
         let rendered = fields
@@ -115,6 +119,7 @@ impl MetricsSink for LogSink {
 
 /// Builds the setup-path metrics hook from payload settings. `None` settings
 /// mean no sink (the donor's default on the library path).
+#[cfg(target_os = "windows")]
 pub fn sink_from_settings(
     settings: Option<&TelemetrySettings>,
     base_dir: Option<&std::path::Path>,

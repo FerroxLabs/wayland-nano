@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+autobins = false
 
 [dependencies]
 nano-core = { path = "../nano-core" }
@@ -63,7 +64,24 @@ windows-sys = { version = "0.52", features = [
 
 [dev-dependencies]
 pretty_assertions = "1"
+dunce = "1"
+regex-lite = "0.1.8"
+tempfile = "3"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+regex-lite = "0.1.8"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+landlock = "0.4.4"
+libc = "0.2"
+seccompiler = "0.5.0"
+
+# Helper binaries are platform-bound: the ported Windows sandbox helpers only
+# build on Windows, and the legacy Landlock/seccomp enforcement helper only
+# builds on Linux. Declaring them under target cfg keeps cross-target
+# `cargo check` green without stub mains.
 [[bin]]
 name = "nanok3-sandbox-setup"
 path = "src/bin/setup_main/main.rs"
@@ -83,3 +101,7 @@ path = "src/bin/tree_kill_probe/main.rs"
 [[bin]]
 name = "nanok3-spawn-profile"
 path = "src/bin/spawn_profile/main.rs"
+
+[[bin]]
+name = "nanok3-linux-sandbox"
+path = "src/bin/linux_sandbox/main.rs"

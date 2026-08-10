@@ -13,6 +13,58 @@
 
 pub mod telemetry;
 
+// Unix containment backends. The policy/argv builders are pure string
+// construction, so they also compile in test builds on every host to
+// maximize cross-platform test coverage; only the spawned helpers are
+// platform-bound.
+#[cfg(any(target_os = "macos", test))]
+pub mod macos_seatbelt;
+#[cfg(any(target_os = "linux", test))]
+pub mod linux_landlock;
+
+/// Sandbox backend selected for the current platform.
+///
+/// Provenance: codex `codex-rs/sandboxing/src/manager.rs` @ 646f7c0a
+/// (`SandboxType` + `get_platform_sandbox`, verbatim). Adaptation: the
+/// Windows variant maps to the existing restricted-token backend in this
+/// crate; `SandboxablePreference` and the SandboxManager/spawn machinery are
+/// intentionally not ported — callers transform argv via the per-platform
+/// modules (`macos_seatbelt`, `linux_landlock`) and spawn themselves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SandboxType {
+    None,
+    MacosSeatbelt,
+    LinuxSeccomp,
+    WindowsRestrictedToken,
+}
+
+impl SandboxType {
+    pub fn as_metric_tag(self) -> &'static str {
+        match self {
+            SandboxType::None => "none",
+            SandboxType::MacosSeatbelt => "seatbelt",
+            SandboxType::LinuxSeccomp => "seccomp",
+            SandboxType::WindowsRestrictedToken => "windows_sandbox",
+        }
+    }
+}
+
+pub fn get_platform_sandbox(windows_sandbox_enabled: bool) -> Option<SandboxType> {
+    if cfg!(target_os = "macos") {
+        Some(SandboxType::MacosSeatbelt)
+    } else if cfg!(target_os = "linux") {
+        Some(SandboxType::LinuxSeccomp)
+    } else if cfg!(target_os = "windows") {
+        if windows_sandbox_enabled {
+            Some(SandboxType::WindowsRestrictedToken)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub mod acl;
 #[cfg(target_os = "windows")]

@@ -4,29 +4,43 @@
 //! command, WITHOUT executing anything. The privileged step is always a
 //! separate, owner-run elevated invocation of nanok3-sandbox-setup.exe.
 
-use nano_sandbox::setup_exec::WindowsSandboxProvisioningSettings;
-use nano_sandbox::setup_exec::provisioning_payload_review;
+#[cfg(target_os = "windows")]
+mod win {
+    use nano_sandbox::setup_exec::WindowsSandboxProvisioningSettings;
+    use nano_sandbox::setup_exec::provisioning_payload_review;
 
+    pub(crate) fn main() -> anyhow::Result<()> {
+        let nano_home = std::env::var_os("NANOK3_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| dirs_next::home_dir().expect("home dir").join(".nanok3"));
+        let real_user = std::env::var("USERNAME").unwrap_or_else(|_| "unknown".into());
+        let settings = WindowsSandboxProvisioningSettings {
+            proxy_ports: Vec::new(),
+            allow_local_binding: false,
+        };
+
+        let (pretty, b64) = provisioning_payload_review(&nano_home, &real_user, settings)?;
+
+        println!("=== nanok3 provisioning dry run (NOTHING EXECUTED) ===");
+        println!("nano_home: {}", nano_home.display());
+        println!("real_user: {real_user}");
+        println!();
+        println!("--- payload (what the elevated helper would receive) ---");
+        println!("{pretty}");
+        println!();
+        println!("--- to execute (ELEVATED PowerShell, after review) ---");
+        println!(r"target\release\nanok3-sandbox-setup.exe {b64}");
+        Ok(())
+    }
+
+}
+
+#[cfg(target_os = "windows")]
 fn main() -> anyhow::Result<()> {
-    let nano_home = std::env::var_os("NANOK3_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| dirs_next::home_dir().expect("home dir").join(".nanok3"));
-    let real_user = std::env::var("USERNAME").unwrap_or_else(|_| "unknown".into());
-    let settings = WindowsSandboxProvisioningSettings {
-        proxy_ports: Vec::new(),
-        allow_local_binding: false,
-    };
+    win::main()
+}
 
-    let (pretty, b64) = provisioning_payload_review(&nano_home, &real_user, settings)?;
-
-    println!("=== nanok3 provisioning dry run (NOTHING EXECUTED) ===");
-    println!("nano_home: {}", nano_home.display());
-    println!("real_user: {real_user}");
-    println!();
-    println!("--- payload (what the elevated helper would receive) ---");
-    println!("{pretty}");
-    println!();
-    println!("--- to execute (ELEVATED PowerShell, after review) ---");
-    println!(r"target\release\nanok3-sandbox-setup.exe {b64}");
-    Ok(())
+#[cfg(not(target_os = "windows"))]
+fn main() {
+    panic!("nanok3-provision-dry-run is Windows-only");
 }
