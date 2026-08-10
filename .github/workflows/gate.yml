@@ -90,6 +90,18 @@ jobs:
       - name: gate-test
         run: just gate-test
 
+      # C2.4 oracle is "CI measurement": run the agent-path profiler in
+      # release mode and emit a machine-readable report, merged into this
+      # leg's evidence manifest below. Advisory — perf never fails the gate.
+      - name: gate-perf (C2.4, advisory)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          cargo build --release -p nano-cli
+          New-Item -ItemType Directory -Force -Path nano-k3/artifacts/evidence/ci | Out-Null
+          ./target/release/nanok3-acp-profile.exe --json nano-k3/artifacts/evidence/ci/perf-${{ matrix.os }}.json
+
       - name: gate-deny
         run: just gate-deny
         continue-on-error: true # advisory until SBOM policy lands
@@ -107,6 +119,11 @@ jobs:
             rust = "1.95.0"
             at = (Get-Date).ToUniversalTime().ToString("o")
             steps = @("gate-fmt", "gate-lint", "gate-test", "gate-deny(advisory)")
+          }
+          $perfPath = "nano-k3/artifacts/evidence/ci/perf-${{ matrix.os }}.json"
+          if (Test-Path $perfPath) {
+            $manifest.steps += "gate-perf(advisory)"
+            $manifest.perf = Get-Content $perfPath -Raw | ConvertFrom-Json
           }
           New-Item -ItemType Directory -Force -Path nano-k3/artifacts/evidence/ci | Out-Null
           $manifest | ConvertTo-Json | Out-File "nano-k3/artifacts/evidence/ci/$($env:GITHUB_RUN_ID)-manifest.json" -Encoding utf8

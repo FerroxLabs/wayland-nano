@@ -5,12 +5,27 @@
 //!   response (the agent's first sign of life on the ACP wire);
 //! - initialize handshake latency: warm-process `initialize` round trips;
 //! - fixture-replayed turn frame throughput: scripted turn events pushed
-//!   through the NDJSON codec + host-loop framing into a sink.
+//!   through the NDJSON codec + host-loop framing into a sink;
+//! - idle RSS: resident set of a spawned `acp-host` after `initialize`,
+//!   settled, no turn running;
+//! - active RSS: this process's peak working set while a fixture turn storm
+//!   is replayed through the real host loop (the codec/framing path is the
+//!   resident code; a spawned `acp-host` cannot run turns without a live
+//!   model, so the storm runs in-process);
+//! - task wall time: one full fixture turn end-to-end (message frame in →
+//!   terminal `stream_end` out) through `run_host_loop`.
 //!
 //! The `nanok3` binary is located next to this binary in the target dir, or
 //! via NANOK3_EXE. FLUX_API_KEY is set to a placeholder: `acp-host` refuses
 //! to start without one, but `initialize`/`session/new` never touch the
 //! network, and no prompt is ever sent.
+//!
+//! RSS is read externally (never self-reported by the measured child): on
+//! Windows via a `Get-Process` PowerShell one-liner, on unix via `ps`. This
+//! is a dev-profiling bin, not shipped runtime, so a shell-out is fine.
+//!
+//! `--json <path>` additionally writes a machine-readable report (used by
+//! the advisory CI perf step in `.github/workflows/gate.yml`).
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -102,6 +117,80 @@ fn stats(label: &str, mut samples: Vec<f64>) {
     );
 }
 
+/// Sorted-sample summary for the JSON report.
+fn summary(mut samples: Vec<f64>) -> serde_json::Value {
+    samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+    serde_json::json!({
+        "mean": mean,
+        "median": samples[samples.len() / 2],
+        "min": samples[0],
+        "max": samples[samples.len() - 1],
+        "n": samples.len(),
+    })
+}
+
+/// Current resident set (bytes) of `pid`, read externally. Windows:
+/// `Get-Process` working set; unix: `ps` RSS (KiB). Dev-profiling only.
+fn rss_bytes(pid: u32) -> Option<u64> {
+    #[cfg(windows)]
+    let out = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!("(Get-Process -Id {pid}).WorkingSet64"),
+        ])
+        .output()
+        .ok()?;
+    #[cfg(not(windows))]
+    let out = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let value: u64 = text.trim().parse().ok()?;
+    #[cfg(windows)]
+    return Some(value);
+    #[cfg(not(windows))]
+    return Some(value * 1024);
+}
+
+/// Peak working set (bytes) of `pid`. Windows: `PeakWorkingSet64`; Linux:
+/// VmHWM. `None` where the platform exposes neither (e.g. macOS) — the
+/// caller falls back to the current RSS and says so in the report.
+fn peak_rss_bytes(pid: u32) -> Option<u64> {
+    #[cfg(windows)]
+    {
+        let out = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!("(Get-Process -Id {pid}).PeakWorkingSet64"),
+            ])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        let kb: u64 = status
+            .lines()
+            .find_map(|line| line.strip_prefix("VmHWM:"))?
+            .trim()
+            .strip_suffix("kB")?
+            .trim()
+            .parse()
+            .ok()?;
+        Some(kb * 1024)
+    }
+    #[cfg(all(not(windows), not(target_os = "linux")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// Spawn→ready: fresh process, spawn-to-first-`initialize`-response.
 fn spawn_to_ready(workspace: &std::path::Path, iterations: usize) -> Vec<f64> {
     let mut samples = Vec::new();
@@ -144,9 +233,10 @@ fn warm_initialize(workspace: &std::path::Path, iterations: usize) -> Vec<f64> {
     samples
 }
 
-/// Fixture-replayed turn throughput: scripted turn events through the real
-/// NDJSON host loop (encode + frame + flush) into a counting sink.
-fn frame_throughput(turns: usize, events_per_turn: usize) -> (u64, f64) {
+/// Replays `turns` scripted fixture turns through the real NDJSON host loop
+/// (encode + frame + flush) into a counting sink, timing the loop. Returns
+/// (frames, bytes, wall time).
+fn run_fixture(turns: usize, events_per_turn: usize) -> (u64, u64, std::time::Duration) {
     struct CountingSink {
         frames: u64,
         bytes: u64,
@@ -233,36 +323,149 @@ fn frame_throughput(turns: usize, events_per_turn: usize) -> (u64, f64) {
             .expect("host loop");
         let elapsed = started.elapsed();
         assert_eq!(exit, nano_protocol::host::HostExit::StdinClosed);
-        println!(
-            "{:<34} {} frames ({} bytes) in {:.2} ms",
-            "fixture turn stream",
-            sink.frames,
-            sink.bytes,
-            elapsed.as_secs_f64() * 1000.0
-        );
-        (sink.frames, elapsed.as_secs_f64())
+        (sink.frames, sink.bytes, elapsed)
     })
 }
 
+/// Fixture-replayed turn throughput.
+fn frame_throughput(turns: usize, events_per_turn: usize) -> (u64, f64) {
+    let (frames, bytes, elapsed) = run_fixture(turns, events_per_turn);
+    println!(
+        "{:<34} {} frames ({} bytes) in {:.2} ms",
+        "fixture turn stream",
+        frames,
+        bytes,
+        elapsed.as_secs_f64() * 1000.0
+    );
+    (frames, elapsed.as_secs_f64())
+}
+
+/// Task wall time: one full fixture turn end-to-end — message frame in to
+/// terminal stream_end out — per sample.
+fn fixture_turn_wall(events_per_turn: usize, iterations: usize) -> Vec<f64> {
+    let mut samples = Vec::new();
+    for _ in 0..iterations {
+        let (_, _, elapsed) = run_fixture(1, events_per_turn);
+        samples.push(elapsed.as_secs_f64() * 1000.0);
+    }
+    samples
+}
+
+/// Idle RSS: fresh acp-host, initialize, settle, then sample the child's
+/// resident set. Returns the median sample in bytes.
+fn idle_rss(workspace: &std::path::Path) -> Option<u64> {
+    let (mut acp, _) = AcpChild::spawn(workspace);
+    let response = acp.round_trip(
+        1,
+        "initialize",
+        serde_json::json!({ "protocolVersion": 1, "clientCapabilities": {} }),
+    );
+    assert_eq!(response["result"]["protocolVersion"], 1, "init: {response}");
+    std::thread::sleep(std::time::Duration::from_millis(300)); // settle
+    let mut samples = Vec::new();
+    for _ in 0..3 {
+        samples.push(rss_bytes(acp.child.id())?);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    samples.sort_unstable();
+    Some(samples[samples.len() / 2])
+}
+
+fn mib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
 fn main() {
+    // `--json <path>` writes the machine-readable report the advisory CI
+    // perf step merges into the leg's evidence manifest.
+    let args: Vec<String> = std::env::args().collect();
+    let json_path = args
+        .windows(2)
+        .find(|w| w[0] == "--json")
+        .map(|w| std::path::PathBuf::from(&w[1]));
+
     let workspace = std::env::temp_dir().join(format!("nanok3-acp-prof-{}", std::process::id()));
     std::fs::create_dir_all(&workspace).expect("workspace");
 
     println!("=== acp profile: agent path (no live model calls) ===");
     println!("binary: {}", nanok3_exe().display());
 
-    stats("spawn→ready (cold process)", spawn_to_ready(&workspace, 10));
-    stats(
-        "initialize handshake (warm)",
-        warm_initialize(&workspace, 50),
-    );
+    let spawn_ready = spawn_to_ready(&workspace, 10);
+    stats("spawn→ready (cold process)", spawn_ready.clone());
+    let initialize = warm_initialize(&workspace, 50);
+    stats("initialize handshake (warm)", initialize.clone());
 
     let (frames, seconds) = frame_throughput(50, 100);
+    let throughput = frames as f64 / seconds;
     println!(
-        "{:<34} {:>8.0} frames/sec",
-        "codec frame throughput",
-        frames as f64 / seconds
+        "{:<34} {throughput:>8.0} frames/sec",
+        "codec frame throughput"
     );
+
+    // Task wall time: full single fixture turns, end-to-end.
+    let task_wall = fixture_turn_wall(100, 50);
+    stats("task wall time (1 fixture turn)", task_wall.clone());
+
+    // Idle RSS: a live initialized acp-host, no turn running.
+    let idle = idle_rss(&workspace);
+    match idle {
+        Some(bytes) => println!(
+            "{:<34} {bytes} bytes ({:.2} MiB)",
+            "idle RSS (acp-host)",
+            mib(bytes)
+        ),
+        None => println!("{:<34} unavailable on this platform", "idle RSS (acp-host)"),
+    }
+
+    // Active RSS: peak working set of THIS process across a fixture turn
+    // storm through the real host loop. The storm is what a busy turn does
+    // on the codec/framing path; a spawned acp-host cannot run turns without
+    // a live model, so the load is generated in-process.
+    let self_pid = std::process::id();
+    let (storm_frames, _, _) = run_fixture(500, 100);
+    let active = peak_rss_bytes(self_pid).or_else(|| rss_bytes(self_pid));
+    let active_kind = if peak_rss_bytes(self_pid).is_some() {
+        "peak working set"
+    } else {
+        "current RSS (no peak counter)"
+    };
+    match active {
+        Some(bytes) => println!(
+            "{:<34} {bytes} bytes ({:.2} MiB) across a {storm_frames}-frame storm",
+            "active RSS (turn storm)",
+            mib(bytes)
+        ),
+        None => println!(
+            "{:<34} unavailable on this platform",
+            "active RSS (turn storm)"
+        ),
+    }
+
+    if let Some(path) = json_path {
+        let report = serde_json::json!({
+            "tool": "nanok3-acp-profile",
+            "at_unix": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            "spawn_ready_ms": summary(spawn_ready),
+            "initialize_warm_ms": summary(initialize),
+            "frame_throughput_fps": throughput,
+            "task_wall_ms": summary(task_wall),
+            "idle_rss_bytes": idle,
+            "active_rss_bytes": active,
+            "active_rss_kind": active_kind,
+        });
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("json report dir");
+        }
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&report).expect("report json"),
+        )
+        .expect("write json report");
+        println!("json report: {}", path.display());
+    }
 
     let _ = std::fs::remove_dir_all(&workspace);
 }
