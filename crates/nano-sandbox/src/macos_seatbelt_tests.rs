@@ -467,11 +467,14 @@ fn create_seatbelt_args_with_read_only_git_and_nano_subpaths() {
     let cwd = tmp.path().join("cwd");
     fs::create_dir_all(&cwd).expect("create cwd");
     // Pin the cwd to its canonical spelling. The engine normalizes writable
-    // roots with `dunce::canonicalize` but matches the explicit carveout
-    // entries (`.git`/`.agents`/`.nano`, emitted in `workspace_write_policy`'s
-    // fixed order) by raw path equality, so an 8.3 short-name spelling of
-    // %TEMP% (windows-latest CI: `C:\Users\RUNNER~1\...`) would otherwise
-    // reorder the `WRITABLE_ROOT_0_EXCLUDED_*` parameters.
+    // roots with `dunce::canonicalize` and now also normalizes before matching
+    // the explicit carveout entries (`.git`/`.agents`/`.nano`, emitted in
+    // `workspace_write_policy`'s fixed order), so a non-canonical %TEMP%
+    // spelling no longer reorders the `WRITABLE_ROOT_0_EXCLUDED_*` parameters
+    // (regression coverage:
+    // `create_seatbelt_args_carveout_order_is_cwd_spelling_independent`).
+    // The canonical pin keeps this test's expectations independent of the
+    // host temp-dir spelling.
     let cwd_canonical = canonical(&cwd);
 
     // Build a policy that only includes the two test roots as writable and
@@ -799,6 +802,81 @@ fn create_seatbelt_args_for_cwd_as_git_repo() {
         .position(|arg| arg == "--")
         .expect("seatbelt args should include command separator");
     assert_eq!(args[command_index + 1..], shell_command);
+}
+
+/// Regression: the `WRITABLE_ROOT_*_EXCLUDED_*` ORDER must not depend on the
+/// spelling the cwd arrives in.
+///
+/// The engine normalizes writable roots to their canonical spelling but used
+/// to match the explicit `.git`/`.agents`/`.nano` carveout entries against
+/// the on-disk defaults by RAW path equality. A cwd whose spelling differs
+/// from its canonical form (macOS CI: TMPDIR under `/var`, which resolves to
+/// `/private/var`; Windows CI: 8.3 short-name `%TEMP%`) let the on-disk
+/// defaults (`.git`, `.nano`) leak past that check ahead of the explicit
+/// entries, reordering the carveouts to `[.git, .nano, .agents]` while the
+/// golden pins `[.git, .agents, .nano]`. Windows tests cannot stage a
+/// depth-1 symlink like `/var`, but a case-mangled cwd exercises the same
+/// raw-vs-canonical split because the filesystem is case-insensitive.
+#[cfg(windows)]
+#[test]
+fn create_seatbelt_args_carveout_order_is_cwd_spelling_independent() {
+    let tmp = TempDir::new().expect("tempdir");
+    let PopulatedTmp {
+        vulnerable_root,
+        vulnerable_root_canonical,
+        dot_git_canonical,
+        dot_agents_canonical,
+        dot_nano_canonical,
+        ..
+    } = populate_tmpdir(tmp.path());
+
+    let file_system_policy = workspace_write_policy(
+        &[],
+        /*exclude_tmpdir_env_var*/ true,
+        /*exclude_slash_tmp*/ true,
+    );
+
+    // Spell the cwd in all-uppercase: it resolves to the same directory on
+    // Windows but compares unequal to the canonical spelling lexically.
+    // TempDir names always contain lowercase `.tmp`, so this never
+    // accidentally matches the canonical form.
+    let cwd_mangled = vulnerable_root.to_string_lossy().to_uppercase();
+    assert_ne!(
+        cwd_mangled,
+        vulnerable_root_canonical.to_string_lossy(),
+        "test requires a non-canonical cwd spelling"
+    );
+
+    let shell_command: Vec<String> = vec!["echo".to_string(), "hello".to_string()];
+    let args = seatbelt_args_for(
+        shell_command,
+        &file_system_policy,
+        NetworkSandboxPolicy::Restricted,
+        Path::new(&cwd_mangled),
+        &[],
+    );
+
+    let expected_definitions = [
+        format!(
+            "-DWRITABLE_ROOT_0={}",
+            vulnerable_root_canonical.to_string_lossy()
+        ),
+        format!(
+            "-DWRITABLE_ROOT_0_EXCLUDED_0={}",
+            dot_git_canonical.to_string_lossy()
+        ),
+        format!(
+            "-DWRITABLE_ROOT_0_EXCLUDED_1={}",
+            dot_agents_canonical.to_string_lossy()
+        ),
+        format!(
+            "-DWRITABLE_ROOT_0_EXCLUDED_2={}",
+            dot_nano_canonical.to_string_lossy()
+        ),
+    ];
+    for expected in &expected_definitions {
+        assert!(args.contains(expected), "missing {expected}: {args:#?}");
+    }
 }
 
 // Some fields are only read by unix/macos-gated tests.

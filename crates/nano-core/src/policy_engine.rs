@@ -280,6 +280,12 @@ impl FileSystemSandboxPolicy {
 
     /// Returns the writable roots together with read-only carveouts resolved
     /// against the provided cwd.
+    ///
+    /// Carveout order is deterministic and independent of the cwd's
+    /// raw-vs-canonical spelling: explicit entries are matched against the
+    /// on-disk defaults after `normalize_effective_absolute_path`, so hosts
+    /// whose cwd is not in canonical form (macOS `/var` -> `/private/var`,
+    /// Windows 8.3 short names) emit the same order as canonical hosts.
     pub fn get_writable_roots_with_cwd(&self, cwd: &Path) -> Vec<WritableRoot> {
         if self.has_full_disk_write_access() {
             return Vec::new();
@@ -757,7 +763,19 @@ fn has_explicit_resolved_path_entry(
     entries: &[ResolvedFileSystemEntry],
     path: &AbsolutePathBuf,
 ) -> bool {
-    entries.iter().any(|entry| &entry.path == path)
+    // Match on the normalized effective spelling, not only the raw one: the
+    // writable root (and therefore the default carveouts derived from it) is
+    // canonicalized, while explicit entries keep the spelling they were
+    // resolved from. Those spellings diverge whenever the cwd is not in
+    // canonical form (macOS `/var` -> `/private/var` TMPDIR, Windows 8.3
+    // short-name %TEMP% or casing), and a raw-only equality check would miss
+    // same-target entries across that split, duplicating the default
+    // carveouts and making the emitted carveout ORDER host-dependent.
+    let normalized_path = normalize_effective_absolute_path(path.clone());
+    entries.iter().any(|entry| {
+        &entry.path == path
+            || normalize_effective_absolute_path(entry.path.clone()) == normalized_path
+    })
 }
 
 fn metadata_path_name(name: &OsStr) -> Option<&'static str> {
