@@ -1,1 +1,2 @@
 *.sbpl text eol=lf
+crates/nano-protocol/corpus/** -text
