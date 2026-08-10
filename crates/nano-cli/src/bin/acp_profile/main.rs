@@ -1,6 +1,6 @@
 //! nanok3-acp-profile — agent-path perf numbers for docs/metrics/C2-metrics.md.
 //!
-//! Measures (no live model calls anywhere):
+//! Measures (no live model calls unless explicitly keyed — see the last item):
 //! - acp-host spawn→ready latency: process spawn to the first `initialize`
 //!   response (the agent's first sign of life on the ACP wire);
 //! - initialize handshake latency: warm-process `initialize` round trips;
@@ -13,12 +13,20 @@
 //!   resident code; a spawned `acp-host` cannot run turns without a live
 //!   model, so the storm runs in-process);
 //! - task wall time: one full fixture turn end-to-end (message frame in →
-//!   terminal `stream_end` out) through `run_host_loop`.
+//!   terminal `stream_end` out) through `run_host_loop`;
+//! - active-agent RSS (LIVE, opt-in): when `FLUX_TEST_KEY` (or
+//!   `FLUX_API_KEY`) is present in the environment, the profiler spawns the
+//!   real `acp-host` child with that key, drives a live multi-tool turn
+//!   through it (fs_read ×3 + fs_write, permissions auto-approved), and
+//!   measures the CHILD's peak `WorkingSet64` externally while the turn
+//!   runs. Without a key this metric prints `skipped` and the bin still
+//!   exits 0, so CI is unaffected.
 //!
 //! The `nanok3` binary is located next to this binary in the target dir, or
-//! via NANOK3_EXE. FLUX_API_KEY is set to a placeholder: `acp-host` refuses
-//! to start without one, but `initialize`/`session/new` never touch the
-//! network, and no prompt is ever sent.
+//! via NANOK3_EXE. For the non-live metrics FLUX_API_KEY is set to a
+//! placeholder: `acp-host` refuses to start without one, but
+//! `initialize`/`session/new` never touch the network, and no prompt is
+//! ever sent on that path.
 //!
 //! RSS is read externally (never self-reported by the measured child): on
 //! Windows via a `Get-Process` PowerShell one-liner, on unix via `ps`. This
@@ -29,7 +37,9 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::time::Instant;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 fn nanok3_exe() -> std::path::PathBuf {
     if let Some(path) = std::env::var_os("NANOK3_EXE") {
@@ -49,11 +59,15 @@ struct AcpChild {
 
 impl AcpChild {
     fn spawn(workspace: &std::path::Path) -> (Self, Instant) {
+        Self::spawn_with_key(workspace, "nanok3-perf-placeholder-key")
+    }
+
+    fn spawn_with_key(workspace: &std::path::Path, flux_key: &str) -> (Self, Instant) {
         let started = Instant::now();
         let mut child = Command::new(nanok3_exe())
             .arg("acp-host")
             .current_dir(workspace)
-            .env("FLUX_API_KEY", "nanok3-perf-placeholder-key")
+            .env("FLUX_API_KEY", flux_key)
             .env("NANOK3_HOME", workspace.join("nano-home"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -93,6 +107,53 @@ impl AcpChild {
             let frame: serde_json::Value = serde_json::from_str(&line).expect("frame json");
             if frame.get("id").and_then(|v| v.as_u64()) == Some(id) {
                 return frame;
+            }
+        }
+    }
+
+    /// Live `session/prompt`: reads until the prompt response, answering
+    /// permission requests "allow once" inline. Returns the response plus
+    /// every frame seen (canary substrate — checked for the key by the
+    /// caller).
+    fn prompt_live(
+        &mut self,
+        id: u64,
+        session_id: &str,
+        text: &str,
+    ) -> (serde_json::Value, Vec<serde_json::Value>) {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "session/prompt",
+            "params": {
+                "sessionId": session_id,
+                "prompt": [{ "type": "text", "text": text }],
+            },
+        });
+        writeln!(self.stdin, "{}", serde_json::to_string(&request).unwrap()).expect("write");
+        self.stdin.flush().expect("flush");
+        let mut frames = Vec::new();
+        loop {
+            let mut line = String::new();
+            let n = self.stdout.read_line(&mut line).expect("read");
+            assert!(n > 0, "engine closed stdout mid-turn");
+            let frame: serde_json::Value = serde_json::from_str(&line).expect("frame json");
+            let is_permission =
+                frame.get("method").and_then(|m| m.as_str()) == Some("session/request_permission");
+            frames.push(frame.clone());
+            if is_permission {
+                let reply = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": frame["id"].clone(),
+                    "result": { "outcome": { "outcome": "selected", "optionId": "allow" } }
+                });
+                writeln!(self.stdin, "{}", serde_json::to_string(&reply).unwrap()).expect("write");
+                self.stdin.flush().expect("flush");
+                continue;
+            }
+            if frame.get("method").is_none() && frame.get("id").and_then(|v| v.as_u64()) == Some(id)
+            {
+                return (frame, frames);
             }
         }
     }
@@ -375,6 +436,123 @@ fn mib(bytes: u64) -> f64 {
     bytes as f64 / (1024.0 * 1024.0)
 }
 
+/// Result of the live active-agent RSS measurement.
+struct LiveAgentRss {
+    bytes: u64,
+    frames: usize,
+    turn_wall: Duration,
+}
+
+/// Live active-agent RSS (the C2.4 "active RSS" scorecard number): spawn
+/// the REAL `acp-host` child with the live key, drive a live multi-tool turn
+/// (fs_read ×3 + fs_write, permissions auto-approved) through it, and
+/// measure the CHILD's working set externally — a 250 ms `WorkingSet64`
+/// sampler thread plus the `PeakWorkingSet64` counter after the turn.
+///
+/// Guarded: returns `None` (metric reported as `skipped`, exit still 0)
+/// unless `FLUX_TEST_KEY` or `FLUX_API_KEY` is present in the environment.
+fn live_agent_rss(workspace: &std::path::Path) -> Option<LiveAgentRss> {
+    let key = std::env::var("FLUX_TEST_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
+        .or_else(|| std::env::var("FLUX_API_KEY").ok().filter(|k| !k.is_empty()))?;
+
+    let live_ws = workspace.join("live-turn");
+    std::fs::create_dir_all(&live_ws).expect("live workspace");
+    for (name, content) in [
+        (
+            "alpha.txt",
+            "alpha: reliability is loud, typed, recoverable failure.\n",
+        ),
+        (
+            "beta.txt",
+            "beta: the material remembers every cut; measure twice.\n",
+        ),
+        (
+            "gamma.txt",
+            "gamma: every abstraction leaks; choose which leaks to live with.\n",
+        ),
+    ] {
+        std::fs::write(live_ws.join(name), content).expect("seed live fixture");
+    }
+
+    let (mut acp, _) = AcpChild::spawn_with_key(&live_ws, &key);
+    let init = acp.round_trip(
+        1,
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": 1,
+            "clientCapabilities": { "fs": { "readTextFile": true, "writeTextFile": true } }
+        }),
+    );
+    assert_eq!(init["result"]["protocolVersion"], 1, "init: {init}");
+    let created = acp.round_trip(
+        2,
+        "session/new",
+        serde_json::json!({ "cwd": live_ws.to_string_lossy(), "mcpServers": [] }),
+    );
+    let session_id = created["result"]["sessionId"]
+        .as_str()
+        .expect("sessionId")
+        .to_string();
+
+    // External sampler: poll the child's current working set while the turn
+    // runs; the OS peak counter (read post-turn) is the authoritative peak.
+    let pid = acp.child.id();
+    let stop = Arc::new(AtomicBool::new(false));
+    let sampled_max = Arc::new(AtomicU64::new(0));
+    let sampler = {
+        let stop = Arc::clone(&stop);
+        let sampled_max = Arc::clone(&sampled_max);
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                if let Some(bytes) = rss_bytes(pid) {
+                    sampled_max.fetch_max(bytes, Ordering::Relaxed);
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        })
+    };
+
+    let started = Instant::now();
+    let (response, frames) = acp.prompt_live(
+        3,
+        &session_id,
+        "Multi-tool task. Step 1: use fs_read on alpha.txt, beta.txt, and gamma.txt (one call \
+         each). Step 2: use fs_write to create summary.txt containing each file's text followed by \
+         a one-line note on how it relates to reliable software. Step 3: reply DONE.",
+    );
+    let turn_wall = started.elapsed();
+    stop.store(true, Ordering::Relaxed);
+    sampler.join().expect("sampler thread");
+
+    assert!(
+        response["result"]["stopReason"].is_string(),
+        "live turn must answer: {response}"
+    );
+    // Canary, fail-closed: the key must appear in no frame.
+    let captured = serde_json::to_string(&frames).expect("frames json");
+    assert!(
+        !captured.contains(&key),
+        "CANARY VIOLATION: credential leaked into ACP frames"
+    );
+
+    let bytes = [
+        peak_rss_bytes(pid),
+        Some(sampled_max.load(Ordering::Relaxed)).filter(|b| *b > 0),
+        rss_bytes(pid),
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+    .expect("child RSS readable on every supported platform");
+    Some(LiveAgentRss {
+        bytes,
+        frames: frames.len(),
+        turn_wall,
+    })
+}
+
 fn main() {
     // `--json <path>` writes the machine-readable report the advisory CI
     // perf step merges into the leg's evidence manifest.
@@ -387,7 +565,7 @@ fn main() {
     let workspace = std::env::temp_dir().join(format!("nanok3-acp-prof-{}", std::process::id()));
     std::fs::create_dir_all(&workspace).expect("workspace");
 
-    println!("=== acp profile: agent path (no live model calls) ===");
+    println!("=== acp profile: agent path (fixture metrics need no live model) ===");
     println!("binary: {}", nanok3_exe().display());
 
     let spawn_ready = spawn_to_ready(&workspace, 10);
@@ -441,6 +619,26 @@ fn main() {
         ),
     }
 
+    // Active-AGENT RSS (the C2.4 scorecard number): the real spawned
+    // acp-host child's peak working set during a live multi-tool turn.
+    // Opt-in: without FLUX_TEST_KEY/FLUX_API_KEY the metric is `skipped`
+    // and the bin still exits 0 (CI path unchanged).
+    let live = live_agent_rss(&workspace);
+    match &live {
+        Some(m) => println!(
+            "{:<34} {} bytes ({:.2} MiB) child peak working set over a live multi-tool turn ({} frames, {:.1} s wall)",
+            "active RSS (live acp-host)",
+            m.bytes,
+            mib(m.bytes),
+            m.frames,
+            m.turn_wall.as_secs_f64()
+        ),
+        None => println!(
+            "{:<34} skipped (no FLUX_TEST_KEY / FLUX_API_KEY)",
+            "active RSS (live acp-host)"
+        ),
+    }
+
     if let Some(path) = json_path {
         let report = serde_json::json!({
             "tool": "nanok3-acp-profile",
@@ -455,6 +653,12 @@ fn main() {
             "idle_rss_bytes": idle,
             "active_rss_bytes": active,
             "active_rss_kind": active_kind,
+            "active_agent_rss_bytes": live.as_ref().map(|m| m.bytes),
+            "active_agent_rss_kind": if live.is_some() {
+                "live-measured spawned acp-host child, multi-tool turn"
+            } else {
+                "skipped-no-key"
+            },
         });
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("json report dir");

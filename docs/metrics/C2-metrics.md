@@ -2,7 +2,10 @@
 
 Measured 2026-08-10 on the primary truth machine (Win11 Pro, i9-13900KF,
 128 GB RAM, Rust 1.95.0 MSVC, release profile: lto=thin, codegen-units=1,
-strip=symbols). Agent-path numbers; no live model calls anywhere (G-C2-4).
+strip=symbols). Agent-path numbers. The fixture metrics (cold start,
+handshake, throughput, wall time, idle RSS, in-process storm RSS) make no
+live model calls; the active-AGENT RSS row is explicitly LIVE-measured
+(opt-in, keyed) — each row is labeled (G-C2-4).
 
 Reproduce:
 
@@ -21,17 +24,20 @@ turn through the real NDJSON host loop.
 
 Re-measured 2026-08-10 with the extended profiler (`--json` machine-readable
 report). All numbers from one local release run on the truth machine; the
-same profiler runs in CI (see below).
+same profiler runs in CI (see below). Rows are labeled **CI-fixture-measured**
+(no live model; this is what the CI step records) or **live-measured**
+(opt-in keyed run; CI prints `skipped` for it and exits 0).
 
-| Metric | Value | Method |
-|---|---|---|
-| acp-host spawn→ready (cold process, "cold start") | **median 5.62 ms** (mean 5.99, min 5.38, max 9.55; n=10) | spawn → first `initialize` response |
-| — first-ever run cold effect | max 257.5 ms on the first spawn of a run (AV/DLL warm-up), subsequent spawns ~6 ms | same |
-| initialize handshake (warm process) | **median 0.02 ms** (mean 0.02, max 0.04; n=50) | `initialize` round trip on a live host |
-| fixture-replayed turn frame throughput | **~3.26 M frames/sec** (5,101 frames / 588,745 bytes in 1.57 ms) | 50 turns × 100 scripted events through `run_host_loop` (encode + frame + flush) into a sink |
-| task wall time (1 fixture turn, end-to-end) | **median 0.03 ms** (mean 0.03, max 0.05; n=50) | message frame in → terminal `stream_end` out through `run_host_loop` |
-| idle RSS | **7.67 MiB** (8,040,448 bytes, median of 3 samples after 300 ms settle) | spawned `acp-host`, initialized, no turn running; read externally via `Get-Process` WorkingSet64 |
-| active RSS | **5.20 MiB** (5,447,680 bytes peak working set) | profiler process peak across a 51,001-frame fixture turn storm through the real host loop |
+| Metric | Value | Method | Label |
+|---|---|---|---|
+| acp-host spawn→ready (cold process, "cold start") | **median 6.59 ms** (mean 6.93, min 6.50, max 9.55; n=10) | spawn → first `initialize` response | CI-fixture-measured |
+| — first-ever run cold effect | max 257.5 ms on the first spawn of a run (AV/DLL warm-up), subsequent spawns ~6 ms | same | CI-fixture-measured |
+| initialize handshake (warm process) | **median 0.02 ms** (mean 0.03, max 0.05; n=50) | `initialize` round trip on a live host | CI-fixture-measured |
+| fixture-replayed turn frame throughput | **~2.64 M frames/sec** (5,101 frames / 588,745 bytes in 1.93 ms) | 50 turns × 100 scripted events through `run_host_loop` (encode + frame + flush) into a sink | CI-fixture-measured |
+| task wall time (1 fixture turn, end-to-end) | **median 0.03 ms** (mean 0.04, max 0.05; n=50) | message frame in → terminal `stream_end` out through `run_host_loop` | CI-fixture-measured |
+| idle RSS | **9.81 MiB** (10,285,056 bytes, median of 3 samples after 300 ms settle) | spawned `acp-host`, initialized, no turn running; read externally via `Get-Process` WorkingSet64 | CI-fixture-measured |
+| active RSS (codec/host-loop path) | **5.13 MiB** (5,382,144 bytes peak working set) | profiler process peak across a 51,001-frame fixture turn storm through the real host loop | CI-fixture-measured |
+| **active RSS (spawned agent, live turn)** | **13.59 MiB** (14,254,080 bytes child peak `WorkingSet64`) | the REAL spawned `acp-host` child, measured EXTERNALLY (250 ms `WorkingSet64` sampler + `PeakWorkingSet64`) while it processed a live multi-tool turn (fs_read ×3 + fs_write, permissions auto-approved; 11 frames, 15.9 s wall) | **live-measured** (keyed run 2026-08-10; CI prints `skipped`) |
 
 Notes:
 
@@ -46,11 +52,21 @@ Notes:
   Windows `Get-Process` `(Peak)WorkingSet64` via a PowerShell one-liner
   (unix: `ps` RSS / VmHWM). The profiler is a dev bin, not shipped runtime,
   so the shell-out is acceptable.
-- Active-RSS scope, stated exactly: the load is generated IN the profiler
-  process — a spawned `acp-host` cannot run turns without a live model
-  (live turns never run in CI, and the profiler makes no network calls).
-  The number is the peak working set of the real codec/host-loop/framing
-  code path under a turn storm, not of a model-driven `acp-host`.
+- Active-RSS scope, stated exactly — TWO numbers, two subjects:
+  - **CI-fixture-measured (5.13 MiB):** the load is generated IN the
+    profiler process — a spawned `acp-host` cannot run turns without a live
+    model (live turns never run in CI). This number is the peak working set
+    of the real codec/host-loop/framing code path under a turn storm.
+  - **Live-measured (13.59 MiB):** the scorecard's active-agent number —
+    the spawned `acp-host` CHILD's own peak working set during a real
+    live multi-tool Flux turn, read externally via `Get-Process`
+    `(Peak)WorkingSet64`. Opt-in: the profiler runs this leg only when
+    `FLUX_TEST_KEY`/`FLUX_API_KEY` is present; otherwise it prints
+    `skipped` for the metric and still exits 0 (verified 2026-08-10:
+    `active RSS (live acp-host)  skipped (no FLUX_TEST_KEY / FLUX_API_KEY)`,
+    exit 0). The JSON report records it as `active_agent_rss_bytes` /
+    `active_agent_rss_kind` (`live-measured spawned acp-host child,
+    multi-tool turn` vs `skipped-no-key`).
 - Steady-state throughput is ~2.6–3.3 M frames/sec across runs; the
   flush-per-frame cadence enforced by the G-C2-1 test costs nothing
   measurable at this scale.
@@ -74,6 +90,16 @@ recording probe and asserts: `ready` first, per-event frames in scripted
 order, terminal `stream_end` last, and a flush boundary between every pair
 of frames (no two frames coalesce unflushed). Runs in `cargo test
 -p nano-protocol`, no live model calls.
+
+Live complement (the scorecard C2.3 oracle): `crates/nano-cli/tests/
+c2_watchdog.rs` is a Desktop-style watchdog harness over a live long turn
+against the real spawned `acp-host` — per-frame arrival timestamps, active
+inter-frame gaps asserted under Desktop's `acp.promptTimeout` default
+(300 s, stricter than the scorecard's 600 s). Live-gated on `FLUX_TEST_KEY`
+(self-skips without it). Measured 2026-08-10 (live): 23 update frames over
+a 90.3 s multi-tool essay turn, max active inter-frame gap **11,195.2 ms**
+(bound 300,000 ms), turn `end_turn`, stream well-ordered; manifest
+preserved at `shared/reviews/C2/c2-watchdog-manifest.json`.
 
 ## ARM64 Windows compile-gate (local cross-check)
 

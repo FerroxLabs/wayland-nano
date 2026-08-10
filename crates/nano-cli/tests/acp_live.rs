@@ -17,6 +17,7 @@ use nano_cli::acp_mode;
 use nano_model::types::{
     ContentBlock, ModelError, ModelEvent, ModelRequest, ModelResponse, Role, ToolCall, Usage,
 };
+use nano_session::{JournalWriter, Op, OpEnvelope};
 use std::collections::VecDeque;
 use std::io::{BufRead, Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -767,6 +768,188 @@ fn session_load_restores_context_across_serve_instances() {
         matches!(&last.role, Role::User)
             && matches!(&last.content[0], ContentBlock::Text { text } if text == "what did it say again?"),
         "the new prompt must be the final message: {last:?}"
+    );
+    drop(requests);
+
+    drop(client); // EOF → clean exit before the temp dir goes away
+    let _ = std::fs::remove_dir_all(&sessions_dir);
+}
+
+/// The crash branch of the replay: a journaled ToolCall whose ToolResult
+/// never landed (the process died mid-call) must replay as status "failed" —
+/// never "completed", never a card hanging in_progress — and the restored
+/// model context must show the ToolUse WITHOUT a fabricated result. A
+/// normally completed call in the SAME journal is the control: it must still
+/// replay as completed.
+#[test]
+fn session_load_replays_interrupted_tool_call_as_failed() {
+    let sessions_dir = temp_sessions_dir("interrupted");
+    let session_id;
+    // First "process": one clean turn (read + answer) — the control call.
+    {
+        let mut client = Harness::spawn_with(
+            vec![
+                Step::Respond(tool_response(tool_call(
+                    "c1",
+                    "fs_read",
+                    serde_json::json!({"path": "note.txt"}),
+                ))),
+                Step::Respond(text_response("the note says hello")),
+            ],
+            &sessions_dir,
+            true,
+        );
+        session_id = client.session_id.clone();
+        let prompt_id = client.send_prompt(&session_id, "what does the note say?");
+        let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id));
+        assert_eq!(frames.last().unwrap()["result"]["stopReason"], "end_turn");
+    } // drop: EOF → clean exit; the journal is all that survives
+
+    // Crash state: turn 2 began and its tool call journaled, then the process
+    // died before the ToolResult landed. JournalWriter — the same append-only
+    // writer the live path uses — appends exactly that tail, so the journal
+    // ends with a ToolCall op and NO matching ToolResult.
+    let journal = sessions_dir.join(format!("{session_id}.jsonl"));
+    let mut writer = JournalWriter::open(&journal).expect("journal reopens");
+    assert!(
+        writer
+            .append(&OpEnvelope::new(
+                format!("{session_id}-crash-turnbegin-2"),
+                "now",
+                Op::TurnBegin {
+                    turn_id: format!("{session_id}-turn-2"),
+                    input: "check the note again".into(),
+                },
+            ))
+            .expect("append crashed TurnBegin"),
+        "crash TurnBegin must be a new append"
+    );
+    assert!(
+        writer
+            .append(&OpEnvelope::new(
+                format!("{session_id}-crash-toolcall-c2"),
+                "now",
+                Op::ToolCall {
+                    turn_id: format!("{session_id}-turn-2"),
+                    call_id: "c2".into(),
+                    name: "fs_read".into(),
+                    args: serde_json::json!({"path": "note.txt"}),
+                },
+            ))
+            .expect("append crashed ToolCall"),
+        "crash ToolCall must be a new append"
+    );
+    drop(writer); // never a ToolResult for c2: the crash cut the journal here
+
+    // Second "process": same sessions dir, straight to session/load.
+    let mut client = Harness::spawn_with(
+        vec![Step::Respond(text_response("still hello"))],
+        &sessions_dir,
+        false,
+    );
+    let load_id = client.next_id;
+    client.next_id += 1;
+    client.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": load_id,
+        "method": "session/load",
+        "params": { "sessionId": session_id, "cwd": ".", "mcpServers": [] },
+    }));
+    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(load_id));
+    let response = frames.last().unwrap();
+    assert!(
+        response.get("error").is_none() && response.get("result").is_some(),
+        "load of a crash-cut session must succeed overall: {response}"
+    );
+    let replay = &frames[..frames.len() - 1];
+    let kinds: Vec<&str> = replay
+        .iter()
+        .map(|f| {
+            f["params"]["update"]["sessionUpdate"]
+                .as_str()
+                .unwrap_or("not-a-session-update")
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "user_message_chunk",
+            "tool_call",
+            "tool_call_update",
+            "agent_message_chunk",
+            "user_message_chunk",
+            "tool_call"
+        ],
+        "replay frames, in order: {frames:?}"
+    );
+    // Control: the completed call replays as completed, digest update included.
+    assert_eq!(replay[1]["params"]["update"]["toolCallId"], "c1");
+    assert_eq!(replay[1]["params"]["update"]["status"], "completed");
+    assert_eq!(replay[2]["params"]["update"]["toolCallId"], "c1");
+    assert_eq!(replay[2]["params"]["update"]["status"], "completed");
+    assert_eq!(
+        replay[4]["params"]["update"]["content"]["text"],
+        "check the note again"
+    );
+    // The interrupted call: replayed as failed, and NO completion update may
+    // exist for it anywhere in the replay (no fabricated digest).
+    assert_eq!(replay[5]["params"]["update"]["toolCallId"], "c2");
+    assert_eq!(
+        replay[5]["params"]["update"]["status"], "failed",
+        "a ToolCall with no journaled ToolResult must replay as failed: {frames:?}"
+    );
+    assert!(
+        !replay.iter().any(
+            |f| f["params"]["update"]["sessionUpdate"] == "tool_call_update"
+                && f["params"]["update"]["toolCallId"] == "c2"
+        ),
+        "the interrupted call must not gain a fabricated completion update: {frames:?}"
+    );
+
+    // The follow-up prompt's model request pins the honest context behavior:
+    // the ToolUse is there, the result is simply ABSENT (no fabricated
+    // payload, no failure-marker message) — the trailing assistant message
+    // carries exactly the bare ToolUse block and nothing else.
+    let prompt_id = client.send_prompt(&session_id, "and what was it?");
+    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id));
+    assert_eq!(frames.last().unwrap()["result"]["stopReason"], "end_turn");
+    let requests = client.model_requests.lock().unwrap();
+    assert_eq!(
+        requests.len(),
+        1,
+        "one scripted model call for the follow-up"
+    );
+    let messages = &requests[0].messages;
+    let interrupted = messages
+        .iter()
+        .find(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { id, .. } if id == "c2"))
+        })
+        .expect("the interrupted ToolUse must be in the model request");
+    assert!(
+        matches!(&interrupted.role, Role::Assistant)
+            && interrupted.content.len() == 1
+            && matches!(
+                &interrupted.content[0],
+                ContentBlock::ToolUse { id, name, .. } if id == "c2" && name == "fs_read"
+            ),
+        "the interrupted call must appear as a bare ToolUse, nothing fabricated beside it: {interrupted:?}"
+    );
+    assert!(
+        !messages.iter().any(|m| m.content.iter().any(
+            |b| matches!(b, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "c2")
+        )),
+        "no tool result may be fabricated for the interrupted call: {messages:?}"
+    );
+    // Control in context: the completed call's (digest-elided) result IS there.
+    assert!(
+        messages.iter().any(|m| matches!(&m.role, Role::Tool)
+            && m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolResult { tool_use_id, is_error, .. } if tool_use_id == "c1" && !is_error))),
+        "the completed call's result must be in the model request: {messages:?}"
     );
     drop(requests);
 
