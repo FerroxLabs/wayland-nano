@@ -76,9 +76,16 @@ jobs:
       # The helper's modern path shells out to bubblewrap; hosted Ubuntu
       # images don't ship it. (Legacy landlock fallback stays tested by the
       # builder tests; runtime tests exercise the default bwrap path.)
+      # Ubuntu 24.04+ restricts unprivileged user namespaces via AppArmor
+      # (bwrap dies with "loopback: Failed RTM_NEWADDR: Operation not
+      # permitted" on 24.04-arm); the sandbox REQUIRES userns+netns, so
+      # lift the host restriction on the throwaway runner.
       - name: Install bubblewrap (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl kernel.unprivileged_userns_clone=1 || true
 
       - name: gate-test
         run: just gate-test
