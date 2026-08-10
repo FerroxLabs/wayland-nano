@@ -189,8 +189,9 @@ mod tests {
     use super::*;
     use std::process::{Command, Stdio};
 
-    /// Spawns a tiny fake MCP server (powershell reading JSON-RPC lines and
-    /// answering initialize/tools/list with canned responses).
+    /// Spawns a tiny fake MCP server (powershell on Windows, sh on unix —
+    /// same JSON-RPC line discipline, canned initialize/tools/list answers).
+    #[cfg(windows)]
     fn fake_server() -> StdioTransport {
         let script = r#"
 $reader = [System.Console]::In
@@ -208,6 +209,31 @@ while ($true) {
 "#;
         let mut child = Command::new("powershell.exe")
             .args(["-NoProfile", "-Command", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("fake server spawn");
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        StdioTransport::from_pipes(child, stdin, stdout)
+    }
+
+    #[cfg(unix)]
+    fn fake_server() -> StdioTransport {
+        let script = r#"
+while IFS= read -r line; do
+    id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+    case "$line" in
+        *'"initialize"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"fake","version":"0"}}}\n' "$id" ;;
+        *'"tools/list"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"fake echo"}]}}\n' "$id" ;;
+    esac
+done
+"#;
+        let mut child = Command::new("sh")
+            .args(["-c", script])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

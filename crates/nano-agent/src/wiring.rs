@@ -77,8 +77,7 @@ pub fn v1_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "shell".into(),
-            description: "Run a cmd.exe command inside the workspace sandbox. Args: command."
-                .into(),
+            description: "Run a shell command inside the workspace sandbox. Args: command.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
