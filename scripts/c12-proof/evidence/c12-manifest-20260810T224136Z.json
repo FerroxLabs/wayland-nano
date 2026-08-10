@@ -1,0 +1,95 @@
+﻿{
+    "gate":  "C1.2",
+    "track":  "B",
+    "source_sha":  "31b9a6e073f04cfb1e707650a119316c27143424",
+    "dirty":  true,
+    "runner":  {
+                   "host":  "SEANDESKTOP",
+                   "os":  "Microsoft Windows 11 Pro",
+                   "arch":  "AMD64",
+                   "user":  "seand",
+                   "elevated":  true
+               },
+    "provisioned":  false,
+    "started_at":  "2026-08-10T15:41:36.4391774Z",
+    "finished_at":  "2026-08-10T15:41:40.0143736Z",
+    "counts":  {
+                   "pass":  7,
+                   "fail":  0,
+                   "skip":  5
+               },
+    "results":  [
+                    {
+                        "probe":  "harness-env",
+                        "status":  "PASS",
+                        "detail":  "host=SEANDESKTOP user=seand provisioned=False",
+                        "at":  "2026-08-10T15:41:36.4913306Z"
+                    },
+                    {
+                        "probe":  "write-inside-root",
+                        "status":  "PASS",
+                        "detail":  "created workspace/allowed.txt",
+                        "at":  "2026-08-10T15:41:36.5066215Z"
+                    },
+                    {
+                        "probe":  "write-outside-root",
+                        "status":  "SKIP",
+                        "detail":  "not provisioned",
+                        "at":  "2026-08-10T15:41:36.5066215Z"
+                    },
+                    {
+                        "probe":  "sensitive-read-deny",
+                        "status":  "SKIP",
+                        "detail":  "not provisioned",
+                        "at":  "2026-08-10T15:41:36.5145423Z"
+                    },
+                    {
+                        "probe":  "junction-escape",
+                        "status":  "SKIP",
+                        "detail":  "not provisioned",
+                        "at":  "2026-08-10T15:41:36.5145423Z"
+                    },
+                    {
+                        "probe":  "tree-kill-5s",
+                        "status":  "PASS",
+                        "detail":  "job terminate killed tree in 1ms; all 2 recorded descendant PID(s) gone from CIM inventory",
+                        "at":  "2026-08-10T15:41:37.7018971Z"
+                    },
+                    {
+                        "probe":  "process-cleanup",
+                        "status":  "PASS",
+                        "detail":  "no nanok3 helper processes running",
+                        "at":  "2026-08-10T15:41:37.9206959Z"
+                    },
+                    {
+                        "probe":  "network-deny-offline",
+                        "status":  "SKIP",
+                        "detail":  "not provisioned",
+                        "at":  "2026-08-10T15:41:37.9236317Z"
+                    },
+                    {
+                        "probe":  "broker-network-ok",
+                        "status":  "PASS",
+                        "detail":  "reachable (HTTP 500 from api.fluxrouter.ai - network, TLS, and Flux all respond; auth failure still proves reachability)",
+                        "at":  "2026-08-10T15:41:38.5359223Z"
+                    },
+                    {
+                        "probe":  "path-edgecases",
+                        "status":  "PASS",
+                        "detail":  "unicode+longpath:ok; reserved-name:wrote(platform-allows;in-root=contained)",
+                        "at":  "2026-08-10T15:41:38.5390440Z"
+                    },
+                    {
+                        "probe":  "setup-idempotent",
+                        "status":  "SKIP",
+                        "detail":  "not provisioned",
+                        "at":  "2026-08-10T15:41:38.5395569Z"
+                    },
+                    {
+                        "probe":  "uninstall-scope",
+                        "status":  "PASS",
+                        "detail":  "post-uninstall scan: no NanoK3 accounts, group, firewall rules, WFP provider/filters, setup marker, secrets file, .sandbox log dir, or Winlogon UserList values remain",
+                        "at":  "2026-08-10T15:41:39.7504292Z"
+                    }
+                ]
+}

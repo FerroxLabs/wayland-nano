@@ -1,0 +1,95 @@
+﻿{
+    "gate":  "C1.2",
+    "track":  "B",
+    "source_sha":  "31b9a6e073f04cfb1e707650a119316c27143424",
+    "dirty":  true,
+    "runner":  {
+                   "host":  "SEANDESKTOP",
+                   "os":  "Microsoft Windows 11 Pro",
+                   "arch":  "AMD64",
+                   "user":  "seand",
+                   "elevated":  true
+               },
+    "provisioned":  true,
+    "started_at":  "2026-08-10T15:29:47.9979411Z",
+    "finished_at":  "2026-08-10T15:29:58.0505368Z",
+    "counts":  {
+                   "pass":  12,
+                   "fail":  0,
+                   "skip":  0
+               },
+    "results":  [
+                    {
+                        "probe":  "harness-env",
+                        "status":  "PASS",
+                        "detail":  "host=SEANDESKTOP user=seand provisioned=True",
+                        "at":  "2026-08-10T15:29:48.0631010Z"
+                    },
+                    {
+                        "probe":  "write-inside-root",
+                        "status":  "PASS",
+                        "detail":  "created workspace/allowed.txt",
+                        "at":  "2026-08-10T15:29:48.0741366Z"
+                    },
+                    {
+                        "probe":  "write-outside-root",
+                        "status":  "PASS",
+                        "detail":  "denied as NanoK3SandboxOffline: Access to the path \u0027C:\\Users\\seand\\AppData\\Local\\Temp\\nanok3-c12-ws\\outside\\nanok3-escape-attempt.txt\u0027 is denied. (oracle: file absent; evidence D:\\Development\\waylandnano\\nano-k3\\scripts\\c12-proof\\evidence\\nanok3-write-outside-root.stdout.log)",
+                        "at":  "2026-08-10T15:29:49.1857836Z"
+                    },
+                    {
+                        "probe":  "sensitive-read-deny",
+                        "status":  "PASS",
+                        "detail":  "denied as NanoK3SandboxOffline: Access is denied (controls: harness-read=ok acl-self-test=ok)",
+                        "at":  "2026-08-10T15:29:50.2773357Z"
+                    },
+                    {
+                        "probe":  "junction-escape",
+                        "status":  "PASS",
+                        "detail":  "denied as NanoK3SandboxOffline: Access to the path \u0027C:\\Users\\seand\\AppData\\Local\\Temp\\nanok3-c12-ws\\junction-to-outside\\escaped.txt\u0027 is denied. (oracle: no file at C:\\Users\\seand\\AppData\\Local\\Temp\\nanok3-c12-ws\\outside\\escaped.txt; control: junction functional for harness user)",
+                        "at":  "2026-08-10T15:29:51.3348568Z"
+                    },
+                    {
+                        "probe":  "tree-kill-5s",
+                        "status":  "PASS",
+                        "detail":  "job terminate killed tree in 2ms; all 2 recorded descendant PID(s) gone from CIM inventory",
+                        "at":  "2026-08-10T15:29:52.6026774Z"
+                    },
+                    {
+                        "probe":  "process-cleanup",
+                        "status":  "PASS",
+                        "detail":  "no nanok3 helper processes running",
+                        "at":  "2026-08-10T15:29:52.8142294Z"
+                    },
+                    {
+                        "probe":  "network-deny-offline",
+                        "status":  "PASS",
+                        "detail":  "connect denied as NanoK3SandboxOffline: Exception calling \"EndConnect\" with \"1\" argument(s): \"An attempt was made to access a socket in a way forbidden by its a (control: harness connect ok; wfp-filters=present)",
+                        "at":  "2026-08-10T15:29:54.3035497Z"
+                    },
+                    {
+                        "probe":  "broker-network-ok",
+                        "status":  "PASS",
+                        "detail":  "reachable (HTTP 500 from api.fluxrouter.ai - network, TLS, and Flux all respond; auth failure still proves reachability)",
+                        "at":  "2026-08-10T15:29:54.7223299Z"
+                    },
+                    {
+                        "probe":  "path-edgecases",
+                        "status":  "PASS",
+                        "detail":  "unicode+longpath:ok; reserved-name:wrote(platform-allows;in-root=contained)",
+                        "at":  "2026-08-10T15:29:54.7223299Z"
+                    },
+                    {
+                        "probe":  "setup-idempotent",
+                        "status":  "PASS",
+                        "detail":  "refresh round-trips (canonical hash stable, created_at re-stamped); tampered marker detected and restored",
+                        "at":  "2026-08-10T15:29:54.8033235Z"
+                    },
+                    {
+                        "probe":  "uninstall-scope",
+                        "status":  "PASS",
+                        "detail":  "all artifacts in scope (accounts=2; group=NanoK3SandboxUsers; services=0+tasks=0; firewall=0/4; wfp-provider=skipped(unelevated); profile=.nanok3-only); run with -PostUninstall after helper uninstall to verify removal",
+                        "at":  "2026-08-10T15:29:57.7727351Z"
+                    }
+                ]
+}
