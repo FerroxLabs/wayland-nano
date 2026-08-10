@@ -2,7 +2,23 @@
 
 ## Current position
 
-### 48H SPRINT STATE (2026-08-10, post-compaction: Desktop registration DONE)
+### 48H SPRINT STATE (2026-08-10, swarm landing: unix parity + adversarial + CI + packaging DONE)
+- **UNIX PARITY LANDED** (b68e7a9): macOS seatbelt + Linux landlock/seccomp ported
+  into nano-sandbox; cargo check + clippy clean on linux-gnu + apple-darwin targets;
+  22 builder tests run on Windows host. bwrap deferred (UPSTREAM.md TODO).
+- **ADVERSARIAL SUITE** (6e44921): 31 tests; found + fixed 6 real holes (egress
+  redirect bypass, 3 credential-leak displays, junction/symlink write escape).
+  nano-model transport leak closed via shared sanitizer. No test weakened.
+- **CI MATRIX AUTHORED** (0ecf88a): 6 targets (win x64/arm64, macos-13/14,
+  ubuntu x64/arm64); unix legs go green on first hosted run. Not yet pushed to a remote.
+- **NPM SCAFFOLD** (f387c03): zero-dep installer + launcher, win32-x64 staged,
+  win32-arm64 runtime-rejected per compile-gate-only rule.
+- **COMPLIANCE CATALOG** (973f5b7): docs/compliance/SCENARIO_CATALOG.md — 290-test
+  inventory keyed to COMP-* IDs + 16-gap register. NOTE: shared/contracts/ is EMPTY
+  (Track A freeze never landed, gap G-CTR-1) — catalog keys off SCORECARD §2 instead.
+- Workspace: 290+ tests green, clippy -D warnings clean, HEAD = 973f5b7.
+
+### Previous state (2026-08-10, post-compaction: Desktop registration DONE)
 - **ACP ADAPTER LIVE** (commit 2eddab7): `nanok3 acp-host` speaks ACP; slice proves
   initialize v1 → session/new → prompt with streamed updates → end_turn → canary
   clean → zero orphans. Release binary: target/release/nanok3.exe (6.4MB).
