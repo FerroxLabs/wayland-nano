@@ -126,7 +126,7 @@ fn missing_bwrap_warning_uses_nanok3_namespace() {
     assert!(WSL1_BWRAP_WARNING.contains("Nano K3"));
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn unclosed_character_classes_are_escaped_for_ripgrep() {
     let (search_root, glob) =
@@ -136,7 +136,7 @@ fn unclosed_character_classes_are_escaped_for_ripgrep() {
     assert_eq!(glob, r"\[*.env");
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn root_prefix_unreadable_globs_are_too_broad_for_linux_expansion() {
     assert_eq!(
@@ -145,7 +145,7 @@ fn root_prefix_unreadable_globs_are_too_broad_for_linux_expansion() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod unix {
     use super::*;
     use nano_core::permissions::FileSystemSandboxEntry;

@@ -73,6 +73,13 @@ jobs:
         if: runner.os == 'Linux'
         run: test -x target/debug/nanok3-linux-sandbox
 
+      # The helper's modern path shells out to bubblewrap; hosted Ubuntu
+      # images don't ship it. (Legacy landlock fallback stays tested by the
+      # builder tests; runtime tests exercise the default bwrap path.)
+      - name: Install bubblewrap (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
       - name: gate-test
         run: just gate-test
 
