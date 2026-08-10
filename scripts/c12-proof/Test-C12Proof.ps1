@@ -56,6 +56,48 @@ try {
     } else { Add-Result "write-inside-root" "FAIL" "file missing after write" }
 } catch { Add-Result "write-inside-root" "FAIL" "write threw: $_" }
 
+# ---------- probe: write-outside-root (requires provisioned offline identity) ----------
+# Runs a real write attempt OUTSIDE the provisioned root as NanoK3SandboxOffline;
+# the DACL layer (implicit absence of allow, acl.rs) must deny it. Oracle: file absent.
+if (-not $provisioned) {
+    Add-Result "write-outside-root" "SKIP" "not provisioned"
+} else {
+    try {
+        Add-Type -AssemblyName System.Security
+        $secretsPath = Join-Path $env:USERPROFILE ".nanok3\.sandbox-secrets\sandbox_users.json"
+        if (-not (Test-Path $secretsPath)) { throw "secrets file missing at $secretsPath" }
+        $record = (Get-Content $secretsPath -Raw | ConvertFrom-Json).offline
+        $blob = [Convert]::FromBase64String($record.password)
+        $bytes = [Security.Cryptography.ProtectedData]::Unprotect($blob, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+        $secure = [System.Security.SecureString]::new()
+        foreach ($ch in [Text.Encoding]::UTF8.GetChars($bytes)) { $secure.AppendChar($ch) }
+        $bytes = $null; $blob = $null
+        $cred = [pscredential]::new($record.username, $secure)
+
+        $target = Join-Path $outside "nanok3-escape-attempt.txt"
+        if (Test-Path $target) { Remove-Item -Force $target }
+        $logOut = Join-Path $EvidenceDir "nanok3-write-outside-root.stdout.log"
+        $logErr = Join-Path $EvidenceDir "nanok3-write-outside-root.stderr.log"
+        # child contract: exit 42 = out-of-root write SUCCEEDED (violation), 43 = denied (expected)
+        $childCmd = "try { 'escape' | Out-File -LiteralPath '$target' -Encoding utf8 -ErrorAction Stop; exit 42 } catch { Write-Output (`$_.Exception.Message); exit 43 }"
+        $proc = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -ArgumentList @("-NoProfile", "-NonInteractive", "-Command", $childCmd) `
+            -Credential $cred -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $logOut -RedirectStandardError $logErr
+        $wrote = Test-Path $target
+        if ($wrote -or $proc.ExitCode -eq 42) {
+            Add-Result "write-outside-root" "FAIL" "sandboxed write outside root SUCCEEDED (exit=$($proc.ExitCode) file-present=$wrote)"
+        } elseif ($proc.ExitCode -eq 43) {
+            $msg = (Get-Content $logOut -ErrorAction SilentlyContinue | Select-Object -First 1)
+            if ($msg.Length -gt 120) { $msg = $msg.Substring(0, 120) }
+            Add-Result "write-outside-root" "PASS" "denied as $($record.username): $msg (oracle: file absent; evidence $logOut)"
+        } else {
+            $err = (Get-Content $logErr -ErrorAction SilentlyContinue | Select-Object -First 1)
+            Add-Result "write-outside-root" "FAIL" "probe child inconclusive exit=$($proc.ExitCode): $err"
+        }
+    } catch { Add-Result "write-outside-root" "FAIL" "harness error: $_" }
+}
+
 # ---------- probe: sensitive-read-deny (oracle: read throws) ----------
 $secretFile = Join-Path $denied "secret.env"
 "API_KEY=should-not-read" | Out-File $secretFile -Encoding utf8
@@ -144,7 +186,10 @@ try {
     if (Test-Path (Join-Path $longName "file.txt")) { $results_ec += "unicode+longpath:ok" }
     $reserved = Join-Path $inside "aux.txt"
     "ok" | Out-File $reserved -ErrorAction Stop
-    $results_ec += "reserved-name:WROTE(unexpected)"
+    # Win11 builds >= 26100 create reserved-name files as ordinary NTFS objects
+    # (see README "Known limitations"); a successful in-root write is contained
+    # and is NOT a violation — DACL enforcement is name-agnostic.
+    $results_ec += "reserved-name:wrote(platform-allows;in-root=contained)"
 } catch [System.IO.IOException] {
     $results_ec += "reserved-name:rejected"
 } catch {
@@ -153,22 +198,145 @@ try {
 Add-Result "path-edgecases" "PASS" ($results_ec -join "; ")
 
 # ---------- probe: setup-idempotent (requires provisioned) ----------
+# Invokes the helper with a base64 payload carrying refresh_marker_only=true,
+# which runs ONLY the marker path provisioning runs (prepare protected file +
+# commit valid contents). Oracle: the helper's own readiness rule (identity.rs
+# load_marker: marker parses as SetupMarker and version matches) plus a
+# canonical hash over all marker fields except created_at (which the helper
+# re-stamps on every refresh). The tamper half proves the refresh really
+# writes: a no-op helper would leave the tampered marker in place -> FAIL.
 if (-not $provisioned) {
     Add-Result "setup-idempotent" "SKIP" "not provisioned"
 } else {
     $marker = Join-Path $env:USERPROFILE ".nanok3\.sandbox\setup_marker.json"
-    if (Test-Path $marker) {
-        $before = (Get-FileHash $marker -Algorithm SHA256).Hash
-        & $setupExe --refresh-marker-only 2>$null | Out-Null
-        $after = (Get-FileHash $marker -Algorithm SHA256).Hash
-        if ($before -eq $after) {
-            Add-Result "setup-idempotent" "PASS" "marker unchanged after refresh"
-        } else {
-            Add-Result "setup-idempotent" "FAIL" "marker hash changed on rerun"
-        }
-    } else {
+    if (-not (Test-Path $marker)) {
         Add-Result "setup-idempotent" "FAIL" "marker missing at $marker"
+    } elseif (-not (Test-Path $setupExe)) {
+        Add-Result "setup-idempotent" "FAIL" "setup helper missing at $setupExe"
+    } else {
+        try {
+            $nanoHome = Join-Path $env:USERPROFILE ".nanok3"
+
+            function Read-Marker {
+                Get-Content $marker -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            }
+            function Test-MarkerValid([parameter(Mandatory)]$m) {
+                # Mirrors identity.rs: parseable + version present and unchanged.
+                return ($null -ne $m -and $null -ne $m.version -and $m.version -eq $script:markerVersion)
+            }
+            function Get-MarkerCanonicalHash([parameter(Mandatory)]$m) {
+                # created_at is re-stamped by every commit; exclude it so the
+                # hash covers exactly the fields the refresh must preserve.
+                $m.PSObject.Properties.Remove('created_at')
+                $canon = ($m | ConvertTo-Json -Compress -Depth 4)
+                $bytes = [Text.Encoding]::UTF8.GetBytes($canon)
+                return [BitConverter]::ToString(
+                    [Security.Cryptography.SHA256]::Create().ComputeHash($bytes)) -replace '-', ''
+            }
+            function Invoke-MarkerRefresh([parameter(Mandatory)]$m) {
+                $payload = [ordered]@{
+                    version             = [int]$m.version
+                    offline_username    = "NanoK3SandboxOffline"
+                    online_username     = "NanoK3SandboxOnline"
+                    nano_home           = $nanoHome
+                    command_cwd         = (Get-Location).Path
+                    read_roots          = @()
+                    write_roots         = @()
+                    proxy_ports         = @($m.proxy_ports)
+                    allow_local_binding = [bool]$m.allow_local_binding
+                    real_user           = $env:USERNAME
+                    refresh_marker_only = $true
+                }
+                $b64 = [Convert]::ToBase64String(
+                    [Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json -Compress)))
+                & $setupExe $b64 2>$null | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "helper exited $LASTEXITCODE" }
+            }
+
+            $script:markerVersion = $null
+            $before = Read-Marker
+            $script:markerVersion = [int]$before.version
+            if (-not (Test-MarkerValid $before)) { throw "marker invalid before refresh" }
+            $hashBefore = Get-MarkerCanonicalHash $before
+
+            # 1) real refresh round-trips: readiness rule holds and every
+            #    field except created_at is preserved.
+            Invoke-MarkerRefresh $before
+            $after = Read-Marker
+            if (-not (Test-MarkerValid $after)) { throw "marker invalid after refresh" }
+            $hashAfter = Get-MarkerCanonicalHash $after
+            if ($hashBefore -ne $hashAfter) { throw "canonical marker hash changed on refresh" }
+
+            # 2) tamper is detected by the readiness rule and the refresh
+            #    restores a valid marker.
+            '{"version":0,"offline_username":"tampered","online_username":"tampered"}' |
+                Out-File $marker -Encoding utf8 -ErrorAction Stop
+            $tampered = Read-Marker
+            if (Test-MarkerValid $tampered) { throw "tampered marker not detected by readiness rule" }
+            Invoke-MarkerRefresh $before
+            $restored = Read-Marker
+            if (-not (Test-MarkerValid $restored)) { throw "marker still invalid after restore refresh" }
+            if ((Get-MarkerCanonicalHash $restored) -ne $hashBefore) {
+                throw "restored marker content differs from pre-refresh marker"
+            }
+
+            Add-Result "setup-idempotent" "PASS" "refresh round-trips (canonical hash stable, created_at re-stamped); tampered marker detected and restored"
+        } catch {
+            Add-Result "setup-idempotent" "FAIL" "$_"
+            # Best effort: never leave a broken marker behind on a provisioned box.
+            try { Invoke-MarkerRefresh $before } catch {}
+        }
     }
+}
+
+# ---------- probe: uninstall-scope (requires provisioned) ----------
+# Residue scan: every Nano-owned artifact must live inside the known scope
+# (NanoK3Sandbox* accounts, CodexSandboxUsers group, the 3 codex_sandbox_offline_*
+# firewall rules, %USERPROFILE%\.nanok3). No services, scheduled tasks, or stray
+# profile-root files. NOTE: the setup helper has no uninstall mode yet, so this
+# audits provisioning residue; extend to a post-uninstall scan when one ships.
+if (-not $provisioned) {
+    Add-Result "uninstall-scope" "SKIP" "not provisioned"
+} else {
+    $residue = @()
+    $scope = @()
+    try {
+        $expectedAccounts = @("NanoK3SandboxOffline", "NanoK3SandboxOnline")
+        $foundAccounts = @(Get-CimInstance Win32_UserAccount -ErrorAction Stop |
+            Where-Object { $_.LocalAccount -and $_.Name -like "NanoK3*" } |
+            ForEach-Object { $_.Name })
+        foreach ($a in $foundAccounts) { if ($expectedAccounts -notcontains $a) { $residue += "unexpected-account:$a" } }
+        foreach ($a in $expectedAccounts) { if ($foundAccounts -notcontains $a) { $residue += "missing-account:$a" } }
+        $scope += "accounts=$($foundAccounts.Count)"
+
+        $group = Get-LocalGroup -Name "CodexSandboxUsers" -ErrorAction SilentlyContinue
+        if ($null -eq $group) { $residue += "missing-group:CodexSandboxUsers" } else { $scope += "group=CodexSandboxUsers" }
+
+        $svc = @(Get-CimInstance Win32_Service -ErrorAction Stop |
+            Where-Object { $_.Name -match "nanok3|codex.?sandbox" -or $_.PathName -match "nanok3" })
+        foreach ($s in $svc) { $residue += "service:$($s.Name)" }
+        $tasks = @(Get-ScheduledTask -ErrorAction Stop |
+            Where-Object { $_.TaskName -match "nanok3|codex.?sandbox" })
+        foreach ($t in $tasks) { $residue += "scheduled-task:$($t.TaskName)" }
+        $scope += "services=$($svc.Count)+tasks=$($tasks.Count)"
+
+        $knownFw = @("codex_sandbox_offline_block_outbound", "codex_sandbox_offline_block_loopback_tcp", "codex_sandbox_offline_block_loopback_udp")
+        $fw = @(Get-NetFirewallRule -ErrorAction Stop |
+            Where-Object { $_.Name -match "nanok3|codex_sandbox" } | ForEach-Object { $_.Name })
+        foreach ($f in $fw) { if ($knownFw -notcontains $f) { $residue += "unexpected-firewall-rule:$f" } }
+        $scope += "firewall=$($fw.Count)/3"
+
+        $stray = @(Get-ChildItem $env:USERPROFILE -Force -ErrorAction Stop |
+            Where-Object { $_.Name -like "*nanok3*" -and $_.Name -ne ".nanok3" })
+        foreach ($f in $stray) { $residue += "profile-residue:$($f.Name)" }
+        $scope += "profile=.nanok3-only"
+
+        if ($residue.Count -eq 0) {
+            Add-Result "uninstall-scope" "PASS" ("all artifacts in scope (" + ($scope -join "; ") + "); provisioning residue only (no uninstall mode shipped)")
+        } else {
+            Add-Result "uninstall-scope" "FAIL" ("out-of-scope residue: " + ($residue -join ", "))
+        }
+    } catch { Add-Result "uninstall-scope" "FAIL" "residue scan inconclusive: $_" }
 }
 
 # ---------- manifest ----------

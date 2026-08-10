@@ -35,7 +35,10 @@ executes — B-PRV-01.)
 - Account names are Track-B namespaced (`NanoK3Sandbox*`) — no collision with
   Track A's `CodexSandbox*` accounts if those exist.
 - The helper is idempotent: rerun makes no changes when state matches.
-- Uninstall removes only Nano-owned state (accounts, filters, marker, dirs).
+- Uninstall/teardown is NOT implemented yet — no uninstall mode exists in the
+  setup helper. The proof's `uninstall-scope` probe audits that provisioning
+  residue stays inside the known Nano-owned scope (accounts, group, the 3
+  `codex_sandbox_offline_*` firewall rules, `%USERPROFILE%\.nanok3`).
 - Windows Sandbox feature is NOT required for this path.
 
 ## After provisioning

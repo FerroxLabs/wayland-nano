@@ -1,0 +1,95 @@
+﻿{
+    "gate":  "C1.2",
+    "track":  "B",
+    "source_sha":  "f57645d96c5dc1bcd0c3b945cd5a57ae5b046cf8",
+    "dirty":  true,
+    "runner":  {
+                   "host":  "SEANDESKTOP",
+                   "os":  "Microsoft Windows 11 Pro",
+                   "arch":  "AMD64",
+                   "user":  "seand",
+                   "elevated":  false
+               },
+    "provisioned":  false,
+    "started_at":  "2026-08-10T01:06:17.9572056Z",
+    "finished_at":  "2026-08-10T01:06:20.6254311Z",
+    "counts":  {
+                   "pass":  8,
+                   "fail":  0,
+                   "skip":  4
+               },
+    "results":  [
+                    {
+                        "probe":  "harness-env",
+                        "status":  "PASS",
+                        "detail":  "host=SEANDESKTOP user=seand provisioned=False",
+                        "at":  "2026-08-10T01:06:18.0510563Z"
+                    },
+                    {
+                        "probe":  "write-inside-root",
+                        "status":  "PASS",
+                        "detail":  "created workspace/allowed.txt",
+                        "at":  "2026-08-10T01:06:18.0616469Z"
+                    },
+                    {
+                        "probe":  "write-outside-root",
+                        "status":  "SKIP",
+                        "detail":  "not provisioned",
+                        "at":  "2026-08-10T01:06:18.0626494Z"
+                    },
+                    {
+                        "probe":  "sensitive-read-deny",
+                        "status":  "PASS",
+                        "detail":  "read denied: Access is denied",
+                        "at":  "2026-08-10T01:06:18.0823428Z"
+                    },
+                    {
+                        "probe":  "junction-escape",
+                        "status":  "PASS",
+                        "detail":  "junction write denied",
+                        "at":  "2026-08-10T01:06:18.1008660Z"
+                    },
+                    {
+                        "probe":  "tree-kill-5s",
+                        "status":  "PASS",
+                        "detail":  "job terminate killed tree in 3ms; CIM shows no survivors",
+                        "at":  "2026-08-10T01:06:19.6208715Z"
+                    },
+                    {
+                        "probe":  "process-cleanup",
+                        "status":  "PASS",
+                        "detail":  "no nanok3 helper processes running",
+                        "at":  "2026-08-10T01:06:19.7912166Z"
+                    },
+                    {
+                        "probe":  "network-deny-offline",
+                        "status":  "SKIP",
+                        "detail":  "not provisioned",
+                        "at":  "2026-08-10T01:06:19.7922636Z"
+                    },
+                    {
+                        "probe":  "broker-network-ok",
+                        "status":  "PASS",
+                        "detail":  "reachable (HTTP 500 from api.fluxrouter.ai - network, TLS, and Flux all respond; auth failure still proves reachability)",
+                        "at":  "2026-08-10T01:06:20.3784604Z"
+                    },
+                    {
+                        "probe":  "path-edgecases",
+                        "status":  "PASS",
+                        "detail":  "unicode+longpath:ok; reserved-name:wrote(platform-allows;in-root=contained)",
+                        "at":  "2026-08-10T01:06:20.3819674Z"
+                    },
+                    {
+                        "probe":  "setup-idempotent",
+                        "status":  "SKIP",
+                        "detail":  "not provisioned",
+                        "at":  "2026-08-10T01:06:20.3827587Z"
+                    },
+                    {
+                        "probe":  "uninstall-scope",
+                        "status":  "SKIP",
+                        "detail":  "not provisioned",
+                        "at":  "2026-08-10T01:06:20.3827587Z"
+                    }
+                ]
+}

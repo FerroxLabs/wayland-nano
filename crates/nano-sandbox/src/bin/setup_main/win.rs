@@ -105,6 +105,8 @@ struct Payload {
     mode: SetupMode,
     #[serde(default)]
     refresh_only: bool,
+    #[serde(default)]
+    refresh_marker_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
@@ -482,6 +484,9 @@ fn real_main() -> Result<()> {
 }
 
 fn run_setup(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
+    if payload.refresh_marker_only {
+        return run_refresh_marker_only(payload, log);
+    }
     let writes_setup_marker = !payload.refresh_only && payload.mode != SetupMode::ReadAclsOnly;
     if writes_setup_marker {
         prepare_setup_marker(&payload.nano_home, &payload.real_user)?;
@@ -500,6 +505,25 @@ fn run_setup(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<(
             payload.allow_local_binding,
         )?;
     }
+    Ok(())
+}
+
+// Marker-refresh-only path: performs exactly the marker steps provisioning
+// runs (prepare the protected file, then commit valid contents) and nothing
+// else — no user provisioning, firewall, or ACL work. Used by proof harnesses
+// to verify marker idempotency; runs unelevated as the real user, who holds
+// GA on the marker via its protected ACL.
+fn run_refresh_marker_only(payload: &Payload, log: &mut dyn Write) -> Result<()> {
+    log_line(log, "refresh-marker-only: rewriting setup marker")?;
+    prepare_setup_marker(&payload.nano_home, &payload.real_user)?;
+    commit_setup_marker(
+        &payload.nano_home,
+        &payload.offline_username,
+        &payload.online_username,
+        &payload.proxy_ports,
+        payload.allow_local_binding,
+    )?;
+    log_line(log, "refresh-marker-only: setup marker rewritten")?;
     Ok(())
 }
 
@@ -1026,11 +1050,13 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
 
 #[cfg(test)]
 mod tests {
+    use super::BASE64;
     use super::Payload;
     use super::SETUP_VERSION;
     use super::WRITE_ROOT_ALLOW_MASK;
     use super::convert_string_sid_to_sid;
     use super::workspace_write_cap_sids_for_path;
+    use base64::Engine;
     use nano_sandbox::ensure_allow_mask_aces;
     use nano_sandbox::ensure_allow_write_aces;
     use nano_sandbox::load_or_create_cap_sids;
@@ -1064,6 +1090,28 @@ mod tests {
         let payload: Payload = serde_json::from_value(payload_json()).expect("payload");
 
         assert_eq!(payload.otel, None);
+    }
+
+    #[test]
+    fn payload_defaults_refresh_marker_only_absent() {
+        let payload: Payload = serde_json::from_value(payload_json()).expect("payload");
+
+        assert!(!payload.refresh_marker_only);
+    }
+
+    #[test]
+    fn payload_accepts_refresh_marker_only() {
+        let mut payload = payload_json();
+        payload["refresh_marker_only"] = json!(true);
+        let payload_json = serde_json::to_vec(&payload).expect("serialize payload");
+        // Exercise the same base64 wire contract the CLI entry point uses.
+        let payload_b64 = BASE64.encode(payload_json);
+        let decoded = BASE64.decode(payload_b64).expect("decode payload b64");
+        let payload: Payload = serde_json::from_slice(&decoded).expect("payload");
+
+        assert!(payload.refresh_marker_only);
+        assert!(!payload.refresh_only);
+        assert_eq!(payload.mode, super::SetupMode::Full);
     }
 
     #[test]
