@@ -14,7 +14,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: read
+  contents: write # GitHub release assets (Desktop bundling downloads from these)
   id-token: write # npm provenance (Sigstore OIDC)
 
 jobs:
@@ -139,6 +139,33 @@ jobs:
             *) DIST_TAG=latest ;;
           esac
           npm publish --provenance --access public --tag "$DIST_TAG"
+
+      - name: GitHub release assets (Desktop bundling source)
+        working-directory: packaging/npm
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v$VERSION"
+          # One zip per platform + a combined shasums manifest — the exact
+          # shape Desktop's prepareWaylandNano.js downloads and verifies.
+          assets=()
+          manifest="{}"
+          for dir in binaries/*/; do
+            pkg=$(basename "$dir")
+            bin="wayland-nano"; [ "$pkg" = "win32-x64" ] && bin="wayland-nano.exe"
+            zip="wayland-nano-${VERSION}-${pkg}.zip"
+            (cd "$dir" && zip -q "$OLDPWD/$zip" "$bin")
+            sha=$(sha256sum "$zip" | cut -d' ' -f1)
+            manifest=$(echo "$manifest" | jq --arg k "$pkg" --arg v "$sha" '. + {($k): $v}')
+            assets+=("$zip")
+          done
+          echo "$manifest" | jq . > "wayland-nano-${VERSION}-shasums.json"
+          assets+=("wayland-nano-${VERSION}-shasums.json")
+          gh release create "$TAG" --title "Wayland Nano $VERSION" --generate-notes "${assets[@]}" \
+            || gh release upload "$TAG" "${assets[@]}" --clobber
 
       - name: Evidence bundle
         run: powershell -NoProfile -File scripts/collect-evidence.ps1 -BundleDir artifacts/evidence-bundle -AllowMissing
