@@ -366,6 +366,13 @@ fn hard_link_creation_to_write_denied_target_fails() {
     // Self-limiting creation: since Windows 10, CreateHardLink requires write
     // access to the TARGET. The sandbox identity has no write ACE on outside
     // objects, so it cannot even plant the alias itself.
+    //
+    // Environment note: this holds for NON-ADMIN identities. Administrators
+    // (e.g. hosted CI runners) can create the link despite the deny ACE —
+    // SeRestorePrivilege bypasses the target check. In that case the
+    // containment that matters is the POLICY layer: the engine denies writes
+    // to multi-link files outright (policy_engine existing_file_has_multiple_links),
+    // so a planted alias is unwritable through the tools either way.
     let (_tmp, ws, outside) = fixture();
     let target = outside.join("nano-secret.txt");
     let me = whoami();
@@ -373,10 +380,25 @@ fn hard_link_creation_to_write_denied_target_fails() {
     icacls(&[target_arg.clone(), "/deny".into(), format!("{me}:(W)")]);
 
     let link = ws.join("nano-hardlink.txt");
-    let err = std::fs::hard_link(&target, &link)
-        .expect_err("hard-link creation must require write access to the target");
-    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
-    assert!(!link.exists());
+    match std::fs::hard_link(&target, &link) {
+        Err(err) => {
+            // Non-admin path: creation itself is refused.
+            assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+            assert!(!link.exists());
+        }
+        Ok(()) => {
+            // Admin-context path (CI runners): creation succeeds, so the
+            // write-through must be denied by the policy layer instead.
+            let policy = nano_core::permissions::PermissionProfile::workspace_write()
+                .file_system_sandbox_policy();
+            assert!(
+                !policy.can_write_path_with_cwd(&link, &ws),
+                "admin-planted hard link must be write-denied at the policy layer"
+            );
+            let before = std::fs::read_to_string(&target).unwrap();
+            assert_eq!(before, "nano-outside-secret", "target mutated pre-check");
+        }
+    }
 
     icacls(&[target_arg, "/remove:d".into(), me]);
 }
