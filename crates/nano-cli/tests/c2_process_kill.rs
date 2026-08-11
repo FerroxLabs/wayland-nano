@@ -4,12 +4,12 @@
 //! mid-tool → resume, no duplicate side effects", oracle "external state
 //! diff". Unlike the in-process cancel-flag coverage
 //! (`nano-agent/tests/c2_kill_mid_edit.rs`), this test kills the REAL
-//! `nanok3 acp-host` OS process mid-turn and diffs external state.
+//! `wayland-nano acp-host` OS process mid-turn and diffs external state.
 //!
 //! LIVE-GATED: self-skips without `FLUX_TEST_KEY` (mirrors `acp_slice.rs`).
 //!
 //! Flow:
-//! 1. Spawn `nanok3 acp-host` (real child process), initialize, session/new
+//! 1. Spawn `wayland-nano acp-host` (real child process), initialize, session/new
 //!    against a fresh temp workspace seeded with `marker.txt` = "PENDING\n".
 //! 2. session/prompt orders a two-step task: fs_edit marker.txt PENDING→
 //!    STAGE1, then fs_write second.txt = STAGE2. Permission requests are
@@ -22,7 +22,7 @@
 //! 4. External state diff: the on-disk workspace must equal, byte-exactly
 //!    and in both directions (file set + bytes), the reconstruction from the
 //!    journaled applied ops (seed + ok fs_edit/fs_write calls).
-//! 5. A FRESH `nanok3 acp-host` process loads the same session id: replay
+//! 5. A FRESH `wayland-nano acp-host` process loads the same session id: replay
 //!    frames must match the journal-derived expectation exactly (a call
 //!    whose ToolResult never journaled replays as failed — the honest
 //!    crash-interrupted semantic), and the load must not touch the disk.
@@ -31,7 +31,7 @@
 //!    the journal delta must contain no ok mutation targeting marker.txt.
 //!
 //! Run manifest: JSON written to `<workspace>/c2-kill-manifest.json`, where
-//! workspace = `$TEMP/nanok3-c2-kill-<pid>/` (kept after the run); the path
+//! workspace = `$TEMP/nano-c2-kill-<pid>/` (kept after the run); the path
 //! is printed to stderr. It records kill timing, frames seen, journal op
 //! inventory, disk hashes (FNV-1a 64) at every phase, and the load replay
 //! order. A captured run summary is pasted in `shared/reviews/C2/
@@ -155,7 +155,7 @@ fn pid_alive(pid: u32) -> bool {
     }
 }
 
-/// ACP client handle over a spawned `nanok3 acp-host`. Stdout is pumped on a
+/// ACP client handle over a spawned `wayland-nano acp-host`. Stdout is pumped on a
 /// reader thread into a channel so the test can enforce frame deadlines.
 struct Acp {
     child: Child,
@@ -169,19 +169,19 @@ struct Acp {
 
 impl Acp {
     fn spawn(workspace: &Path, nano_home: &Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_nanok3"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_wayland-nano"))
             .arg("acp-host")
             .current_dir(workspace)
             .env(
                 "FLUX_API_KEY",
                 std::env::var("FLUX_TEST_KEY").unwrap_or_default(),
             )
-            .env("NANOK3_HOME", nano_home)
+            .env("NANO_HOME", nano_home)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .expect("spawn nanok3 acp-host");
+            .expect("spawn wayland-nano acp-host");
         let pid = child.id();
         let stdin = child.stdin.take().expect("stdin");
         let mut stdout = std::io::BufReader::new(child.stdout.take().expect("stdout"));
@@ -470,7 +470,7 @@ fn c2_process_kill_resume_external_state_diff() {
         return;
     }
 
-    let workspace = std::env::temp_dir().join(format!("nanok3-c2-kill-{}", std::process::id()));
+    let workspace = std::env::temp_dir().join(format!("nano-c2-kill-{}", std::process::id()));
     std::fs::create_dir_all(&workspace).expect("workspace");
     let nano_home = workspace.join("nano-home");
     std::fs::write(workspace.join("marker.txt"), b"PENDING\n").expect("seed marker.txt");

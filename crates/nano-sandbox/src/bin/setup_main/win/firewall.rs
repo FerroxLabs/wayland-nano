@@ -33,18 +33,19 @@ use nano_sandbox::SetupFailure;
 
 // This is the stable identifier we use to find/update the rule idempotently.
 // It intentionally does not change between installs. Track-B namespacing:
-// nanok3_sandbox_* (Track A uses codex_sandbox_* — never touch those).
-const OFFLINE_BLOCK_RULE_NAME: &str = "nanok3_sandbox_offline_block_outbound";
-const OFFLINE_BLOCK_LOOPBACK_TCP_RULE_NAME: &str = "nanok3_sandbox_offline_block_loopback_tcp";
-const OFFLINE_BLOCK_LOOPBACK_UDP_RULE_NAME: &str = "nanok3_sandbox_offline_block_loopback_udp";
+// nano_sandbox_* (Track A uses codex_sandbox_* — never touch those).
+const OFFLINE_BLOCK_RULE_NAME: &str = "nano_sandbox_offline_block_outbound";
+const OFFLINE_BLOCK_LOOPBACK_TCP_RULE_NAME: &str = "nano_sandbox_offline_block_loopback_tcp";
+const OFFLINE_BLOCK_LOOPBACK_UDP_RULE_NAME: &str = "nano_sandbox_offline_block_loopback_udp";
 
 // Friendly text shown in the firewall UI.
-const OFFLINE_BLOCK_RULE_FRIENDLY: &str = "NanoK3 Sandbox Offline - Block Non-Loopback Outbound";
+const OFFLINE_BLOCK_RULE_FRIENDLY: &str =
+    "Wayland Nano Sandbox Offline - Block Non-Loopback Outbound";
 const OFFLINE_BLOCK_LOOPBACK_TCP_RULE_FRIENDLY: &str =
-    "NanoK3 Sandbox Offline - Block Loopback TCP (Except Proxy)";
+    "Wayland Nano Sandbox Offline - Block Loopback TCP (Except Proxy)";
 const OFFLINE_BLOCK_LOOPBACK_UDP_RULE_FRIENDLY: &str =
-    "NanoK3 Sandbox Offline - Block Loopback UDP";
-const OFFLINE_PROXY_ALLOW_RULE_NAME: &str = "nanok3_sandbox_offline_allow_loopback_proxy";
+    "Wayland Nano Sandbox Offline - Block Loopback UDP";
+const OFFLINE_PROXY_ALLOW_RULE_NAME: &str = "nano_sandbox_offline_allow_loopback_proxy";
 const LOOPBACK_REMOTE_ADDRESSES: &str = "127.0.0.0/8,::/127";
 const NON_LOOPBACK_REMOTE_ADDRESSES: &str = "0.0.0.0-126.255.255.255,128.0.0.0-255.255.255.255,::,::2-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff";
 
@@ -211,7 +212,7 @@ pub fn ensure_offline_outbound_block(offline_sid: &str, log: &mut dyn Write) -> 
     result
 }
 
-/// Removes every Track-B (`nanok3_sandbox_*`) firewall rule.
+/// Removes every Track-B (`nano_sandbox_*`) firewall rule.
 ///
 /// Track-B addition (the donor has no teardown). Deletes are exact-name only
 /// — never pattern matched — so Track A's codex_sandbox_* rules are never
@@ -629,13 +630,13 @@ mod tests {
     }
 
     #[test]
-    fn firewall_rule_names_are_nanok3_namespaced() {
-        // Track-B firewall rules must keep the nanok3_sandbox_offline_ prefix
+    fn firewall_rule_names_are_nano_namespaced() {
+        // Track-B firewall rules must keep the nano_sandbox_offline_ prefix
         // so provisioning and uninstall never collide with Track A's
         // codex_sandbox_offline_* rules on one box.
         for name in OFFLINE_SANDBOX_RULE_NAMES {
             assert!(
-                name.starts_with("nanok3_sandbox_offline_"),
+                name.starts_with("nano_sandbox_offline_"),
                 "rule name {name} lost the Track-B prefix"
             );
         }

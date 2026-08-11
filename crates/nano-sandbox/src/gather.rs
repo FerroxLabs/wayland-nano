@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn profile_read_roots_falls_back_to_profile_root_when_enumeration_fails() {
-        let missing = Path::new(r"C:\nanok3-definitely-missing-profile-dir");
+        let missing = Path::new(r"C:\wayland-nano-definitely-missing-profile-dir");
         assert_eq!(profile_read_roots(missing), vec![missing.to_path_buf()]);
     }
 

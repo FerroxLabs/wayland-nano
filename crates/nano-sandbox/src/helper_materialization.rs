@@ -2,7 +2,7 @@
 //!
 //! Provenance: ported from Codex `windows-sandbox-rs/src/helper_materialization.rs`
 //! @ 646f7c0a. Transformations: module path; RESOURCES_DIRNAME
-//! "codex-resources" -> "nanok3-resources" (branding/isolation).
+//! "codex-resources" -> "wayland-nano-resources" (branding/isolation).
 
 use anyhow::Context;
 use anyhow::Result;
@@ -23,7 +23,7 @@ use crate::sandbox_bin_dir;
 
 const DEV_BUILD_VERSION_SENTINEL: &str = "0.0.0";
 pub(crate) const BIN_DIRNAME: &str = "bin";
-pub(crate) const RESOURCES_DIRNAME: &str = "nanok3-resources";
+pub(crate) const RESOURCES_DIRNAME: &str = "wayland-nano-resources";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum HelperExecutable {
@@ -33,7 +33,7 @@ pub enum HelperExecutable {
 impl HelperExecutable {
     fn file_name(self) -> &'static str {
         match self {
-            Self::CommandRunner => "nanok3-command-runner.exe",
+            Self::CommandRunner => "wayland-nano-command-runner.exe",
         }
     }
 
@@ -450,7 +450,7 @@ mod tests {
         let codex_home = tmp.path().join("codex-home");
         let source_dir = tmp.path().join("sibling-source");
         fs::create_dir_all(&source_dir).expect("create source dir");
-        let runner_source = source_dir.join("nanok3-command-runner.exe");
+        let runner_source = source_dir.join("wayland-nano-command-runner.exe");
         fs::write(&runner_source, b"runner").expect("runner");
         let runner_suffix = helper_version_suffix(&runner_source).expect("runner suffix");
         let runner_destination = helper_bin_dir(&codex_home).join(materialized_file_name(
@@ -475,13 +475,15 @@ mod tests {
         let resources_dir = release_dir.join(RESOURCES_DIRNAME);
         fs::create_dir_all(&resources_dir).expect("create resources dir");
         let exe = release_dir.join("codex.exe");
-        let helper = resources_dir.join("nanok3-command-runner.exe");
+        let helper = resources_dir.join("wayland-nano-command-runner.exe");
         fs::write(&exe, b"codex").expect("write exe");
         fs::write(&helper, b"runner").expect("write helper");
 
-        let resolved =
-            bundled_executable_path_for_exe(&exe, /*file_name*/ "nanok3-command-runner.exe")
-                .expect("helper path");
+        let resolved = bundled_executable_path_for_exe(
+            &exe,
+            /*file_name*/ "wayland-nano-command-runner.exe",
+        )
+        .expect("helper path");
 
         assert_eq!(resolved, helper);
     }
@@ -495,13 +497,15 @@ mod tests {
         fs::create_dir_all(&bin_dir).expect("create bin dir");
         fs::create_dir_all(&resources_dir).expect("create resources dir");
         let exe = bin_dir.join("codex.exe");
-        let helper = resources_dir.join("nanok3-command-runner.exe");
+        let helper = resources_dir.join("wayland-nano-command-runner.exe");
         fs::write(&exe, b"codex").expect("write exe");
         fs::write(&helper, b"runner").expect("write helper");
 
-        let resolved =
-            bundled_executable_path_for_exe(&exe, /*file_name*/ "nanok3-command-runner.exe")
-                .expect("helper path");
+        let resolved = bundled_executable_path_for_exe(
+            &exe,
+            /*file_name*/ "wayland-nano-command-runner.exe",
+        )
+        .expect("helper path");
 
         assert_eq!(resolved, helper);
     }
@@ -516,15 +520,17 @@ mod tests {
         fs::create_dir_all(&package_resources_dir).expect("create package resources dir");
         fs::create_dir_all(&bin_resources_dir).expect("create bin resources dir");
         let exe = bin_dir.join("codex.exe");
-        let package_helper = package_resources_dir.join("nanok3-command-runner.exe");
-        let bin_helper = bin_resources_dir.join("nanok3-command-runner.exe");
+        let package_helper = package_resources_dir.join("wayland-nano-command-runner.exe");
+        let bin_helper = bin_resources_dir.join("wayland-nano-command-runner.exe");
         fs::write(&exe, b"codex").expect("write exe");
         fs::write(&package_helper, b"package runner").expect("write package helper");
         fs::write(&bin_helper, b"bin runner").expect("write bin helper");
 
-        let resolved =
-            bundled_executable_path_for_exe(&exe, /*file_name*/ "nanok3-command-runner.exe")
-                .expect("helper path");
+        let resolved = bundled_executable_path_for_exe(
+            &exe,
+            /*file_name*/ "wayland-nano-command-runner.exe",
+        )
+        .expect("helper path");
 
         assert_eq!(resolved, package_helper);
     }
@@ -536,15 +542,17 @@ mod tests {
         let resources_dir = release_dir.join(RESOURCES_DIRNAME);
         fs::create_dir_all(&resources_dir).expect("create resources dir");
         let exe = release_dir.join("codex.exe");
-        let sibling_helper = release_dir.join("nanok3-command-runner.exe");
-        let resource_helper = resources_dir.join("nanok3-command-runner.exe");
+        let sibling_helper = release_dir.join("wayland-nano-command-runner.exe");
+        let resource_helper = resources_dir.join("wayland-nano-command-runner.exe");
         fs::write(&exe, b"codex").expect("write exe");
         fs::write(&sibling_helper, b"sibling runner").expect("write sibling helper");
         fs::write(&resource_helper, b"resource runner").expect("write resource helper");
 
-        let resolved =
-            bundled_executable_path_for_exe(&exe, /*file_name*/ "nanok3-command-runner.exe")
-                .expect("helper path");
+        let resolved = bundled_executable_path_for_exe(
+            &exe,
+            /*file_name*/ "wayland-nano-command-runner.exe",
+        )
+        .expect("helper path");
 
         assert_eq!(resolved, sibling_helper);
     }
@@ -567,6 +575,6 @@ mod tests {
     fn materialized_file_name_adds_suffix_before_extension() {
         let file_name = materialized_file_name(HelperExecutable::CommandRunner, "test-suffix");
 
-        assert_eq!(file_name, "nanok3-command-runner-test-suffix.exe");
+        assert_eq!(file_name, "wayland-nano-command-runner-test-suffix.exe");
     }
 }

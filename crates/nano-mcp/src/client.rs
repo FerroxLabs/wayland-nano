@@ -258,9 +258,9 @@ done
     }
 
     #[test]
-    fn initialize_params_advertise_nanok3() {
+    fn initialize_params_advertise_nano() {
         let params = initialize_params();
-        assert_eq!(params["clientInfo"]["name"], "nanok3");
+        assert_eq!(params["clientInfo"]["name"], "wayland-nano");
         assert_eq!(
             params["protocolVersion"],
             crate::protocol::MCP_PROTOCOL_VERSION

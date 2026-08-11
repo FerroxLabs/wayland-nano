@@ -52,7 +52,7 @@ impl EgressClient {
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(300))
-            .user_agent("nanok3/0.1.0")
+            .user_agent("wayland-nano/0.1.0")
             .redirect(reqwest::redirect::Policy::custom(move |attempt| {
                 if attempt.previous().len() >= MAX_REDIRECT_HOPS {
                     return attempt.error("redirect hop limit exceeded");

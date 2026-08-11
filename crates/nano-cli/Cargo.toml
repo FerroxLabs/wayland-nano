@@ -6,11 +6,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "nanok3"
+name = "wayland-nano"
 path = "src/main.rs"
 
 [[bin]]
-name = "nanok3-acp-profile"
+name = "wayland-nano-acp-profile"
 path = "src/bin/acp_profile/main.rs"
 
 [dependencies]

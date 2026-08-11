@@ -109,7 +109,7 @@ struct Payload {
     refresh_only: bool,
     #[serde(default)]
     refresh_marker_only: bool,
-    /// Track-B addition: remove the NanoK3-track machine state (accounts,
+    /// Track-B addition: remove the Wayland Nano-track machine state (accounts,
     /// group, firewall rules, WFP objects, setup marker) and nothing else.
     #[serde(default)]
     uninstall: bool,
@@ -518,20 +518,23 @@ fn run_setup(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<(
 }
 
 // Uninstall path (Track-B addition — the donor has no teardown): removes ONLY
-// NanoK3-track machine state — the two NanoK3Sandbox* accounts, the
-// NanoK3SandboxUsers group (only when its membership is exactly the
-// provisioned accounts), the nanok3_sandbox_* firewall rules, the NanoK3 WFP
+// Wayland Nano-track machine state — the two NanoSandbox* accounts, the
+// NanoSandboxUsers group (only when its membership is exactly the
+// provisioned accounts), the nano_sandbox_* firewall rules, the Wayland Nano WFP
 // provider/sublayer/filters, the Winlogon UserList values hiding the sandbox
 // accounts, the DPAPI sandbox_users.json secrets file (only after parsing it
-// and verifying it names exactly the provisioned NanoK3Sandbox* accounts),
+// and verifying it names exactly the provisioned NanoSandbox* accounts),
 // the setup marker, and the .sandbox log dir. Track A's Codex* objects are
-// never touched: every removal is keyed by an exact NanoK3 name, a verified
+// never touched: every removal is keyed by an exact Wayland Nano name, a verified
 // file content, or a Track-B WFP GUID whose identity is verified before
 // deletion, and any mismatch aborts the run (fail-closed). Every step
 // tolerates already-absent state, so a rerun after a partial uninstall
 // converges.
 fn run_uninstall(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
-    log_line(log, "uninstall mode: removing NanoK3-track sandbox state")?;
+    log_line(
+        log,
+        "uninstall mode: removing Wayland Nano-track sandbox state",
+    )?;
 
     // Firewall rules first: they reference the offline account SID, so they
     // must go before the accounts are deleted.
@@ -563,7 +566,7 @@ fn run_uninstall(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Resu
     .map_err(|err| {
         anyhow::Error::new(SetupFailure::new(
             SetupErrorCode::HelperUninstallFailed,
-            format!("remove NanoK3 WFP objects failed: {err}"),
+            format!("remove Wayland Nano WFP objects failed: {err}"),
         ))
     })?;
     log_line(log, &format!("removed {removed_filters} WFP filters"))?;
@@ -614,18 +617,18 @@ fn run_uninstall(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Resu
 
 /// Track-B addition: removes the `.sandbox` log dir as the final uninstall
 /// step. Fail-closed on scope: the recursive delete only runs when the dir is
-/// exactly `<nano_home>/.sandbox` under a `.nanok3` home — a payload pointing
+/// exactly `<nano_home>/.sandbox` under a `.nano` home — a payload pointing
 /// anywhere else (e.g. at Track A's home) aborts instead of deleting foreign
 /// state. A missing dir is tolerated (idempotent).
 fn remove_sandbox_log_dir(nano_home: &Path, sbx_dir: &Path, log: &mut dyn Write) -> Result<()> {
-    let home_is_nanok3 = nano_home
+    let home_is_nano = nano_home
         .file_name()
-        .is_some_and(|name| name.eq_ignore_ascii_case(".nanok3"));
-    if !home_is_nanok3 || sbx_dir != sandbox_dir(nano_home) {
+        .is_some_and(|name| name.eq_ignore_ascii_case(".nano"));
+    if !home_is_nano || sbx_dir != sandbox_dir(nano_home) {
         return Err(anyhow::Error::new(SetupFailure::new(
             SetupErrorCode::HelperUninstallFailed,
             format!(
-                "refusing to remove sandbox log dir {}: not the .nanok3-scoped .sandbox dir",
+                "refusing to remove sandbox log dir {}: not the .nano-scoped .sandbox dir",
                 sbx_dir.display()
             ),
         )));
@@ -1210,8 +1213,8 @@ mod tests {
     fn payload_json() -> serde_json::Value {
         json!({
             "version": SETUP_VERSION,
-            "offline_username": "NanoK3SandboxOffline",
-            "online_username": "NanoK3SandboxOnline",
+            "offline_username": "NanoSandboxOffline",
+            "online_username": "NanoSandboxOnline",
             "nano_home": "C:\\codex-home",
             "command_cwd": "C:\\workspace",
             "read_roots": [],
@@ -1522,7 +1525,7 @@ mod tests {
     #[test]
     fn remove_sandbox_log_dir_removes_dir_with_open_log_file() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let nano_home = temp.path().join(".nanok3");
+        let nano_home = temp.path().join(".nano");
         let sbx_dir = super::sandbox_dir(&nano_home);
         fs::create_dir_all(&sbx_dir).expect("create sandbox dir");
         let log_path = sbx_dir.join("sandbox.2026-08-10.log");
@@ -1543,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_sandbox_log_dir_refuses_non_nanok3_home() {
+    fn remove_sandbox_log_dir_refuses_non_nano_home() {
         let temp = tempfile::tempdir().expect("tempdir");
         let nano_home = temp.path().join("codex-home");
         let sbx_dir = super::sandbox_dir(&nano_home);
@@ -1551,7 +1554,7 @@ mod tests {
         let mut log: Vec<u8> = Vec::new();
 
         let err = super::remove_sandbox_log_dir(&nano_home, &sbx_dir, &mut log)
-            .expect_err("non-.nanok3 home must abort");
+            .expect_err("non-.nano home must abort");
 
         assert!(
             err.to_string()
@@ -1563,7 +1566,7 @@ mod tests {
     #[test]
     fn remove_sandbox_log_dir_tolerates_missing_dir() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let nano_home = temp.path().join(".nanok3");
+        let nano_home = temp.path().join(".nano");
         let sbx_dir = super::sandbox_dir(&nano_home);
         let mut log: Vec<u8> = Vec::new();
 

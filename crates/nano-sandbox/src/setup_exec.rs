@@ -4,7 +4,7 @@
 //! Provenance: ported from Codex `windows-sandbox-rs/src/setup.rs` (execution
 //! half) @ 646f7c0a. Transformations:
 //! - codex_home -> nano_home naming;
-//! - SETUP_EXE_FILENAME -> "nanok3-sandbox-setup.exe" (dual-track isolation:
+//! - SETUP_EXE_FILENAME -> "wayland-nano-sandbox-setup.exe" (dual-track isolation:
 //!   Track A's helper is "codex-windows-sandbox-setup.exe");
 //! - ElevationPayload.otel -> Option<telemetry::TelemetrySettings> (facade;
 //!   `global_telemetry_settings()` currently None on all paths);
@@ -71,7 +71,7 @@ const ERROR_CANCELLED: u32 = 1223;
 // Donor-local constants (windows-sys does not export these RIDs).
 const SECURITY_BUILTIN_DOMAIN_RID: u32 = 0x0000_0020;
 const DOMAIN_ALIAS_RID_ADMINS: u32 = 0x0000_0220;
-const SETUP_EXE_FILENAME: &str = "nanok3-sandbox-setup.exe";
+const SETUP_EXE_FILENAME: &str = "wayland-nano-sandbox-setup.exe";
 
 pub struct SandboxSetupRequest<'a> {
     pub permissions: &'a ResolvedWindowsSandboxPermissions,
@@ -829,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_serializes_with_nanok3_identities() {
+    fn payload_serializes_with_nano_identities() {
         let payload = ElevationPayload {
             version: SETUP_VERSION,
             offline_username: OFFLINE_USERNAME.to_string(),
@@ -848,7 +848,7 @@ mod tests {
             refresh_only: true,
         };
         let json = serde_json::to_string(&payload).unwrap();
-        assert!(json.contains("NanoK3SandboxOffline"));
+        assert!(json.contains("NanoSandboxOffline"));
         assert!(json.contains("\"mode\":\"full\""));
         assert!(json.contains("\"refresh_only\":true"));
     }

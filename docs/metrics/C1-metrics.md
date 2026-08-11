@@ -1,5 +1,12 @@
 # C1 metrics — Track B (nano-k3)
 
+> **Naming note (rebrand, 2026-08-11):** these numbers were measured under the
+> old NanoK3 codename; binary names below (`nanok3-sandbox-setup.exe`,
+> `nanok3-command-runner.exe`, `nanok3-spawn-profile`) are quoted as recorded.
+> Current names per `docs/REBRAND.md`: `wayland-nano-sandbox-setup.exe`,
+> `wayland-nano-command-runner.exe`, `wayland-nano-spawn-profile`. The
+> measurements themselves are unaffected by the rename.
+
 Measured 2026-08-09 on the primary truth machine (Win11 Pro, i9-13900KF, Rust
 1.95.0 MSVC, release profile: lto=thin, codegen-units=1, strip=symbols).
 

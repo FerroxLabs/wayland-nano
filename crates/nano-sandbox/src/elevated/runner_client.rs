@@ -3,7 +3,7 @@
 //!
 //! Provenance: ported from Codex `windows-sandbox-rs/src/elevated/runner_client.rs`
 //! @ 646f7c0a. Transformations: codex_home -> nano_home naming;
-//! codex-command-runner.exe -> nanok3-command-runner.exe.
+//! codex-command-runner.exe -> wayland-nano-command-runner.exe.
 
 use crate::identity::SandboxCreds;
 use crate::ipc_framed::ErrorPayload;
@@ -331,7 +331,7 @@ pub(crate) fn spawn_runner_transport(
     let runner_cmdline = runner_exe
         .to_str()
         .map(str::to_owned)
-        .unwrap_or_else(|| "nanok3-command-runner.exe".to_string());
+        .unwrap_or_else(|| "wayland-nano-command-runner.exe".to_string());
     let runner_full_cmd = format!(
         "{} {} {}",
         quote_windows_arg(&runner_cmdline),
@@ -399,7 +399,7 @@ pub(crate) fn spawn_runner_transport(
         unsafe {
             // Keep the process handle alive until the pipe handshake finishes. If the handshake
             // fails after the runner process has already launched, we still need a way to stop
-            // that child instead of leaking a stray `nanok3-command-runner.exe`.
+            // that child instead of leaking a stray `wayland-nano-command-runner.exe`.
             if pi.hProcess != 0 {
                 let _ = TerminateProcess(pi.hProcess, 1);
                 CloseHandle(pi.hProcess);
@@ -419,7 +419,7 @@ pub(crate) fn spawn_runner_transport(
     let startup_result = (|| -> Result<()> {
         // Keep the runner process HANDLE alive until the *entire* startup handshake finishes.
         // That way, a later `send_spawn_request` or `spawn_ready` failure can still terminate the
-        // runner instead of leaving a stray `nanok3-command-runner.exe` behind.
+        // runner instead of leaving a stray `wayland-nano-command-runner.exe` behind.
         transport.send_spawn_request(spawn_request)?;
         transport.read_spawn_ready()?;
         Ok(())

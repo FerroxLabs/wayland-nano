@@ -8,5 +8,5 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(not(target_os = "windows"))]
 fn main() {
-    panic!("nanok3-command-runner is Windows-only");
+    panic!("wayland-nano-command-runner is Windows-only");
 }

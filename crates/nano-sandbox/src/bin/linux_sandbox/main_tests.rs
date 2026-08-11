@@ -3,8 +3,8 @@
 // - managed-proxy tests dropped with the proxy surface;
 // - `needs_direct_runtime_enforcement` tests dropped (that gate is not
 //   ported; see main.rs provenance note);
-// - `codex-linux-sandbox` -> `nanok3-linux-sandbox`; synthetic-mount registry
-//   dir renamed to the nanok3-* namespace;
+// - `codex-linux-sandbox` -> `wayland-nano-linux-sandbox`; synthetic-mount registry
+//   dir renamed to the wayland-nano-* namespace;
 // - `PermissionProfile::from_runtime_permissions` (legacy constructor) ->
 //   direct `PermissionProfile::Managed` construction.
 // (Plain comments, not //!: this file is pulled in via include! inside
@@ -65,7 +65,7 @@ fn inserts_bwrap_argv0_before_command_separator() {
     apply_inner_command_argv0_for_launcher(
         &mut argv,
         /*supports_argv0*/ true,
-        "/tmp/nanok3-arg0-session/nanok3-linux-sandbox".to_string(),
+        "/tmp/wayland-nano-arg0-session/wayland-nano-linux-sandbox".to_string(),
     );
     assert_eq!(
         argv,
@@ -83,7 +83,7 @@ fn inserts_bwrap_argv0_before_command_separator() {
             "--proc".to_string(),
             "/proc".to_string(),
             "--argv0".to_string(),
-            "nanok3-linux-sandbox".to_string(),
+            "wayland-nano-linux-sandbox".to_string(),
             "--".to_string(),
             "/bin/true".to_string(),
         ]
@@ -109,13 +109,13 @@ fn rewrites_inner_command_path_when_bwrap_lacks_argv0() {
     apply_inner_command_argv0_for_launcher(
         &mut argv,
         /*supports_argv0*/ false,
-        "/tmp/nanok3-arg0-session/nanok3-linux-sandbox".to_string(),
+        "/tmp/wayland-nano-arg0-session/wayland-nano-linux-sandbox".to_string(),
     );
 
     assert!(!argv.iter().any(|arg| arg == "--argv0"));
     assert!(
         argv.windows(2)
-            .any(|window| { window == ["--", "/tmp/nanok3-arg0-session/nanok3-linux-sandbox"] })
+            .any(|window| { window == ["--", "/tmp/wayland-nano-arg0-session/wayland-nano-linux-sandbox"] })
     );
 }
 
@@ -133,7 +133,7 @@ fn rewrites_bwrap_helper_command_not_nested_user_command_when_current_exe_appear
         "/tmp/cwd".to_string(),
         "--".to_string(),
         nested_current_exe.clone(),
-        "--nanok3-run-as-apply-patch".to_string(),
+        "--wayland-nano-run-as-apply-patch".to_string(),
         "patch".to_string(),
     ];
 
@@ -153,7 +153,7 @@ fn rewrites_bwrap_helper_command_not_nested_user_command_when_current_exe_appear
             "/tmp/cwd".to_string(),
             "--".to_string(),
             nested_current_exe,
-            "--nanok3-run-as-apply-patch".to_string(),
+            "--wayland-nano-run-as-apply-patch".to_string(),
             "patch".to_string(),
         ]
     );
@@ -250,7 +250,7 @@ fn synthetic_mount_registry_root_is_unique_to_effective_user() {
     assert_eq!(
         synthetic_mount_registry_root(),
         std::env::temp_dir().join(format!(
-            "nanok3-bwrap-synthetic-mount-targets-{effective_uid}"
+            "wayland-nano-bwrap-synthetic-mount-targets-{effective_uid}"
         ))
     );
 }

@@ -36,7 +36,7 @@ fn uuidish() -> String {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    format!("nanok3-{:x}", t.as_nanos())
+    format!("wayland-nano-{:x}", t.as_nanos())
 }
 
 /// What the host loop concluded with.

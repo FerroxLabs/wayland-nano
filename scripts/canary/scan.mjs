@@ -42,11 +42,11 @@ const add = (cls, files) => files.forEach((f) => targets.set(f, cls));
 add("acp-protocol-capture", walk(join(ROOT, "shared/reviews/C3/evidence"), [".txt", ".json", ".log"]));
 add("c2-evidence", walk(join(ROOT, "shared/reviews/C2"), [".json", ".md"]));
 add("panel-artifacts", walk(join(ROOT, "shared/reviews/panel"), [".json", ".txt"]));
-add("session-journal", walk(join(process.env.USERPROFILE || "", ".nanok3/sessions"), [".jsonl"]));
-add("nano-home-logs", walk(join(process.env.USERPROFILE || "", ".nanok3"), [".log", ".json"]));
+add("session-journal", walk(join(process.env.USERPROFILE || "", ".nano/sessions"), [".jsonl"]));
+add("nano-home-logs", walk(join(process.env.USERPROFILE || "", ".nano"), [".log", ".json"]));
 add("claim-docs", walk(join(ROOT, "shared/reviews"), [".md"]));
 
-// Desktop conversation DB rows for nanok3 conversations, dumped live if the
+// Desktop conversation DB rows for wayland-nano conversations, dumped live if the
 // dev-profile DB exists (best-effort; absence recorded, not fatal).
 const dbDump = join(ROOT, ".tmp/canary-db-dump.json");
 let dbNote = "not attempted";

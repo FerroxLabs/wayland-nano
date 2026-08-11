@@ -7,11 +7,11 @@
 //! @ 646f7c0a. Transformations:
 //! - `codex_install_context::InstallContext` / `bazel_bwrap` candidate lookups
 //!   DROPPED (nano-k3 has no install-context or Bazel layout); candidate
-//!   search covers `<exe_dir>/nanok3-resources/bwrap`,
-//!   `<exe_dir>/../nanok3-resources/bwrap`, and `<exe_dir>/bwrap`;
-//! - `codex-resources` directory name -> `nanok3-resources`;
-//! - `CODEX_BWRAP_SHA256` compile-time digest pin -> `NANOK3_BWRAP_SHA256`
-//!   (nanok3-* namespacing).
+//!   search covers `<exe_dir>/wayland-nano-resources/bwrap`,
+//!   `<exe_dir>/../wayland-nano-resources/bwrap`, and `<exe_dir>/bwrap`;
+//! - `codex-resources` directory name -> `wayland-nano-resources`;
+//! - `CODEX_BWRAP_SHA256` compile-time digest pin -> `NANO_BWRAP_SHA256`
+//!   (wayland-nano-* namespacing).
 
 use std::ffi::CStr;
 use std::ffi::CString;
@@ -101,9 +101,13 @@ fn candidates_for_exe(exe: &Path) -> Vec<PathBuf> {
     };
 
     let mut candidates = Vec::new();
-    candidates.push(exe_dir.join("nanok3-resources").join("bwrap"));
+    candidates.push(exe_dir.join("wayland-nano-resources").join("bwrap"));
     if let Some(package_target_dir) = exe_dir.parent() {
-        candidates.push(package_target_dir.join("nanok3-resources").join("bwrap"));
+        candidates.push(
+            package_target_dir
+                .join("wayland-nano-resources")
+                .join("bwrap"),
+        );
     }
     candidates.push(exe_dir.join("bwrap"));
     candidates
@@ -119,9 +123,9 @@ fn is_executable_file(path: &Path) -> bool {
 fn expected_sha256() -> Option<[u8; 32]> {
     static EXPECTED: OnceLock<Option<[u8; 32]>> = OnceLock::new();
     *EXPECTED.get_or_init(|| {
-        let raw_digest = option_env!("NANOK3_BWRAP_SHA256")?;
+        let raw_digest = option_env!("NANO_BWRAP_SHA256")?;
         let digest = parse_sha256_hex(raw_digest)
-            .unwrap_or_else(|err| panic!("invalid NANOK3_BWRAP_SHA256 value: {err}"));
+            .unwrap_or_else(|err| panic!("invalid NANO_BWRAP_SHA256 value: {err}"));
         (digest != NULL_SHA256_DIGEST).then_some(digest)
     })
 }
@@ -200,8 +204,8 @@ mod tests {
     #[test]
     fn finds_bundled_bwrap_next_to_exe_resources() {
         let temp_dir = tempdir().expect("temp dir");
-        let exe = temp_dir.path().join("nanok3-linux-sandbox");
-        let expected_bwrap = temp_dir.path().join("nanok3-resources").join("bwrap");
+        let exe = temp_dir.path().join("wayland-nano-linux-sandbox");
+        let expected_bwrap = temp_dir.path().join("wayland-nano-resources").join("bwrap");
         write_executable(&exe);
         write_executable(&expected_bwrap);
 
@@ -215,8 +219,10 @@ mod tests {
     fn finds_bundled_bwrap_next_to_package_target_dir() {
         let temp_dir = tempdir().expect("temp dir");
         let target_dir = temp_dir.path().join("vendor/x86_64-unknown-linux-musl");
-        let exe = target_dir.join("nanok3").join("nanok3-linux-sandbox");
-        let expected_bwrap = target_dir.join("nanok3-resources").join("bwrap");
+        let exe = target_dir
+            .join("wayland-nano")
+            .join("wayland-nano-linux-sandbox");
+        let expected_bwrap = target_dir.join("wayland-nano-resources").join("bwrap");
         write_executable(&exe);
         write_executable(&expected_bwrap);
 
@@ -229,7 +235,7 @@ mod tests {
     #[test]
     fn finds_adjacent_dev_bwrap() {
         let temp_dir = tempdir().expect("temp dir");
-        let exe = temp_dir.path().join("nanok3-linux-sandbox");
+        let exe = temp_dir.path().join("wayland-nano-linux-sandbox");
         let expected_bwrap = temp_dir.path().join("bwrap");
         write_executable(&exe);
         write_executable(&expected_bwrap);

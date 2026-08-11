@@ -12,7 +12,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\c12-proof\Test-C12Pr
 ```
 
 **The authoritative run is elevated.** Four containment probes execute as the
-provisioned OFFLINE IDENTITY (`NanoK3SandboxOffline`) via
+provisioned OFFLINE IDENTITY (`NanoSandboxOffline`) via
 `Start-Process -Credential` (CreateProcessWithLogonW), which is admin-gated on
 this box — verified empirically: unelevated launch of even whoami.exe as the
 offline account returns Access is denied. `write-outside-root`,
@@ -48,16 +48,16 @@ so the harness is also runnable pre-provisioning to validate the harness itself.
 ## Uninstall-scope probe modes
 
 Default (run while provisioned): asserts every Nano-owned artifact stays
-inside the known scope — `NanoK3Sandbox{Offline,Online}` accounts,
-`NanoK3SandboxUsers` group, the `nanok3_sandbox_offline_*` firewall rules,
-the `NanoK3 Windows Sandbox WFP` provider + `nanok3_wfp_*` filters, and
-`%USERPROFILE%\.nanok3` — with no services, scheduled tasks, or stray
+inside the known scope — `NanoSandbox{Offline,Online}` accounts,
+`NanoSandboxUsers` group, the `nano_sandbox_offline_*` firewall rules,
+the `Wayland Nano Sandbox WFP` provider + `nano_wfp_*` filters, and
+`%USERPROFILE%\.nano` — with no services, scheduled tasks, or stray
 profile-root files.
 
 Post-uninstall (run after teardown): asserts every one of those artifacts is
 gone — including the DPAPI secrets file
-(`%USERPROFILE%\.nanok3\.sandbox-secrets\sandbox_users.json`), the
-`%USERPROFILE%\.nanok3\.sandbox` log dir, and the
+(`%USERPROFILE%\.nano\.sandbox-secrets\sandbox_users.json`), the
+`%USERPROFILE%\.nano\.sandbox` log dir, and the
 `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList`
 values that hid the sandbox accounts from the login screen. Teardown is the
 setup helper itself with an `uninstall: true` payload (same base64 CLI
@@ -65,18 +65,18 @@ contract as provisioning), run elevated:
 
 ```powershell
 # elevated; payload built like the provisioning payload plus "uninstall": true
-target\release\nanok3-sandbox-setup.exe <BASE64_UNINSTALL_PAYLOAD>
+target\release\wayland-nano-sandbox-setup.exe <BASE64_UNINSTALL_PAYLOAD>
 
 # then, unelevated:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\c12-proof\Test-C12Proof.ps1 -PostUninstall
 ```
 
-The helper's uninstall is fail-closed on exact NanoK3 identities (account
+The helper's uninstall is fail-closed on exact Wayland Nano identities (account
 name prefix, exact group membership, exact firewall rule names, Track-B WFP
 GUIDs whose display names are verified before deletion, a secrets file that
-is parsed and verified to name exactly the provisioned `NanoK3Sandbox*`
-accounts before deletion, UserList values keyed by exact `NanoK3Sandbox*`
-account names, and a log-dir removal guarded to the `.nanok3`-scoped
+is parsed and verified to name exactly the provisioned `NanoSandbox*`
+accounts before deletion, UserList values keyed by exact `NanoSandbox*`
+account names, and a log-dir removal guarded to the `.nano`-scoped
 `.sandbox` path) and removes nothing else — Track A's
 `CodexSandbox*`/`codex_*` objects are never touched.
 
@@ -100,16 +100,16 @@ account names, and a log-dir removal guarded to the `.nanok3`-scoped
   relabeled accordingly.
 - **Offline-identity probes** (`write-outside-root`, `sensitive-read-deny`,
   `junction-escape`, `network-deny-offline`) all execute their attempt as the
-  provisioned `NanoK3SandboxOffline` identity, never as the harness user.
+  provisioned `NanoSandboxOffline` identity, never as the harness user.
   They share one pattern (`Get-OfflineCredential` / `Invoke-OfflineChild`):
   the offline credential is decrypted from
-  `%USERPROFILE%\.nanok3\.sandbox-secrets\sandbox_users.json` (DPAPI,
+  `%USERPROFILE%\.nano\.sandbox-secrets\sandbox_users.json` (DPAPI,
   current-user scope) **in memory only** — the plaintext is never printed,
   logged, or persisted — and a one-shot powershell child is launched via
   `Start-Process -Credential` under a numeric exit-code contract:
   42/43 write, 44/45 read, 46/47 junction write, 48/49 TCP connect (even =
   violation, odd = denied/blocked, expected). stdout/stderr are captured to
-  `nanok3-<probe>.{stdout,stderr}.log` in the evidence dir as the denial
+  `wayland-nano-<probe>.{stdout,stderr}.log` in the evidence dir as the denial
   evidence. Each probe also carries a harness-side control so the denial is
   attributable to the identity: `sensitive-read-deny` requires the harness
   user to read the same file successfully (plus the legacy same-user
@@ -119,10 +119,10 @@ account names, and a log-dir removal guarded to the `.nanok3`-scoped
   control makes the probe FAIL as inconclusive rather than PASS.
 - **network-deny-offline**'s primary oracle is the real TCP connect attempt
   as the offline identity. The pre-hardening WFP-XML grep (`netsh wfp show
-  filters`, NanoK3 substring) is kept only as a secondary `wfp-filters=`
+  filters`, `nano_wfp` substring) is kept only as a secondary `wfp-filters=`
   detail line — filter presence alone never passes the probe.
 - **tree-kill-5s** scopes its survivor inventory to the probe's own tree:
-  while `nanok3-tree-kill-probe.exe` runs, the harness walks
+  while `wayland-nano-tree-kill-probe.exe` runs, the harness walks
   `Win32_Process.ParentProcessId` from the probe PID every 100 ms and records
   every descendant PID observed; after `job.terminate()` none of those
   recorded PIDs may still exist. An empty recording FAILs the probe (the
@@ -130,20 +130,20 @@ account names, and a log-dir removal guarded to the `.nanok3`-scoped
   misattribute unrelated processes (panel finding #5) and is gone.
 - **uninstall-scope** has two modes (see "Uninstall-scope probe modes"
   above). The default mode audits provisioning residue; `-PostUninstall`
-  audits that the helper's `uninstall: true` run removed all NanoK3 machine
-  state: accounts, group, firewall rules, WFP provider/filters, setup marker,
-  the DPAPI secrets file, the `.sandbox` log dir, and the Winlogon
+  audits that the helper's `uninstall: true` run removed all Wayland Nano
+  machine state: accounts, group, firewall rules, WFP provider/filters, setup
+  marker, the DPAPI secrets file, the `.sandbox` log dir, and the Winlogon
   `SpecialAccounts\UserList` hide-values. Provisioning artifacts are Track-B
-  namespaced: group `NanoK3SandboxUsers`, firewall rules
-  `nanok3_sandbox_offline_*`, WFP provider `NanoK3 Windows Sandbox WFP` with
-  `nanok3_wfp_*` filters (Track-B GUIDs, distinct from the donor's).
+  namespaced: group `NanoSandboxUsers`, firewall rules
+  `nano_sandbox_offline_*`, WFP provider `Wayland Nano Sandbox WFP` with
+  `nano_wfp_*` filters (Track-B GUIDs, distinct from the donor's).
 - `setup-idempotent` builds a base64 setup payload with
   `refresh_marker_only: true` (schema field in
   `crates/nano-sandbox/src/bin/setup_main/win.rs`) and invokes
-  `nanok3-sandbox-setup.exe <payload>` unelevated. The helper then performs
-  ONLY the marker path provisioning runs (prepare the protected marker file,
-  then commit valid contents). The probe verifies (a) the refresh round-trips:
-  the marker still satisfies the readiness rule from
+  `wayland-nano-sandbox-setup.exe <payload>` unelevated. The helper then
+  performs ONLY the marker path provisioning runs (prepare the protected
+  marker file, then commit valid contents). The probe verifies (a) the
+  refresh round-trips: the marker still satisfies the readiness rule from
   `crates/nano-sandbox/src/identity.rs` (`load_marker`: parseable
   `SetupMarker` + matching `version`) and a canonical SHA-256 over every field
   except `created_at` — which `commit_setup_marker` legitimately re-stamps on

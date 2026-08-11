@@ -1019,7 +1019,7 @@ mod nano_tests {
 
     #[test]
     fn deny_write_ace_blocks_write_and_check_reports_denied() {
-        let dir = std::env::temp_dir().join(format!("nanok3-acl-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("wayland-nano-acl-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
 
         // Baseline: the harness user can write, and the allow-scan reports it.

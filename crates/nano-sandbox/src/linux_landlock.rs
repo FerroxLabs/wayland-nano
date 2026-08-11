@@ -1,12 +1,12 @@
 //! Linux sandbox argv builder: transforms a command + permission profile
-//! into a `nanok3-linux-sandbox` helper invocation. The caller spawns the
+//! into a `wayland-nano-linux-sandbox` helper invocation. The caller spawns the
 //! helper binary with the returned argv.
 //!
 //! Provenance: ported from Codex `codex-rs/sandboxing/src/landlock.rs`
 //! @ 646f7c0a. Transformations:
 //! - codex_protocol::models::PermissionProfile -> nano_core::permissions::PermissionProfile
 //!   (nano-k3's profile is an enum; its serde shape is the CLI contract);
-//! - `codex-linux-sandbox` -> `nanok3-linux-sandbox` (nanok3-* namespacing);
+//! - `codex-linux-sandbox` -> `wayland-nano-linux-sandbox` (wayland-nano-* namespacing);
 //! - managed-network-proxy surface DROPPED (nano-egress owns egress):
 //!   `allow_network_for_proxy` and the `--allow-network-for-proxy` flag are
 //!   not ported; proxy-only networking required bubblewrap, which is also
@@ -17,12 +17,12 @@
 use nano_core::permissions::PermissionProfile;
 use std::path::Path;
 
-/// Basename used when a NanoK3 executable self-invokes as the Linux sandbox
+/// Basename used when a Wayland Nano executable self-invokes as the Linux sandbox
 /// helper.
-pub const NANOK3_LINUX_SANDBOX_ARG0: &str = "nanok3-linux-sandbox";
+pub const NANO_LINUX_SANDBOX_ARG0: &str = "wayland-nano-linux-sandbox";
 
 /// Converts the permission profile into the CLI invocation for
-/// `nanok3-linux-sandbox`.
+/// `wayland-nano-linux-sandbox`.
 ///
 /// The helper performs the actual sandboxing (legacy Landlock + seccomp)
 /// after parsing these arguments. The profile JSON flag is emitted before

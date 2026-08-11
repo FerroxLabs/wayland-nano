@@ -17,7 +17,7 @@ const ACTIVATION_BUDGET_CHARS: usize = 8_000;
 pub fn prepare_skill_context(roots: &[PathBuf]) -> Option<Message> {
     let (skills, errors) = load_skill_roots(roots);
     for error in &errors {
-        eprintln!("nanok3: skill load error: {error}");
+        eprintln!("wayland-nano: skill load error: {error}");
     }
     if skills.is_empty() {
         return None;

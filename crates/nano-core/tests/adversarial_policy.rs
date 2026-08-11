@@ -57,7 +57,7 @@ impl Drop for Fixture {
 /// temp root with `workspace/` (writable) holding `private/secret.txt`
 /// (denied) and `ok.txt` (plain workspace file).
 fn fixture(tag: &str) -> Fixture {
-    let root = std::env::temp_dir().join(format!("nanok3-adv-policy-{}-{tag}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("nano-adv-policy-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let fixture = Fixture {
         ws: root.join("workspace"),
@@ -65,8 +65,8 @@ fn fixture(tag: &str) -> Fixture {
         root,
     };
     std::fs::create_dir_all(&fixture.private).unwrap();
-    std::fs::write(fixture.private.join("secret.txt"), "nanok3-adv-secret").unwrap();
-    std::fs::write(fixture.ws.join("ok.txt"), "nanok3-adv-ok").unwrap();
+    std::fs::write(fixture.private.join("secret.txt"), "nano-adv-secret").unwrap();
+    std::fs::write(fixture.ws.join("ok.txt"), "nano-adv-ok").unwrap();
     fixture
 }
 
@@ -213,7 +213,7 @@ fn verbatim_unc_spelling_does_not_escape_to_a_local_grant() {
         FileSystemAccessMode::Read,
     )]);
 
-    let canonical = Path::new(r"\\nanok3-no-such-host\nanok3share\secret.txt");
+    let canonical = Path::new(r"\\nano-no-such-host\nanoshare\secret.txt");
     let canonical_decision = policy.resolve_access_with_cwd(canonical, &cwd);
     assert_eq!(
         canonical_decision,
@@ -221,7 +221,7 @@ fn verbatim_unc_spelling_does_not_escape_to_a_local_grant() {
         "control: UNC path outside every entry must be denied"
     );
 
-    let variant = Path::new(r"\\?\UNC\nanok3-no-such-host\nanok3share\secret.txt");
+    let variant = Path::new(r"\\?\UNC\nano-no-such-host\nanoshare\secret.txt");
     let variant_decision = policy.resolve_access_with_cwd(variant, &cwd);
     assert_not_more_permissive(canonical_decision, variant_decision, r"\\?\UNC\ spelling");
 }
@@ -240,11 +240,11 @@ fn double_slash_spelling_does_not_inherit_local_grants() {
         FileSystemAccessMode::Read,
     )]);
 
-    let canonical = Path::new(r"\\nanok3-no-such-host\nanok3share\secret.txt");
+    let canonical = Path::new(r"\\nano-no-such-host\nanoshare\secret.txt");
     let canonical_decision = policy.resolve_access_with_cwd(canonical, &cwd);
     assert_eq!(canonical_decision, FileSystemAccessMode::Deny);
 
-    let variant = Path::new("//nanok3-no-such-host/nanok3share/secret.txt");
+    let variant = Path::new("//nano-no-such-host/nanoshare/secret.txt");
     let variant_decision = policy.resolve_access_with_cwd(variant, &cwd);
     assert_not_more_permissive(
         canonical_decision,
@@ -371,12 +371,12 @@ fn dot_components_and_mixed_separators_match_canonical_decision() {
 
 #[test]
 fn ads_spellings_do_not_bypass_file_deny() {
-    let root = std::env::temp_dir().join(format!("nanok3-adv-policy-{}-ads", std::process::id()));
+    let root = std::env::temp_dir().join(format!("nano-adv-policy-{}-ads", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let ws = root.join("workspace");
     std::fs::create_dir_all(&ws).unwrap();
     let denied_file = ws.join("secret.txt");
-    std::fs::write(&denied_file, "nanok3-adv-secret").unwrap();
+    std::fs::write(&denied_file, "nano-adv-secret").unwrap();
 
     // Deny the exact file; the rest of the workspace stays writable.
     let policy = FileSystemSandboxPolicy::restricted(vec![
@@ -416,8 +416,8 @@ fn ads_spellings_do_not_bypass_file_deny() {
     // still cover all of its streams — otherwise hidden data can be attached
     // to (or read from) a denied file via ADS spelling.
     let default_stream = ws.join("secret.txt::$DATA");
-    let named_stream = ws.join("secret.txt:nanok3ads");
-    if std::fs::write(&named_stream, "nanok3-adv-ads").is_err() {
+    let named_stream = ws.join("secret.txt:nanoads");
+    if std::fs::write(&named_stream, "nano-adv-ads").is_err() {
         eprintln!("skipping: ADS unavailable (non-NTFS volume)");
         let _ = std::fs::remove_dir_all(&root);
         return;
@@ -510,7 +510,7 @@ fn eight_three_short_name_spellings_stay_denied() {
 #[test]
 fn overlong_path_spellings_match_canonical_decision() {
     let root =
-        std::env::temp_dir().join(format!("nanok3-adv-policy-{}-overlong", std::process::id()));
+        std::env::temp_dir().join(format!("nano-adv-policy-{}-overlong", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let ws = root.join("workspace");
     let private = ws.join("private");
@@ -520,13 +520,13 @@ fn overlong_path_spellings_match_canonical_decision() {
     // verbatim prefix, which bypasses the legacy limit for creation.
     let mut deep = private.clone();
     for _ in 0..12 {
-        deep = deep.join("nanok3-deep-directory-segment");
+        deep = deep.join("nano-deep-directory-segment");
     }
     let verbatim_deep = format!(r"\\?\{}", deep.display());
     std::fs::create_dir_all(&verbatim_deep).unwrap();
     let deep_file = deep.join("secret.txt");
     assert!(deep_file.display().to_string().len() > 260);
-    std::fs::write(format!(r"\\?\{}", deep_file.display()), "nanok3-adv-secret").unwrap();
+    std::fs::write(format!(r"\\?\{}", deep_file.display()), "nano-adv-secret").unwrap();
 
     let f = Fixture {
         root: root.clone(),
@@ -612,12 +612,12 @@ fn relative_spellings_from_unusual_cwd_match_absolute_decision() {
 
 #[test]
 fn git_metadata_case_and_trailing_dot_variants_stay_read_only() {
-    let root = std::env::temp_dir().join(format!("nanok3-adv-policy-{}-meta", std::process::id()));
+    let root = std::env::temp_dir().join(format!("nano-adv-policy-{}-meta", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let ws = root.join("workspace");
     let git = ws.join(".git");
     std::fs::create_dir_all(&git).unwrap();
-    std::fs::write(git.join("config"), "nanok3-adv-git").unwrap();
+    std::fs::write(git.join("config"), "nano-adv-git").unwrap();
 
     let policy = workspace_write_policy(&[], true, true);
     let canonical = git.join("config");

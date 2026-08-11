@@ -1,4 +1,4 @@
-//! nanok3-spawn-profile — measures where spawn prep time goes.
+//! wayland-nano-spawn-profile — measures where spawn prep time goes.
 //!
 //! The documented ~30s/spawn cost (b-env-02 repro) needs attribution before
 //! optimization: restricted-token creation, cap SID loading, session ACL
@@ -17,7 +17,7 @@ mod win {
 
     #[tokio::main(flavor = "current_thread")]
     pub(crate) async fn main() -> anyhow::Result<()> {
-        let tmp = std::env::temp_dir().join("nanok3-prof-fixed");
+        let tmp = std::env::temp_dir().join("wayland-nano-prof-fixed");
         let workspace = tmp.join("workspace");
         let nano_home = tmp.join("nano-home");
         std::fs::create_dir_all(&workspace)?;
@@ -155,5 +155,5 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(not(target_os = "windows"))]
 fn main() {
-    panic!("nanok3-spawn-profile is Windows-only");
+    panic!("wayland-nano-spawn-profile is Windows-only");
 }

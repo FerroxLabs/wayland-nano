@@ -1,4 +1,4 @@
-# NanoK3 (Track B) — gate entry points
+# Wayland Nano (Track B) — gate entry points
 # Local and CI use the same commands; scripts may add platform args but never
 # replace gate semantics.
 

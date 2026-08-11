@@ -1423,14 +1423,14 @@ fn find_first_non_existent_component(target_path: &Path) -> Option<PathBuf> {
 
 const SYSTEM_BWRAP_PROGRAM: &str = "bwrap";
 const MISSING_BWRAP_WARNING: &str = concat!(
-    "Nano K3 could not find bubblewrap on PATH. ",
+    "Wayland Nano could not find bubblewrap on PATH. ",
     "Install bubblewrap with your OS package manager. ",
-    "Nano K3 will use the bundled bubblewrap in the meantime.",
+    "Wayland Nano will use the bundled bubblewrap in the meantime.",
 );
 const USER_NAMESPACE_WARNING: &str =
-    "Nano K3's Linux sandbox uses bubblewrap and needs access to create user namespaces.";
+    "Wayland Nano's Linux sandbox uses bubblewrap and needs access to create user namespaces.";
 pub const WSL1_BWRAP_WARNING: &str = concat!(
-    "Nano K3's Linux sandbox uses bubblewrap, which is not supported on WSL1 ",
+    "Wayland Nano's Linux sandbox uses bubblewrap, which is not supported on WSL1 ",
     "because WSL1 cannot create the required user namespaces. ",
     "Use WSL2 for sandboxed shell commands."
 );

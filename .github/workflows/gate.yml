@@ -1,4 +1,4 @@
-# NanoK3 (Track B) — native gate workflow, 6-target hosted-runner matrix.
+# Wayland Nano (Track B) — native gate workflow, 6-target hosted-runner matrix.
 # Proves macOS / Linux / Windows parity (x64 + ARM64) on the same gate the
 # Windows leg has always run: gate-fmt, gate-lint, gate-test, gate-deny
 # (advisory). Live tests never run in CI (they need the owner-held Flux
@@ -6,12 +6,12 @@
 #
 # POST-PORT STATE: the unix legs (macos-*, ubuntu-*) assume the in-flight
 # nano-sandbox unix backend port has landed — including the
-# `nanok3-linux-sandbox` helper binary built on the Linux legs below. Until
-# that port merges, expect the unix legs to fail in gate-lint/gate-test; the
-# matrix is authored for the tree after the port. fail-fast is off so one
+# `wayland-nano-linux-sandbox` helper binary built on the Linux legs below.
+# Until that port merges, expect the unix legs to fail in gate-lint/gate-test;
+# the matrix is authored for the tree after the port. fail-fast is off so one
 # red leg never cancels the others.
 
-name: nanok3-gate
+name: wayland-nano-gate
 
 on:
   push:
@@ -61,7 +61,7 @@ jobs:
         run: just gate-lint
 
       # Build all bins BEFORE the tests: the unix shell-tool runtime tests
-      # exec the nanok3-linux-sandbox helper, and `cargo test` only builds
+      # exec the wayland-nano-linux-sandbox helper, and `cargo test` only builds
       # bins of the package under test — the helper must already exist in
       # target/debug/.
       - name: Build workspace binaries (unix sandbox helpers)
@@ -69,9 +69,9 @@ jobs:
         run: cargo build --workspace --bins
 
       # Post-port proof: the Linux sandbox helper binary must exist.
-      - name: Verify nanok3-linux-sandbox helper built
+      - name: Verify wayland-nano-linux-sandbox helper built
         if: runner.os == 'Linux'
-        run: test -x target/debug/nanok3-linux-sandbox
+        run: test -x target/debug/wayland-nano-linux-sandbox
 
       # The helper's modern path shells out to bubblewrap; hosted Ubuntu
       # images don't ship it. (Legacy landlock fallback stays tested by the
@@ -100,7 +100,7 @@ jobs:
         run: |
           cargo build --release -p nano-cli
           New-Item -ItemType Directory -Force -Path nano-k3/artifacts/evidence/ci | Out-Null
-          ./target/release/nanok3-acp-profile.exe --json nano-k3/artifacts/evidence/ci/perf-${{ matrix.os }}.json
+          ./target/release/wayland-nano-acp-profile.exe --json nano-k3/artifacts/evidence/ci/perf-${{ matrix.os }}.json
 
       - name: gate-deny
         run: just gate-deny

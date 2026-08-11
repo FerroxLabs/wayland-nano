@@ -5,7 +5,7 @@ use serde::Serialize;
 
 pub const JSONRPC_VERSION: &str = "2.0";
 pub const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
-pub const CLIENT_NAME: &str = "nanok3";
+pub const CLIENT_NAME: &str = "wayland-nano";
 pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -123,7 +123,7 @@ mod tests {
         assert_eq!(json["id"], 1);
         assert_eq!(json["method"], "initialize");
         assert_eq!(json["params"]["protocolVersion"], MCP_PROTOCOL_VERSION);
-        assert_eq!(json["params"]["clientInfo"]["name"], "nanok3");
+        assert_eq!(json["params"]["clientInfo"]["name"], "wayland-nano");
     }
 
     #[test]

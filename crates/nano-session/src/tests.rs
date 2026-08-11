@@ -202,7 +202,7 @@ fn compaction_replay_is_actionably_equivalent() {
 
 #[test]
 fn writer_is_idempotent_across_reopen() {
-    let dir = std::env::temp_dir().join(format!("nanok3-journal-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("nano-journal-{}", std::process::id()));
     let path = PathBuf::from(&dir).join("wire.jsonl");
     {
         let mut writer = JournalWriter::open(&path).unwrap();
@@ -226,7 +226,7 @@ fn writer_is_idempotent_across_reopen() {
 }
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("nanok3-journal-{}-{tag}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("nano-journal-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir

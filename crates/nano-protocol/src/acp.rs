@@ -101,7 +101,7 @@ pub fn agent_capabilities() -> serde_json::Value {
             }
         },
         "agentInfo": {
-            "name": "nanok3",
+            "name": "wayland-nano",
             "version": env!("CARGO_PKG_VERSION")
         }
     })
@@ -281,7 +281,7 @@ mod tests {
     fn initialize_response_shape() {
         let caps = agent_capabilities();
         assert_eq!(caps["protocolVersion"], 1);
-        assert_eq!(caps["agentInfo"]["name"], "nanok3");
+        assert_eq!(caps["agentInfo"]["name"], "wayland-nano");
         assert_eq!(
             caps["agentCapabilities"]["promptCapabilities"]["text"],
             true

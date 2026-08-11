@@ -1,4 +1,4 @@
-//! nanok3-acp-profile — agent-path perf numbers for docs/metrics/C2-metrics.md.
+//! wayland-nano-acp-profile — agent-path perf numbers for docs/metrics/C2-metrics.md.
 //!
 //! Measures (no live model calls unless explicitly keyed — see the last item):
 //! - acp-host spawn→ready latency: process spawn to the first `initialize`
@@ -22,8 +22,8 @@
 //!   runs. Without a key this metric prints `skipped` and the bin still
 //!   exits 0, so CI is unaffected.
 //!
-//! The `nanok3` binary is located next to this binary in the target dir, or
-//! via NANOK3_EXE. For the non-live metrics FLUX_API_KEY is set to a
+//! The `wayland-nano` binary is located next to this binary in the target dir, or
+//! via NANO_EXE. For the non-live metrics FLUX_API_KEY is set to a
 //! placeholder: `acp-host` refuses to start without one, but
 //! `initialize`/`session/new` never touch the network, and no prompt is
 //! ever sent on that path.
@@ -41,14 +41,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-fn nanok3_exe() -> std::path::PathBuf {
-    if let Some(path) = std::env::var_os("NANOK3_EXE") {
+fn wayland_nano_exe() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("NANO_EXE") {
         return std::path::PathBuf::from(path);
     }
     let here = std::env::current_exe().expect("current exe");
     here.parent()
         .expect("target dir")
-        .join(format!("nanok3{}", std::env::consts::EXE_SUFFIX))
+        .join(format!("wayland-nano{}", std::env::consts::EXE_SUFFIX))
 }
 
 struct AcpChild {
@@ -59,21 +59,21 @@ struct AcpChild {
 
 impl AcpChild {
     fn spawn(workspace: &std::path::Path) -> (Self, Instant) {
-        Self::spawn_with_key(workspace, "nanok3-perf-placeholder-key")
+        Self::spawn_with_key(workspace, "wayland-nano-perf-placeholder-key")
     }
 
     fn spawn_with_key(workspace: &std::path::Path, flux_key: &str) -> (Self, Instant) {
         let started = Instant::now();
-        let mut child = Command::new(nanok3_exe())
+        let mut child = Command::new(wayland_nano_exe())
             .arg("acp-host")
             .current_dir(workspace)
             .env("FLUX_API_KEY", flux_key)
-            .env("NANOK3_HOME", workspace.join("nano-home"))
+            .env("NANO_HOME", workspace.join("nano-home"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .expect("spawn nanok3 acp-host");
+            .expect("spawn wayland-nano acp-host");
         let stdin = child.stdin.take().expect("stdin");
         let stdout = BufReader::new(child.stdout.take().expect("stdout"));
         (
@@ -289,7 +289,7 @@ fn warm_initialize(workspace: &std::path::Path, iterations: usize) -> Vec<f64> {
             serde_json::json!({ "protocolVersion": 1, "clientCapabilities": {} }),
         );
         samples.push(started.elapsed().as_secs_f64() * 1000.0);
-        assert_eq!(response["result"]["agentInfo"]["name"], "nanok3");
+        assert_eq!(response["result"]["agentInfo"]["name"], "wayland-nano");
     }
     samples
 }
@@ -562,11 +562,11 @@ fn main() {
         .find(|w| w[0] == "--json")
         .map(|w| std::path::PathBuf::from(&w[1]));
 
-    let workspace = std::env::temp_dir().join(format!("nanok3-acp-prof-{}", std::process::id()));
+    let workspace = std::env::temp_dir().join(format!("nano-acp-prof-{}", std::process::id()));
     std::fs::create_dir_all(&workspace).expect("workspace");
 
     println!("=== acp profile: agent path (fixture metrics need no live model) ===");
-    println!("binary: {}", nanok3_exe().display());
+    println!("binary: {}", wayland_nano_exe().display());
 
     let spawn_ready = spawn_to_ready(&workspace, 10);
     stats("spawn→ready (cold process)", spawn_ready.clone());
@@ -641,7 +641,7 @@ fn main() {
 
     if let Some(path) = json_path {
         let report = serde_json::json!({
-            "tool": "nanok3-acp-profile",
+            "tool": "wayland-nano-acp-profile",
             "at_unix": std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-// nanok3 launcher shim.
+// wayland-nano launcher shim.
 // Resolves the prebuilt native binary for this platform/arch (see
 // bin/install.js for the packaging-pattern rationale) and replaces this
 // process's stdio with the child's, passing process.argv through verbatim.
@@ -19,7 +19,7 @@ const UNSUPPORTED_RUNTIME = new Set(['win32-arm64']);
 
 function resolveBinary() {
   const key = `${process.platform}-${process.arch}`;
-  const exe = process.platform === 'win32' ? 'nanok3.exe' : 'nanok3';
+  const exe = process.platform === 'win32' ? 'wayland-nano.exe' : 'wayland-nano';
   return { key, binaryPath: path.join(PACKAGE_ROOT, 'binaries', key, exe) };
 }
 
@@ -28,7 +28,7 @@ function main() {
 
   if (UNSUPPORTED_RUNTIME.has(key)) {
     console.error(
-      `nanok3: ${key} is not supported at runtime in this alpha.\n` +
+      `wayland-nano: ${key} is not supported at runtime in this alpha.\n` +
         '  The ARM64 Windows build is compile-gated only. Use win32-x64, darwin-x64, darwin-arm64, linux-x64, or linux-arm64.',
     );
     process.exit(1);
@@ -36,7 +36,7 @@ function main() {
 
   if (!fs.existsSync(binaryPath)) {
     console.error(
-      `nanok3: no prebuilt binary for ${key} at ${binaryPath}.\n` +
+      `wayland-nano: no prebuilt binary for ${key} at ${binaryPath}.\n` +
         '  Reinstall the package, or build from source (see packaging/npm/README.md).',
     );
     process.exit(1);
@@ -56,7 +56,7 @@ function main() {
   }
 
   child.on('error', (err) => {
-    console.error(`nanok3: failed to start ${binaryPath}: ${err.message}`);
+    console.error(`wayland-nano: failed to start ${binaryPath}: ${err.message}`);
     process.exit(1);
   });
 

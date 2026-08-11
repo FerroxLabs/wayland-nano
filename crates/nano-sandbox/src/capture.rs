@@ -485,7 +485,8 @@ mod nano_tests {
     use std::fs;
 
     fn fixture_dirs(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let tmp = std::env::temp_dir().join(format!("nanok3-cap-{tag}-{}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("wayland-nano-cap-{tag}-{}", std::process::id()));
         let workspace = tmp.join("workspace");
         let nano_home = tmp.join("nano-home");
         fs::create_dir_all(&workspace).unwrap();
@@ -501,7 +502,11 @@ mod nano_tests {
             &PermissionProfile::workspace_write(),
             &roots,
             &nano_home,
-            vec!["cmd.exe".into(), "/c".into(), "echo nanok3-capture".into()],
+            vec![
+                "cmd.exe".into(),
+                "/c".into(),
+                "echo wayland-nano-capture".into(),
+            ],
             &workspace,
             HashMap::new(),
             Some(20_000), // 20s bound: must not come anywhere near a timeout
@@ -513,7 +518,7 @@ mod nano_tests {
         assert_eq!(result.exit_code, 0);
         assert!(!result.timed_out, "capture must not time out");
         let stdout = String::from_utf8_lossy(&result.stdout);
-        assert!(stdout.contains("nanok3-capture"), "stdout: {stdout}");
+        assert!(stdout.contains("wayland-nano-capture"), "stdout: {stdout}");
         let _ = fs::remove_dir_all(workspace.parent().unwrap());
     }
 

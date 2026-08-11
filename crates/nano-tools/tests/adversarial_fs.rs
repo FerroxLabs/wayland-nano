@@ -3,7 +3,7 @@
 //!
 //! Fixture style mirrors `fs.rs` unit tests: a tempdir holding a `workspace`
 //! root (writable) plus an `outside` directory (never writable, deny-read
-//! where reads are under test). All marker/secret files are nanok3-namespaced.
+//! where reads are under test). All marker/secret files are nano-namespaced.
 
 use nano_core::abs::AbsolutePathBuf;
 use nano_core::permissions::{
@@ -55,7 +55,7 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let outside = tmp.path().join("outside");
     std::fs::create_dir_all(&ws).unwrap();
     std::fs::create_dir_all(&outside).unwrap();
-    std::fs::write(outside.join("nanok3-secret.txt"), "nanok3-outside-secret").unwrap();
+    std::fs::write(outside.join("nano-secret.txt"), "nano-outside-secret").unwrap();
     (tmp, ws, outside)
 }
 
@@ -89,14 +89,14 @@ fn make_dir_link(link: &Path, target: &Path) -> bool {
 fn write_through_dotdot_chain_is_denied() {
     let (tmp, ws, _outside) = fixture();
     let tools = FsTools::new(workspace_policy(&ws), &ws);
-    let escape = tmp.path().join("nanok3-traversal.txt");
+    let escape = tmp.path().join("nano-traversal.txt");
 
     let attempts = [
-        ws.join("../nanok3-traversal.txt"),
-        ws.join("sub/../../nanok3-traversal.txt"),
-        ws.join("../../nanok3-traversal.txt"),
+        ws.join("../nano-traversal.txt"),
+        ws.join("sub/../../nano-traversal.txt"),
+        ws.join("../../nano-traversal.txt"),
         // absolute path smuggling a `..` past naive prefix checks
-        tmp.path().join("workspace/../nanok3-traversal.txt"),
+        tmp.path().join("workspace/../nano-traversal.txt"),
     ];
     for attempt in attempts {
         let err = tools.write_file(&attempt, "pwn").expect_err("must deny");
@@ -119,9 +119,9 @@ fn dotdot_that_stays_inside_workspace_is_allowed() {
     let (_tmp, ws, _outside) = fixture();
     std::fs::create_dir_all(ws.join("sub")).unwrap();
     let tools = FsTools::new(workspace_policy(&ws), &ws);
-    let target = ws.join("sub/../nanok3-ok.txt");
+    let target = ws.join("sub/../nano-ok.txt");
     tools.write_file(&target, "fine").expect("in-root write");
-    assert!(ws.join("nanok3-ok.txt").exists());
+    assert!(ws.join("nano-ok.txt").exists());
 }
 
 #[test]
@@ -129,8 +129,8 @@ fn read_through_dotdot_into_denied_dir_is_denied() {
     let (_tmp, ws, outside) = fixture();
     let tools = FsTools::new(deny_read_policy(&outside), &ws);
     let attempts = [
-        ws.join("../outside/nanok3-secret.txt"),
-        outside.join("nanok3-secret.txt"),
+        ws.join("../outside/nano-secret.txt"),
+        outside.join("nano-secret.txt"),
     ];
     for attempt in attempts {
         let err = tools
@@ -161,14 +161,14 @@ fn sensitive_file_outside_workspace_denied_by_name_via_traversal() {
 #[test]
 fn read_through_dir_link_into_denied_dir_is_denied() {
     let (_tmp, ws, outside) = fixture();
-    let link = ws.join("nanok3-link");
+    let link = ws.join("nano-link");
     if !make_dir_link(&link, &outside) {
         eprintln!("skipping: directory link creation not permitted on this host");
         return;
     }
     let tools = FsTools::new(deny_read_policy(&outside), &ws);
     let err = tools
-        .read_file(&link.join("nanok3-secret.txt"), &ReadBounds::default())
+        .read_file(&link.join("nano-secret.txt"), &ReadBounds::default())
         .expect_err("read through link into denied dir must be denied");
     assert!(
         matches!(err, ToolError::ReadDenied(_)),
@@ -179,14 +179,14 @@ fn read_through_dir_link_into_denied_dir_is_denied() {
 #[test]
 fn write_through_dir_link_escapes_workspace_must_be_denied() {
     let (_tmp, ws, outside) = fixture();
-    let link = ws.join("nanok3-link");
+    let link = ws.join("nano-link");
     if !make_dir_link(&link, &outside) {
         eprintln!("skipping: directory link creation not permitted on this host");
         return;
     }
     let tools = FsTools::new(workspace_policy(&ws), &ws);
-    let escape = outside.join("nanok3-link-escape.txt");
-    let err = tools.write_file(&link.join("nanok3-link-escape.txt"), "pwn");
+    let escape = outside.join("nano-link-escape.txt");
+    let err = tools.write_file(&link.join("nano-link-escape.txt"), "pwn");
     assert!(
         matches!(err, Err(ToolError::WriteDenied(_))),
         "SECURITY HOLE: write through a directory link inside the workspace \
@@ -245,7 +245,7 @@ fn ntfs_junction_read_into_denied_dir_is_denied() {
     assert!(status.status.success(), "mklink /J failed");
     let tools = FsTools::new(deny_read_policy(&outside), &ws);
     let err = tools
-        .read_file(&junction.join("nanok3-secret.txt"), &ReadBounds::default())
+        .read_file(&junction.join("nano-secret.txt"), &ReadBounds::default())
         .expect_err("read through junction into denied dir must be denied");
     assert!(
         matches!(err, ToolError::ReadDenied(_)),

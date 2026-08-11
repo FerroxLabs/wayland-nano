@@ -3,7 +3,7 @@
 //! Provenance: ported from Codex `windows-sandbox-rs/src/wfp_setup.rs` @
 //! 646f7c0a. Transformations: OTel/Statsig provider -> telemetry facade
 //! `MetricsHook` (D-facade); metric names rebranded
-//! `codex.*` -> `nanok3.*`; codex_home -> nano_home.
+//! `codex.*` -> `nano.*`; codex_home -> nano_home.
 
 use crate::setup_error::sanitize_setup_metric_tag_value;
 use crate::telemetry;
@@ -12,10 +12,10 @@ use crate::wfp::uninstall_wfp_filters as remove_wfp_objects;
 use anyhow::Result;
 use std::path::Path;
 
-const WFP_SETUP_SUCCESS_METRIC: &str = "nanok3.windows_sandbox.wfp_setup_success";
-const WFP_SETUP_FAILURE_METRIC: &str = "nanok3.windows_sandbox.wfp_setup_failure";
-const WFP_UNINSTALL_SUCCESS_METRIC: &str = "nanok3.windows_sandbox.wfp_uninstall_success";
-const WFP_UNINSTALL_FAILURE_METRIC: &str = "nanok3.windows_sandbox.wfp_uninstall_failure";
+const WFP_SETUP_SUCCESS_METRIC: &str = "nano.windows_sandbox.wfp_setup_success";
+const WFP_SETUP_FAILURE_METRIC: &str = "nano.windows_sandbox.wfp_setup_failure";
+const WFP_UNINSTALL_SUCCESS_METRIC: &str = "nano.windows_sandbox.wfp_uninstall_success";
+const WFP_UNINSTALL_FAILURE_METRIC: &str = "nano.windows_sandbox.wfp_uninstall_failure";
 
 #[derive(Debug, Clone, Copy)]
 enum WfpSetupMetricOutcome {
@@ -166,7 +166,7 @@ pub fn install_wfp_filters<F>(
     emit_wfp_setup_metric_safely(metrics_hook, offline_username, &metric, &mut log);
 }
 
-/// Removes the persistent NanoK3 WFP provider, sublayer, and filters.
+/// Removes the persistent Wayland Nano WFP provider, sublayer, and filters.
 ///
 /// Track-B addition. Unlike install (whose failures are non-fatal to the rest
 /// of setup), uninstall propagates failures: the caller decides whether to
@@ -180,7 +180,7 @@ pub fn uninstall_wfp_filters<F>(
 where
     F: FnMut(&str),
 {
-    let target = "nanok3-wfp";
+    let target = "wayland-nano-wfp";
     let (metric, outcome) =
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(remove_wfp_objects)) {
             Ok(Ok(removed_filter_count)) => {

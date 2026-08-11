@@ -80,7 +80,7 @@ probe "omit-max-tokens completions" "$BASE/v1/chat/completions" /tmp/o-cc.json "
 
 # --- 9. MCP tools/list over streamable HTTP ---
 cat > /tmp/mcp-init.json <<'EOF'
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"nanok3-probe","version":"0.1.0"}}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"wayland-nano-probe","version":"0.1.0"}}}
 EOF
 printf '== mcp initialize (capture session) ==\n'
 curl -sS -N -D "$OUT/mcp/${TS}_init_headers.txt" -o "$OUT/mcp/${TS}_init_body.txt" \

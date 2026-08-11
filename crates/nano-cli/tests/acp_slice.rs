@@ -1,4 +1,4 @@
-//! ACP slice: a simulated ACP host (Desktop's role) drives the real `nanok3
+//! ACP slice: a simulated ACP host (Desktop's role) drives the real `wayland-nano
 //! acp-host` binary over stdio JSON-RPC, live end-to-end.
 //!
 //! Verifies: initialize → session/new → session/prompt (streamed updates +
@@ -24,19 +24,19 @@ struct AcpSlice {
 
 impl AcpSlice {
     fn spawn(workspace: &std::path::Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_nanok3"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_wayland-nano"))
             .arg("acp-host")
             .current_dir(workspace)
             .env(
                 "FLUX_API_KEY",
                 std::env::var("FLUX_TEST_KEY").unwrap_or_default(),
             )
-            .env("NANOK3_HOME", workspace.join("nano-home"))
+            .env("NANO_HOME", workspace.join("nano-home"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .expect("spawn nanok3 acp-host");
+            .expect("spawn wayland-nano acp-host");
         let child_pid = child.id();
         let stdin = child.stdin.take();
         let stdout = BufReader::new(child.stdout.take().unwrap());
@@ -91,13 +91,13 @@ fn acp_slice_live_prompt_through_desktop_protocol() {
         eprintln!("FLUX_TEST_KEY not set — skipping ACP slice");
         return;
     }
-    let workspace = std::env::temp_dir().join(format!("nanok3-acp-{}", std::process::id()));
+    let workspace = std::env::temp_dir().join(format!("nano-acp-{}", std::process::id()));
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::write(workspace.join("note.txt"), "acp slice marker\n").unwrap();
 
     let mut slice = AcpSlice::spawn(&workspace);
 
-    // 1. initialize — protocol v1, nanok3 identity, prompt text capability.
+    // 1. initialize — protocol v1, wayland-nano identity, prompt text capability.
     let init = slice.request(
         "initialize",
         serde_json::json!({
@@ -107,7 +107,7 @@ fn acp_slice_live_prompt_through_desktop_protocol() {
     );
     let result = &init["result"];
     assert_eq!(result["protocolVersion"], 1, "init: {init}");
-    assert_eq!(result["agentInfo"]["name"], "nanok3");
+    assert_eq!(result["agentInfo"]["name"], "wayland-nano");
     assert_eq!(
         result["agentCapabilities"]["promptCapabilities"]["text"],
         true
@@ -122,7 +122,7 @@ fn acp_slice_live_prompt_through_desktop_protocol() {
         .as_str()
         .expect("sessionId")
         .to_string();
-    assert!(session_id.starts_with("nanok3-session-"));
+    assert!(session_id.starts_with("wayland-nano-session-"));
 
     // 3. session/prompt → streamed updates captured + final stopReason.
     let answer = slice.request(

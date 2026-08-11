@@ -9,7 +9,7 @@
 //! - outputs are bounded, timeouts enforced, and the result carries the
 //!   shell identity for protocol reporting;
 //! - FAIL CLOSED: if the platform sandbox transform cannot be built (missing
-//!   `nanok3-linux-sandbox` helper, seatbelt policy build error, no backend
+//!   `wayland-nano-linux-sandbox` helper, seatbelt policy build error, no backend
 //!   for the target), `run` returns a typed error and never spawns
 //!   unsandboxed.
 //!
@@ -28,7 +28,7 @@ use nano_sandbox::SandboxType;
 #[cfg(windows)]
 use nano_sandbox::capture::{CaptureResult, run_windows_sandbox_capture};
 #[cfg(any(target_os = "linux", test))]
-use nano_sandbox::linux_landlock::NANOK3_LINUX_SANDBOX_ARG0;
+use nano_sandbox::linux_landlock::NANO_LINUX_SANDBOX_ARG0;
 #[cfg(any(target_os = "linux", test))]
 use nano_sandbox::linux_landlock::create_linux_sandbox_command_args_for_permission_profile;
 #[cfg(any(target_os = "macos", test))]
@@ -178,7 +178,7 @@ impl ShellTool {
     /// profile), with output bounds and an optional timeout.
     ///
     /// The spawn goes through the platform sandbox transform (Seatbelt on
-    /// macOS, the `nanok3-linux-sandbox` helper on Linux). If the transform
+    /// macOS, the `wayland-nano-linux-sandbox` helper on Linux). If the transform
     /// cannot be built, this returns a typed error and spawns nothing.
     #[cfg(unix)]
     pub fn run(
@@ -348,18 +348,18 @@ fn seatbelt_sandbox_argv(
     Ok(argv)
 }
 
-/// Environment variable overriding the location of the `nanok3-linux-sandbox`
+/// Environment variable overriding the location of the `wayland-nano-linux-sandbox`
 /// helper binary (CI legs point it at the cargo-built helper).
 #[cfg(any(target_os = "linux", test))]
-pub const NANOK3_LINUX_SANDBOX_EXE_ENV_VAR: &str = "NANOK3_LINUX_SANDBOX_EXE";
+pub const NANO_LINUX_SANDBOX_EXE_ENV_VAR: &str = "NANO_LINUX_SANDBOX_EXE";
 
-/// Resolves the `nanok3-linux-sandbox` helper binary: explicit override
+/// Resolves the `wayland-nano-linux-sandbox` helper binary: explicit override
 /// first, then next to the current executable, then the cargo `target/`
 /// parent of a `deps/` test executable. Returns `None` when no candidate is
 /// a real file — the caller must fail closed.
 #[cfg(any(target_os = "linux", test))]
 fn resolve_linux_sandbox_exe() -> Option<PathBuf> {
-    let env_override = std::env::var_os(NANOK3_LINUX_SANDBOX_EXE_ENV_VAR).map(PathBuf::from);
+    let env_override = std::env::var_os(NANO_LINUX_SANDBOX_EXE_ENV_VAR).map(PathBuf::from);
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
@@ -380,7 +380,7 @@ fn resolve_linux_sandbox_exe_from(
     }
     let exe_dir = current_exe_dir?;
     for dir in [exe_dir.to_path_buf(), exe_dir.join("..")] {
-        let candidate = dir.join(NANOK3_LINUX_SANDBOX_ARG0);
+        let candidate = dir.join(NANO_LINUX_SANDBOX_ARG0);
         if candidate.is_file() {
             return Some(candidate);
         }
@@ -389,17 +389,17 @@ fn resolve_linux_sandbox_exe_from(
 }
 
 /// argv[0] for the helper invocation: the full path when the binary is
-/// already named `nanok3-linux-sandbox`, otherwise the canonical basename so
+/// already named `wayland-nano-linux-sandbox`, otherwise the canonical basename so
 /// self-invoking dispatch sees the helper identity.
 ///
 /// Provenance: codex `sandboxing/src/manager.rs` @ 646f7c0a
 /// (`linux_sandbox_arg0_override`, near-verbatim).
 #[cfg(any(target_os = "linux", test))]
 fn linux_sandbox_arg0_override(exe: &Path) -> String {
-    if exe.file_name().and_then(|name| name.to_str()) == Some(NANOK3_LINUX_SANDBOX_ARG0) {
+    if exe.file_name().and_then(|name| name.to_str()) == Some(NANO_LINUX_SANDBOX_ARG0) {
         exe.to_string_lossy().into_owned()
     } else {
-        NANOK3_LINUX_SANDBOX_ARG0.to_string()
+        NANO_LINUX_SANDBOX_ARG0.to_string()
     }
 }
 
@@ -431,8 +431,8 @@ fn linux_sandbox_command_with_resolver(
 ) -> Result<PlatformCommand, ShellError> {
     let helper_exe = resolve().ok_or_else(|| {
         ShellError::SandboxUnavailable(format!(
-            "`{NANOK3_LINUX_SANDBOX_ARG0}` helper binary not found (set \
-             {NANOK3_LINUX_SANDBOX_EXE_ENV_VAR} or place the helper next to the \
+            "`{NANO_LINUX_SANDBOX_ARG0}` helper binary not found (set \
+             {NANO_LINUX_SANDBOX_EXE_ENV_VAR} or place the helper next to the \
              current executable); refusing to run unsandboxed"
         ))
     })?;
@@ -587,16 +587,12 @@ mod tests {
         let out = tool
             .run(
                 ShellKind::Cmd,
-                "echo nanok3-shell",
+                "echo nano-shell",
                 Some(std::time::Duration::from_secs(60)),
             )
             .expect("spawn");
         assert_eq!(out.exit_code, 0);
-        assert!(
-            out.stdout.contains("nanok3-shell"),
-            "stdout: {}",
-            out.stdout
-        );
+        assert!(out.stdout.contains("nano-shell"), "stdout: {}", out.stdout);
         assert!(!out.timed_out);
         assert!(matches!(out.shell, ShellKind::Cmd));
     }
@@ -683,7 +679,7 @@ mod tests {
     #[test]
     fn linux_transform_prepends_helper_and_profile_flags() {
         let (_tmp, home, ws) = fixture();
-        let helper = home.join(NANOK3_LINUX_SANDBOX_ARG0);
+        let helper = home.join(NANO_LINUX_SANDBOX_ARG0);
         std::fs::write(&helper, b"fake helper").unwrap();
         let profile = PermissionProfile::workspace_write();
         let command =
@@ -714,11 +710,11 @@ mod tests {
 
     #[test]
     fn linux_arg0_falls_back_to_basename_for_other_exe_names() {
-        let named = Path::new("/tmp/nanok3-session/nanok3-linux-sandbox");
+        let named = Path::new("/tmp/nanok3-session/wayland-nano-linux-sandbox");
         assert_eq!(linux_sandbox_arg0_override(named), named.to_string_lossy());
         assert_eq!(
             linux_sandbox_arg0_override(Path::new("/tmp/nanok3-session/nanok3")),
-            NANOK3_LINUX_SANDBOX_ARG0
+            NANO_LINUX_SANDBOX_ARG0
         );
     }
 
@@ -744,7 +740,7 @@ mod tests {
     #[test]
     fn helper_resolution_prefers_env_override_then_sibling_then_target_parent() {
         let (_tmp, home, _ws) = fixture();
-        let env_helper = home.join("elsewhere").join(NANOK3_LINUX_SANDBOX_ARG0);
+        let env_helper = home.join("elsewhere").join(NANO_LINUX_SANDBOX_ARG0);
         std::fs::create_dir_all(env_helper.parent().unwrap()).unwrap();
         std::fs::write(&env_helper, b"fake helper").unwrap();
         assert_eq!(
@@ -755,7 +751,7 @@ mod tests {
         // sibling candidates (still sandboxed either way).
         let exe_dir = home.join("bin");
         std::fs::create_dir_all(&exe_dir).unwrap();
-        let sibling = exe_dir.join(NANOK3_LINUX_SANDBOX_ARG0);
+        let sibling = exe_dir.join(NANO_LINUX_SANDBOX_ARG0);
         std::fs::write(&sibling, b"fake helper").unwrap();
         assert_eq!(
             resolve_linux_sandbox_exe_from(Some(home.join("missing")), Some(&exe_dir)),
@@ -799,16 +795,12 @@ mod tests {
         let out = tool
             .run(
                 ShellKind::Sh,
-                "echo nanok3-shell",
+                "echo nano-shell",
                 Some(std::time::Duration::from_secs(60)),
             )
             .expect("spawn");
         assert_eq!(out.exit_code, 0);
-        assert!(
-            out.stdout.contains("nanok3-shell"),
-            "stdout: {}",
-            out.stdout
-        );
+        assert!(out.stdout.contains("nano-shell"), "stdout: {}", out.stdout);
         assert!(!out.timed_out);
         assert!(matches!(out.shell, ShellKind::Sh));
     }

@@ -195,7 +195,7 @@ pub fn scope_temp_env(env_map: &mut HashMap<String, String>) {
             .cloned()
             .or_else(|| env::var_os(key).map(|v| v.to_string_lossy().into_owned()));
         if let Some(base) = base {
-            let scoped = format!("{base}\nanok3-temp");
+            let scoped = format!("{base}\\wayland-nano-temp");
             let _ = std::fs::create_dir_all(&scoped);
             env_map.insert(key.to_string(), scoped);
         }

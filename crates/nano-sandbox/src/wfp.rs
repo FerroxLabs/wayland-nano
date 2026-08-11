@@ -76,22 +76,23 @@ use filter_specs::ConditionSpec;
 use filter_specs::FILTER_SPECS;
 use filter_specs::FilterSpec;
 
-const SESSION_NAME: &str = "NanoK3 Windows Sandbox WFP";
-const PROVIDER_NAME: &str = "NanoK3 Windows Sandbox WFP";
-const PROVIDER_DESCRIPTION: &str = "Persistent WFP provider for NanoK3 Windows sandbox filters";
-const SUBLAYER_NAME: &str = "NanoK3 Windows Sandbox WFP";
-const SUBLAYER_DESCRIPTION: &str = "Persistent WFP sublayer for NanoK3 Windows sandbox filters";
+const SESSION_NAME: &str = "Wayland Nano Sandbox WFP";
+const PROVIDER_NAME: &str = "Wayland Nano Sandbox WFP";
+const PROVIDER_DESCRIPTION: &str = "Persistent WFP provider for Wayland Nano sandbox filters";
+const SUBLAYER_NAME: &str = "Wayland Nano Sandbox WFP";
+const SUBLAYER_DESCRIPTION: &str = "Persistent WFP sublayer for Wayland Nano sandbox filters";
 
 // WFP identifies persistent providers, sublayers, and filters by stable GUIDs.
-// These values are NanoK3-owned (Track B) identities, deliberately distinct
-// from the donor's Codex GUIDs so both tracks' WFP namespaces coexist on one
-// box and Track-B uninstall can never delete Track-A objects. Do not
-// regenerate them unless we intentionally want to orphan old objects and
-// create a new WFP namespace.
-const PROVIDER_KEY: GUID = GUID::from_u128(0xf66b03a6_a380_409a_9751_d18c4a151e17);
-const SUBLAYER_KEY: GUID = GUID::from_u128(0x9ff7689d_50d3_4eb7_b437_417e1480fb71);
+// These values are Wayland Nano-owned identities, freshly generated for the
+// rebrand: they are distinct both from the donor's Codex GUIDs and from the
+// retired NanoK3-codename GUIDs, so the new provider can never match or
+// delete either predecessor's objects on one box. Do not regenerate them
+// unless we intentionally want to orphan old objects and create a new WFP
+// namespace.
+const PROVIDER_KEY: GUID = GUID::from_u128(0xcab1ac9f_2744_4e23_8d15_ea96dce2fa40);
+const SUBLAYER_KEY: GUID = GUID::from_u128(0x4080c0a5_4be7_4f24_b1ee_da4eb3b5a566);
 
-/// Installs the persistent NanoK3 WFP filters for `account`.
+/// Installs the persistent Wayland Nano WFP filters for `account`.
 ///
 /// This is intended to run from the already-elevated setup helper. Callers
 /// should treat any returned error as non-fatal to the rest of setup.
@@ -242,7 +243,7 @@ impl Drop for UserMatchCondition {
     }
 }
 
-/// Ensures the persistent NanoK3 WFP provider exists.
+/// Ensures the persistent Wayland Nano WFP provider exists.
 fn ensure_provider(engine: HANDLE) -> Result<()> {
     let provider_name = to_wide(OsStr::new(PROVIDER_NAME));
     let provider_description = to_wide(OsStr::new(PROVIDER_DESCRIPTION));
@@ -261,7 +262,7 @@ fn ensure_provider(engine: HANDLE) -> Result<()> {
     ensure_success_or(result, "FwpmProviderAdd0", &[FWP_E_ALREADY_EXISTS as u32])
 }
 
-/// Ensures the persistent NanoK3 sublayer exists under the NanoK3 provider.
+/// Ensures the persistent Wayland Nano sublayer exists under the Wayland Nano provider.
 fn ensure_sublayer(engine: HANDLE) -> Result<()> {
     let sublayer_name = to_wide(OsStr::new(SUBLAYER_NAME));
     let sublayer_description = to_wide(OsStr::new(SUBLAYER_DESCRIPTION));
@@ -371,7 +372,7 @@ fn delete_filter_if_present(engine: HANDLE, key: &GUID) -> Result<()> {
     )
 }
 
-/// Removes the persistent NanoK3 WFP filters, sublayer, and provider.
+/// Removes the persistent Wayland Nano WFP filters, sublayer, and provider.
 ///
 /// Track-B addition (the donor has no teardown). Fail-closed: every object is
 /// looked up by its Track-B GUID and its identity (display name and owning
@@ -396,7 +397,7 @@ pub fn uninstall_wfp_filters() -> Result<usize> {
     Ok(removed_filter_count)
 }
 
-/// Deletes one filter after verifying it belongs to the NanoK3 provider.
+/// Deletes one filter after verifying it belongs to the Wayland Nano provider.
 /// Returns Ok(false) when the filter is already absent.
 fn remove_filter_if_verified(engine: HANDLE, spec: &FilterSpec) -> Result<bool> {
     let mut filter: *mut FWPM_FILTER0 = null_mut();
@@ -409,14 +410,18 @@ fn remove_filter_if_verified(engine: HANDLE, spec: &FilterSpec) -> Result<bool> 
         let filter_ref = &*filter;
         let provider_matches =
             !filter_ref.providerKey.is_null() && guid_eq(&*filter_ref.providerKey, &PROVIDER_KEY);
-        provider_matches && wide_string(filter_ref.displayData.name).starts_with("nanok3_wfp_")
+        let name = wide_string(filter_ref.displayData.name);
+        // Fail-closed both ways: only the current nano_wfp_* names pass, and
+        // the retired nanok3_wfp_* codename names are rejected explicitly so
+        // stale pre-rebrand filters can never match.
+        provider_matches && name.starts_with("nano_wfp_") && !name.starts_with("nanok3_wfp_")
     };
     unsafe {
         FwpmFreeMemory0(&mut filter as *mut *mut FWPM_FILTER0 as *mut *mut c_void);
     }
     if !verified {
         return Err(anyhow::anyhow!(
-            "refusing to delete WFP filter {}: identity mismatch (expected a nanok3_wfp_* filter under the NanoK3 provider)",
+            "refusing to delete WFP filter {}: identity mismatch (expected a nano_wfp_* filter under the Wayland Nano provider)",
             spec.name
         ));
     }
@@ -424,7 +429,7 @@ fn remove_filter_if_verified(engine: HANDLE, spec: &FilterSpec) -> Result<bool> 
     Ok(true)
 }
 
-/// Deletes the NanoK3 sublayer after verifying its identity. Absent is fine.
+/// Deletes the Wayland Nano sublayer after verifying its identity. Absent is fine.
 fn remove_sublayer_if_verified(engine: HANDLE) -> Result<()> {
     let mut sublayer: *mut FWPM_SUBLAYER0 = null_mut();
     let result = unsafe { FwpmSubLayerGetByKey0(engine, &SUBLAYER_KEY, &mut sublayer) };
@@ -443,7 +448,7 @@ fn remove_sublayer_if_verified(engine: HANDLE) -> Result<()> {
     }
     if !verified {
         return Err(anyhow::anyhow!(
-            "refusing to delete WFP sublayer: identity mismatch (expected \"{SUBLAYER_NAME}\" under the NanoK3 provider)"
+            "refusing to delete WFP sublayer: identity mismatch (expected \"{SUBLAYER_NAME}\" under the Wayland Nano provider)"
         ));
     }
     let result = unsafe { FwpmSubLayerDeleteByKey0(engine, &SUBLAYER_KEY) };
@@ -454,7 +459,7 @@ fn remove_sublayer_if_verified(engine: HANDLE) -> Result<()> {
     )
 }
 
-/// Deletes the NanoK3 provider after verifying its identity. Absent is fine.
+/// Deletes the Wayland Nano provider after verifying its identity. Absent is fine.
 fn remove_provider_if_verified(engine: HANDLE) -> Result<()> {
     let mut provider: *mut FWPM_PROVIDER0 = null_mut();
     let result = unsafe { FwpmProviderGetByKey0(engine, &PROVIDER_KEY, &mut provider) };
@@ -569,13 +574,13 @@ mod tests {
     }
 
     #[test]
-    fn filter_names_are_nanok3_namespaced() {
+    fn filter_names_are_nano_namespaced() {
         // Track-B WFP objects must never share the donor's codex_wfp_* names
         // so uninstall identity checks can never match Track-A objects.
         assert!(
             FILTER_SPECS
                 .iter()
-                .all(|spec| spec.name.starts_with("nanok3_wfp_"))
+                .all(|spec| spec.name.starts_with("nano_wfp_"))
         );
     }
 

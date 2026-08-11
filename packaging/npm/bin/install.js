@@ -1,22 +1,22 @@
 #!/usr/bin/env node
 'use strict';
 
-// Postinstall: resolve the prebuilt `nanok3` binary for this platform/arch.
+// Postinstall: resolve the prebuilt `wayland-nano` binary for this platform/arch.
 //
 // Pattern choice — single package with an in-tree `binaries/` layout,
 // NOT per-platform optionalDependencies packages:
-//   * optionalDependencies (@nanok3/win32-x64, @nanok3/darwin-arm64, ...)
+//   * optionalDependencies (@waylandnano/nano-win32-x64, @waylandnano/nano-darwin-arm64, ...)
 //     is the right pattern for a *published* package (per-platform tarballs
 //     shrink installs and let npm skip unsupported platforms), but it
 //     requires publishing N+1 packages and keeping their versions in lockstep.
 //   * This package is `private: true` for the alpha: we distribute one
 //     tarball (npm pack / GitHub release asset), so a single package with
-//     `binaries/<platform>-<arch>/nanok3[.exe]` is simpler to build, sign,
-//     and audit, and bin/install.js + bin/nanok3.js do the selection
+//     `binaries/<platform>-<arch>/wayland-nano[.exe]` is simpler to build, sign,
+//     and audit, and bin/install.js + bin/wayland-nano.js do the selection
 //     locally with zero third-party dependencies (pure node stdlib).
 //   * If/when we publish to the public registry, we can flip to
 //     optionalDependencies without changing the launcher contract
-//     (resolveNanok3Binary below stays the single source of truth).
+//     (resolveNanoBinary below stays the single source of truth).
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -27,14 +27,14 @@ const PACKAGE_ROOT = path.resolve(__dirname, '..');
 // keep the target compiling, but it is NOT supported at runtime yet.
 const UNSUPPORTED_RUNTIME = new Set(['win32-arm64']);
 
-function resolveNanok3Binary(platform, arch) {
+function resolveNanoBinary(platform, arch) {
   const key = `${platform}-${arch}`;
-  const exe = platform === 'win32' ? 'nanok3.exe' : 'nanok3';
+  const exe = platform === 'win32' ? 'wayland-nano.exe' : 'wayland-nano';
   return { key, binaryPath: path.join(PACKAGE_ROOT, 'binaries', key, exe) };
 }
 
 function main() {
-  const { key, binaryPath } = resolveNanok3Binary(process.platform, process.arch);
+  const { key, binaryPath } = resolveNanoBinary(process.platform, process.arch);
 
   if (!fs.existsSync(binaryPath)) {
     const binariesDir = path.join(PACKAGE_ROOT, 'binaries');
@@ -45,7 +45,7 @@ function main() {
           .sort()
       : [];
     console.error(
-      `nanok3: no prebuilt binary for ${key}.\n` +
+      `wayland-nano: no prebuilt binary for ${key}.\n` +
         `  This alpha ships binaries for: ${available.join(', ') || '(none — run scripts/pack.ps1 first)'}`,
     );
     process.exit(1);
@@ -57,11 +57,11 @@ function main() {
 
   if (UNSUPPORTED_RUNTIME.has(key)) {
     console.warn(
-      `nanok3: WARNING — ${key} is compile-gated only and not supported at runtime in this alpha.`,
+      `wayland-nano: WARNING — ${key} is compile-gated only and not supported at runtime in this alpha.`,
     );
   }
 
-  console.log(`nanok3: using prebuilt binary for ${key}`);
+  console.log(`wayland-nano: using prebuilt binary for ${key}`);
 }
 
 main();

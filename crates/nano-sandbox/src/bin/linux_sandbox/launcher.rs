@@ -7,7 +7,7 @@
 //! - codex crate `sandboxing::find_system_bwrap_in_path` ->
 //!   nano_sandbox::linux_bwrap::find_system_bwrap_in_path;
 //! - codex_utils_absolute_path -> nano_core::abs;
-//! - unavailable-launcher panic message rebranded to nanok3 resource names.
+//! - unavailable-launcher panic message rebranded to wayland-nano resource names.
 
 use std::ffi::CStr;
 use std::ffi::CString;
@@ -54,7 +54,7 @@ pub(crate) fn exec_bwrap(argv: Vec<String>, preserved_files: Vec<File>) -> ! {
         BubblewrapLauncher::Unavailable => {
             panic!(
                 "bubblewrap is unavailable: no system bwrap was found on PATH and no bundled \
-                 nanok3-resources/bwrap binary was found next to the Nano K3 executable"
+                 wayland-nano-resources/bwrap binary was found next to the Wayland Nano executable"
             )
         }
     }

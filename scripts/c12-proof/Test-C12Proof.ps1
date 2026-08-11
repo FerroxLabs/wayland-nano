@@ -1,13 +1,13 @@
-# C1.2 full-criterion proof harness — Track B (NanoK3)
+# C1.2 full-criterion proof harness — Track B (Wayland Nano)
 # External-state oracle: filesystem, process list, sockets. Never self-report.
 # Run AFTER provisioning. Emits BUILD_PLAN_V3 §8-shaped manifest JSON.
 
 [CmdletBinding()]
 param(
-    [string]$WorkspaceRoot = "$env:TEMP\nanok3-c12-ws",
+    [string]$WorkspaceRoot = "$env:TEMP\wayland-nano-c12-ws",
     [string]$EvidenceDir = "",
     # Run the uninstall-scope probe in post-uninstall mode: assert every
-    # NanoK3 machine-state artifact is GONE (run after invoking the setup
+    # Wayland Nano machine-state artifact is GONE (run after invoking the setup
     # helper with an uninstall:true payload).
     [switch]$PostUninstall
 )
@@ -27,7 +27,7 @@ $script:IsElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.W
 function Get-WfpXml([string]$What) {
     # $What: "filters" | "providers". Returns the dump path, or $null when not elevated.
     if (-not $script:IsElevated) { return $null }
-    $out = Join-Path $env:TEMP "nanok3-c12-wfp-$What.xml"
+    $out = Join-Path $env:TEMP "wayland-nano-c12-wfp-$What.xml"
     & netsh wfp show $What file="$out" 2>$null | Out-Null
     if (Test-Path $out) { $out } else { $null }
 }
@@ -47,14 +47,14 @@ function Add-Result([string]$Probe, [string]$Status, [string]$Detail) {
 # Shared by every containment probe that must execute as the PROVISIONED
 # OFFLINE IDENTITY, not the harness user (pattern proven by write-outside-root):
 # the offline credential is DPAPI-decrypted from
-# %USERPROFILE%\.nanok3\.sandbox-secrets\sandbox_users.json IN MEMORY ONLY —
+# %USERPROFILE%\.nano\.sandbox-secrets\sandbox_users.json IN MEMORY ONLY —
 # the plaintext is never printed, logged, or persisted — then a one-shot
 # powershell child is launched via Start-Process -Credential under a numeric
 # exit-code child contract with parent-opened redirect logs in the evidence
 # dir as the denial evidence.
 function Get-OfflineCredential {
     Add-Type -AssemblyName System.Security
-    $secretsPath = Join-Path $env:USERPROFILE ".nanok3\.sandbox-secrets\sandbox_users.json"
+    $secretsPath = Join-Path $env:USERPROFILE ".nano\.sandbox-secrets\sandbox_users.json"
     if (-not (Test-Path $secretsPath)) { throw "secrets file missing at $secretsPath" }
     $record = (Get-Content $secretsPath -Raw | ConvertFrom-Json).offline
     $blob = [Convert]::FromBase64String($record.password)
@@ -84,8 +84,8 @@ function Get-FirstLogLine([string]$LogBase) {
 }
 
 # ---------- environment ----------
-$setupExe = Join-Path $PSScriptRoot "..\..\target\release\nanok3-sandbox-setup.exe"
-$offlineAccount = "NanoK3SandboxOffline"
+$setupExe = Join-Path $PSScriptRoot "..\..\target\release\wayland-nano-sandbox-setup.exe"
+$offlineAccount = "NanoSandboxOffline"
 $provisioned = $false
 try {
     $u = Get-CimInstance Win32_UserAccount -Filter "Name='$offlineAccount'" -ErrorAction Stop
@@ -112,7 +112,7 @@ try {
 } catch { Add-Result "write-inside-root" "FAIL" "write threw: $_" }
 
 # ---------- probe: write-outside-root (requires provisioned offline identity) ----------
-# Runs a real write attempt OUTSIDE the provisioned root as NanoK3SandboxOffline;
+# Runs a real write attempt OUTSIDE the provisioned root as NanoSandboxOffline;
 # the DACL layer (implicit absence of allow, acl.rs) must deny it. Oracle: file absent.
 if (-not $provisioned) {
     Add-Result "write-outside-root" "SKIP" "not provisioned"
@@ -126,18 +126,18 @@ if (-not $provisioned) {
     try {
         $cred = Get-OfflineCredential
 
-        $target = Join-Path $outside "nanok3-escape-attempt.txt"
+        $target = Join-Path $outside "wayland-nano-escape-attempt.txt"
         if (Test-Path $target) { Remove-Item -Force $target }
         # child contract: exit 42 = out-of-root write SUCCEEDED (violation), 43 = denied (expected)
         $childCmd = "try { 'escape' | Out-File -LiteralPath '$target' -Encoding utf8 -ErrorAction Stop; exit 42 } catch { Write-Output (`$_.Exception.Message); exit 43 }"
-        $proc = Invoke-OfflineChild $cred $childCmd "nanok3-write-outside-root"
+        $proc = Invoke-OfflineChild $cred $childCmd "wayland-nano-write-outside-root"
         $wrote = Test-Path $target
         if ($wrote -or $proc.ExitCode -eq 42) {
             Add-Result "write-outside-root" "FAIL" "sandboxed write outside root SUCCEEDED (exit=$($proc.ExitCode) file-present=$wrote)"
         } elseif ($proc.ExitCode -eq 43) {
-            Add-Result "write-outside-root" "PASS" "denied as $($cred.UserName): $(Get-FirstLogLine 'nanok3-write-outside-root') (oracle: file absent; evidence $EvidenceDir\nanok3-write-outside-root.stdout.log)"
+            Add-Result "write-outside-root" "PASS" "denied as $($cred.UserName): $(Get-FirstLogLine 'wayland-nano-write-outside-root') (oracle: file absent; evidence $EvidenceDir\wayland-nano-write-outside-root.stdout.log)"
         } else {
-            $err = (Get-Content (Join-Path $EvidenceDir "nanok3-write-outside-root.stderr.log") -ErrorAction SilentlyContinue | Select-Object -First 1)
+            $err = (Get-Content (Join-Path $EvidenceDir "wayland-nano-write-outside-root.stderr.log") -ErrorAction SilentlyContinue | Select-Object -First 1)
             Add-Result "write-outside-root" "FAIL" "probe child inconclusive exit=$($proc.ExitCode): $err"
         }
     } catch { Add-Result "write-outside-root" "FAIL" "harness error: $_" }
@@ -145,7 +145,7 @@ if (-not $provisioned) {
 
 # ---------- probe: sensitive-read-deny (oracle: offline identity read denied) ----------
 # Criterion: a file that IS readable by the harness user but lies outside
-# every NanoK3 grant is UNREADABLE by the provisioned offline identity
+# every Wayland Nano grant is UNREADABLE by the provisioned offline identity
 # (implicit absence of allow, acl.rs). Controls inside the same probe: (a)
 # the harness user really can read the target, so the denial is attributable
 # to the identity, not a broken fixture; (b) the legacy same-user deny-ACL
@@ -158,7 +158,7 @@ if (-not $provisioned) {
     try {
         $cred = Get-OfflineCredential
 
-        # control (a): harness-readable target outside any NanoK3 grant (the
+        # control (a): harness-readable target outside any Wayland Nano grant (the
         # harness's own temp tree — the offline identity has no ACE in it)
         $sensDir = Join-Path $ws "sensitive"
         New-Item -ItemType Directory -Force -Path $sensDir | Out-Null
@@ -179,11 +179,11 @@ if (-not $provisioned) {
 
         # child contract: exit 44 = read SUCCEEDED (violation), 45 = denied (expected)
         $childCmd = "try { `$null = Get-Content -LiteralPath '$sensFile' -ErrorAction Stop; exit 44 } catch { Write-Output (`$_.Exception.Message); exit 45 }"
-        $proc = Invoke-OfflineChild $cred $childCmd "nanok3-sensitive-read-deny"
+        $proc = Invoke-OfflineChild $cred $childCmd "wayland-nano-sensitive-read-deny"
         if ($proc.ExitCode -eq 44) {
             Add-Result "sensitive-read-deny" "FAIL" "offline identity READ a file outside all grants ($sensFile)"
         } elseif ($proc.ExitCode -eq 45 -and $harnessRead -and $aclControl) {
-            Add-Result "sensitive-read-deny" "PASS" "denied as $($cred.UserName): $(Get-FirstLogLine 'nanok3-sensitive-read-deny') (controls: harness-read=ok acl-self-test=ok)"
+            Add-Result "sensitive-read-deny" "PASS" "denied as $($cred.UserName): $(Get-FirstLogLine 'wayland-nano-sensitive-read-deny') (controls: harness-read=ok acl-self-test=ok)"
         } else {
             Add-Result "sensitive-read-deny" "FAIL" "inconclusive: child exit=$($proc.ExitCode) harness-readable=$harnessRead acl-self-test=$aclControl"
         }
@@ -221,12 +221,12 @@ if (-not $provisioned) {
 
         # child contract: exit 46 = write through junction SUCCEEDED (violation), 47 = denied (expected)
         $childCmd = "try { 'escape' | Out-File -LiteralPath '$escapeTarget' -Encoding utf8 -ErrorAction Stop; exit 46 } catch { Write-Output (`$_.Exception.Message); exit 47 }"
-        $proc = Invoke-OfflineChild $cred $childCmd "nanok3-junction-escape"
+        $proc = Invoke-OfflineChild $cred $childCmd "wayland-nano-junction-escape"
         $landed = Test-Path $landedFile
         if ($proc.ExitCode -eq 46 -or $landed) {
             Add-Result "junction-escape" "FAIL" "offline identity WROTE through junction outside root (exit=$($proc.ExitCode) file-present=$landed)"
         } elseif ($proc.ExitCode -eq 47 -and $junctionWorks) {
-            Add-Result "junction-escape" "PASS" "denied as $($cred.UserName): $(Get-FirstLogLine 'nanok3-junction-escape') (oracle: no file at $landedFile; control: junction functional for harness user)"
+            Add-Result "junction-escape" "PASS" "denied as $($cred.UserName): $(Get-FirstLogLine 'wayland-nano-junction-escape') (oracle: no file at $landedFile; control: junction functional for harness user)"
         } else {
             Add-Result "junction-escape" "FAIL" "inconclusive: child exit=$($proc.ExitCode) junction-functional=$junctionWorks file-present=$landed"
         }
@@ -238,11 +238,11 @@ if (-not $provisioned) {
 # (ParentProcessId walk rooted at the probe PID); after job.terminate none of
 # THOSE recorded PIDs may survive. A host-wide ping.exe scan would
 # misattribute unrelated processes (panel finding #5).
-$probeExe = Join-Path $PSScriptRoot "..\..\target\debug\nanok3-tree-kill-probe.exe"
+$probeExe = Join-Path $PSScriptRoot "..\..\target\debug\wayland-nano-tree-kill-probe.exe"
 try {
     if (-not (Test-Path $probeExe)) { throw "probe binary missing at $probeExe" }
-    $probeLogOut = Join-Path $EvidenceDir "nanok3-tree-kill-probe.stdout.log"
-    $probeLogErr = Join-Path $EvidenceDir "nanok3-tree-kill-probe.stderr.log"
+    $probeLogOut = Join-Path $EvidenceDir "wayland-nano-tree-kill-probe.stdout.log"
+    $probeLogErr = Join-Path $EvidenceDir "wayland-nano-tree-kill-probe.stderr.log"
     $probeProc = Start-Process -FilePath $probeExe -NoNewWindow -PassThru `
         -RedirectStandardOutput $probeLogOut -RedirectStandardError $probeLogErr
     $descendantPids = @{}
@@ -287,11 +287,11 @@ try {
     }
 } catch { Add-Result "tree-kill-5s" "FAIL" "harness error: $_" }
 
-# ---------- probe: process-cleanup (oracle: no stray nanok3 helpers) ----------
+# ---------- probe: process-cleanup (oracle: no stray wayland-nano helpers) ----------
 $strays = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -like "nanok3-*" }
+    Where-Object { $_.Name -like "wayland-nano-*" }
 if ($null -eq $strays) {
-    Add-Result "process-cleanup" "PASS" "no nanok3 helper processes running"
+    Add-Result "process-cleanup" "PASS" "no wayland-nano helper processes running"
 } else {
     Add-Result "process-cleanup" "FAIL" "strays: $(($strays | ForEach-Object { $_.Name + ':' + $_.ProcessId }) -join ', ')"
 }
@@ -322,12 +322,12 @@ if (-not $provisioned) {
 
         # child contract: exit 48 = connect SUCCEEDED (violation), 49 = blocked/failed (expected)
         $childCmd = "`$c = New-Object System.Net.Sockets.TcpClient; try { `$iar = `$c.BeginConnect('api.fluxrouter.ai', 443, `$null, `$null); if (-not `$iar.AsyncWaitHandle.WaitOne(8000)) { Write-Output 'connect timed out (blocked)'; `$c.Close(); exit 49 }; `$c.EndConnect(`$iar); if (`$c.Connected) { `$c.Close(); exit 48 }; Write-Output 'not connected'; exit 49 } catch { Write-Output (`$_.Exception.Message); exit 49 }"
-        $proc = Invoke-OfflineChild $cred $childCmd "nanok3-network-deny-offline"
+        $proc = Invoke-OfflineChild $cred $childCmd "wayland-nano-network-deny-offline"
 
-        # secondary detail: WFP filters present for the NanoK3 identity
+        # secondary detail: WFP filters present for the Wayland Nano identity
         $filtersXml = Get-WfpXml "filters"
         $wfpDetail = "wfp-filters=NOT-FOUND"
-        if ($filtersXml -and (Select-String -Path $filtersXml -SimpleMatch "NanoK3" -Quiet)) {
+        if ($filtersXml -and (Select-String -Path $filtersXml -SimpleMatch "nano_wfp" -Quiet)) {
             $wfpDetail = "wfp-filters=present"
         }
 
@@ -336,9 +336,9 @@ if (-not $provisioned) {
         } elseif ($proc.ExitCode -eq 48) {
             Add-Result "network-deny-offline" "FAIL" "offline identity CONNECTED to api.fluxrouter.ai:443 — WFP block-all breached"
         } elseif ($proc.ExitCode -eq 49) {
-            Add-Result "network-deny-offline" "PASS" "connect denied as $($cred.UserName): $(Get-FirstLogLine 'nanok3-network-deny-offline') (control: harness connect ok; $wfpDetail)"
+            Add-Result "network-deny-offline" "PASS" "connect denied as $($cred.UserName): $(Get-FirstLogLine 'wayland-nano-network-deny-offline') (control: harness connect ok; $wfpDetail)"
         } else {
-            $err = (Get-Content (Join-Path $EvidenceDir "nanok3-network-deny-offline.stderr.log") -ErrorAction SilentlyContinue | Select-Object -First 1)
+            $err = (Get-Content (Join-Path $EvidenceDir "wayland-nano-network-deny-offline.stderr.log") -ErrorAction SilentlyContinue | Select-Object -First 1)
             Add-Result "network-deny-offline" "FAIL" "probe child inconclusive exit=$($proc.ExitCode): $err"
         }
     } catch { Add-Result "network-deny-offline" "FAIL" "harness error: $_" }
@@ -389,14 +389,14 @@ Add-Result "path-edgecases" "PASS" ($results_ec -join "; ")
 if (-not $provisioned) {
     Add-Result "setup-idempotent" "SKIP" "not provisioned"
 } else {
-    $marker = Join-Path $env:USERPROFILE ".nanok3\.sandbox\setup_marker.json"
+    $marker = Join-Path $env:USERPROFILE ".nano\.sandbox\setup_marker.json"
     if (-not (Test-Path $marker)) {
         Add-Result "setup-idempotent" "FAIL" "marker missing at $marker"
     } elseif (-not (Test-Path $setupExe)) {
         Add-Result "setup-idempotent" "FAIL" "setup helper missing at $setupExe"
     } else {
         try {
-            $nanoHome = Join-Path $env:USERPROFILE ".nanok3"
+            $nanoHome = Join-Path $env:USERPROFILE ".nano"
 
             function Read-Marker {
                 Get-Content $marker -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
@@ -417,8 +417,8 @@ if (-not $provisioned) {
             function Invoke-MarkerRefresh([parameter(Mandatory)]$m) {
                 $payload = [ordered]@{
                     version             = [int]$m.version
-                    offline_username    = "NanoK3SandboxOffline"
-                    online_username     = "NanoK3SandboxOnline"
+                    offline_username    = "NanoSandboxOffline"
+                    online_username     = "NanoSandboxOnline"
                     nano_home           = $nanoHome
                     command_cwd         = (Get-Location).Path
                     read_roots          = @()
@@ -472,32 +472,32 @@ if (-not $provisioned) {
 
 # ---------- probe: uninstall-scope ----------
 # Default mode (run while provisioned): every Nano-owned artifact must live
-# inside the known scope (NanoK3Sandbox* accounts, NanoK3SandboxUsers group,
-# the nanok3_sandbox_offline_* firewall rules, the NanoK3 WFP provider and
-# nanok3_wfp_* filters, %USERPROFILE%\.nanok3). No services, scheduled tasks,
+# inside the known scope (NanoSandbox* accounts, NanoSandboxUsers group,
+# the nano_sandbox_offline_* firewall rules, the Wayland Nano WFP provider and
+# nano_wfp_* filters, %USERPROFILE%\.nano). No services, scheduled tasks,
 # or stray profile-root files.
-# -PostUninstall mode (run AFTER `nanok3-sandbox-setup.exe <payload>` with
+# -PostUninstall mode (run AFTER `wayland-nano-sandbox-setup.exe <payload>` with
 # uninstall:true): every piece of that machine state must be GONE — including
 # the DPAPI secrets file (.sandbox-secrets\sandbox_users.json), the .sandbox
 # log dir, and the Winlogon SpecialAccounts\UserList values that hid the
-# sandbox accounts. Any NanoK3 residue is a FAIL. Track-A (Codex*/codex_*)
+# sandbox accounts. Any Wayland Nano residue is a FAIL. Track-A (Codex*/codex_*)
 # objects are out of scope in both modes: the helper's uninstall is
-# fail-closed on exact NanoK3 identities and never touches them.
+# fail-closed on exact Wayland Nano identities and never touches them.
 if (-not $provisioned -and -not $PostUninstall) {
     Add-Result "uninstall-scope" "SKIP" "not provisioned"
 } elseif ($PostUninstall) {
     $residue = @()
     try {
         $accounts = @(Get-CimInstance Win32_UserAccount -ErrorAction Stop |
-            Where-Object { $_.LocalAccount -and $_.Name -like "NanoK3*" } |
+            Where-Object { $_.LocalAccount -and $_.Name -like "NanoSandbox*" } |
             ForEach-Object { $_.Name })
         foreach ($a in $accounts) { $residue += "account:$a" }
 
-        $group = Get-LocalGroup -Name "NanoK3SandboxUsers" -ErrorAction SilentlyContinue
-        if ($null -ne $group) { $residue += "group:NanoK3SandboxUsers" }
+        $group = Get-LocalGroup -Name "NanoSandboxUsers" -ErrorAction SilentlyContinue
+        if ($null -ne $group) { $residue += "group:NanoSandboxUsers" }
 
         $fw = @(Get-NetFirewallRule -ErrorAction Stop |
-            Where-Object { $_.DisplayName -like "nanok3_sandbox_*" } | ForEach-Object { $_.DisplayName })
+            Where-Object { $_.DisplayName -like "nano_sandbox_*" } | ForEach-Object { $_.DisplayName })
         foreach ($f in $fw) { $residue += "firewall-rule:$f" }
 
         $providersXml = Get-WfpXml "providers"
@@ -505,33 +505,33 @@ if (-not $provisioned -and -not $PostUninstall) {
         if (-not $providersXml -or -not $filtersXml) {
             Write-Host "uninstall-scope note: WFP residue check skipped (netsh wfp is admin-only)"
         } else {
-            if (Select-String -Path $providersXml -SimpleMatch "NanoK3" -Quiet) {
-                $residue += "wfp-provider:NanoK3"
+            if (Select-String -Path $providersXml -SimpleMatch "Wayland Nano" -Quiet) {
+                $residue += "wfp-provider:Wayland Nano"
             }
-            if (Select-String -Path $filtersXml -SimpleMatch "NanoK3" -Quiet) {
-                $residue += "wfp-filters:NanoK3"
+            if (Select-String -Path $filtersXml -SimpleMatch "nano_wfp" -Quiet) {
+                $residue += "wfp-filters:nano_wfp"
             }
         }
 
-        $markerPath = Join-Path $env:USERPROFILE ".nanok3\.sandbox\setup_marker.json"
+        $markerPath = Join-Path $env:USERPROFILE ".nano\.sandbox\setup_marker.json"
         if (Test-Path $markerPath) { $residue += "setup-marker" }
 
-        $secretsFile = Join-Path $env:USERPROFILE ".nanok3\.sandbox-secrets\sandbox_users.json"
+        $secretsFile = Join-Path $env:USERPROFILE ".nano\.sandbox-secrets\sandbox_users.json"
         if (Test-Path $secretsFile) { $residue += "sandbox-secrets:sandbox_users.json" }
 
-        $sandboxLogDir = Join-Path $env:USERPROFILE ".nanok3\.sandbox"
+        $sandboxLogDir = Join-Path $env:USERPROFILE ".nano\.sandbox"
         if (Test-Path $sandboxLogDir) { $residue += "sandbox-log-dir" }
 
         $userListKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList"
         if (Test-Path $userListKey) {
             $userListProps = Get-ItemProperty -Path $userListKey -ErrorAction Stop
-            foreach ($n in @("NanoK3SandboxOffline", "NanoK3SandboxOnline")) {
+            foreach ($n in @("NanoSandboxOffline", "NanoSandboxOnline")) {
                 if ($null -ne $userListProps.PSObject.Properties[$n]) { $residue += "winlogon-userlist:$n" }
             }
         }
 
         if ($residue.Count -eq 0) {
-            Add-Result "uninstall-scope" "PASS" "post-uninstall scan: no NanoK3 accounts, group, firewall rules, WFP provider/filters, setup marker, secrets file, .sandbox log dir, or Winlogon UserList values remain"
+            Add-Result "uninstall-scope" "PASS" "post-uninstall scan: no Wayland Nano accounts, group, firewall rules, WFP provider/filters, setup marker, secrets file, .sandbox log dir, or Winlogon UserList values remain"
         } else {
             Add-Result "uninstall-scope" "FAIL" ("post-uninstall residue: " + ($residue -join ", "))
         }
@@ -540,46 +540,46 @@ if (-not $provisioned -and -not $PostUninstall) {
     $residue = @()
     $scope = @()
     try {
-        $expectedAccounts = @("NanoK3SandboxOffline", "NanoK3SandboxOnline")
+        $expectedAccounts = @("NanoSandboxOffline", "NanoSandboxOnline")
         $foundAccounts = @(Get-CimInstance Win32_UserAccount -ErrorAction Stop |
-            Where-Object { $_.LocalAccount -and $_.Name -like "NanoK3*" } |
+            Where-Object { $_.LocalAccount -and $_.Name -like "NanoSandbox*" } |
             ForEach-Object { $_.Name })
         foreach ($a in $foundAccounts) { if ($expectedAccounts -notcontains $a) { $residue += "unexpected-account:$a" } }
         foreach ($a in $expectedAccounts) { if ($foundAccounts -notcontains $a) { $residue += "missing-account:$a" } }
         $scope += "accounts=$($foundAccounts.Count)"
 
-        $group = Get-LocalGroup -Name "NanoK3SandboxUsers" -ErrorAction SilentlyContinue
-        if ($null -eq $group) { $residue += "missing-group:NanoK3SandboxUsers" } else { $scope += "group=NanoK3SandboxUsers" }
+        $group = Get-LocalGroup -Name "NanoSandboxUsers" -ErrorAction SilentlyContinue
+        if ($null -eq $group) { $residue += "missing-group:NanoSandboxUsers" } else { $scope += "group=NanoSandboxUsers" }
 
         # Track-B only: Track A's codex* services/tasks are not this track's
         # residue and must not flag this probe.
         $svc = @(Get-CimInstance Win32_Service -ErrorAction Stop |
-            Where-Object { $_.Name -match "nanok3" -or $_.PathName -match "nanok3" })
+            Where-Object { $_.Name -match "wayland-nano" -or $_.PathName -match "wayland-nano" })
         foreach ($s in $svc) { $residue += "service:$($s.Name)" }
         $tasks = @(Get-ScheduledTask -ErrorAction Stop |
-            Where-Object { $_.TaskName -match "nanok3" })
+            Where-Object { $_.TaskName -match "wayland-nano" })
         foreach ($t in $tasks) { $residue += "scheduled-task:$($t.TaskName)" }
         $scope += "services=$($svc.Count)+tasks=$($tasks.Count)"
 
-        $knownFw = @("nanok3_sandbox_offline_block_outbound", "nanok3_sandbox_offline_block_loopback_tcp", "nanok3_sandbox_offline_block_loopback_udp", "nanok3_sandbox_offline_allow_loopback_proxy")
+        $knownFw = @("nano_sandbox_offline_block_outbound", "nano_sandbox_offline_block_loopback_tcp", "nano_sandbox_offline_block_loopback_udp", "nano_sandbox_offline_allow_loopback_proxy")
         $fw = @(Get-NetFirewallRule -ErrorAction Stop |
-            Where-Object { $_.DisplayName -like "nanok3_sandbox_*" } | ForEach-Object { $_.DisplayName })
+            Where-Object { $_.DisplayName -like "nano_sandbox_*" } | ForEach-Object { $_.DisplayName })
         foreach ($f in $fw) { if ($knownFw -notcontains $f) { $residue += "unexpected-firewall-rule:$f" } }
         $scope += "firewall=$($fw.Count)/$($knownFw.Count)"
 
         $providersXml = Get-WfpXml "providers"
         if (-not $providersXml) {
             $scope += "wfp-provider=skipped(unelevated)"
-        } elseif (Select-String -Path $providersXml -SimpleMatch "NanoK3 Windows Sandbox WFP" -Quiet) {
+        } elseif (Select-String -Path $providersXml -SimpleMatch "Wayland Nano Sandbox WFP" -Quiet) {
             $scope += "wfp-provider=present"
         } else {
-            $residue += "missing-wfp-provider:NanoK3 Windows Sandbox WFP"
+            $residue += "missing-wfp-provider:Wayland Nano Sandbox WFP"
         }
 
         $stray = @(Get-ChildItem $env:USERPROFILE -Force -ErrorAction Stop |
-            Where-Object { $_.Name -like "*nanok3*" -and $_.Name -ne ".nanok3" })
+            Where-Object { $_.Name -like "*wayland-nano*" })
         foreach ($f in $stray) { $residue += "profile-residue:$($f.Name)" }
-        $scope += "profile=.nanok3-only"
+        $scope += "profile=.nano-only"
 
         if ($residue.Count -eq 0) {
             Add-Result "uninstall-scope" "PASS" ("all artifacts in scope (" + ($scope -join "; ") + "); run with -PostUninstall after helper uninstall to verify removal")

@@ -1,4 +1,4 @@
-//! `nanok3 doctor` — self-diagnostics for the acceptance flow.
+//! `wayland-nano doctor` — self-diagnostics for the acceptance flow.
 //!
 //! Reports environment truth, sandbox state, egress policy health, journal
 //! integrity, and process hygiene. Exit 0 when all *required* checks pass;
@@ -28,15 +28,15 @@ pub fn run(nano_home: &std::path::Path, out: &mut dyn std::io::Write) -> std::io
 
     #[cfg(windows)]
     {
-        checks.push(shell_check("cmd", "cmd.exe", &["/c", "echo nanok3"]));
+        checks.push(shell_check("cmd", "cmd.exe", &["/c", "echo wayland-nano"]));
         checks.push(shell_check(
             "powershell",
             "powershell.exe",
-            &["-NoProfile", "-Command", "echo nanok3"],
+            &["-NoProfile", "-Command", "echo wayland-nano"],
         ));
     }
     #[cfg(unix)]
-    checks.push(shell_check("sh", "sh", &["-c", "echo nanok3"]));
+    checks.push(shell_check("sh", "sh", &["-c", "echo wayland-nano"]));
 
     #[cfg(windows)]
     let setup_complete = nano_sandbox::identity::sandbox_setup_is_complete(nano_home);
@@ -103,7 +103,7 @@ pub fn run(nano_home: &std::path::Path, out: &mut dyn std::io::Write) -> std::io
         detail: ".env denied; notes.txt allowed".into(),
     });
 
-    let strays = stray_nanok3_processes();
+    let strays = stray_nano_processes();
     checks.push(Check {
         name: "process-hygiene",
         status: if strays.is_empty() {
@@ -112,7 +112,7 @@ pub fn run(nano_home: &std::path::Path, out: &mut dyn std::io::Write) -> std::io
             CheckStatus::Warn
         },
         detail: if strays.is_empty() {
-            "no stray nanok3-* helper processes".into()
+            "no stray wayland-nano-* helper processes".into()
         } else {
             format!("strays: {}", strays.join(","))
         },
@@ -135,7 +135,7 @@ pub fn run(nano_home: &std::path::Path, out: &mut dyn std::io::Write) -> std::io
 
     let mut failures = 0;
     let mut warnings = 0;
-    writeln!(out, "nanok3 doctor — {}", env!("CARGO_PKG_VERSION"))?;
+    writeln!(out, "wayland-nano doctor — {}", env!("CARGO_PKG_VERSION"))?;
     for check in &checks {
         let mark = match check.status {
             CheckStatus::Pass => "PASS",
@@ -205,8 +205,8 @@ fn probe_journal(nano_home: &std::path::Path) -> (CheckStatus, String) {
     }
 }
 
-fn stray_nanok3_processes() -> Vec<String> {
-    // Cheap hygiene probe: count OTHER nanok3-* processes via WMIC-free
+fn stray_nano_processes() -> Vec<String> {
+    // Cheap hygiene probe: count OTHER wayland-nano-* processes via WMIC-free
     // approach (tasklist output parse; avoids extra deps).
     let output = std::process::Command::new("tasklist")
         .args(["/fo", "csv", "/nh"])
@@ -217,7 +217,7 @@ fn stray_nanok3_processes() -> Vec<String> {
     let self_pid = std::process::id().to_string();
     String::from_utf8_lossy(&output.stdout)
         .lines()
-        .filter(|line| line.to_lowercase().contains("nanok3-"))
+        .filter(|line| line.to_lowercase().contains("wayland-nano-"))
         .filter(|line| !line.contains(&self_pid))
         .map(|line| line.to_string())
         .collect()

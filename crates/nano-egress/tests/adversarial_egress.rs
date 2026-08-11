@@ -7,7 +7,7 @@
 //! leave".
 //!
 //! Race hardening: each test drives its listener with a unique canary path
-//! (`/nanok3-canary-<test>-<pid>`). A listener counts a connection as a hit
+//! (`/nano-canary-<test>-<pid>`). A listener counts a connection as a hit
 //! ONLY when the request head carries that test's canary; stray probes
 //! (AV/EDR port scans, port reuse by another process under full-workspace
 //! parallelism) get a 404 and stay inert instead of producing false-positive
@@ -48,7 +48,7 @@ fn spawn_listener(
                     let head = read_head(&mut stream);
                     if !head.contains(&canary) {
                         // Stray probe: not this test's traffic — never counted.
-                        respond(&mut stream, "404 Not Found", "", "nanok3-stray-probe");
+                        respond(&mut stream, "404 Not Found", "", "nano-stray-probe");
                         continue;
                     }
                     let n = hits_thread.fetch_add(1, Ordering::SeqCst) + 1;
@@ -100,9 +100,9 @@ fn respond(stream: &mut TcpStream, status: &str, extra_headers: &str, body: &str
 
 #[tokio::test]
 async fn denied_host_produces_zero_socket_activity() {
-    let canary = format!("/nanok3-canary-denied-host-{}", std::process::id());
+    let canary = format!("/nano-canary-denied-host-{}", std::process::id());
     let hostile = spawn_listener(&canary, |mut stream, _| {
-        respond(&mut stream, "200 OK", "", "nanok3-should-never-see-this");
+        respond(&mut stream, "200 OK", "", "nano-should-never-see-this");
     });
     let client = EgressClient::flux();
     let url = format!("http://127.0.0.1:{}{canary}", hostile.addr.port());
@@ -167,10 +167,10 @@ fn flux_allowlist_accepts_only_the_real_host() {
 async fn redirect_to_off_allowlist_host_must_not_be_followed() {
     // Hostile target: only reachable if the client follows a redirect WITHOUT
     // re-checking the egress policy against the redirect target.
-    let exfil_canary = format!("/nanok3-canary-redirect-exfil-{}", std::process::id());
-    let origin_canary = format!("/nanok3-canary-redirect-origin-{}", std::process::id());
+    let exfil_canary = format!("/nano-canary-redirect-exfil-{}", std::process::id());
+    let origin_canary = format!("/nano-canary-redirect-origin-{}", std::process::id());
     let exfil = spawn_listener(&exfil_canary, |mut stream, _| {
-        respond(&mut stream, "200 OK", "", "nanok3-exfil-reached");
+        respond(&mut stream, "200 OK", "", "nano-exfil-reached");
     });
     let exfil_port = exfil.addr.port();
     // Allowed origin: redirects every request to the off-allowlist host,
@@ -208,7 +208,7 @@ async fn redirect_within_allowlisted_host_is_allowed() {
     // permits it, so a green off-allowlist test is not a false negative.
     // Both the initial request and the redirect target use the canary path,
     // so each follow is distinguishable from stray traffic.
-    let canary = format!("/nanok3-canary-redirect-control-{}", std::process::id());
+    let canary = format!("/nano-canary-redirect-control-{}", std::process::id());
     let location = canary.clone();
     let origin = spawn_listener(&canary, move |mut stream, n| {
         if n == 1 {
@@ -219,7 +219,7 @@ async fn redirect_within_allowlisted_host_is_allowed() {
                 "",
             );
         } else {
-            respond(&mut stream, "200 OK", "", "nanok3-redirect-final");
+            respond(&mut stream, "200 OK", "", "nano-redirect-final");
         }
     });
     let client = EgressClient::new(EgressPolicy::new().allow_host("localhost"));
@@ -236,7 +236,7 @@ async fn redirect_within_allowlisted_host_is_allowed() {
         2,
         "same-host redirect should be followed"
     );
-    assert!(body.contains("nanok3-redirect-final"), "final body: {body}");
+    assert!(body.contains("nano-redirect-final"), "final body: {body}");
 }
 
 // --- Credential/header redaction on error paths ------------------------------
@@ -247,16 +247,16 @@ fn denied_error_display_redacts_query_and_userinfo_credentials() {
     let err = client
         .request(
             reqwest::Method::GET,
-            "https://nanok3-user:nanok3-s3cr3t-password@evil.example.com/v1?api_key=nanok3-query-secret",
+            "https://nano-user:nano-s3cr3t-password@evil.example.com/v1?api_key=nano-query-secret",
         )
         .expect_err("must deny");
     let rendered = err.to_string();
     assert!(
-        !rendered.contains("nanok3-s3cr3t-password"),
+        !rendered.contains("nano-s3cr3t-password"),
         "userinfo credential leaked into Denied display: {rendered}"
     );
     assert!(
-        !rendered.contains("nanok3-query-secret"),
+        !rendered.contains("nano-query-secret"),
         "query leaked into Denied display: {rendered}"
     );
 }
@@ -265,17 +265,17 @@ fn denied_error_display_redacts_query_and_userinfo_credentials() {
 fn http_status_error_display_redacts_query_and_userinfo_credentials() {
     let client = EgressClient::flux();
     let err = client.classify_status(
-        "https://nanok3-user:nanok3-s3cr3t-password@api.fluxrouter.ai/v1/chat/completions?api_key=nanok3-query-secret",
+        "https://nano-user:nano-s3cr3t-password@api.fluxrouter.ai/v1/chat/completions?api_key=nano-query-secret",
         401,
     );
     let rendered = err.to_string();
     assert!(rendered.contains("401"));
     assert!(
-        !rendered.contains("nanok3-s3cr3t-password"),
+        !rendered.contains("nano-s3cr3t-password"),
         "userinfo credential leaked into HttpStatus display: {rendered}"
     );
     assert!(
-        !rendered.contains("nanok3-query-secret"),
+        !rendered.contains("nano-query-secret"),
         "query leaked into HttpStatus display: {rendered}"
     );
 }
@@ -301,21 +301,21 @@ async fn transport_error_display_redacts_url_credentials() {
         }
     });
     let client = EgressClient::new(EgressPolicy::new().allow_host("127.0.0.1"));
-    let url = format!("http://127.0.0.1:{port}/v1?api_key=nanok3-transport-secret");
+    let url = format!("http://127.0.0.1:{port}/v1?api_key=nano-transport-secret");
     let err = client
         .request(reqwest::Method::GET, &url)
         .expect("allowlisted")
-        .bearer_auth("nanok3-bearer-secret")
+        .bearer_auth("nano-bearer-secret")
         .send()
         .await
         .expect_err("unanswered connection must error");
     let rendered = client.classify_transport(&err).to_string();
     assert!(
-        !rendered.contains("nanok3-transport-secret"),
+        !rendered.contains("nano-transport-secret"),
         "URL query credential leaked into Transport display: {rendered}"
     );
     assert!(
-        !rendered.contains("nanok3-bearer-secret"),
+        !rendered.contains("nano-bearer-secret"),
         "Authorization header leaked into Transport display: {rendered}"
     );
 }

@@ -1,4 +1,4 @@
-# NanoK3 Compliance Scenario Catalog
+# Wayland Nano Compliance Scenario Catalog
 
 Backbone for the compliance matrix / CI evidence mapping. Every verification
 that exists in Track B is keyed by a **stable scenario ID** and mapped to the
@@ -36,7 +36,7 @@ verbatim). Until they do, the operative frozen references are:
 
 Per-crate totals: nano-agent 15, nano-cli 5, nano-core 9, nano-egress 7,
 nano-mcp 8, nano-model 17, nano-platform 0, nano-protocol 17, nano-sandbox 121
-(105 lib + 16 `nanok3-sandbox-setup` bin), nano-session 10, nano-skills 11,
+(105 lib + 16 `wayland-nano-sandbox-setup` bin), nano-session 10, nano-skills 11,
 nano-tools 15.
 
 ### A.1 Wire protocol & Desktop profile (nano-protocol, 17)
@@ -74,7 +74,7 @@ nano-tools 15.
 
 | Scenario | Proves (contract) | Test / command | Status |
 |---|---|---|---|
-| COMP-MCP-001 | MCP stdio handshake + tools/list; initialize params advertise `nanok3` | `client::tests::{handshake_and_tools_list_over_stdio, initialize_params_advertise_nanok3}` | green |
+| COMP-MCP-001 | MCP stdio handshake + tools/list; initialize params advertise `wayland-nano` | `client::tests::{handshake_and_tools_list_over_stdio, initialize_params_advertise_nanok3}` | green |
 | COMP-MCP-002 | MCP protocol shapes (request shape, result-vs-error) | `protocol::tests::*` (2) | green |
 | COMP-MCP-003 | FLUX quirk #4: SSE-framed and plain-JSON HTTP responses parsed; neither-JSON-nor-SSE rejected | `http::tests::*` (3) | green |
 | COMP-MCP-004 | FLUX C1.1 `/mcp/` live: handshake + tools/list against real Flux MCP (trailing-slash derivation, `Mcp-Session-Id`) | `http::live_tests::live_flux_mcp_handshake_and_tools_list` | live-gated |
@@ -100,11 +100,11 @@ nano-tools 15.
 | COMP-SBX-007 | C1.2 capability SIDs: path-scoped write-root SIDs, cwd-spelling equivalence, only active roots | `cap::tests::*` (2), `spawn_prep::tests::root_capability_sids_only_include_active_roots`, `spawn_prep::tests::{legacy_deny_path_includes_nested_active_root_sid, legacy_capability_roots_use_effective_write_roots, legacy_session_capability_roots_use_runtime_workspace_roots_for_workspace_root}` | green |
 | COMP-SBX-008 | C1.2 permission-profile validation: rejects disabled profiles, unrestricted managed fs, full-disk write entries; token mode per profile; temp env roots scoped (D9) | `resolved_permissions::tests::*` (8) | green |
 | COMP-SBX-009 | C1.2 root gathering + sensitive filters: profile read roots, top-level exclusions, sensitive filter strips nano-home/sandbox dirs | `gather::tests::*` (5), `audit::tests::*` (1) | green |
-| COMP-SBX-010 | C1.2 setup/identity state: marker + users-file round trips, offline drift detection, loopback-only proxy ports, identity readiness, guardian preserve mode, singleflight, NanoK3-branded payload | `setup_types::tests::*` (5), `identity::tests::*` (4), `setup_exec::tests::*` (3) | green |
-| COMP-SBX-011 | C1.2 helper materialization: versioned helper exe copy/reuse/freshness, NanoK3 resource dirs | `helper_materialization::tests::*` (11) | green |
+| COMP-SBX-010 | C1.2 setup/identity state: marker + users-file round trips, offline drift detection, loopback-only proxy ports, identity readiness, guardian preserve mode, singleflight, Wayland Nano–branded payload | `setup_types::tests::*` (5), `identity::tests::*` (4), `setup_exec::tests::*` (3) | green |
+| COMP-SBX-011 | C1.2 helper materialization: versioned helper exe copy/reuse/freshness, Wayland Nano resource dirs | `helper_materialization::tests::*` (11) | green |
 | COMP-SBX-012 | C1.2 elevated-runner IPC: framed round trip, spawn-request/error serialization, credential-error recognition | `elevated::ipc_framed::tests::*` (3), `elevated::runner_client::tests::*` (1) | green |
 | COMP-SBX-013 | Supporting plumbing: stdio bridge EOF/chunks, session handle lifecycle, wrapper argv round trip, git safe-directory injection, ssh config includes, path key normalization, argv quoting, log rolling/redaction, telemetry sink, metric-tag sanitization | `stdio_bridge` (2), `spawn_types` (1), `wrapper` (1), `sandbox_utils` (2), `ssh_config_dependencies` (2), `path_normalization` (1), `winutil` (3), `logging` (4), `telemetry` (2), `setup_error` (3) | green |
-| COMP-SBX-014 | C1.2 setup binary: firewall COM accepts production rule scopes and rejects ineffective/partial policy; runtime bin paths; deny-path SID mapping; setup payload (OTel, provision-only); write-root refresh ACL semantics | `nanok3-sandbox-setup` bin: `win::firewall::tests::*` (5), `win::setup_runtime_bin::tests::*` (2), `win::tests::*` (9) | green |
+| COMP-SBX-014 | C1.2 setup binary: firewall COM accepts production rule scopes and rejects ineffective/partial policy; runtime bin paths; deny-path SID mapping; setup payload (OTel, provision-only); write-root refresh ACL semantics | `wayland-nano-sandbox-setup` bin: `win::firewall::tests::*` (5), `win::setup_runtime_bin::tests::*` (2), `win::tests::*` (9) | green |
 
 ### A.7 Agent loop (nano-agent, 15)
 

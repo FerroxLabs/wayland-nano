@@ -1,5 +1,12 @@
 # NPM packaging acceptance — G-PKG-1
 
+> **Historical record.** This acceptance was run on 2026-08-10 under the old
+> NanoK3 codename — every command, file name, and output below (`nanok3`,
+> `bin/nanok3.js`, `nanok3-0.1.0-alpha.0.tgz`, `agentInfo.name=="nanok3"`, …)
+> is quoted as recorded and must not be rewritten. The current names are in
+> `docs/REBRAND.md` (package `@waylandnano/nano`, launcher
+> `bin/wayland-nano.js`, binary `wayland-nano[.exe]`).
+
 Date: 2026-08-10. Host: Windows 11 x86_64, Git Bash + PowerShell 7.
 Toolchain: node v24.16.0, npm 11.13.0, cargo 1.95.0 (pinned).
 Verdict: **PASS** — all steps green, zero bugs found in the scaffold.

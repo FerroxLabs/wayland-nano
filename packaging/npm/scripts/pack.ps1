@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-    Build the `nanok3` release binary and stage it into the npm package layout.
+    Build the `wayland-nano` release binary and stage it into the npm package layout.
 
 .DESCRIPTION
-    Cross-builds (or natively builds) crates/nano-cli's `nanok3` binary for one
+    Cross-builds (or natively builds) crates/nano-cli's `wayland-nano` binary for one
     platform of the distribution matrix — or all of them — and copies the
     result into packaging/npm/binaries/<platform>-<arch>/, the layout that
-    packaging/npm/bin/install.js and bin/nanok3.js resolve at install/runtime.
+    packaging/npm/bin/install.js and bin/wayland-nano.js resolve at install/runtime.
 
     win32-arm64 is compile-gate only (not supported at runtime); the launcher
     rejects it with a clear error. Cross targets require the matching rustup
@@ -54,7 +54,7 @@ function Get-HostPlatformKey {
 
 function Pack-One([string]$Key) {
     $triple = $Matrix[$Key]
-    $exe = $Key.StartsWith('win32') ? 'nanok3.exe' : 'nanok3'
+    $exe = $Key.StartsWith('win32') ? 'wayland-nano.exe' : 'wayland-nano'
     $builtPath = Join-Path $RepoRoot "target\$triple\release\$exe"
 
     if (-not $SkipBuild) {
@@ -89,4 +89,4 @@ foreach ($key in $targets) {
     Pack-One $key
 }
 
-Write-Host '==> done. Validate with: node --check packaging/npm/bin/install.js; node --check packaging/npm/bin/nanok3.js'
+Write-Host '==> done. Validate with: node --check packaging/npm/bin/install.js; node --check packaging/npm/bin/wayland-nano.js'

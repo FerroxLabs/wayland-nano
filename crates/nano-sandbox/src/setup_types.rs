@@ -5,10 +5,10 @@
 //! structures and env parsing only — the provisioning *execution* lands
 //! separately) @ 646f7c0a. Deliberate transformations, per dual-track
 //! isolation (scorecard §6: test artifacts namespaced per track):
-//! - usernames `CodexSandbox{Offline,Online}` → `NanoK3Sandbox{Offline,Online}`
+//! - usernames `CodexSandbox{Offline,Online}` → `NanoSandbox{Offline,Online}`
 //!   (both tracks' setups must not collide on one host);
-//! - env keys `CODEX_NETWORK_ALLOW_LOCAL_BINDING` → `NANOK3_NETWORK_ALLOW_LOCAL_BINDING`,
-//!   `CODEX_WINDOWS_SANDBOX_PROXY_PORTS` → `NANOK3_WINDOWS_SANDBOX_PROXY_PORTS`
+//! - env keys `CODEX_NETWORK_ALLOW_LOCAL_BINDING` → `NANO_NETWORK_ALLOW_LOCAL_BINDING`,
+//!   `CODEX_WINDOWS_SANDBOX_PROXY_PORTS` → `NANO_WINDOWS_SANDBOX_PROXY_PORTS`
 //!   (wire format otherwise unchanged).
 
 use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
@@ -20,8 +20,8 @@ use std::path::Path;
 use std::path::PathBuf;
 
 pub const SETUP_VERSION: u32 = 5;
-pub const OFFLINE_USERNAME: &str = "NanoK3SandboxOffline";
-pub const ONLINE_USERNAME: &str = "NanoK3SandboxOnline";
+pub const OFFLINE_USERNAME: &str = "NanoSandboxOffline";
+pub const ONLINE_USERNAME: &str = "NanoSandboxOnline";
 
 pub fn sandbox_bin_dir(nano_home: &Path) -> PathBuf {
     nano_home.join(".sandbox-bin")
@@ -157,11 +157,11 @@ const PROXY_ENV_KEYS: &[&str] = &[
     "ws_proxy",
     "wss_proxy",
 ];
-const ALLOW_LOCAL_BINDING_ENV_KEY: &str = "NANOK3_NETWORK_ALLOW_LOCAL_BINDING";
+const ALLOW_LOCAL_BINDING_ENV_KEY: &str = "NANO_NETWORK_ALLOW_LOCAL_BINDING";
 // Internal wire format shared with the network proxy: a comma-separated,
 // sorted list of non-zero loopback proxy ports used only when computing the
 // Windows offline sandbox setup marker.
-const WINDOWS_SANDBOX_PROXY_PORTS_ENV_KEY: &str = "NANOK3_WINDOWS_SANDBOX_PROXY_PORTS";
+const WINDOWS_SANDBOX_PROXY_PORTS_ENV_KEY: &str = "NANO_WINDOWS_SANDBOX_PROXY_PORTS";
 
 pub fn offline_proxy_settings_from_env(
     env_map: &HashMap<String, String>,
@@ -290,7 +290,7 @@ mod tests {
             ("ALL_PROXY", "http://user@127.0.0.1:7000"),
             ("WS_PROXY", "http://[::1]:6000"),
             ("WSS_PROXY", "http://192.168.1.5:5000"), // not loopback: rejected
-            ("NANOK3_WINDOWS_SANDBOX_PROXY_PORTS", "0,4444, 5555"),
+            ("NANO_WINDOWS_SANDBOX_PROXY_PORTS", "0,4444, 5555"),
         ]);
         assert_eq!(
             proxy_ports_from_env(&map),
@@ -302,7 +302,7 @@ mod tests {
     fn offline_settings_respect_identity_and_env() {
         let map = env_map(&[
             ("HTTP_PROXY", "http://127.0.0.1:8080"),
-            ("NANOK3_NETWORK_ALLOW_LOCAL_BINDING", "1"),
+            ("NANO_NETWORK_ALLOW_LOCAL_BINDING", "1"),
         ]);
         let offline = offline_proxy_settings_from_env(&map, SandboxNetworkIdentity::Offline);
         assert_eq!(offline.proxy_ports, vec![8080]);

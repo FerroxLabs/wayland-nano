@@ -12,7 +12,7 @@
 //! - `error!` diagnostics → `tracing::warn!`;
 //! - named ADS spellings (`file:stream`) are normalized to the base file
 //!   before candidate resolution so a deny on a file covers all its streams
-//!   (NanoK3 hardening, no donor counterpart);
+//!   (Wayland Nano hardening, no donor counterpart);
 //! - legacy `SandboxPolicy` conversions, semantic-signature/equivalence, and
 //!   `materialize_project_roots_*` intentionally NOT ported (greenfield: no
 //!   legacy config exists; land with a consumer if ever needed).

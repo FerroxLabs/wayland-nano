@@ -1,4 +1,4 @@
-//! `nanok3 acp-host` — ACP adapter: Desktop's stdio JSON-RPC protocol driving
+//! `wayland-nano acp-host` — ACP adapter: Desktop's stdio JSON-RPC protocol driving
 //! the real turn engine. This is the zero-Desktop-change integration door.
 //!
 //! Live I/O design:
@@ -85,7 +85,7 @@ fn new_session_id() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    format!("nanok3-session-{nanos}-{n}")
+    format!("wayland-nano-session-{nanos}-{n}")
 }
 
 /// Session ids name a journal file directly, so anything that could escape
@@ -99,7 +99,9 @@ fn is_fs_safe_session_id(id: &str) -> bool {
 
 pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     let Some(api_key) = crate::flux_key::flux_api_key() else {
-        eprintln!("nanok3: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for acp-host mode");
+        eprintln!(
+            "wayland-nano: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for acp-host mode"
+        );
         return Ok(2);
     };
 
@@ -222,7 +224,7 @@ where
                                 &JsonRpcResponse::err(
                                     id,
                                     -32602,
-                                    "nanok3 uses FLUX_API_KEY from the environment; no interactive auth",
+                                    "wayland-nano uses FLUX_API_KEY from the environment; no interactive auth",
                                 ),
                             )?;
                         }
@@ -473,7 +475,7 @@ where
                                     // the live frame, never the other way.
                                     if let Err(err) = journal_writer.append(envelope) {
                                         eprintln!(
-                                            "nanok3: session journal append failed: {err}"
+                                            "wayland-nano: session journal append failed: {err}"
                                         );
                                     }
                                     let mut guard =
@@ -526,7 +528,7 @@ where
                             active.context = messages_from_envelopes(&report.envelopes);
                         }
                         Err(err) => {
-                            eprintln!("nanok3: session journal re-read failed: {err}");
+                            eprintln!("wayland-nano: session journal re-read failed: {err}");
                         }
                     }
                 }

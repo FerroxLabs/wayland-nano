@@ -94,25 +94,25 @@ sha2 = "0.10"
 # builds on Linux. Declaring them under target cfg keeps cross-target
 # `cargo check` green without stub mains.
 [[bin]]
-name = "nanok3-sandbox-setup"
+name = "wayland-nano-sandbox-setup"
 path = "src/bin/setup_main/main.rs"
 
 [[bin]]
-name = "nanok3-command-runner"
+name = "wayland-nano-command-runner"
 path = "src/bin/command_runner/main.rs"
 
 [[bin]]
-name = "nanok3-provision-dry-run"
+name = "wayland-nano-provision-dry-run"
 path = "src/bin/provision_dry_run/main.rs"
 
 [[bin]]
-name = "nanok3-tree-kill-probe"
+name = "wayland-nano-tree-kill-probe"
 path = "src/bin/tree_kill_probe/main.rs"
 
 [[bin]]
-name = "nanok3-spawn-profile"
+name = "wayland-nano-spawn-profile"
 path = "src/bin/spawn_profile/main.rs"
 
 [[bin]]
-name = "nanok3-linux-sandbox"
+name = "wayland-nano-linux-sandbox"
 path = "src/bin/linux_sandbox/main.rs"

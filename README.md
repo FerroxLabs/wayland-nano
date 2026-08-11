@@ -1,11 +1,12 @@
-# Wayland Nano — Track B (NanoK3)
+# Wayland Nano — Track B (master implementation)
 
 Greenfield + vendored-crate implementation of the shared Wayland Nano
-contracts, built by K3. Companion/competing implementation to Track A
-(`../nano/`, Codex reduction fork — read-only from here). Comparison rules:
-`../shared/SCORECARD.md`.
+contracts, built by K3. Track B is the master implementation and carries the
+product name (renamed from the NanoK3 codename — see `docs/REBRAND.md`).
+Companion/competing implementation to Track A (`../nano/`, Codex reduction
+fork — read-only from here). Comparison rules: `../shared/SCORECARD.md`.
 
-NanoK3 is a Rust workspace (edition 2024) implementing the Nano runtime:
+Wayland Nano is a Rust workspace (edition 2024) implementing the Nano runtime:
 an agent loop, a policy-enforced tool set, an OS-containment sandbox, an
 egress chokepoint, and protocol hosts that let Wayland Desktop drive it.
 
@@ -31,7 +32,7 @@ egress chokepoint, and protocol hosts that let Wayland Desktop drive it.
 | `nano-skills` | Skill loader/parser: bounded scoped activation, malformed skills surface as errors |
 | `nano-session` | Append-only Op journal: replay, torn-tail recovery, idempotence, compaction equivalence |
 | `nano-protocol` | NDJSON wire codec, honest capability profile, host loop, ACP adapter, Desktop corpus replay |
-| `nano-cli` | The `nanok3` binary and helper bins |
+| `nano-cli` | The `wayland-nano` binary and helper bins |
 
 ## Build, test, gate
 
@@ -52,23 +53,24 @@ Live-gated tests self-skip without credentials (`FLUX_API_KEY`,
 run stays green. Clippy runs with `-D warnings` and enforces the architecture
 bans (all outbound HTTP must flow through `nano-egress`).
 
-## The `nanok3` binary
+## The `wayland-nano` binary
 
 Three modes (`crates/nano-cli/src/main.rs`):
 
-- `nanok3 doctor` — self-diagnostics: environment, sandbox state, egress
-  policy, journal integrity, process hygiene. Exit 0 when all required checks
-  pass (unprovisioned sandbox is a WARN until elevated setup runs).
-- `nanok3 protocol-host` — Desktop-core NDJSON wire host: ready-first loop,
-  malformed input → typed error frame + continue.
-- `nanok3 acp-host` — ACP adapter for Desktop registration
+- `wayland-nano doctor` — self-diagnostics: environment, sandbox state,
+  egress policy, journal integrity, process hygiene. Exit 0 when all required
+  checks pass (unprovisioned sandbox is a WARN until elevated setup runs).
+- `wayland-nano protocol-host` — Desktop-core NDJSON wire host: ready-first
+  loop, malformed input → typed error frame + continue.
+- `wayland-nano acp-host` — ACP adapter for Desktop registration
   (`acp.customAgents`): initialize v1 → session/new → prompt with streamed
   updates → end_turn.
 
-Helper binaries: `nanok3-acp-profile` (metrics), `nanok3-sandbox-setup`,
-`nanok3-command-runner`, `nanok3-provision-dry-run`, `nanok3-tree-kill-probe`,
-`nanok3-spawn-profile` (nano-sandbox, Windows), `nanok3-linux-sandbox`
-(landlock/seccomp/bwrap helper, Linux).
+Helper binaries: `wayland-nano-acp-profile` (metrics),
+`wayland-nano-sandbox-setup`, `wayland-nano-command-runner`,
+`wayland-nano-provision-dry-run`, `wayland-nano-tree-kill-probe`,
+`wayland-nano-spawn-profile` (nano-sandbox, Windows),
+`wayland-nano-linux-sandbox` (landlock/seccomp/bwrap helper, Linux).
 
 ## Install (npm alpha)
 
@@ -79,12 +81,13 @@ See `packaging/npm/README.md`:
 ```powershell
 pwsh packaging/npm/scripts/pack.ps1   # build release + stage binary
 cd packaging/npm; npm pack
-npm install -g ./nanok3-0.1.0-alpha.0.tgz
-nanok3 doctor
+npm install -g ./waylandnano-nano-0.1.0-alpha.0.tgz
+wayland-nano doctor
 ```
 
-Acceptance evidence: `packaging/npm/ACCEPTANCE.md` (offline clean-prefix
-install, doctor exit 0, ACP initialize, unsupported-platform refusal).
+Acceptance evidence: `packaging/npm/ACCEPTANCE.md` (recorded under the old
+NanoK3 codename — offline clean-prefix install, doctor exit 0, ACP
+initialize, unsupported-platform refusal).
 
 ## Security model
 

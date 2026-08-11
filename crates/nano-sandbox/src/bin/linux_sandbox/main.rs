@@ -1,4 +1,4 @@
-//! `nanok3-linux-sandbox` helper: builds the bubblewrap filesystem view,
+//! `wayland-nano-linux-sandbox` helper: builds the bubblewrap filesystem view,
 //! re-invokes itself with `--apply-seccomp-then-exec` for the seccomp layer,
 //! then execs the wrapped command. `--use-legacy-landlock` opts into the
 //! legacy in-process Landlock + seccomp path.
@@ -17,7 +17,7 @@
 //!   preserved: policies the legacy backend cannot enforce still error inside
 //!   `apply_permission_profile_to_current_thread`;
 //! - synthetic-mount registry dir `codex-bwrap-synthetic-mount-targets-$UID`
-//!   -> `nanok3-bwrap-synthetic-mount-targets-$UID` (nanok3-* namespacing);
+//!   -> `wayland-nano-bwrap-synthetic-mount-targets-$UID` (wayland-nano-* namespacing);
 //! - errors panic (fail-closed: the sandboxed command never runs when
 //!   restrictions cannot be applied), matching the donor helper.
 
@@ -56,7 +56,7 @@ mod linux {
     use nano_sandbox::linux_bwrap::SyntheticMountTarget;
     use nano_sandbox::linux_bwrap::SyntheticMountTargetKind;
     use nano_sandbox::linux_bwrap::create_bwrap_command_args;
-    use nano_sandbox::linux_landlock::NANOK3_LINUX_SANDBOX_ARG0;
+    use nano_sandbox::linux_landlock::NANO_LINUX_SANDBOX_ARG0;
 
     use crate::landlock::apply_permission_profile_to_current_thread;
     use crate::launcher::exec_bwrap;
@@ -380,7 +380,7 @@ mod linux {
         if supports_argv0 {
             argv.splice(
                 command_separator_index..command_separator_index,
-                ["--argv0".to_string(), NANOK3_LINUX_SANDBOX_ARG0.to_string()],
+                ["--argv0".to_string(), NANO_LINUX_SANDBOX_ARG0.to_string()],
             );
             return;
         }
@@ -1193,7 +1193,7 @@ mod linux {
     fn synthetic_mount_registry_root() -> PathBuf {
         let effective_uid = unsafe { libc::geteuid() };
         std::env::temp_dir().join(format!(
-            "nanok3-bwrap-synthetic-mount-targets-{effective_uid}"
+            "wayland-nano-bwrap-synthetic-mount-targets-{effective_uid}"
         ))
     }
 
@@ -1433,5 +1433,5 @@ fn main() {
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
-    panic!("nanok3-linux-sandbox is Linux-only");
+    panic!("wayland-nano-linux-sandbox is Linux-only");
 }

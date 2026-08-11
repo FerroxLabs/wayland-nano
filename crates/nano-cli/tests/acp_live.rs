@@ -202,8 +202,7 @@ struct Harness {
 fn temp_sessions_dir(tag: &str) -> std::path::PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir =
-        std::env::temp_dir().join(format!("nanok3-acp-live-{tag}-{}-{n}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("nano-acp-live-{tag}-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp sessions dir");
     dir
 }
@@ -639,7 +638,7 @@ fn session_load_restores_context_across_serve_instances() {
         session_id = client.session_id.clone();
         assert_ne!(
             session_id,
-            format!("nanok3-session-{}", std::process::id()),
+            format!("wayland-nano-session-{}", std::process::id()),
             "session ids must not be pid-based"
         );
         let prompt_id = client.send_prompt(&session_id, "what does the note say?");
@@ -665,7 +664,7 @@ fn session_load_restores_context_across_serve_instances() {
     let missing = client.request(
         "session/load",
         serde_json::json!({
-            "sessionId": "nanok3-session-never-existed",
+            "sessionId": "wayland-nano-session-never-existed",
             "cwd": ".",
             "mcpServers": []
         }),

@@ -276,7 +276,7 @@ fn resume_context_from(envelopes: &[OpEnvelope]) -> Vec<Message> {
 }
 
 fn fixture(tag: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("nanok3-c2-{tag}-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("nano-c2-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let ws = root.join("workspace");
     std::fs::create_dir_all(&ws).unwrap();

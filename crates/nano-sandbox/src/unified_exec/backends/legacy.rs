@@ -421,7 +421,7 @@ mod nano_tests {
 
     #[tokio::test]
     async fn workspace_write_spawn_echoes_and_exits_clean() {
-        let tmp = std::env::temp_dir().join(format!("nanok3-ux-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("wayland-nano-ux-{}", std::process::id()));
         let workspace = tmp.join("workspace");
         let nano_home = tmp.join("nano-home");
         fs::create_dir_all(&workspace).unwrap();
@@ -430,19 +430,26 @@ mod nano_tests {
         let (out, _err, code) = spawn_and_collect(
             &workspace,
             &nano_home,
-            vec!["cmd.exe".into(), "/c".into(), "echo nanok3-hello".into()],
+            vec![
+                "cmd.exe".into(),
+                "/c".into(),
+                "echo wayland-nano-hello".into(),
+            ],
             &workspace,
         )
         .await;
 
-        assert!(out.contains("nanok3-hello"), "stdout must echo: {out}");
+        assert!(
+            out.contains("wayland-nano-hello"),
+            "stdout must echo: {out}"
+        );
         assert_eq!(code, 0);
         let _ = fs::remove_dir_all(&tmp);
     }
 
     #[tokio::test]
     async fn workspace_write_allows_write_inside_root() {
-        let tmp = std::env::temp_dir().join(format!("nanok3-uxw-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("wayland-nano-uxw-{}", std::process::id()));
         let workspace = tmp.join("workspace");
         let nano_home = tmp.join("nano-home");
         fs::create_dir_all(&workspace).unwrap();
@@ -467,7 +474,7 @@ mod nano_tests {
 
     #[tokio::test]
     async fn workspace_write_denies_write_outside_root() {
-        let tmp = std::env::temp_dir().join(format!("nanok3-uxd-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("wayland-nano-uxd-{}", std::process::id()));
         let workspace = tmp.join("workspace");
         let nano_home = tmp.join("nano-home");
         let outside = tmp.join("outside");

@@ -23,7 +23,7 @@
 //!
 //! LIVE-GATED: self-skips without `FLUX_TEST_KEY` (mirrors `acp_slice.rs`).
 //!
-//! Flow: spawn the REAL `nanok3 acp-host`, initialize → session/new against
+//! Flow: spawn the REAL `wayland-nano acp-host`, initialize → session/new against
 //! a fresh temp workspace seeded with three small source files, then run a
 //! genuinely LONG turn (three fs_read round trips plus eight fs_write
 //! round trips, one per essay part — tens of seconds of model time across
@@ -38,7 +38,7 @@
 //! `tool_call_update`, the prompt response is the final frame).
 //!
 //! Run manifest: JSON written to `<workspace>/c2-watchdog-manifest.json`
-//! (workspace = `$TEMP/nanok3-c2-watchdog-<pid>/`, kept after the run; path
+//! (workspace = `$TEMP/nano-c2-watchdog-<pid>/`, kept after the run; path
 //! printed to stderr). It records per-frame arrival offsets and active gaps,
 //! the max gap, and the bound. Measured numbers are pasted in
 //! `shared/reviews/C2/trackb-claim.md` §C2.3.
@@ -81,7 +81,7 @@ struct Stamp {
     tool_call_id: Option<String>,
 }
 
-/// ACP client handle over a spawned `nanok3 acp-host`. Stdout is pumped on a
+/// ACP client handle over a spawned `wayland-nano acp-host`. Stdout is pumped on a
 /// reader thread that timestamps each line the instant it arrives, so gap
 /// measurement is not polluted by consumer-side work.
 struct Acp {
@@ -100,19 +100,19 @@ struct Acp {
 
 impl Acp {
     fn spawn(workspace: &Path, nano_home: &Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_nanok3"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_wayland-nano"))
             .arg("acp-host")
             .current_dir(workspace)
             .env(
                 "FLUX_API_KEY",
                 std::env::var("FLUX_TEST_KEY").unwrap_or_default(),
             )
-            .env("NANOK3_HOME", nano_home)
+            .env("NANO_HOME", nano_home)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .expect("spawn nanok3 acp-host");
+            .expect("spawn wayland-nano acp-host");
         let pid = child.id();
         let stdin = child.stdin.take().expect("stdin");
         let mut stdout = std::io::BufReader::new(child.stdout.take().expect("stdout"));
@@ -243,7 +243,7 @@ fn c2_watchdog_live_long_turn_frame_cadence() {
         return;
     }
 
-    let workspace = std::env::temp_dir().join(format!("nanok3-c2-watchdog-{}", std::process::id()));
+    let workspace = std::env::temp_dir().join(format!("nano-c2-watchdog-{}", std::process::id()));
     std::fs::create_dir_all(&workspace).expect("workspace");
     let nano_home = workspace.join("nano-home");
     std::fs::write(

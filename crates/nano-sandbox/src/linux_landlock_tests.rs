@@ -68,7 +68,7 @@ fn permission_profile_flag_is_included() {
 #[test]
 fn permission_profile_json_round_trips_through_helper_cli_contract() {
     // The `--permission-profile` payload is the CLI contract with the
-    // nanok3-linux-sandbox helper: it must deserialize back into the same
+    // wayland-nano-linux-sandbox helper: it must deserialize back into the same
     // profile.
     let permission_profile = PermissionProfile::workspace_write();
     let args = create_linux_sandbox_command_args_for_permission_profile(
@@ -89,6 +89,6 @@ fn permission_profile_json_round_trips_through_helper_cli_contract() {
 }
 
 #[test]
-fn helper_arg0_uses_nanok3_namespace() {
-    assert_eq!(NANOK3_LINUX_SANDBOX_ARG0, "nanok3-linux-sandbox");
+fn helper_arg0_uses_nano_namespace() {
+    assert_eq!(NANO_LINUX_SANDBOX_ARG0, "wayland-nano-linux-sandbox");
 }

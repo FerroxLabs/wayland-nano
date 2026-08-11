@@ -29,7 +29,7 @@ fn key() -> Option<String> {
 /// Builds the broken mini-project: math.rs with an inverted add, and a
 /// check.cmd that fails until the file contains `a + b`.
 fn broken_project(tag: &str) -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!("nanok3-c2-{tag}-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("nano-c2-{tag}-{}", std::process::id()));
     let ws = root.join("workspace");
     let home = root.join("nano-home");
     std::fs::create_dir_all(&ws).unwrap();

@@ -121,9 +121,9 @@ fn system_bwrap_warning_reports_missing_system_bwrap() {
 }
 
 #[test]
-fn missing_bwrap_warning_uses_nanok3_namespace() {
-    assert!(MISSING_BWRAP_WARNING.contains("Nano K3"));
-    assert!(WSL1_BWRAP_WARNING.contains("Nano K3"));
+fn missing_bwrap_warning_uses_nano_namespace() {
+    assert!(MISSING_BWRAP_WARNING.contains("Wayland Nano"));
+    assert!(WSL1_BWRAP_WARNING.contains("Wayland Nano"));
 }
 
 #[cfg(target_os = "linux")]

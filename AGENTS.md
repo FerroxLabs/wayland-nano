@@ -1,4 +1,4 @@
-# NanoK3 (Track B) — rules for agents working in this repo
+# Wayland Nano (Track B) — rules for agents working in this repo
 
 These are standing rules. They apply to every agent and every change, and they
 override convenience. If a rule blocks your task, stop and report — do not
@@ -43,10 +43,11 @@ route around it.
 
 ## Naming and coexistence
 
-- Track A coexists on dev boxes. Namespace everything NanoK3 creates:
-  `NanoK3*` identities (e.g. `NanoK3SandboxOffline`/`NanoK3SandboxOnline`),
-  `nanok3-*` binaries/dirs, `NANOK3_*` env vars, `nanok3.*` metric names.
-  Never reuse Track A's `Nano*`/`codex-*` names.
+- Track A coexists on dev boxes. Namespace everything Wayland Nano creates:
+  `NanoSandbox*` identities (e.g. `NanoSandboxOffline`/`NanoSandboxOnline`),
+  `wayland-nano-*` binaries/dirs, `NANO_*` env vars, `nano.*` metric names.
+  Never reuse Track A's `Nano*`/`codex-*` names. (Renamed from the NanoK3
+  codename; the authoritative map is `docs/REBRAND.md`.)
 
 ## Toolchain and code rules
 

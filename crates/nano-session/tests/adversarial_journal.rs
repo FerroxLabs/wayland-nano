@@ -123,7 +123,7 @@ fn assert_no_resurrection(
 }
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("nanok3-adv-journal-{}-{tag}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("nano-adv-journal-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -342,7 +342,7 @@ fn crafted_duplicate_ids_on_disk_first_wins_never_double_applies() {
             call_id: "c1".into(),
             ok: false,
             output_digest: "forged".into(),
-            changed_files: vec!["nanok3-forged.rs".into()],
+            changed_files: vec!["nano-forged.rs".into()],
         },
     ));
     let (bytes, _, _) = serialize_lines(&originals);
@@ -353,7 +353,7 @@ fn crafted_duplicate_ids_on_disk_first_wins_never_double_applies() {
         "first record applies"
     );
     assert!(
-        !state.changed_files.contains("nanok3-forged.rs"),
+        !state.changed_files.contains("nano-forged.rs"),
         "duplicate id must never double-apply or overwrite"
     );
 }
@@ -442,7 +442,7 @@ fn writer_duplicate_id_with_different_payload_is_a_noop() {
             call_id: "c1".into(),
             ok: false,
             output_digest: "forged".into(),
-            changed_files: vec!["nanok3-forged.rs".into()],
+            changed_files: vec!["nano-forged.rs".into()],
         },
     );
     {

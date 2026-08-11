@@ -32,7 +32,7 @@ cp /tmp/b3-401.json "$OUT/errors/${TS}_cc_badkey_request.json"
 curl -sS -o "$OUT/errors/${TS}_cc_badkey_response.json" \
   -D "$OUT/errors/${TS}_cc_badkey_headers.txt" \
   -w "HTTP %{http_code}\n" \
-  -H "Authorization: Bearer sk-invalid-nanok3-probe-0000000000000000" \
+  -H "Authorization: Bearer sk-invalid-wayland-nano-probe-00000000000000" \
   -H "Content-Type: application/json" \
   -d @/tmp/b3-401.json "$BASE/v1/chat/completions"
 

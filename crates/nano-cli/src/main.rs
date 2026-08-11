@@ -1,4 +1,4 @@
-//! nanok3 — Wayland Nano (Track B) binary: doctor, protocol host.
+//! wayland-nano — Wayland Nano (Track B) binary: doctor, protocol host.
 
 mod doctor;
 mod host_mode;
@@ -22,7 +22,7 @@ fn main() {
             match runtime.block_on(acp_mode::run(&home)) {
                 Ok(code) => code,
                 Err(err) => {
-                    eprintln!("nanok3: acp io error: {err}");
+                    eprintln!("wayland-nano: acp io error: {err}");
                     2
                 }
             }
@@ -38,21 +38,21 @@ fn main() {
                 Ok(host_mode::HostExit::StdinClosed) => 0,
                 Ok(host_mode::HostExit::ShutdownCommand) => 0,
                 Ok(host_mode::HostExit::Fatal(reason)) => {
-                    eprintln!("nanok3: fatal: {reason}");
+                    eprintln!("wayland-nano: fatal: {reason}");
                     2
                 }
                 Err(err) => {
-                    eprintln!("nanok3: host loop io error: {err}");
+                    eprintln!("wayland-nano: host loop io error: {err}");
                     2
                 }
             }
         }
         Some("--version") | Some("-V") => {
-            println!("nanok3 {}", env!("CARGO_PKG_VERSION"));
+            println!("wayland-nano {}", env!("CARGO_PKG_VERSION"));
             0
         }
         _ => {
-            eprintln!("usage: nanok3 doctor | protocol-host | acp-host | --version");
+            eprintln!("usage: wayland-nano doctor | protocol-host | acp-host | --version");
             2
         }
     };
@@ -60,11 +60,11 @@ fn main() {
 }
 
 fn nano_home() -> std::path::PathBuf {
-    std::env::var_os("NANOK3_HOME")
+    std::env::var_os("NANO_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             dirs_next::home_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join(".nanok3")
+                .join(".nano")
         })
 }

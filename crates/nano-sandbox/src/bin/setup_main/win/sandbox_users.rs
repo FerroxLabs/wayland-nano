@@ -61,8 +61,8 @@ use nano_sandbox::sandbox_secrets_dir;
 use nano_sandbox::string_from_sid_bytes;
 use nano_sandbox::to_wide;
 
-pub const SANDBOX_USERS_GROUP: &str = "NanoK3SandboxUsers";
-const SANDBOX_USERS_GROUP_COMMENT: &str = "NanoK3 sandbox internal group (managed)";
+pub const SANDBOX_USERS_GROUP: &str = "NanoSandboxUsers";
+const SANDBOX_USERS_GROUP_COMMENT: &str = "Wayland Nano sandbox internal group (managed)";
 const SID_ADMINISTRATORS: &str = "S-1-5-32-544";
 const SID_USERS: &str = "S-1-5-32-545";
 const SID_AUTHENTICATED_USERS: &str = "S-1-5-11";
@@ -224,10 +224,12 @@ pub fn ensure_local_group_member(group_name: &str, member_name: &str) -> Result<
     Ok(())
 }
 
-/// True when `username` is a Track-B sandbox account name. Uninstall refuses
-/// to delete anything else (Track A's accounts use a different prefix).
-fn is_nanok3_sandbox_account(username: &str) -> bool {
-    username.starts_with("NanoK3Sandbox")
+/// True when `username` is a Wayland Nano sandbox account name. Uninstall
+/// refuses to delete anything else: Track A's accounts use a different
+/// prefix, and the retired NanoK3* codename identities are rejected
+/// explicitly so stale pre-rebrand state can never match.
+fn is_nano_sandbox_account(username: &str) -> bool {
+    username.starts_with("NanoSandbox") && !username.starts_with("NanoK3")
 }
 
 /// True when a `DOMAIN\name` group-member entry names one of the expected
@@ -243,7 +245,7 @@ fn member_name_matches_expected(domain_and_name: &str, expected: &[&str]) -> boo
 /// Removes the Track-B sandbox accounts and the sandbox users group.
 ///
 /// Track-B addition (the donor has no teardown). Fail-closed: account names
-/// must carry the NanoK3Sandbox prefix, and the group is deleted only when
+/// must carry the NanoSandbox prefix, and the group is deleted only when
 /// every current member is one of the two provisioned accounts — any other
 /// content means the group is not exactly what provisioning created and the
 /// run aborts instead of deleting foreign state. Missing accounts/group are
@@ -256,10 +258,12 @@ pub fn remove_sandbox_users(
     let expected_members = [offline_username, online_username];
     ensure_group_membership_as_provisioned(&expected_members)?;
     for username in expected_members {
-        if !is_nanok3_sandbox_account(username) {
+        if !is_nano_sandbox_account(username) {
             return Err(anyhow::Error::new(SetupFailure::new(
                 SetupErrorCode::HelperUserDeleteFailed,
-                format!("refusing to delete account {username}: not a NanoK3 sandbox account"),
+                format!(
+                    "refusing to delete account {username}: not a Wayland Nano sandbox account"
+                ),
             )));
         }
         delete_local_user(username, log)?;
@@ -351,7 +355,7 @@ fn local_group_member_names(group_name: &str) -> Result<Vec<String>> {
 /// Track-B addition (the donor has no teardown): removes the Winlogon
 /// SpecialAccounts\UserList values provisioning created to keep the sandbox
 /// accounts off the login screen. Fail-closed: only values named exactly
-/// after NanoK3Sandbox* accounts are touched — a non-NanoK3 name aborts
+/// after NanoSandbox* accounts are touched — a non-Wayland Nano name aborts
 /// before any registry write, so Track A's CodexSandbox* values are never
 /// matched. Missing key/values are tolerated (idempotent).
 pub fn remove_hide_user_entries(
@@ -360,11 +364,11 @@ pub fn remove_hide_user_entries(
     log: &mut dyn Write,
 ) -> Result<()> {
     for username in [offline_username, online_username] {
-        if !is_nanok3_sandbox_account(username) {
+        if !is_nano_sandbox_account(username) {
             return Err(anyhow::Error::new(SetupFailure::new(
                 SetupErrorCode::HelperUninstallFailed,
                 format!(
-                    "refusing to remove UserList value for {username}: not a NanoK3 sandbox account"
+                    "refusing to remove UserList value for {username}: not a Wayland Nano sandbox account"
                 ),
             )));
         }
@@ -396,7 +400,7 @@ struct SandboxUserRecordProbe {
 }
 
 /// True only when the file parses as a sandbox users file AND both usernames
-/// are exactly the provisioned NanoK3Sandbox* accounts. Anything else
+/// are exactly the provisioned NanoSandbox* accounts. Anything else
 /// (malformed JSON, Track-A/foreign accounts, a mismatched pair) means the
 /// file is not what provisioning wrote for this payload.
 fn secrets_file_matches_provisioned(bytes: &[u8], offline: &str, online: &str) -> bool {
@@ -406,13 +410,13 @@ fn secrets_file_matches_provisioned(bytes: &[u8], offline: &str, online: &str) -
     };
     parsed.offline.username == offline
         && parsed.online.username == online
-        && is_nanok3_sandbox_account(&parsed.offline.username)
-        && is_nanok3_sandbox_account(&parsed.online.username)
+        && is_nano_sandbox_account(&parsed.offline.username)
+        && is_nano_sandbox_account(&parsed.online.username)
 }
 
 /// Track-B addition (the donor has no teardown): removes the DPAPI credential
 /// file provisioning wrote for the sandbox accounts. Fail-closed: the file is
-/// parsed and BOTH usernames must be exactly the provisioned NanoK3Sandbox*
+/// parsed and BOTH usernames must be exactly the provisioned NanoSandbox*
 /// accounts before anything is deleted — a file whose contents do not match
 /// is foreign state and aborts the uninstall untouched. The containing
 /// `.sandbox-secrets` dir is removed only when left empty (other content such
@@ -442,7 +446,7 @@ pub fn remove_sandbox_secrets(
         return Err(anyhow::Error::new(SetupFailure::new(
             SetupErrorCode::HelperUninstallFailed,
             format!(
-                "refusing to delete {}: contents are not the provisioned NanoK3 sandbox accounts",
+                "refusing to delete {}: contents are not the provisioned Wayland Nano sandbox accounts",
                 users_path.display()
             ),
         )));
@@ -895,14 +899,14 @@ pub(super) fn commit_setup_marker(
 
 #[cfg(test)]
 mod tests {
-    use super::is_nanok3_sandbox_account;
+    use super::is_nano_sandbox_account;
     use super::member_name_matches_expected;
     use super::remove_hide_user_entries;
     use super::remove_sandbox_secrets;
     use super::secrets_file_matches_provisioned;
 
-    const OFFLINE: &str = "NanoK3SandboxOffline";
-    const ONLINE: &str = "NanoK3SandboxOnline";
+    const OFFLINE: &str = "NanoSandboxOffline";
+    const ONLINE: &str = "NanoSandboxOnline";
 
     fn secrets_json(offline: &str, online: &str) -> Vec<u8> {
         // Placeholder blobs only — no real credentials in tests.
@@ -915,30 +919,31 @@ mod tests {
     }
 
     #[test]
-    fn nanok3_account_guard_accepts_track_b_names() {
-        assert!(is_nanok3_sandbox_account("NanoK3SandboxOffline"));
-        assert!(is_nanok3_sandbox_account("NanoK3SandboxOnline"));
+    fn nano_account_guard_accepts_nano_sandbox_names() {
+        assert!(is_nano_sandbox_account("NanoSandboxOffline"));
+        assert!(is_nano_sandbox_account("NanoSandboxOnline"));
     }
 
     #[test]
-    fn nanok3_account_guard_rejects_track_a_and_foreign_names() {
-        // Track-A and built-in accounts must never pass the uninstall guard.
-        assert!(!is_nanok3_sandbox_account("CodexSandboxOffline"));
-        assert!(!is_nanok3_sandbox_account("Administrator"));
-        assert!(!is_nanok3_sandbox_account("nanok3sandboxoffline"));
+    fn nano_account_guard_rejects_nanok3_track_a_and_foreign_names() {
+        // Retired NanoK3* codename identities, Track-A, and built-in accounts
+        // must never pass the uninstall guard.
+        assert!(!is_nano_sandbox_account("NanoK3SandboxOffline"));
+        assert!(!is_nano_sandbox_account("NanoK3SandboxOnline"));
+        assert!(!is_nano_sandbox_account("NanoK3SandboxUsers"));
+        assert!(!is_nano_sandbox_account("CodexSandboxOffline"));
+        assert!(!is_nano_sandbox_account("Administrator"));
+        assert!(!is_nano_sandbox_account("nanosandboxoffline"));
     }
 
     #[test]
     fn member_match_strips_domain_and_ignores_case() {
-        let expected = ["NanoK3SandboxOffline", "NanoK3SandboxOnline"];
+        let expected = ["NanoSandboxOffline", "NanoSandboxOnline"];
         assert!(member_name_matches_expected(
-            "DESKTOP\\NanoK3SandboxOffline",
+            "DESKTOP\\NanoSandboxOffline",
             &expected
         ));
-        assert!(member_name_matches_expected(
-            "nanok3sandboxonline",
-            &expected
-        ));
+        assert!(member_name_matches_expected("nanosandboxonline", &expected));
         assert!(!member_name_matches_expected(
             "DESKTOP\\CodexSandboxOffline",
             &expected
@@ -963,9 +968,9 @@ mod tests {
             OFFLINE,
             ONLINE
         ));
-        // A different NanoK3 pair than the payload's is stale foreign state.
+        // A different Wayland Nano pair than the payload's is stale foreign state.
         assert!(!secrets_file_matches_provisioned(
-            &secrets_json(OFFLINE, "NanoK3SandboxOther"),
+            &secrets_json(OFFLINE, "NanoSandboxOther"),
             OFFLINE,
             ONLINE
         ));

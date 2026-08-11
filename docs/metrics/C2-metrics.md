@@ -1,5 +1,11 @@
 # C2 metrics — Track B (nano-k3)
 
+> **Naming note (rebrand, 2026-08-11):** these numbers were measured under the
+> old NanoK3 codename; binary/env names below (`nanok3-acp-profile.exe`,
+> `nanok3.exe`, `NANOK3_EXE`) are quoted as recorded. Current names per
+> `docs/REBRAND.md`: `wayland-nano-acp-profile.exe`, `wayland-nano.exe`,
+> `NANO_EXE`. The measurements themselves are unaffected by the rename.
+
 Measured 2026-08-10 on the primary truth machine (Win11 Pro, i9-13900KF,
 128 GB RAM, Rust 1.95.0 MSVC, release profile: lto=thin, codegen-units=1,
 strip=symbols). Agent-path numbers. The fixture metrics (cold start,

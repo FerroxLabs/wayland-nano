@@ -10,7 +10,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 pub const PROTOCOL_VERSION: u32 = 1;
-pub const ENGINE_ID: &str = "nanok3";
+pub const ENGINE_ID: &str = "wayland-nano";
 pub const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Host → engine commands (stdin), corpus shapes for the supported subset;

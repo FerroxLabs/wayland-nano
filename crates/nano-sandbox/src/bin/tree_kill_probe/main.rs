@@ -1,4 +1,4 @@
-//! nanok3-tree-kill-probe — C1.2 probe: spawn a real process tree under a Job
+//! wayland-nano-tree-kill-probe — C1.2 probe: spawn a real process tree under a Job
 //! Object and prove terminate kills parent + descendants, fast.
 //!
 //! Prints `TREE_KILL_OK ms=<elapsed>` when the whole tree is gone after
@@ -45,5 +45,5 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(not(target_os = "windows"))]
 fn main() {
-    panic!("nanok3-tree-kill-probe is Windows-only");
+    panic!("wayland-nano-tree-kill-probe is Windows-only");
 }

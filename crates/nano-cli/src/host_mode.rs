@@ -1,4 +1,4 @@
-//! `nanok3 protocol-host` — runs the NDJSON host loop over stdin/stdout,
+//! `wayland-nano protocol-host` — runs the NDJSON host loop over stdin/stdout,
 //! driving real turns through the production stack (Flux + tools + sandbox).
 
 use nano_agent::loop_protection::TurnBudget;
@@ -13,10 +13,10 @@ use nano_protocol::messages::Event;
 use nano_tools::fs::FsTools;
 use nano_tools::shell::ShellTool;
 
-/// MCP server specs from NANOK3_MCP_SERVERS: a JSON array of
+/// MCP server specs from NANO_MCP_SERVERS: a JSON array of
 /// {"name": str, "command": str, "args": [str]} entries.
 fn mcp_specs_from_env() -> Vec<nano_agent::mcp::McpServerSpec> {
-    let Ok(raw) = std::env::var("NANOK3_MCP_SERVERS") else {
+    let Ok(raw) = std::env::var("NANO_MCP_SERVERS") else {
         return Vec::new();
     };
     serde_json::from_str::<Vec<serde_json::Value>>(&raw)
@@ -56,7 +56,9 @@ pub async fn run(
     workspace: &std::path::Path,
 ) -> std::io::Result<HostExit> {
     let Some(api_key) = nano_cli::flux_key::flux_api_key() else {
-        eprintln!("nanok3: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for protocol-host mode");
+        eprintln!(
+            "wayland-nano: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for protocol-host mode"
+        );
         return Ok(HostExit::Fatal("missing FLUX_API_KEY".into()));
     };
 
@@ -72,7 +74,7 @@ pub async fn run(
     let mut registry = nano_agent::mcp::McpRegistry::new();
     for spec in mcp_specs_from_env() {
         if let Err(err) = registry.register(spec) {
-            eprintln!("nanok3: MCP server registration failed: {err}");
+            eprintln!("wayland-nano: MCP server registration failed: {err}");
         }
     }
     let executor = nano_agent::mcp::McpToolExecutor::new(registry, &executor);

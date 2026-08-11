@@ -45,7 +45,7 @@ mod tests {
 
         // File fallback works and trims whitespace/newlines.
         let mut path = std::env::temp_dir();
-        path.push(format!("nanok3-flux-key-test-{}.txt", std::process::id()));
+        path.push(format!("nano-flux-key-test-{}.txt", std::process::id()));
         {
             let mut f = std::fs::File::create(&path).unwrap();
             writeln!(f, "  sk-from-file  ").unwrap();
@@ -63,7 +63,7 @@ mod tests {
         assert_eq!(flux_api_key(), None);
 
         // Missing file yields None.
-        unsafe { std::env::set_var("FLUX_API_KEY_FILE", "D:/nonexistent/nanok3-no-key.txt") };
+        unsafe { std::env::set_var("FLUX_API_KEY_FILE", "D:/nonexistent/nano-no-key.txt") };
         assert_eq!(flux_api_key(), None);
 
         unsafe { std::env::remove_var("FLUX_API_KEY_FILE") };

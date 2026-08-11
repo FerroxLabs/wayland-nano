@@ -26,7 +26,7 @@ pub struct AbsolutePathBuf(PathBuf);
 /// Strip the Windows verbatim prefix so lexical comparisons behave.
 /// Provenance: codex-utils-absolute-path `normalize_path_for_platform`.
 ///
-/// NanoK3 deviation (fail-closed): `\\?\UNC\host\share\...` is the verbatim
+/// Wayland Nano deviation (fail-closed): `\\?\UNC\host\share\...` is the verbatim
 /// spelling of the UNC path `\\host\share\...`. Stripping the prefix alone
 /// would leave a relative-looking `UNC\...` tail that gets absolutized
 /// against the process cwd, deciding a phantom local path while the OS would
