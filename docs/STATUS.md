@@ -2,6 +2,28 @@
 
 ## Current position
 
+### OVERNIGHT WAVE (2026-08-12, publish + TUI + hardening goal)
+- **PUBLISHED: `waylandnano@0.1.0-alpha.0` live on npm** (unscoped, parity
+  with getwayland), Sigstore provenance (public repo), `next`+`latest`
+  dist-tags. Lifecycle proof 6/6 (install/update/rollback/re-upgrade/
+  uninstall + scratch doctor 0-fail): `shared/reviews/RC/evidence/npm-lifecycle-manifest.json`.
+- **GitHub release `v0.1.0-alpha.0`** live: 5 platform zips + shasums
+  manifest — the Desktop bundling download source.
+- **Repo renamed** everywhere: GitHub FerroxLabs/wayland-nano (PUBLIC;
+  Track A = wayland-nano-track-a, archived), local dir, in-repo sweep
+  (`bfc39a3`). Bugs found by the live exercises and fixed: B1 acpArgs
+  (`70ada57fd` desktop), B2 sandbox_users_path (`fd12c1a`), B3 embedded
+  fixture fallback (`fde9898`), bwrap ARM probe headroom (`e047370`),
+  npm repository field (`a20ccc8`).
+- **First-class wnano e2e SOLID (7/7)** — agent-30 CDP campaign; Desktop
+  PR #950 (integration) + #951 (bundling parity, stacked) open. Desktop
+  PR Checks red for a PRE-EXISTING unrelated cause (constitution-fs pins
+  a history-surgery-removed commit; main fails the same way) — documented
+  blocker in shared/reviews/RC/evidence/CONSOLIDATED-VERIFICATION.md.
+- **nano-tui design PANEL-CERTIFIED** (codex + claude both MEETS-THE-BAR,
+  shared/reviews/panel-tui/) — ACP-subprocess ratatui 0.30.2 alternate-
+  screen client. Build in flight (agent-65).
+
 ### RC RE-CERT STATE (2026-08-11, closing wave)
 - **CI 6/6 GREEN on HEAD `25e0921`** (run 31469382425): the admin-runner
   hardlink failures are root-caused and fixed — multi-link probe in
