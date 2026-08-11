@@ -392,13 +392,14 @@ fn hard_link_creation_to_write_denied_target_fails() {
             // Deterministic on every host: the multi-link probe is fail-closed
             // (an existing file that cannot be opened/probed denies the write),
             // which also covers runners where DACL evaluation blocks the probe.
+            // NOTE: no content read of `target` here — the `(W)` deny ACE also
+            // strips READ_CONTROL (STANDARD_RIGHTS_WRITE), so GENERIC_READ
+            // opens fail on elevated runners; the policy denial is the oracle.
             let policy = workspace_policy(&ws);
             assert!(
                 !policy.can_write_path_with_cwd(&link, &ws),
                 "admin-planted hard link must be write-denied at the policy layer"
             );
-            let before = std::fs::read_to_string(&target).unwrap();
-            assert_eq!(before, "nano-outside-secret", "target mutated pre-check");
         }
     }
 

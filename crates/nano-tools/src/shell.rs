@@ -37,7 +37,7 @@ use nano_sandbox::macos_seatbelt::CreateSeatbeltCommandArgsParams;
 use nano_sandbox::macos_seatbelt::MACOS_PATH_TO_SEATBELT_EXECUTABLE;
 #[cfg(any(target_os = "macos", test))]
 use nano_sandbox::macos_seatbelt::create_seatbelt_command_args;
-#[cfg(windows)]
+#[cfg(any(windows, unix))]
 use std::collections::HashMap;
 use std::path::Path;
 #[cfg(any(target_os = "linux", test))]
@@ -202,11 +202,25 @@ impl ShellTool {
         command: &str,
         timeout: Option<std::time::Duration>,
     ) -> Result<ShellOutput, ShellError> {
+        self.run_with_env(shell, command, timeout, HashMap::new())
+    }
+
+    /// `run` with extra environment entries for the spawned child (merged
+    /// over the inherited environment). Mirrors the Windows seam; tests use
+    /// it for per-test TEMP/TMP isolation.
+    #[cfg(unix)]
+    pub fn run_with_env(
+        &self,
+        shell: ShellKind,
+        command: &str,
+        timeout: Option<std::time::Duration>,
+        extra_env: HashMap<String, String>,
+    ) -> Result<ShellOutput, ShellError> {
         let started = std::time::Instant::now();
         let profile = unix_workspace_write_profile();
         let platform =
             platform_sandbox_command(unix_shell_argv(command), &profile, &self.workspace)?;
-        let result = capture_unix_command(platform, &self.workspace, timeout)?;
+        let result = capture_unix_command_env(platform, &self.workspace, timeout, extra_env)?;
 
         let (stdout, out_trunc) = truncate_lossy(result.stdout, MAX_OUTPUT_BYTES);
         let (stderr, err_trunc) = truncate_lossy(result.stderr, MAX_OUTPUT_BYTES);
@@ -474,12 +488,13 @@ struct UnixCaptureResult {
 /// mirroring the Windows capture's semantics: piped stdout/stderr drained on
 /// reader threads, a poll loop against the deadline, kill past the timeout,
 /// and the same synthetic timeout exit code (128 + 64) the Windows capture
-/// reports.
+/// reports. `extra_env` entries are merged over the inherited environment.
 #[cfg(unix)]
-fn capture_unix_command(
+fn capture_unix_command_env(
     platform: PlatformCommand,
     cwd: &Path,
     timeout: Option<std::time::Duration>,
+    extra_env: HashMap<String, String>,
 ) -> Result<UnixCaptureResult, ShellError> {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
@@ -498,7 +513,8 @@ fn capture_unix_command(
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .envs(extra_env);
     if let Some(arg0) = platform.arg0 {
         command.arg0(arg0);
     }

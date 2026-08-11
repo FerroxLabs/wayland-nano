@@ -736,11 +736,9 @@ fn canonicalize_write_target(path: &AbsolutePathBuf) -> AbsolutePathBuf {
 
 /// Returns true when `path` is an existing regular file with more than one
 /// hard link — i.e. its file object has other names this engine cannot see.
-/// Missing or unopenable targets return false: a missing target is a create
-/// (a brand-new object with exactly one name), and a file the process cannot
-/// even open will be gated by the OS at write time anyway.
-/// Follows reparse points (like the write would) and fails on directories,
-/// which cannot be hard-linked on NTFS. FAIL-CLOSED: a file that EXISTS but
+/// Missing targets return false (a missing target is a create — a brand-new
+/// object with exactly one name). Follows reparse points (like the write
+/// would) and fails on directories, which cannot be hard-linked on NTFS. FAIL-CLOSED: a file that EXISTS but
 /// cannot be opened for probing counts as multi-linked (deny) — the caller
 /// is a security check on the write path, and a file we cannot even open is
 /// not one the tool can legitimately write.

@@ -23,7 +23,6 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
 /// fail-closed ACL verification otherwise — this file's escape tests
 /// proved the flake: `write_inside_workspace_still_works` intermittently
 /// failed under `--workspace` parallelism).
-#[cfg(windows)]
 fn fixture_env(tmp: &tempfile::TempDir) -> std::collections::HashMap<String, String> {
     let p = tmp.path().to_string_lossy().into_owned();
     std::collections::HashMap::from([("TEMP".to_string(), p.clone()), ("TMP".to_string(), p)])
@@ -133,7 +132,7 @@ fn unix_write_escape_via_parent_dir_produces_no_side_effect() {
         ShellKind::Sh,
         "echo pwn > ../nano-shell-escape.txt",
         Some(std::time::Duration::from_secs(60)),
-        fixture_env(&_tmp),
+        fixture_env(&tmp),
     );
     assert!(
         !escape.exists(),
@@ -153,7 +152,7 @@ fn unix_write_escape_via_absolute_path_produces_no_side_effect() {
         ShellKind::Sh,
         &command,
         Some(std::time::Duration::from_secs(60)),
-        fixture_env(&_tmp),
+        fixture_env(&tmp),
     );
     assert!(
         !escape.exists(),
@@ -195,7 +194,7 @@ fn unix_sandbox_unavailable_fails_closed_with_no_side_effect() {
         ShellKind::Sh,
         "echo ran > nano-must-not-run.txt",
         Some(std::time::Duration::from_secs(60)),
-        fixture_env(&_tmp),
+        fixture_env(&tmp),
     );
     assert!(
         result.is_err(),
