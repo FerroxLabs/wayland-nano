@@ -20,9 +20,14 @@
   in the fail-closed probe; O2 no host-independent unit test for that branch)
   — recorded in `shared/reviews/tracka-comparison.md` addendum + the remote-
   archival sentence corrected (archiving the remote is a pending owner action).
+- **Panel debt O1/O2 CLEARED** (`b7333c7`, CI 6/6 green — run 31472239208):
+  fail-closed probe distinguishes NotFound (create) from other metadata
+  errors (deny) on both platforms; deterministic Windows pin test added.
+  Addendum in tracka-comparison.md updated to CLEARED.
 - PENDING OWNER (unchanged): (1) elevated migration per docs/REBRAND.md
   (kit in ../.tmp/); (2) npm waylandnano scope + NPM_TOKEN repo secret;
-  (3) final promotion signature after panel CERTIFIED; (4) archive the
+  (3) final promotion signature (record staged at
+  shared/reviews/RC/owner-promotion.md); (4) archive the
   FerroxLabs/wayland-nano remote.
 
 ### RC GOAL STATE (2026-08-11, late wave — Phase D + acceptance landed)
