@@ -2,7 +2,22 @@
 
 ## Current position
 
-### RC GOAL STATE (2026-08-11, Phases A/C mostly landed, D/E in motion)
+### RC GOAL STATE (2026-08-11, big wave landed — 70f0771)
+- **Phase A COMPLETE except owner migration**: Track A verdict posted;
+  rebrand committed + CI-green; 4 frozen contracts; sandbox fix port landed
+  (transactional ACL rollback, root/descendant refresh, bounded helper
+  lifecycle + taint sentinels, AccessCheck-verified token; 30+ new tests;
+  deny-ACE latent caveat closed); hardlink race fixed. OWNER: elevated
+  migration per docs/REBRAND.md (kit staged in ../.tmp/).
+- **Phase C COMPLETE**: Responses + Anthropic-compat + count_tokens live-
+  verified (6/6 smokes), shared classification, committed.
+- **Phase D in motion**: model catalog + set_model landed (picker shows the
+  Flux catalog; note Desktop's tier-id short-circuit for its lane); skills
+  via UI PASS; MCP wired into acp-host (per-session registries, permission-
+  gated) — UI re-proof pending; packaged smoke pending.
+- **Phase E**: scaffold + release.yml (tag-driven, provenance publish);
+  owner actions: create npm waylandnano scope + NPM_TOKEN repo secret.
+- Wave committed as 70f0771 (MCP + sandbox port + models). CI validating.
 - **Phase A**: Track A verdict posted (`shared/reviews/tracka-comparison.md`,
   kill/archive recommended; salvage: hardlink spike + provisioning ADR +
   sandbox fixes). Rebrand committed (1efa0fe): wayland-nano binaries,
