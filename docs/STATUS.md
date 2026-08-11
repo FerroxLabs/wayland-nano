@@ -2,7 +2,33 @@
 
 ## Current position
 
-### FINAL STATE (2026-08-11 — GOAL COMPLETE: C1/C2/C3 promoted by owner)
+### RC GOAL STATE (2026-08-11, Phases A/C mostly landed, D/E in motion)
+- **Phase A**: Track A verdict posted (`shared/reviews/tracka-comparison.md`,
+  kill/archive recommended; salvage: hardlink spike + provisioning ADR +
+  sandbox fixes). Rebrand committed (1efa0fe): wayland-nano binaries,
+  NanoSandbox* machine state + fresh WFP GUIDs, @waylandnano/nano, Desktop
+  profiles re-registered. 4 frozen contracts in shared/contracts/. Sandbox
+  fix port-by-review + hardlink-race FIX landed (real hole: multi-link
+  writes now denied; docs/audits/hardlink-race.md). PENDING OWNER:
+  elevated migration run (uninstall NanoK3 → provision Wayland Nano).
+- **Phase C (done)**: flux_responses + anthropic_messages (COMPAT) +
+  count_tokens implemented; shared flux_common classification (500-auth /
+  413-overflow can't diverge); 16 fixture tests + 6/6 live smokes green vs
+  real Flux. /mcp documented upstream-blocked.
+- **Phase D (in motion)**: model discovery + session/set_model landed
+  (picker catalog, routed turns, fail-closed unknown ids; Desktop tier-id
+  short-circuit noted for Desktop lane). Skills via UI PASS. MCP via UI
+  exposed a real gap (acp-host dropped mcpServers) — wiring in progress.
+  Packaged-app smoke pending.
+- **Phase E (scaffold done)**: gate-deny is a HARD gate now (wildcard deps
+  pinned, CDLA-Permissive allowed for webpki-roots), CycloneDX SBOM step on
+  windows-latest leg, NOTICES.md, docs/COMPATIBILITY.md, evidence-bundle
+  collector (scripts/collect-evidence.ps1, sha256 manifest, fail-closed).
+  Publish is owner-gated (npm waylandnano scope + token in CI secrets).
+- Consolidated commit of the agent wave lands after the two running agents
+  settle (their files interleave); tree currently compiles clean.
+
+### Previous state (2026-08-11 — GOAL COMPLETE: C1/C2/C3 promoted by owner)
 - **OWNER SIGNED ALL THREE VERDICTS** (Sean, 2026-08-11, VERIFIED—promote):
   `shared/reviews/C1,C2,C3/trackb-verdict.md`. This follows the unanimous
   panel PROMOTE and the final cross-audit: Codex (GPT 5.6 Sol) + Claude
