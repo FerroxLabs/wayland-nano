@@ -22,7 +22,7 @@ Nothing here runs without the owner's explicit go.
 ## The command
 
 From an **elevated** PowerShell (right-click → Run as administrator), in
-`D:\Development\waylandnano\nano-k3`:
+`D:\Development\waylandnano\wayland-nano`:
 
 ```powershell
 # 1. Review the payload that will be sent (read-only):

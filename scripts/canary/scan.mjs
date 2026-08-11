@@ -3,7 +3,7 @@
 // frame, log, session, or dump. Publishes its own implementation (this file)
 // and a machine-readable receipt so the scan is independently re-runnable.
 //
-// Usage: node nano-k3/scripts/canary/scan.mjs <receipt-out.json>
+// Usage: node wayland-nano/scripts/canary/scan.mjs <receipt-out.json>
 // The key is read from waylandnano/.secrets/flux-test-key into memory only —
 // never printed, never written, never included in the receipt (only its
 // SHA-256 fingerprint, matching the repo's digest convention).
@@ -78,7 +78,7 @@ for (const [file, cls] of targets) {
 }
 
 const receipt = {
-  scanner: "nano-k3/scripts/canary/scan.mjs (this implementation)",
+  scanner: "wayland-nano/scripts/canary/scan.mjs (this implementation)",
   at: new Date().toISOString(),
   key_fingerprint_sha256: keySha,
   coverage_classes: [...new Set(results.map((r) => r.class))],

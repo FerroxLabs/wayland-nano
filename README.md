@@ -1,7 +1,7 @@
 # Wayland Nano — Track B (master implementation)
 
 Greenfield + vendored-crate implementation of the shared Wayland Nano
-contracts, built by K3. Track B is the master implementation and carries the
+contracts. Track B is the master implementation and carries the
 product name (renamed from the NanoK3 codename — see `docs/REBRAND.md`).
 Companion/competing implementation to Track A (`../nano/`, Codex reduction
 fork — read-only from here). Comparison rules: `../shared/SCORECARD.md`.

@@ -13,7 +13,7 @@
 //!   activation, and the proxy-routed seccomp mode are not ported;
 //! - the donor's `ensure_legacy_landlock_mode_supports_policy` is not ported:
 //!   it relied on the legacy `SandboxPolicy` semantic-signature machinery that
-//!   nano-k3 deliberately never ported (greenfield). Fail-closed coverage is
+//!   wayland-nano deliberately never ported (greenfield). Fail-closed coverage is
 //!   preserved: policies the legacy backend cannot enforce still error inside
 //!   `apply_permission_profile_to_current_thread`;
 //! - synthetic-mount registry dir `codex-bwrap-synthetic-mount-targets-$UID`

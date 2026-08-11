@@ -2,7 +2,7 @@
 //! @ 646f7c0a. Transformations:
 //! - legacy `SandboxPolicy` constructions replaced by direct
 //!   `FileSystemSandboxPolicy` / `policy_engine::workspace_write_policy`
-//!   construction (no legacy config layer in nano-k3);
+//!   construction (no legacy config layer in wayland-nano);
 //! - managed-network-proxy tests DROPPED with the proxy surface itself;
 //!   the remaining network tests assert the Restricted/Enabled split and
 //!   fail-closed restricted behavior;

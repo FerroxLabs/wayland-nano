@@ -8,7 +8,7 @@
 //!   for the behavioral layer and `WritableRoot`);
 //! - codex_utils_absolute_path::AbsolutePathBuf -> nano_core::abs::AbsolutePathBuf;
 //! - managed-network-proxy surface DROPPED (nano-egress owns egress in
-//!   nano-k3): `NetworkProxy`, `ManagedNetworkSandboxContext`,
+//!   wayland-nano): `NetworkProxy`, `ManagedNetworkSandboxContext`,
 //!   `managed_network`, `environment_id`, `enforce_managed_network`, loopback
 //!   proxy ports and local-binding rules are not ported. The network policy
 //!   split kept here is Restricted/Enabled plus explicit unix-socket
@@ -16,7 +16,7 @@
 //!   to "no proxy => no special cases";
 //! - legacy `SandboxPolicy` entry points
 //!   (`create_seatbelt_command_args_for_legacy_policy`, `dynamic_network_policy`)
-//!   NOT ported (greenfield: no legacy config exists in nano-k3);
+//!   NOT ported (greenfield: no legacy config exists in wayland-nano);
 //! - compiled on macOS and in test builds everywhere (the policy builder is
 //!   pure string construction; only the spawn is macOS-specific).
 

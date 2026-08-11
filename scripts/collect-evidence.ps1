@@ -14,17 +14,17 @@
   Copies files verbatim; never reads or prints file contents (no secrets).
 
 .EXAMPLE
-  pwsh nano-k3/scripts/collect-evidence.ps1 -BundleDir .\bundle-v0.1.0-alpha
+  pwsh wayland-nano/scripts/collect-evidence.ps1 -BundleDir .\bundle-v0.1.0-alpha
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$BundleDir,
 
-    # Repo root of nano-k3 (defaults to the script's parent directory).
+    # Repo root of wayland-nano (defaults to the script's parent directory).
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
 
-    # Shared review root (defaults to ../shared relative to nano-k3).
+    # Shared review root (defaults to ../shared relative to wayland-nano).
     [string]$SharedRoot = (Join-Path (Split-Path $RepoRoot -Parent) "shared"),
 
     # Produce a partial bundle when a slot is missing/empty (stamped unsealed).

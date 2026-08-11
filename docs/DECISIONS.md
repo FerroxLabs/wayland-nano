@@ -1,4 +1,4 @@
-# NanoK3 decisions
+# Wayland Nano decisions
 
 - **D1 — Greenfield + vendored, not fork.** Per `resources/WAYLAND_NANO_PLAN_V3.md`
   §3, with the concession recorded in `resources/WAYLAND_NANO_BUILD_PLAN_V3_K3_REVIEW.md`:

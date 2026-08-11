@@ -6,7 +6,7 @@ route around it.
 
 ## Scope and filesystem boundaries
 
-- Write only inside `nano-k3/` (this repo) and, when the task requires it,
+- Write only inside `wayland-nano/` (this repo) and, when the task requires it,
   `../shared/`. Nothing else.
 - `../nano/` (Track A) is **read-only**. `../resources/upstreams/` is
   **read-only** (immutable donor snapshots). Never write, delete, or "fix"

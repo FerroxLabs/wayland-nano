@@ -1,6 +1,6 @@
 # Notices — Wayland Nano (Track B)
 
-Third-party attribution for the `nano-k3` workspace. This file is release
+Third-party attribution for the `wayland-nano` workspace. This file is release
 evidence: keep it in sync with `UPSTREAM.md` (provenance ledger) and
 `deny.toml` (license gate).
 

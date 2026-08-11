@@ -7,7 +7,7 @@ process list, network), never Nano's self-report.
 ## Run
 
 ```powershell
-# From D:\Development\waylandnano\nano-k3 — ELEVATED (admin) shell, NO WSL:
+# From D:\Development\waylandnano\wayland-nano — ELEVATED (admin) shell, NO WSL:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\c12-proof\Test-C12Proof.ps1
 ```
 

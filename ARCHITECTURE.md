@@ -1,4 +1,4 @@
-# Wayland Nano — Track B (NanoK3) Architecture Constitution
+# Wayland Nano — Track B Architecture Constitution
 
 Greenfield + vendored-crate implementation of the shared Wayland Nano contracts.
 Track A (reduction fork) lives in `../nano/` — never write there.

@@ -1,4 +1,4 @@
-# NanoK3 (Track B) status
+# Wayland Nano (Track B) status
 
 ## Current position
 
@@ -100,7 +100,7 @@
   SHA-bound kill manifest, C3 timestamp note, RSS reconciliation, and the
   published full-corpus canary scanner (`scripts/canary/scan.mjs`, 33
   artifacts / 219KB / zero hits).
-- Track B (nano-k3) is COMPLETE against the scorecard: C1 substrate proven,
+- Track B (wayland-nano) is COMPLETE against the scorecard: C1 substrate proven,
   C2 minimum native task proven, C3 Desktop vertical slice proven — all
   externally verified, all owner-promoted.
 - Follow-on work (new goals, not this one): Track A comparison

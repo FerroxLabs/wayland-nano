@@ -116,7 +116,7 @@ fn sandbox_unavailable_fails_closed_with_no_side_effect() {
 }
 
 // --- Unix legs (run for real on the CI unix runners) ----------------------
-// The Linux leg needs the `nanok3-linux-sandbox` helper; `cargo test
+// The Linux leg needs the `wayland-nano-linux-sandbox` helper; `cargo test
 // --workspace` builds it into `target/debug/`, which the shell tool's helper
 // resolution finds from the `deps/` test executable directory.
 

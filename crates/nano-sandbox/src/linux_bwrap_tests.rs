@@ -3,7 +3,7 @@
 //! - proxy-mode tests dropped with the managed-proxy surface;
 //! - `.codex` -> `.nano` in protected-metadata expectations;
 //! - `FileSystemSandboxPolicy::workspace_write` ->
-//!   `policy_engine::workspace_write_policy` (nano-k3 has no legacy
+//!   `policy_engine::workspace_write_policy` (wayland-nano has no legacy
 //!   SandboxPolicy constructors);
 //! - gating: pure string/argv tests run on every host; filesystem-builder
 //!   tests are `cfg(unix)` (unix path semantics, `/dev/null`); the

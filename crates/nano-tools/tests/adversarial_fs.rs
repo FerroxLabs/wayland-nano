@@ -148,7 +148,7 @@ fn read_through_dotdot_into_denied_dir_is_denied() {
 fn sensitive_file_outside_workspace_denied_by_name_via_traversal() {
     let (tmp, ws, _outside) = fixture();
     let env_outside = tmp.path().join(".env");
-    std::fs::write(&env_outside, "NANOK3_SECRET=1").unwrap();
+    std::fs::write(&env_outside, "NANO_SECRET=1").unwrap();
     let tools = FsTools::new(workspace_policy(&ws), &ws);
     let err = tools
         .read_file(&ws.join("../.env"), &ReadBounds::default())
@@ -205,7 +205,7 @@ fn ntfs_junction_write_escape_must_be_denied() {
     // Junctions need no privilege and historically bypass lexical checks that
     // only special-case symlinks — exercise them explicitly.
     let (_tmp, ws, outside) = fixture();
-    let junction = ws.join("nanok3-junction");
+    let junction = ws.join("nano-junction");
     let status = std::process::Command::new("cmd")
         .args(["/c", "mklink", "/J"])
         .arg(&junction)
@@ -218,8 +218,8 @@ fn ntfs_junction_write_escape_must_be_denied() {
         String::from_utf8_lossy(&status.stderr)
     );
     let tools = FsTools::new(workspace_policy(&ws), &ws);
-    let escape = outside.join("nanok3-junction-escape.txt");
-    let err = tools.write_file(&junction.join("nanok3-junction-escape.txt"), "pwn");
+    let escape = outside.join("nano-junction-escape.txt");
+    let err = tools.write_file(&junction.join("nano-junction-escape.txt"), "pwn");
     assert!(
         matches!(err, Err(ToolError::WriteDenied(_))),
         "SECURITY HOLE: write through an NTFS junction escaped the workspace: {err:?}"
@@ -235,7 +235,7 @@ fn ntfs_junction_write_escape_must_be_denied() {
 #[test]
 fn ntfs_junction_read_into_denied_dir_is_denied() {
     let (_tmp, ws, outside) = fixture();
-    let junction = ws.join("nanok3-junction");
+    let junction = ws.join("nano-junction");
     let status = std::process::Command::new("cmd")
         .args(["/c", "mklink", "/J"])
         .arg(&junction)

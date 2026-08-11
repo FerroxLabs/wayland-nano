@@ -6,7 +6,7 @@
 //! Provenance: ported from Codex `codex-rs/linux-sandbox/src/bundled_bwrap.rs`
 //! @ 646f7c0a. Transformations:
 //! - `codex_install_context::InstallContext` / `bazel_bwrap` candidate lookups
-//!   DROPPED (nano-k3 has no install-context or Bazel layout); candidate
+//!   DROPPED (wayland-nano has no install-context or Bazel layout); candidate
 //!   search covers `<exe_dir>/wayland-nano-resources/bwrap`,
 //!   `<exe_dir>/../wayland-nano-resources/bwrap`, and `<exe_dir>/bwrap`;
 //! - `codex-resources` directory name -> `wayland-nano-resources`;

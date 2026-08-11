@@ -5,7 +5,7 @@
 //! Provenance: ported from Codex `codex-rs/sandboxing/src/landlock.rs`
 //! @ 646f7c0a. Transformations:
 //! - codex_protocol::models::PermissionProfile -> nano_core::permissions::PermissionProfile
-//!   (nano-k3's profile is an enum; its serde shape is the CLI contract);
+//!   (wayland-nano's profile is an enum; its serde shape is the CLI contract);
 //! - `codex-linux-sandbox` -> `wayland-nano-linux-sandbox` (wayland-nano-* namespacing);
 //! - managed-network-proxy surface DROPPED (nano-egress owns egress):
 //!   `allow_network_for_proxy` and the `--allow-network-for-proxy` flag are

@@ -695,8 +695,8 @@ mod tests {
         let profile = unix_workspace_write_profile();
         let (file_system_sandbox_policy, _) = profile.to_runtime_permissions();
         assert!(!file_system_sandbox_policy.has_full_disk_write_access());
-        let inside = ws.join("nanok3-inside-workspace.txt");
-        let outside = tmp.path().join("nanok3-outside-workspace.txt");
+        let inside = ws.join("nano-inside-workspace.txt");
+        let outside = tmp.path().join("nano-outside-workspace.txt");
         assert!(
             file_system_sandbox_policy.can_write_path_with_cwd(&inside, &ws),
             "workspace must stay writable"
@@ -753,10 +753,10 @@ mod tests {
 
     #[test]
     fn linux_arg0_falls_back_to_basename_for_other_exe_names() {
-        let named = Path::new("/tmp/nanok3-session/wayland-nano-linux-sandbox");
+        let named = Path::new("/tmp/nano-session/wayland-nano-linux-sandbox");
         assert_eq!(linux_sandbox_arg0_override(named), named.to_string_lossy());
         assert_eq!(
-            linux_sandbox_arg0_override(Path::new("/tmp/nanok3-session/nanok3")),
+            linux_sandbox_arg0_override(Path::new("/tmp/nano-session/not-the-helper")),
             NANO_LINUX_SANDBOX_ARG0
         );
     }
