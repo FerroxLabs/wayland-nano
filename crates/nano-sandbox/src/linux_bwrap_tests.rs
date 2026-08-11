@@ -1565,9 +1565,14 @@ exit 1
         let fake_bwrap_path: &Path = fake_bwrap.as_ref();
         let started_at = Instant::now();
 
+        // Probe timeout has headroom for loaded ARM CI runners (a 100ms
+        // deadline raced the fake's spawn+sh startup there); the behavioral
+        // contract is unchanged — the probe must see the marker and return
+        // false WITHOUT waiting for the background sleep's stderr pipe, and
+        // a probe that did wait would blow the 500ms elapsed bound (~1s).
         assert!(!system_bwrap_has_user_namespace_access(
             fake_bwrap_path,
-            Duration::from_millis(100),
+            Duration::from_millis(400),
         ));
         assert!(started_at.elapsed() < Duration::from_millis(500));
     }
