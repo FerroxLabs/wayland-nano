@@ -24,11 +24,15 @@
   fail-closed probe distinguishes NotFound (create) from other metadata
   errors (deny) on both platforms; deterministic Windows pin test added.
   Addendum in tracka-comparison.md updated to CLEARED.
-- PENDING OWNER (unchanged): (1) elevated migration per docs/REBRAND.md
-  (kit in ../.tmp/); (2) npm unscoped `waylandnano` package (parity with getwayland) + NPM_TOKEN repo secret;
-  (3) final promotion signature (record staged at
-  shared/reviews/RC/owner-promotion.md); (4) archive the
-  FerroxLabs/wayland-nano remote.
+- **Elevated migration COMPLETE** (2026-08-11): NanoK3* machine state
+  uninstalled with the pre-rebrand helper; provisioned fresh as
+  NanoSandbox{Offline,Online}/NanoSandboxUsers/.nano; C1.2 harness
+  **12/12 PASS** under the new names (manifest c12-manifest-20260811T200508Z).
+  Migration caught + fixed a real regression: the review payload never
+  minted the cancellation token the helper's fail-closed validation
+  requires (`d6079d7` + regression test).
+- PENDING OWNER: nothing blocking — NPM_TOKEN set, publish fires on tag.
+  Track A remote archived. Desktop PR #950 open (first-class wnano).
 
 ### RC GOAL STATE (2026-08-11, late wave — Phase D + acceptance landed)
 - **Phase D COMPLETE + UI-proven**: model picker lists + switches the Flux
