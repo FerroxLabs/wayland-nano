@@ -388,25 +388,13 @@ fn hard_link_creation_to_write_denied_target_fails() {
         }
         Ok(()) => {
             // Admin-context path (CI runners): creation succeeds, so the
-            // write-through must be denied at the policy layer instead —
-            // using this file's standard workspace policy (the multi-link
-            // check pins it in nano-core's own adversarial suite too).
+            // write-through must be denied at the policy layer instead.
+            // Deterministic on every host: the multi-link probe is fail-closed
+            // (an existing file that cannot be opened/probed denies the write),
+            // which also covers runners where DACL evaluation blocks the probe.
             let policy = workspace_policy(&ws);
-            // Diagnostics for CI environments (hosted runners' 8.3 TEMP paths
-            // make path-resolution behavior host-specific; if the policy call
-            // diverges there we need the runner's own values to see why).
-            let direct = std::fs::File::open(&link).is_ok();
-            let policy_says = policy.can_write_path_with_cwd(&link, &ws);
-            eprintln!(
-                "admin-branch diagnostics: link_exists={} file_open_ok={} policy_can_write={} ws={} link={}",
-                link.exists(),
-                direct,
-                policy_says,
-                ws.display(),
-                link.display()
-            );
             assert!(
-                !policy_says,
+                !policy.can_write_path_with_cwd(&link, &ws),
                 "admin-planted hard link must be write-denied at the policy layer"
             );
             let before = std::fs::read_to_string(&target).unwrap();

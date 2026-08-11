@@ -739,6 +739,11 @@ fn canonicalize_write_target(path: &AbsolutePathBuf) -> AbsolutePathBuf {
 /// Missing or unopenable targets return false: a missing target is a create
 /// (a brand-new object with exactly one name), and a file the process cannot
 /// even open will be gated by the OS at write time anyway.
+/// Follows reparse points (like the write would) and fails on directories,
+/// which cannot be hard-linked on NTFS. FAIL-CLOSED: a file that EXISTS but
+/// cannot be opened for probing counts as multi-linked (deny) — the caller
+/// is a security check on the write path, and a file we cannot even open is
+/// not one the tool can legitimately write.
 #[cfg(windows)]
 fn existing_file_has_multiple_links(path: &Path) -> bool {
     use std::os::windows::io::AsRawHandle;
@@ -747,17 +752,19 @@ fn existing_file_has_multiple_links(path: &Path) -> bool {
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
     use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
 
-    // Follows reparse points (like the write would) and fails on directories,
-    // which cannot be hard-linked on NTFS.
     let Ok(file) = std::fs::File::open(path) else {
-        return false;
+        // Only reachable for an existing non-directory (callers gate on
+        // existence); a probe failure must deny, not silently allow.
+        return std::fs::symlink_metadata(path)
+            .map(|m| m.is_file())
+            .unwrap_or(false);
     };
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     // SAFETY: `file` is a valid open handle for the duration of the call and
     // `info` is valid writable memory of the expected type and size.
     let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut info) };
     if ok == 0 {
-        return false;
+        return true; // probe failed on an open file: deny, never allow
     }
     info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 && info.nNumberOfLinks > 1
 }

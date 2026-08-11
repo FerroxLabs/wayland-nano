@@ -18,18 +18,30 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     (tmp, home, ws)
 }
 
+/// Per-test TEMP/TMP so the sandbox capture ACLs a per-test scoped temp
+/// root instead of the shared one (parallel cargo test races the
+/// fail-closed ACL verification otherwise — this file's escape tests
+/// proved the flake: `write_inside_workspace_still_works` intermittently
+/// failed under `--workspace` parallelism).
+#[cfg(windows)]
+fn fixture_env(tmp: &tempfile::TempDir) -> std::collections::HashMap<String, String> {
+    let p = tmp.path().to_string_lossy().into_owned();
+    std::collections::HashMap::from([("TEMP".to_string(), p.clone()), ("TMP".to_string(), p)])
+}
+
 #[cfg(windows)]
 #[test]
 fn write_escape_via_parent_dir_produces_no_side_effect() {
     let (tmp, home, ws) = fixture();
-    let escape = tmp.path().join("nanok3-shell-escape.txt");
+    let escape = tmp.path().join("nano-shell-escape.txt");
     let tool = ShellTool::new(&home, &ws);
     // `..` from the sandboxed cwd lands in the tempdir root — outside every
     // writable root of the workspace-write profile.
-    let _ = tool.run(
+    let _ = tool.run_with_env(
         ShellKind::Cmd,
-        "echo pwn > ..\\nanok3-shell-escape.txt",
+        "echo pwn > ..\\nano-shell-escape.txt",
         Some(std::time::Duration::from_secs(60)),
+        fixture_env(&tmp),
     );
     assert!(
         !escape.exists(),
@@ -42,13 +54,14 @@ fn write_escape_via_parent_dir_produces_no_side_effect() {
 #[test]
 fn write_escape_via_absolute_path_produces_no_side_effect() {
     let (tmp, home, ws) = fixture();
-    let escape = tmp.path().join("nanok3-shell-escape-abs.txt");
+    let escape = tmp.path().join("nano-shell-escape-abs.txt");
     let tool = ShellTool::new(&home, &ws);
     let command = format!("echo pwn > {}", escape.display());
-    let _ = tool.run(
+    let _ = tool.run_with_env(
         ShellKind::Cmd,
         &command,
         Some(std::time::Duration::from_secs(60)),
+        fixture_env(&tmp),
     );
     assert!(
         !escape.exists(),
@@ -64,14 +77,15 @@ fn write_inside_workspace_still_works() {
     let (_tmp, home, ws) = fixture();
     let tool = ShellTool::new(&home, &ws);
     let out = tool
-        .run(
+        .run_with_env(
             ShellKind::Cmd,
-            "echo data > nanok3-shell-control.txt",
+            "echo data > nano-shell-control.txt",
             Some(std::time::Duration::from_secs(60)),
+            fixture_env(&_tmp),
         )
         .expect("in-policy command must spawn");
     assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
-    assert!(ws.join("nanok3-shell-control.txt").exists());
+    assert!(ws.join("nano-shell-control.txt").exists());
 }
 
 #[cfg(windows)]
@@ -81,14 +95,15 @@ fn sandbox_unavailable_fails_closed_with_no_side_effect() {
     // surface a typed spawn error and MUST NOT fall back to running the
     // command unsandboxed.
     let (tmp, home, _ws) = fixture();
-    let missing_ws = tmp.path().join("nanok3-missing-workspace");
+    let missing_ws = tmp.path().join("nano-missing-workspace");
     let tool = ShellTool::new(&home, &missing_ws);
-    let marker_home = home.join("nanok3-must-not-run.txt");
-    let marker_tmp = tmp.path().join("nanok3-must-not-run.txt");
-    let result = tool.run(
+    let marker_home = home.join("nano-must-not-run.txt");
+    let marker_tmp = tmp.path().join("nano-must-not-run.txt");
+    let result = tool.run_with_env(
         ShellKind::Cmd,
-        "echo ran > nanok3-must-not-run.txt",
+        "echo ran > nano-must-not-run.txt",
         Some(std::time::Duration::from_secs(60)),
+        fixture_env(&tmp),
     );
     assert!(
         result.is_err(),
@@ -110,14 +125,15 @@ fn sandbox_unavailable_fails_closed_with_no_side_effect() {
 #[test]
 fn unix_write_escape_via_parent_dir_produces_no_side_effect() {
     let (tmp, home, ws) = fixture();
-    let escape = tmp.path().join("nanok3-shell-escape.txt");
+    let escape = tmp.path().join("nano-shell-escape.txt");
     let tool = ShellTool::new(&home, &ws);
     // `..` from the sandboxed cwd lands in the tempdir root — outside every
     // writable root of the workspace-write profile.
-    let _ = tool.run(
+    let _ = tool.run_with_env(
         ShellKind::Sh,
-        "echo pwn > ../nanok3-shell-escape.txt",
+        "echo pwn > ../nano-shell-escape.txt",
         Some(std::time::Duration::from_secs(60)),
+        fixture_env(&_tmp),
     );
     assert!(
         !escape.exists(),
@@ -130,13 +146,14 @@ fn unix_write_escape_via_parent_dir_produces_no_side_effect() {
 #[test]
 fn unix_write_escape_via_absolute_path_produces_no_side_effect() {
     let (tmp, home, ws) = fixture();
-    let escape = tmp.path().join("nanok3-shell-escape-abs.txt");
+    let escape = tmp.path().join("nano-shell-escape-abs.txt");
     let tool = ShellTool::new(&home, &ws);
     let command = format!("echo pwn > {}", escape.display());
-    let _ = tool.run(
+    let _ = tool.run_with_env(
         ShellKind::Sh,
         &command,
         Some(std::time::Duration::from_secs(60)),
+        fixture_env(&_tmp),
     );
     assert!(
         !escape.exists(),
@@ -152,14 +169,15 @@ fn unix_write_inside_workspace_still_works() {
     let (_tmp, home, ws) = fixture();
     let tool = ShellTool::new(&home, &ws);
     let out = tool
-        .run(
+        .run_with_env(
             ShellKind::Sh,
-            "echo data > nanok3-shell-control.txt",
+            "echo data > nano-shell-control.txt",
             Some(std::time::Duration::from_secs(60)),
+            fixture_env(&_tmp),
         )
         .expect("in-policy command must spawn");
     assert_eq!(out.exit_code, 0, "stderr: {}", out.stderr);
-    assert!(ws.join("nanok3-shell-control.txt").exists());
+    assert!(ws.join("nano-shell-control.txt").exists());
 }
 
 #[cfg(unix)]
@@ -169,14 +187,15 @@ fn unix_sandbox_unavailable_fails_closed_with_no_side_effect() {
     // must surface a typed error and MUST NOT fall back to running the
     // command unsandboxed.
     let (tmp, home, _ws) = fixture();
-    let missing_ws = tmp.path().join("nanok3-missing-workspace");
+    let missing_ws = tmp.path().join("nano-missing-workspace");
     let tool = ShellTool::new(&home, &missing_ws);
-    let marker_home = home.join("nanok3-must-not-run.txt");
-    let marker_tmp = tmp.path().join("nanok3-must-not-run.txt");
-    let result = tool.run(
+    let marker_home = home.join("nano-must-not-run.txt");
+    let marker_tmp = tmp.path().join("nano-must-not-run.txt");
+    let result = tool.run_with_env(
         ShellKind::Sh,
-        "echo ran > nanok3-must-not-run.txt",
+        "echo ran > nano-must-not-run.txt",
         Some(std::time::Duration::from_secs(60)),
+        fixture_env(&_tmp),
     );
     assert!(
         result.is_err(),
