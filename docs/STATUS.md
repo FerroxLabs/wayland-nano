@@ -13,14 +13,17 @@
 - **Track A stale-doc hold closed**: disposition addendum in
   `shared/reviews/tracka-comparison.md` (all ADOPT items name landing
   commits: `70f0771`, `f30ddcf`).
-- **Panel closing-confirmation round IN FLIGHT**: codex (gpt-5.6-sol via
-  Flux) + claude (fable-5 via Flux anthropic endpoint — OAuth lapsed,
-  ANTHROPIC_BASE_URL=api.fluxrouter.ai + key works; opus-5 fallback if
-  fable refuses security content). Bundle: `../.tmp/claude-rc-bundle3.md`;
-  verdicts land in `shared/reviews/panel/<lens>-rc-final.md`.
+- **Panel closing-confirmation round COMPLETE — BOTH LENSES CERTIFIED**:
+  codex (gpt-5.6-sol) `shared/reviews/panel/codex-rc-final.md`; claude
+  (fable-5 via Flux anthropic endpoint) `shared/reviews/panel/claude-rc-final.md`.
+  Claude flagged 2 non-blocking debt items (O1 micro fail-open metadata path
+  in the fail-closed probe; O2 no host-independent unit test for that branch)
+  — recorded in `shared/reviews/tracka-comparison.md` addendum + the remote-
+  archival sentence corrected (archiving the remote is a pending owner action).
 - PENDING OWNER (unchanged): (1) elevated migration per docs/REBRAND.md
   (kit in ../.tmp/); (2) npm waylandnano scope + NPM_TOKEN repo secret;
-  (3) final promotion signature after panel CERTIFIED.
+  (3) final promotion signature after panel CERTIFIED; (4) archive the
+  FerroxLabs/wayland-nano remote.
 
 ### RC GOAL STATE (2026-08-11, late wave — Phase D + acceptance landed)
 - **Phase D COMPLETE + UI-proven**: model picker lists + switches the Flux
