@@ -45,10 +45,18 @@ after, then the provisioned-state migration (elevated owner step).
 
 ## Migration (elevated, owner-run, after the sweep)
 
-1. Uninstall NanoK3-branded state with the CURRENT helper
-   (`.tmp/nanok3-uninstall-payload.txt` still valid).
-2. `-PostUninstall` scan → zero residue.
-3. Provision with the renamed helper (new payload from the new dry-run bin).
+Staged kit (in `../.tmp/`): `nanok3-sandbox-setup.exe` (pre-rebrand helper,
+kept because the rebranded helper's fail-closed guards REFUSE to touch
+NanoK3* identities), `nanok3-uninstall-payload.txt`,
+`wayland-nano-provision-payload.txt` (regenerate via the dry-run bin if the
+schema moved).
+
+1. Uninstall NanoK3-branded state with the PRE-REBRAND helper:
+   `.tmp\nanok3-sandbox-setup.exe (Get-Content .tmp\nanok3-uninstall-payload.txt)`
+2. Verify old state is gone directly:
+   `Get-LocalUser NanoK3SandboxOffline` → not found; `Test-Path ~\.nanok3` → False.
+3. Provision with the renamed helper:
+   `target\release\wayland-nano-sandbox-setup.exe (Get-Content ..\.tmp\wayland-nano-provision-payload.txt)`
 4. Full harness run → 12/12 under the new names.
 5. Desktop: re-register agent (new id/path), one smoke conversation.
 
