@@ -2,7 +2,29 @@
 
 ## Current position
 
-### 48H SPRINT STATE (2026-08-11, PANEL AUDIT COMPLETE — corrective rounds closed)
+### FINAL STATE (2026-08-11 — GOAL COMPLETE: C1/C2/C3 promoted by owner)
+- **OWNER SIGNED ALL THREE VERDICTS** (Sean, 2026-08-11, VERIFIED—promote):
+  `shared/reviews/C1,C2,C3/trackb-verdict.md`. This follows the unanimous
+  panel PROMOTE and the final cross-audit: Codex (GPT 5.6 Sol) + Claude
+  (Fable) both MEETS-THE-BAR on every checkpoint
+  (`shared/reviews/panel/codex-sol-final-audit.md`,
+  `claude-fable-final-audit.md`).
+- Final audit hygiene closed the same day: firewall DisplayName scanner fix,
+  SHA-bound kill manifest, C3 timestamp note, RSS reconciliation, and the
+  published full-corpus canary scanner (`scripts/canary/scan.mjs`, 33
+  artifacts / 219KB / zero hits).
+- Track B (nano-k3) is COMPLETE against the scorecard: C1 substrate proven,
+  C2 minimum native task proven, C3 Desktop vertical slice proven — all
+  externally verified, all owner-promoted.
+- Follow-on work (new goals, not this one): Track A comparison
+  (`shared/reviews/tracka-comparison.md` pending), model discovery in
+  Desktop (ACP models/set_mode), MCP+skills via Desktop UI, packaged-app
+  smoke, soak, NPM publish, Desktop-lane bugs (4 filed in C3 evidence),
+  wl-cdp renderer regression is Desktop's.
+- Debt ledger clean: deny-ACE audit correct-by-design
+  (`docs/audits/deny-ace-scan.md`).
+
+### Previous state (2026-08-11, PANEL AUDIT COMPLETE — corrective rounds closed)
 - External panel (codex + claude lenses; gemini disqualified — Google retired
   the tier) audited the C1/C2/C3 claims adversarially over 4 rounds. Verdicts
   archived in `shared/reviews/panel/` (codex-verdict.md, claude-verdict.md).
