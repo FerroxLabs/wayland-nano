@@ -2,22 +2,52 @@
 
 use crate::loop_protection::ProgressSignals;
 use crate::turn::{ModelDriver, ToolExecutor, ToolOutcome};
+use nano_model::anthropic_messages::AnthropicMessagesClient;
 use nano_model::flux_completions::FluxCompletionsClient;
+use nano_model::flux_responses::FluxResponsesClient;
 use nano_model::types::{ModelError, ModelRequest, ModelResponse, ToolCall, ToolDefinition};
 use nano_tools::fs::{FsTools, ReadBounds};
 use nano_tools::shell::{ShellKind, ShellTool};
 
-/// ModelDriver over the real Flux Completions client.
+/// One of the three Flux wire surfaces. Completions is the production wire;
+/// Responses and Anthropic Messages are selectable compat surfaces (per
+/// FINDINGS batch-2 WIRE-2, never the default).
+#[derive(Debug)]
+enum FluxClient {
+    Completions(FluxCompletionsClient),
+    Responses(FluxResponsesClient),
+    Anthropic(AnthropicMessagesClient),
+}
+
+/// ModelDriver over a Flux wire client (default: Completions).
 #[derive(Debug)]
 pub struct FluxDriver {
-    client: FluxCompletionsClient,
+    client: FluxClient,
     api_key: String,
 }
 
 impl FluxDriver {
+    /// Default construction: the production Chat Completions wire.
     pub fn new(client: FluxCompletionsClient, api_key: impl Into<String>) -> Self {
         Self {
-            client,
+            client: FluxClient::Completions(client),
+            api_key: api_key.into(),
+        }
+    }
+
+    /// Explicit opt-in: the Responses surface.
+    pub fn responses(client: FluxResponsesClient, api_key: impl Into<String>) -> Self {
+        Self {
+            client: FluxClient::Responses(client),
+            api_key: api_key.into(),
+        }
+    }
+
+    /// Explicit opt-in: the Anthropic Messages COMPAT surface (thinking/cache
+    /// are inert on live Flux — FINDINGS batch-2 WIRE-2).
+    pub fn anthropic_compat(client: AnthropicMessagesClient, api_key: impl Into<String>) -> Self {
+        Self {
+            client: FluxClient::Anthropic(client),
             api_key: api_key.into(),
         }
     }
@@ -26,7 +56,11 @@ impl FluxDriver {
 #[async_trait::async_trait]
 impl ModelDriver for FluxDriver {
     async fn complete(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError> {
-        self.client.complete(request, &self.api_key).await
+        match &self.client {
+            FluxClient::Completions(client) => client.complete(request, &self.api_key).await,
+            FluxClient::Responses(client) => client.complete(request, &self.api_key).await,
+            FluxClient::Anthropic(client) => client.complete(request, &self.api_key).await,
+        }
     }
 }
 

@@ -13,6 +13,11 @@
 //! - named ADS spellings (`file:stream`) are normalized to the base file
 //!   before candidate resolution so a deny on a file covers all its streams
 //!   (Wayland Nano hardening, no donor counterpart);
+//! - writes to an existing regular file with more than one hard link are
+//!   denied: a hard link has no reparse point, so canonicalization cannot see
+//!   that the file object may also be reachable outside every writable entry
+//!   (Wayland Nano hardening, no donor counterpart; evidence in
+//!   `docs/audits/hardlink-race.md`);
 //! - legacy `SandboxPolicy` conversions, semantic-signature/equivalence, and
 //!   `materialize_project_roots_*` intentionally NOT ported (greenfield: no
 //!   legacy config exists; land with a consumer if ever needed).
@@ -138,7 +143,35 @@ impl FileSystemSandboxPolicy {
         if self.is_write_link_escape(path, cwd) {
             return false;
         }
+        if self.is_hard_link_alias_write(path, cwd) {
+            return false;
+        }
         !self.is_metadata_write_denied(path, cwd)
+    }
+
+    /// Fail-closed hard-link alias check for writes: a hard link is a second
+    /// NAME for the same file object, not a reparse point, so
+    /// [`Self::is_write_link_escape`] sees a legitimate in-root path while an
+    /// in-place write (the tool layer truncates via `std::fs::write`) would
+    /// mutate the object under ALL of its names — including names outside
+    /// every writable entry. An existing regular file with more than one link
+    /// is therefore denied. Directories (not hard-linkable on NTFS), missing
+    /// targets (the write creates a new object), and unrestricted policies
+    /// (full write access anyway) are unaffected.
+    ///
+    /// False positives are accepted and documented: a file whose names all
+    /// live INSIDE the writable root is denied too, because the engine cannot
+    /// enumerate the other names cheaply and in-place mutation of a shared
+    /// object is exactly what must not happen silently. Callers that must
+    /// "edit" such a file can replace it (unlink + create), which breaks the
+    /// alias instead of writing through it. Evidence and the residual
+    /// check-to-use race (covered by the OS DACL layer, not this check) are
+    /// analyzed in `docs/audits/hardlink-race.md`.
+    fn is_hard_link_alias_write(&self, path: &Path, cwd: &Path) -> bool {
+        let Some(path) = resolve_candidate_path(path, cwd) else {
+            return true;
+        };
+        existing_file_has_multiple_links(path.as_path())
     }
 
     /// Fail-closed reparse-point check for writes: resolves the nearest
@@ -699,6 +732,49 @@ fn canonicalize_write_target(path: &AbsolutePathBuf) -> AbsolutePathBuf {
         }
     }
     path.clone()
+}
+
+/// Returns true when `path` is an existing regular file with more than one
+/// hard link — i.e. its file object has other names this engine cannot see.
+/// Missing or unopenable targets return false: a missing target is a create
+/// (a brand-new object with exactly one name), and a file the process cannot
+/// even open will be gated by the OS at write time anyway.
+#[cfg(windows)]
+fn existing_file_has_multiple_links(path: &Path) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
+    use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
+
+    // Follows reparse points (like the write would) and fails on directories,
+    // which cannot be hard-linked on NTFS.
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `file` is a valid open handle for the duration of the call and
+    // `info` is valid writable memory of the expected type and size.
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut info) };
+    if ok == 0 {
+        return false;
+    }
+    info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 && info.nNumberOfLinks > 1
+}
+
+/// Unix counterpart: `nlink` is stable in std.
+#[cfg(unix)]
+fn existing_file_has_multiple_links(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    metadata.is_file() && metadata.nlink() > 1
+}
+
+#[cfg(not(any(windows, unix)))]
+fn existing_file_has_multiple_links(_path: &Path) -> bool {
+    false
 }
 
 fn normalize_effective_absolute_path(path: AbsolutePathBuf) -> AbsolutePathBuf {

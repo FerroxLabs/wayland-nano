@@ -94,6 +94,9 @@ route around it.
 
 - Architecture constitution: `ARCHITECTURE.md`
 - Provenance ledger: `UPSTREAM.md`
+- Third-party attribution: `NOTICES.md`
+- Platform/Flux support levels: `docs/COMPATIBILITY.md`
+- Release evidence bundle: `docs/release/EVIDENCE-BUNDLE.md` (+ `scripts/collect-evidence.ps1`)
 - Sprint state: `docs/STATUS.md`
 - Scenario catalog + gaps: `docs/compliance/SCENARIO_CATALOG.md`
 - Scorecard / kill criteria: `../shared/SCORECARD.md`

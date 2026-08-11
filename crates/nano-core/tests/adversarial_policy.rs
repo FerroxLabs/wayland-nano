@@ -608,6 +608,116 @@ fn relative_spellings_from_unusual_cwd_match_absolute_decision() {
     );
 }
 
+// --- NTFS hard links -----------------------------------------------------------
+//
+// A hard link is a second NAME for the same file object, not a reparse point:
+// `canonicalize_write_target` sees a legitimate in-workspace path while an
+// in-place write mutates the object under ALL of its names, including names
+// outside every writable entry. The engine therefore denies writes to any
+// existing regular file with more than one link. Evidence and analysis:
+// `docs/audits/hardlink-race.md`.
+
+#[test]
+fn hard_link_alias_into_workspace_is_write_denied() {
+    let f = fixture("hardlink-write");
+    let policy = policy(&f);
+    let outside = f.root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let target = outside.join("target.txt");
+    std::fs::write(&target, "nano-adv-original").unwrap();
+    let link = f.ws.join("link.txt");
+    // fs::hard_link needs no special privilege on Windows.
+    std::fs::hard_link(&target, &link).unwrap();
+
+    assert!(
+        policy.can_write_path_with_cwd(&f.ws.join("ok.txt"), &f.ws),
+        "control: plain in-workspace file is writable"
+    );
+    assert!(
+        !policy.can_write_path_with_cwd(&link, &f.ws),
+        "SECURITY HOLE (hard link): {} aliases the out-of-root object {}; \
+         canonicalization cannot see the alias (no reparse point)",
+        link.display(),
+        target.display()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "nano-adv-original",
+        "outside target must be untouched"
+    );
+}
+
+#[test]
+fn hard_link_write_deny_releases_when_outside_name_is_removed() {
+    // Pins that the deny tracks the LINK COUNT, not the name: once the
+    // outside name is deleted the in-workspace name is the only name for the
+    // object, and writing it no longer mutates anything outside the root.
+    let f = fixture("hardlink-release");
+    let policy = policy(&f);
+    let outside = f.root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let target = outside.join("target.txt");
+    std::fs::write(&target, "nano-adv-original").unwrap();
+    let link = f.ws.join("link.txt");
+    std::fs::hard_link(&target, &link).unwrap();
+    assert!(
+        !policy.can_write_path_with_cwd(&link, &f.ws),
+        "control: aliased file is write-denied"
+    );
+
+    std::fs::remove_file(&target).unwrap();
+    assert!(
+        policy.can_write_path_with_cwd(&link, &f.ws),
+        "sole remaining name inside the writable root must be writable"
+    );
+}
+
+#[test]
+fn in_workspace_hard_link_pair_is_also_write_denied() {
+    // Documented conservative false positive: BOTH names live inside the
+    // writable root, so writing is containment-safe — but the engine cannot
+    // enumerate a file's other names cheaply, so it denies any multi-linked
+    // file. Callers must replace (unlink + create) such files instead of
+    // editing them in place.
+    let f = fixture("hardlink-inroot");
+    let policy = policy(&f);
+    let first = f.ws.join("first.txt");
+    std::fs::write(&first, "nano-adv-pair").unwrap();
+    let second = f.ws.join("second.txt");
+    std::fs::hard_link(&first, &second).unwrap();
+
+    for name in [&first, &second] {
+        assert!(
+            !policy.can_write_path_with_cwd(name, &f.ws),
+            "multi-linked in-root file {} is denied in-place writes by design",
+            name.display()
+        );
+    }
+}
+
+#[test]
+fn hard_link_read_alias_transparency_is_pinned_as_platform_limitation() {
+    // PLATFORM LIMITATION (docs/audits/hardlink-race.md): the lexical policy
+    // layer cannot distinguish a hard link's names, so a read through an
+    // in-workspace alias of a deny-read file is NOT denied here. Containment
+    // is provided by the OS layer instead: the target file's DACL binds every
+    // name of the object, and the sandbox identity has no read ACE on denied
+    // targets (proven in nano-tools/tests/adversarial_fs.rs).
+    let f = fixture("hardlink-read");
+    let policy = policy(&f);
+    let matcher = matcher(&policy, &f.ws);
+    let target = f.private.join("secret.txt");
+    let link = f.ws.join("link.txt");
+    std::fs::hard_link(&target, &link).unwrap();
+
+    assert!(matcher.is_read_denied(&target), "control: canonical denied");
+    assert!(
+        !matcher.is_read_denied(&link),
+        "documented limitation: the read-deny matcher is alias-transparent \
+         for hard links; the OS DACL layer is the containment for this"
+    );
+}
+
 // --- Protected metadata under spelling variants -------------------------------------------
 
 #[test]

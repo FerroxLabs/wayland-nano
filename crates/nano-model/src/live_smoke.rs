@@ -120,3 +120,93 @@ async fn live_egress_denies_non_flux_host() {
         "non-Flux host must be denied at construction"
     );
 }
+
+#[tokio::test]
+async fn live_responses_complete() {
+    let Some(key) = key() else {
+        eprintln!("FLUX_TEST_KEY not set — skipping live smoke");
+        return;
+    };
+    let client = crate::flux_responses::FluxResponsesClient::new(EgressClient::flux());
+    let request = ModelRequest {
+        model: "flux-fast".into(),
+        messages: vec![Message::user("Reply with exactly the word: ok")],
+        max_tokens: Some(512),
+        stream: false,
+        ..Default::default()
+    };
+    let response = client
+        .complete(&request, &key)
+        .await
+        .expect("live responses call");
+
+    let text: String = response
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            ModelEvent::TextDelta(t) => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.to_lowercase().contains("ok"),
+        "expected ok in text: {text}"
+    );
+    assert!(response.usage.output_tokens > 0);
+    record("responses.json", &format!("{:#?}", response.events));
+}
+
+#[tokio::test]
+async fn live_anthropic_complete() {
+    let Some(key) = key() else {
+        eprintln!("FLUX_TEST_KEY not set — skipping live smoke");
+        return;
+    };
+    let client = crate::anthropic_messages::AnthropicMessagesClient::new(EgressClient::flux());
+    let request = ModelRequest {
+        model: "flux-auto".into(),
+        messages: vec![Message::user("Reply with exactly the word: ok")],
+        max_tokens: Some(512),
+        stream: false,
+        ..Default::default()
+    };
+    let response = client
+        .complete(&request, &key)
+        .await
+        .expect("live anthropic call");
+
+    let text: String = response
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            ModelEvent::TextDelta(t) => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.to_lowercase().contains("ok"),
+        "expected ok in text: {text}"
+    );
+    assert!(response.usage.output_tokens > 0);
+    record("anthropic.json", &format!("{:#?}", response.events));
+}
+
+#[tokio::test]
+async fn live_anthropic_count_tokens() {
+    let Some(key) = key() else {
+        eprintln!("FLUX_TEST_KEY not set — skipping live smoke");
+        return;
+    };
+    let client = crate::anthropic_messages::AnthropicMessagesClient::new(EgressClient::flux());
+    let request = ModelRequest {
+        model: "flux-auto".into(),
+        messages: vec![Message::user("Reply with exactly the word: ok")],
+        ..Default::default()
+    };
+    let count = client
+        .count_tokens(&request, &key)
+        .await
+        .expect("live count_tokens call");
+    assert!(count > 0, "count_tokens must return a positive count");
+    record("count_tokens.json", &format!("input_tokens={count}"));
+}

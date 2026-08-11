@@ -5,10 +5,15 @@
 //! fixture evidence, shared/fixtures/flux/FINDINGS.md):
 //! - PRIMARY: Flux Chat Completions at api.fluxrouter.ai/v1
 //! - COMPAT: Flux Anthropic Messages (thinking/cache pass-through failed live
-//!   — compat only, not the preferred route)
-//! - DEFERRED: Responses (upstream marks it Phase 2)
+//!   — FINDINGS batch-2 WIRE-2 — compat only, not the preferred route)
+//! - IMPLEMENTED: Flux Responses (POST /v1/responses); Completions stays the
+//!   single production wire per the same WIRE-2 verdict.
 
+pub mod anthropic_messages;
+pub mod flux_common;
 pub mod flux_completions;
+pub mod flux_models;
+pub mod flux_responses;
 pub mod retry;
 pub mod sse;
 pub mod types;

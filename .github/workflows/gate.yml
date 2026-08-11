@@ -1,8 +1,11 @@
 # Wayland Nano (Track B) — native gate workflow, 6-target hosted-runner matrix.
 # Proves macOS / Linux / Windows parity (x64 + ARM64) on the same gate the
 # Windows leg has always run: gate-fmt, gate-lint, gate-test, gate-deny
-# (advisory). Live tests never run in CI (they need the owner-held Flux
-# credential); evidence fixtures replay instead.
+# (hard gate — licenses/advisories/bans fail the build). A CycloneDX SBOM is
+# generated on the windows-latest leg (output is platform-independent, so one
+# leg suffices) and lands in that leg's evidence artifacts. Live tests never
+# run in CI (they need the owner-held Flux credential); evidence fixtures
+# replay instead.
 #
 # POST-PORT STATE: the unix legs (macos-*, ubuntu-*) assume the in-flight
 # nano-sandbox unix backend port has landed — including the
@@ -104,7 +107,25 @@ jobs:
 
       - name: gate-deny
         run: just gate-deny
-        continue-on-error: true # advisory until SBOM policy lands
+
+      # SBOM is gated to the windows-latest leg: cargo-cyclonedx derives the
+      # dependency closure from Cargo.lock + cargo metadata, so the output is
+      # platform-independent and one leg suffices (avoids 6x toolchain fetch).
+      # cargo-cyclonedx writes <override-filename>.json adjacent to every
+      # workspace member's Cargo.toml; we keep the nano-cli one (the shipped
+      # binary crate) as the canonical sbom.json and clean up the rest.
+      - name: Install cargo-cyclonedx
+        if: matrix.os == 'windows-latest'
+        uses: taiki-e/install-action@cargo-cyclonedx
+
+      - name: CycloneDX SBOM (sbom.json)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          cargo cyclonedx --manifest-path crates/nano-cli/Cargo.toml --format json --all --override-filename sbom
+          New-Item -ItemType Directory -Force -Path nano-k3/artifacts/evidence/ci | Out-Null
+          Move-Item -Force crates/nano-cli/sbom.json nano-k3/artifacts/evidence/ci/sbom.json
+          Remove-Item -Force crates/*/sbom.json
 
       - name: Evidence manifest (Windows)
         if: always() && runner.os == 'Windows'
@@ -118,12 +139,15 @@ jobs:
             arch = "${{ matrix.arch }}"
             rust = "1.95.0"
             at = (Get-Date).ToUniversalTime().ToString("o")
-            steps = @("gate-fmt", "gate-lint", "gate-test", "gate-deny(advisory)")
+            steps = @("gate-fmt", "gate-lint", "gate-test", "gate-deny")
           }
           $perfPath = "nano-k3/artifacts/evidence/ci/perf-${{ matrix.os }}.json"
           if (Test-Path $perfPath) {
             $manifest.steps += "gate-perf(advisory)"
             $manifest.perf = Get-Content $perfPath -Raw | ConvertFrom-Json
+          }
+          if (Test-Path "nano-k3/artifacts/evidence/ci/sbom.json") {
+            $manifest.steps += "sbom(cyclonedx)"
           }
           New-Item -ItemType Directory -Force -Path nano-k3/artifacts/evidence/ci | Out-Null
           $manifest | ConvertTo-Json | Out-File "nano-k3/artifacts/evidence/ci/$($env:GITHUB_RUN_ID)-manifest.json" -Encoding utf8
@@ -142,7 +166,7 @@ jobs:
             "arch": "${{ matrix.arch }}",
             "rust": "1.95.0",
             "at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "steps": ["gate-fmt", "gate-lint", "gate-test", "build-bins", "gate-deny(advisory)"]
+            "steps": ["gate-fmt", "gate-lint", "gate-test", "build-bins", "gate-deny"]
           }
           JSON
 

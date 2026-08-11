@@ -89,6 +89,12 @@ impl JsonRpcNotification {
 }
 
 /// Agent capabilities advertised in the initialize response.
+///
+/// `mcpCapabilities` is present because session/new (and session/load)
+/// genuinely consume `mcpServers`: Desktop parses the block's PRESENCE as
+/// stdio support (acpTypes.ts `parseAgentCapabilitiesObject`: `stdio: mcp
+/// !== null`) and reads `http`/`sse` as booleans — so the honest shape is
+/// exactly `{http: false, sse: false}` (stdio-only, implied by presence).
 pub fn agent_capabilities() -> serde_json::Value {
     serde_json::json!({
         "protocolVersion": ACP_PROTOCOL_VERSION,
@@ -98,6 +104,10 @@ pub fn agent_capabilities() -> serde_json::Value {
                 "text": true,
                 "image": false,
                 "embeddedContext": false
+            },
+            "mcpCapabilities": {
+                "http": false,
+                "sse": false
             }
         },
         "agentInfo": {
@@ -107,14 +117,41 @@ pub fn agent_capabilities() -> serde_json::Value {
     })
 }
 
+/// A model the session can switch to (the ACP `models` block, unstable API).
+/// This is the exact shape Desktop consumes: acpTypes.ts `AcpAvailableModel`
+/// (`id` — with a `modelId` fallback — plus `name` as the picker label).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AvailableModel {
+    pub id: String,
+    pub name: String,
+}
+
+/// The `models` block shared by session/new, session/load and
+/// session/set_model responses. Desktop reads it top-level
+/// (AcpConnection.ts `parseSessionCapabilities`).
+pub fn session_models_value(
+    current_model_id: &str,
+    available: &[AvailableModel],
+) -> serde_json::Value {
+    serde_json::json!({
+        "currentModelId": current_model_id,
+        "availableModels": available,
+    })
+}
+
 /// session/new response.
-pub fn session_new_result(session_id: &str) -> serde_json::Value {
+pub fn session_new_result(
+    session_id: &str,
+    current_model_id: &str,
+    available: &[AvailableModel],
+) -> serde_json::Value {
     serde_json::json!({
         "sessionId": session_id,
         "modes": {
             "availableModes": [{"id": "default", "name": "Default"}],
             "currentModeId": "default"
-        }
+        },
+        "models": session_models_value(current_model_id, available)
     })
 }
 
@@ -122,12 +159,25 @@ pub fn session_new_result(session_id: &str) -> serde_json::Value {
 /// (AcpConnection.ts `loadSession`: "session/load returns
 /// modes/models/configOptions but not sessionId"), the loaded session keeps
 /// the id the client sent, so no sessionId is returned here.
-pub fn session_load_result() -> serde_json::Value {
+pub fn session_load_result(
+    current_model_id: &str,
+    available: &[AvailableModel],
+) -> serde_json::Value {
     serde_json::json!({
         "modes": {
             "availableModes": [{"id": "default", "name": "Default"}],
             "currentModeId": "default"
-        }
+        },
+        "models": session_models_value(current_model_id, available)
+    })
+}
+
+/// session/set_model response: the updated models state (Desktop updates its
+/// cache from the requested id; echoing the state keeps the agent the source
+/// of truth).
+pub fn set_model_result(current_model_id: &str, available: &[AvailableModel]) -> serde_json::Value {
+    serde_json::json!({
+        "models": session_models_value(current_model_id, available)
     })
 }
 
@@ -286,6 +336,12 @@ mod tests {
             caps["agentCapabilities"]["promptCapabilities"]["text"],
             true
         );
+        // stdio-only MCP: the block's presence advertises stdio to Desktop
+        // (acpTypes.ts), http/sse stay honestly false.
+        let mcp = &caps["agentCapabilities"]["mcpCapabilities"];
+        assert!(mcp.is_object(), "mcpCapabilities must be advertised: {caps}");
+        assert_eq!(mcp["http"], false);
+        assert_eq!(mcp["sse"], false);
     }
 
     #[test]
@@ -303,6 +359,42 @@ mod tests {
         let json = serde_json::to_value(&tool).unwrap();
         assert_eq!(json["params"]["update"]["kind"], "execute");
         assert_eq!(json["params"]["update"]["status"], "in_progress");
+    }
+
+    #[test]
+    fn session_new_carries_the_desktop_models_shape() {
+        let available = vec![
+            AvailableModel {
+                id: "flux-auto".into(),
+                name: "flux-auto".into(),
+            },
+            AvailableModel {
+                id: "flux-fast".into(),
+                name: "flux-fast".into(),
+            },
+        ];
+        let result = session_new_result("s1", "flux-auto", &available);
+        assert_eq!(result["sessionId"], "s1");
+        assert_eq!(result["models"]["currentModelId"], "flux-auto");
+        let models = result["models"]["availableModels"].as_array().unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[1]["id"], "flux-fast");
+        assert_eq!(models[1]["name"], "flux-fast");
+
+        // session/load carries the same models block, without a sessionId.
+        let loaded = session_load_result("flux-fast", &available);
+        assert!(loaded.get("sessionId").is_none());
+        assert_eq!(loaded["models"]["currentModelId"], "flux-fast");
+
+        let switched = set_model_result("flux-fast", &available);
+        assert_eq!(switched["models"]["currentModelId"], "flux-fast");
+        assert_eq!(
+            switched["models"]["availableModels"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]

@@ -13,5 +13,15 @@ serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 serde_json = "1"
 
+[target.'cfg(windows)'.dependencies]
+# Pinned workspace version (0.52, per AGENTS.md). Used solely for
+# GetFileInformationByHandle: the hard-link alias write check needs
+# BY_HANDLE_FILE_INFORMATION.nNumberOfLinks, which stable std does not expose
+# (`windows_by_handle` is still unstable).
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+
 [dev-dependencies]
 pretty_assertions = "1"

@@ -252,3 +252,152 @@ fn ntfs_junction_read_into_denied_dir_is_denied() {
         "denied with wrong variant: {err:?}"
     );
 }
+
+// --- Hard-link escapes ---------------------------------------------------------
+//
+// A hard link is a second NAME for the same file object — no reparse point —
+// so canonicalization cannot see that an in-workspace name aliases an object
+// outside the writable root. `fs::hard_link` needs no special privilege on
+// Windows. The policy engine denies writes to any existing file with more
+// than one link; the OS DACL layer binds the access check to the file OBJECT
+// (every name of it), which is what contains the sandbox identity. Evidence
+// and analysis: `docs/audits/hardlink-race.md`.
+
+#[test]
+fn write_through_hard_link_is_denied_and_does_not_land_outside() {
+    let (_tmp, ws, outside) = fixture();
+    let target = outside.join("nano-secret.txt");
+    let link = ws.join("nano-hardlink.txt");
+    std::fs::hard_link(&target, &link).expect("hard link needs no privilege");
+
+    let tools = FsTools::new(workspace_policy(&ws), &ws);
+    let err = tools.write_file(&link, "pwn");
+    assert!(
+        matches!(err, Err(ToolError::WriteDenied(_))),
+        "SECURITY HOLE: write through a hard link inside the workspace was not \
+         denied: {err:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "nano-outside-secret",
+        "SECURITY HOLE: write through a hard link mutated the out-of-root object"
+    );
+}
+
+#[test]
+fn read_through_hard_link_into_denied_dir_documents_alias_transparency() {
+    // PLATFORM LIMITATION (docs/audits/hardlink-race.md): the lexical policy
+    // layer cannot distinguish a hard link's names, so the read through an
+    // in-workspace alias of a deny-read file is NOT denied at this layer.
+    // Containment comes from the OS: the sandbox identity has no read ACE on
+    // the target object (proven by
+    // `target_dacl_denies_read_through_preplanted_hard_link` below), so the
+    // same attempt inside the sandbox fails at the DACL.
+    let (_tmp, ws, outside) = fixture();
+    let target = outside.join("nano-secret.txt");
+    let link = ws.join("nano-hardlink.txt");
+    std::fs::hard_link(&target, &link).expect("hard link needs no privilege");
+
+    let tools = FsTools::new(deny_read_policy(&outside), &ws);
+    let (content, _) = tools
+        .read_file(&link, &ReadBounds::default())
+        .expect("documented limitation: policy layer is alias-transparent for hard links");
+    assert_eq!(content, "nano-outside-secret");
+}
+
+/// `DOMAIN\user` for icacls ACEs.
+#[cfg(windows)]
+fn whoami() -> String {
+    let output = std::process::Command::new("whoami")
+        .output()
+        .expect("spawn whoami");
+    assert!(output.status.success(), "whoami failed");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// Runs icacls, asserting success. Used to place/remove deny ACEs emulating
+/// the sandbox identity's missing grant on an outside object: an absent allow
+/// ACE denies exactly like an explicit deny ACE.
+#[cfg(windows)]
+fn icacls(args: &[String]) {
+    let output = std::process::Command::new("icacls")
+        .args(args)
+        .output()
+        .expect("spawn icacls");
+    assert!(
+        output.status.success(),
+        "icacls {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn target_dacl_denies_write_through_preplanted_hard_link() {
+    // OS-layer containment proof: even with the alias PRE-PLANTED inside the
+    // workspace (the ambient same-user race), the write is access-checked
+    // against the TARGET file object's DACL, not the directory entry. A raw
+    // `std::fs::write` bypasses the policy check on purpose: the DACL alone
+    // must stop the write.
+    let (_tmp, ws, outside) = fixture();
+    let target = outside.join("nano-secret.txt");
+    let link = ws.join("nano-hardlink.txt");
+    std::fs::hard_link(&target, &link).expect("hard link needs no privilege");
+
+    let me = whoami();
+    let target_arg = target.display().to_string();
+    icacls(&[target_arg.clone(), "/deny".into(), format!("{me}:(W)")]);
+
+    let err = std::fs::write(&link, "pwn")
+        .expect_err("target DACL must deny the write through the alias");
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+
+    icacls(&[target_arg, "/remove:d".into(), me]);
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "nano-outside-secret",
+        "outside object mutated despite the DACL deny"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn hard_link_creation_to_write_denied_target_fails() {
+    // Self-limiting creation: since Windows 10, CreateHardLink requires write
+    // access to the TARGET. The sandbox identity has no write ACE on outside
+    // objects, so it cannot even plant the alias itself.
+    let (_tmp, ws, outside) = fixture();
+    let target = outside.join("nano-secret.txt");
+    let me = whoami();
+    let target_arg = target.display().to_string();
+    icacls(&[target_arg.clone(), "/deny".into(), format!("{me}:(W)")]);
+
+    let link = ws.join("nano-hardlink.txt");
+    let err = std::fs::hard_link(&target, &link)
+        .expect_err("hard-link creation must require write access to the target");
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(!link.exists());
+
+    icacls(&[target_arg, "/remove:d".into(), me]);
+}
+
+#[cfg(windows)]
+#[test]
+fn target_dacl_denies_read_through_preplanted_hard_link() {
+    // The read-side counterpart: the target object's DACL binds every name,
+    // so a denied target stays unreadable through an in-workspace alias. This
+    // is the containment for the policy layer's read alias transparency.
+    let (_tmp, ws, outside) = fixture();
+    let target = outside.join("nano-secret.txt");
+    let link = ws.join("nano-hardlink.txt");
+    std::fs::hard_link(&target, &link).expect("hard link needs no privilege");
+
+    let me = whoami();
+    let target_arg = target.display().to_string();
+    icacls(&[target_arg.clone(), "/deny".into(), format!("{me}:(R)")]);
+
+    let err = std::fs::read(&link).expect_err("target DACL must deny the read through the alias");
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+
+    icacls(&[target_arg, "/remove:d".into(), me]);
+}

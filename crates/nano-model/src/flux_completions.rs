@@ -8,6 +8,7 @@
 //! - usage carries cost_usd + cache fields — mapped to Usage;
 //! - alias routing differs per surface — this adapter only speaks Completions.
 
+use crate::flux_common::{classify_transport, read_error_body, sse_integrity_error};
 use crate::retry::RetryPolicy;
 use crate::sse::SseParser;
 use crate::types::{
@@ -16,7 +17,10 @@ use crate::types::{
 };
 use nano_egress::client::EgressClient;
 
-pub const FLUX_BASE: &str = "https://api.fluxrouter.ai";
+// Shared wire plumbing (single classification path across all three Flux
+// surfaces) — re-exported so existing callers keep their import paths.
+pub use crate::flux_common::{FLUX_BASE, classify_status};
+
 pub const COMPLETIONS_PATH: &str = "/v1/chat/completions";
 
 #[derive(Debug)]
@@ -91,50 +95,6 @@ impl FluxCompletionsClient {
                 },
             }
         }
-    }
-}
-
-fn classify_transport(err: reqwest::Error) -> ModelError {
-    // Delegate to nano-egress so transport errors never echo userinfo/query
-    // (single redaction path, fail-closed).
-    ModelError::Transport(nano_egress::client::sanitize_transport_error(&err))
-}
-
-async fn read_error_body(response: reqwest::Response) -> String {
-    response.text().await.unwrap_or_default()
-}
-
-pub fn classify_status(status: u16, body: String) -> ModelError {
-    let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
-    let error = parsed.as_ref().and_then(|v| v.get("error"));
-    let message = error
-        .and_then(|e| e.get("message"))
-        .and_then(|m| m.as_str())
-        .unwrap_or("")
-        .to_string();
-    let error_type = error.and_then(|e| e.get("type")).and_then(|t| t.as_str());
-    match status {
-        401 | 403 => ModelError::Auth(message),
-        // Live wire (batch-3 badkey fixture): an invalid key arrives as
-        // HTTP 500 with error.type=="auth_error", NOT 401. The embedded
-        // message carries `key=<sha256-of-presented-key>` — a digest, not
-        // the key itself, matching this crate's hashed-digest convention —
-        // so carrying it in ModelError::Auth logs is acceptable.
-        500 if error_type == Some("auth_error") => ModelError::Auth(message),
-        402 => ModelError::Entitlement(message),
-        // Kept for spec compliance; live Flux never sends 429 (burst load
-        // saturates the edge with bare 503 nginx HTML, no Retry-After).
-        429 => ModelError::RateLimited {
-            retry_after_ms: None,
-        },
-        // Live wire (batch-3 overlimit fixture): context overflow arrives as
-        // HTTP 413 with error.message=="context_window_exceeded".
-        413 => ModelError::ContextOverflow(message),
-        400 if message.contains("context") || message.contains("token") => {
-            ModelError::ContextOverflow(message)
-        }
-        s if s >= 500 => ModelError::Server { status: s, message },
-        s => ModelError::Server { status: s, message },
     }
 }
 
@@ -299,12 +259,6 @@ fn parse_usage(usage: Option<&serde_json::Value>) -> Usage {
             .and_then(|r| r.as_u64()),
         cost_usd: usage.get("cost_usd").and_then(|c| c.as_f64()),
     }
-}
-
-/// Map a parser cap violation to a protocol integrity error (fail-closed:
-/// a hostile stream errors the completion, it is never truncated).
-fn sse_integrity_error(err: crate::sse::SseError) -> ModelError {
-    ModelError::Protocol(format!("sse stream rejected: {err}"))
 }
 
 /// Parse a recorded SSE stream of chat.completion.chunk frames.
