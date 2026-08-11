@@ -23,6 +23,14 @@
   wl-cdp renderer regression is Desktop's.
 - Debt ledger clean: deny-ACE audit correct-by-design
   (`docs/audits/deny-ace-scan.md`).
+- **Debt (from Track A salvage)**: same-user NTFS hard-link containment race
+  is UNANALYZED in our DACL model — Track A's spike
+  (`shared/contracts/windows-hardlink-containment.md`, adopted) shows a
+  hard link created inside a writable root can point at a file outside it,
+  and DACL containment alone may not cover the link target's semantics.
+  Needs analysis + adversarial test. Track A's sandbox fixes (transactional
+  ACL rollback, AccessCheck-verified token, bounded helper lifecycle) are
+  being ported by review; re-audit deny-ace conclusions after.
 
 ### Previous state (2026-08-11, PANEL AUDIT COMPLETE — corrective rounds closed)
 - External panel (codex + claude lenses; gemini disqualified — Google retired
