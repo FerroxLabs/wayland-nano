@@ -48,6 +48,8 @@ jobs:
           targets: ${{ matrix.target }}
 
       # The gate must pass on the tagged commit before any artifact exists.
+      - name: Install just
+        uses: taiki-e/install-action@just
       - name: gate-fmt
         run: just gate-fmt
       - name: gate-lint
