@@ -961,12 +961,16 @@ pub fn provisioning_payload(
 }
 
 /// The provisioning payload as (pretty JSON for review, base64 for launch).
+/// Must mint the same per-run cancellation token the orchestrated flow adds —
+/// the helper's fail-closed validation rejects token-less payloads in any
+/// mode that mutates ACLs, so a review payload without one is unusable.
 pub fn provisioning_payload_review(
     nano_home: &Path,
     real_user: &str,
     settings: WindowsSandboxProvisioningSettings,
 ) -> Result<(String, String)> {
-    let payload = provisioning_payload(nano_home, real_user, settings);
+    let mut payload = provisioning_payload(nano_home, real_user, settings);
+    payload.cancellation_path = Some(new_setup_cancellation_path(nano_home)?);
     let pretty = serde_json::to_string_pretty(&payload)?;
     let b64 = BASE64_STANDARD.encode(serde_json::to_vec(&payload)?);
     Ok((pretty, b64))
@@ -1215,6 +1219,39 @@ mod tests {
         assert!(json.contains("NanoSandboxOffline"));
         assert!(json.contains("\"mode\":\"full\""));
         assert!(json.contains("\"refresh_only\":true"));
+    }
+
+    #[test]
+    fn review_payload_carries_valid_cancellation_token() {
+        // Regression: the owner-review path used to emit
+        // `cancellation_path: null`, which the helper's fail-closed
+        // validation rejects — the review payload must be launchable as-is.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nano_home = temp.path().join("nano-home");
+        let settings = WindowsSandboxProvisioningSettings {
+            proxy_ports: Vec::new(),
+            allow_local_binding: false,
+        };
+        let (_pretty, b64) =
+            provisioning_payload_review(&nano_home, "dev", settings).expect("review payload");
+        let json = BASE64_STANDARD.decode(b64).expect("payload b64 decodes");
+        let value: serde_json::Value = serde_json::from_slice(&json).expect("payload json");
+        let token = value["cancellation_path"]
+            .as_str()
+            .expect("token is present");
+        let name = std::path::Path::new(token)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("token has a UTF-8 file name");
+        let hex = name
+            .strip_prefix("cancel-")
+            .expect("token name is cancel-<hex>");
+        assert_eq!(hex.len(), 32, "token hex width");
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit()), "token is hex");
+        assert!(
+            token.starts_with(&crate::sandbox_dir(&nano_home).display().to_string()),
+            "token lives directly inside the canonical sandbox dir"
+        );
     }
 
     #[test]
