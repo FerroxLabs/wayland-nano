@@ -168,6 +168,10 @@ jobs:
             || gh release upload "$TAG" "${assets[@]}" --clobber
 
       - name: Evidence bundle
+        # DEBT: collect-evidence.ps1 is Windows-oriented and fails on the
+        # ubuntu publish leg; the gate manifests already carry the evidence.
+        # Post-publish bookkeeping — never block a successful publish on it.
+        continue-on-error: true
         run: powershell -NoProfile -File scripts/collect-evidence.ps1 -BundleDir artifacts/evidence-bundle -AllowMissing
         shell: pwsh
 
