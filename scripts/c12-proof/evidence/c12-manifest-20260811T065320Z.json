@@ -1,0 +1,95 @@
+﻿{
+    "gate":  "C1.2",
+    "track":  "B",
+    "source_sha":  "722aabffbb930ef7ee6ee9cd9e0432f5363f5f24",
+    "dirty":  true,
+    "runner":  {
+                   "host":  "SEANDESKTOP",
+                   "os":  "Microsoft Windows 11 Pro",
+                   "arch":  "AMD64",
+                   "user":  "seand",
+                   "elevated":  false
+               },
+    "provisioned":  true,
+    "started_at":  "2026-08-10T23:53:20.4305994Z",
+    "finished_at":  "2026-08-10T23:53:24.7782164Z",
+    "counts":  {
+                   "pass":  7,
+                   "fail":  1,
+                   "skip":  4
+               },
+    "results":  [
+                    {
+                        "probe":  "harness-env",
+                        "status":  "PASS",
+                        "detail":  "host=SEANDESKTOP user=seand provisioned=True",
+                        "at":  "2026-08-10T23:53:20.4964250Z"
+                    },
+                    {
+                        "probe":  "write-inside-root",
+                        "status":  "PASS",
+                        "detail":  "created workspace/allowed.txt",
+                        "at":  "2026-08-10T23:53:20.5062806Z"
+                    },
+                    {
+                        "probe":  "write-outside-root",
+                        "status":  "SKIP",
+                        "detail":  "requires elevation (credential-child launch is admin-gated)",
+                        "at":  "2026-08-10T23:53:20.5073020Z"
+                    },
+                    {
+                        "probe":  "sensitive-read-deny",
+                        "status":  "SKIP",
+                        "detail":  "requires elevation (credential-child launch is admin-gated)",
+                        "at":  "2026-08-10T23:53:20.5073020Z"
+                    },
+                    {
+                        "probe":  "junction-escape",
+                        "status":  "SKIP",
+                        "detail":  "requires elevation (credential-child launch is admin-gated)",
+                        "at":  "2026-08-10T23:53:20.5083279Z"
+                    },
+                    {
+                        "probe":  "tree-kill-5s",
+                        "status":  "PASS",
+                        "detail":  "job terminate killed tree in 1ms; all 2 recorded descendant PID(s) gone from CIM inventory",
+                        "at":  "2026-08-10T23:53:21.7031737Z"
+                    },
+                    {
+                        "probe":  "process-cleanup",
+                        "status":  "PASS",
+                        "detail":  "no nanok3 helper processes running",
+                        "at":  "2026-08-10T23:53:21.8992463Z"
+                    },
+                    {
+                        "probe":  "network-deny-offline",
+                        "status":  "SKIP",
+                        "detail":  "requires elevation (credential-child launch is admin-gated)",
+                        "at":  "2026-08-10T23:53:21.8992463Z"
+                    },
+                    {
+                        "probe":  "broker-network-ok",
+                        "status":  "PASS",
+                        "detail":  "reachable (HTTP 500 from api.fluxrouter.ai - network, TLS, and Flux all respond; auth failure still proves reachability)",
+                        "at":  "2026-08-10T23:53:22.2929376Z"
+                    },
+                    {
+                        "probe":  "path-edgecases",
+                        "status":  "PASS",
+                        "detail":  "unicode+longpath:ok; reserved-name:wrote(platform-allows;in-root=contained)",
+                        "at":  "2026-08-10T23:53:22.2929376Z"
+                    },
+                    {
+                        "probe":  "setup-idempotent",
+                        "status":  "PASS",
+                        "detail":  "refresh round-trips (canonical hash stable, created_at re-stamped); tampered marker detected and restored",
+                        "at":  "2026-08-10T23:53:22.3934750Z"
+                    },
+                    {
+                        "probe":  "uninstall-scope",
+                        "status":  "FAIL",
+                        "detail":  "out-of-scope residue: unexpected-account:, unexpected-account:, missing-account:NanoK3SandboxOffline, missing-account:NanoK3SandboxOnline",
+                        "at":  "2026-08-10T23:53:24.5483255Z"
+                    }
+                ]
+}
