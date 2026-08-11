@@ -81,7 +81,13 @@ jobs:
           bin="wayland-nano"
           [ "${{ matrix.os }}" = "windows-latest" ] && bin="wayland-nano.exe"
           cp "target/${{ matrix.target }}/release/$bin" "$dest/"
-          (cd "$dest" && sha256sum "$bin" > "$bin.sha256")
+          # sha256sum is GNU coreutils (linux/windows Git Bash); macOS images
+          # only guarantee shasum.
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd "$dest" && sha256sum "$bin" > "$bin.sha256")
+          else
+            (cd "$dest" && shasum -a 256 "$bin" > "$bin.sha256")
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: nano-bin-${{ matrix.pkg }}
