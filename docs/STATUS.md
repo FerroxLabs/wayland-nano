@@ -2,7 +2,21 @@
 
 ## Current position
 
-### RC GOAL STATE (2026-08-11, big wave landed — 70f0771)
+### RC GOAL STATE (2026-08-11, late wave — Phase D + acceptance landed)
+- **Phase D COMPLETE + UI-proven**: model picker lists + switches the Flux
+  catalog (modelId wire fix, live-verified), MCP tool call through the
+  permission gate, skills marker. Packaged-build smoke PASS (win-unpacked
+  artifact, scratch profile, CDP via WAYLAND_CDP_PORT).
+- **Clean-machine acceptance PASS** (`shared/reviews/C3/evidence/acceptance/`):
+  offline npm install of the alpha tgz → registered in a fresh packaged
+  Desktop profile → write-with-permission + read-back conversation →
+  on-disk verification. Third sighting of the Desktop spawn-key quirk
+  (fresh-profile migration strips the assistants record) — Desktop lane.
+- CI caught + fixed a modelId assertion miss (de1cae4); pack.ps1 PS5.1
+  compat (5b961ff). Wave HEAD: de1cae4.
+- PENDING OWNER: (1) elevated migration (docs/REBRAND.md, kit in .tmp/);
+  (2) npm waylandnano scope + NPM_TOKEN repo secret (enables publish).
+- Remaining mine: soak run, panel re-cert, Phase A/F close-out.
 - **Phase A COMPLETE except owner migration**: Track A verdict posted;
   rebrand committed + CI-green; 4 frozen contracts; sandbox fix port landed
   (transactional ACL rollback, root/descendant refresh, bounded helper
