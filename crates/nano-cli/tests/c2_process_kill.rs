@@ -735,9 +735,20 @@ fn c2_process_kill_resume_external_state_diff() {
         serde_json::Value::Object(map)
     };
     let manifest_path = workspace.join("c2-kill-manifest.json");
+    // Bind the run to the tree it ran against (panel hygiene: the clean-SHA
+    // property must be machine-readable, not narrative).
+    let source_sha = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".into());
     let manifest = serde_json::json!({
         "test": "c2_process_kill_resume_external_state_diff",
         "criterion": "C2.2 crash-resume: kill mid-edit/mid-tool → resume, no duplicate side effects (external state diff)",
+        "source_sha": source_sha,
         "session_id": session_id,
         "workspace": workspace.to_string_lossy(),
         "kill": {

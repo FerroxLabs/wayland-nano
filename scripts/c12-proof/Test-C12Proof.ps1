@@ -497,7 +497,7 @@ if (-not $provisioned -and -not $PostUninstall) {
         if ($null -ne $group) { $residue += "group:NanoK3SandboxUsers" }
 
         $fw = @(Get-NetFirewallRule -ErrorAction Stop |
-            Where-Object { $_.Name -like "nanok3_sandbox_*" } | ForEach-Object { $_.Name })
+            Where-Object { $_.DisplayName -like "nanok3_sandbox_*" } | ForEach-Object { $_.DisplayName })
         foreach ($f in $fw) { $residue += "firewall-rule:$f" }
 
         $providersXml = Get-WfpXml "providers"
@@ -563,7 +563,7 @@ if (-not $provisioned -and -not $PostUninstall) {
 
         $knownFw = @("nanok3_sandbox_offline_block_outbound", "nanok3_sandbox_offline_block_loopback_tcp", "nanok3_sandbox_offline_block_loopback_udp", "nanok3_sandbox_offline_allow_loopback_proxy")
         $fw = @(Get-NetFirewallRule -ErrorAction Stop |
-            Where-Object { $_.Name -like "nanok3_sandbox_*" } | ForEach-Object { $_.Name })
+            Where-Object { $_.DisplayName -like "nanok3_sandbox_*" } | ForEach-Object { $_.DisplayName })
         foreach ($f in $fw) { if ($knownFw -notcontains $f) { $residue += "unexpected-firewall-rule:$f" } }
         $scope += "firewall=$($fw.Count)/$($knownFw.Count)"
 
