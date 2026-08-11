@@ -2,6 +2,26 @@
 
 ## Current position
 
+### RC RE-CERT STATE (2026-08-11, closing wave)
+- **CI 6/6 GREEN on HEAD `25e0921`** (run 31469382425): the admin-runner
+  hardlink failures are root-caused and fixed — multi-link probe in
+  `nano-core/src/policy_engine.rs` is now fail-CLOSED (exists-but-unprobeable
+  = deny, `4dd8dbe`); admin-branch test asserts policy denial only (the
+  icacls `(W)` deny strips READ_CONTROL, so target reads are unportable);
+  `run_with_env` seam cross-platform (`25e0921`). Local gates green ×2,
+  clippy `-D warnings` + fmt clean.
+- **Track A stale-doc hold closed**: disposition addendum in
+  `shared/reviews/tracka-comparison.md` (all ADOPT items name landing
+  commits: `70f0771`, `f30ddcf`).
+- **Panel closing-confirmation round IN FLIGHT**: codex (gpt-5.6-sol via
+  Flux) + claude (fable-5 via Flux anthropic endpoint — OAuth lapsed,
+  ANTHROPIC_BASE_URL=api.fluxrouter.ai + key works; opus-5 fallback if
+  fable refuses security content). Bundle: `../.tmp/claude-rc-bundle3.md`;
+  verdicts land in `shared/reviews/panel/<lens>-rc-final.md`.
+- PENDING OWNER (unchanged): (1) elevated migration per docs/REBRAND.md
+  (kit in ../.tmp/); (2) npm waylandnano scope + NPM_TOKEN repo secret;
+  (3) final promotion signature after panel CERTIFIED.
+
 ### RC GOAL STATE (2026-08-11, late wave — Phase D + acceptance landed)
 - **Phase D COMPLETE + UI-proven**: model picker lists + switches the Flux
   catalog (modelId wire fix, live-verified), MCP tool call through the
