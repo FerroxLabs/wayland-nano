@@ -118,10 +118,13 @@ pub fn agent_capabilities() -> serde_json::Value {
 }
 
 /// A model the session can switch to (the ACP `models` block, unstable API).
-/// This is the exact shape Desktop consumes: acpTypes.ts `AcpAvailableModel`
-/// (`id` — with a `modelId` fallback — plus `name` as the picker label).
+/// The ACP-spec field name is `modelId` — proven by live Desktop behavior
+/// (SessionLifecycle.ts maps m.modelId; rows sent as `id` render with
+/// undefined ids and no-op). The Rust field stays `id`; the wire carries
+/// `modelId` via serde rename.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AvailableModel {
+    #[serde(rename = "modelId")]
     pub id: String,
     pub name: String,
 }
@@ -381,7 +384,7 @@ mod tests {
         assert_eq!(result["models"]["currentModelId"], "flux-auto");
         let models = result["models"]["availableModels"].as_array().unwrap();
         assert_eq!(models.len(), 2);
-        assert_eq!(models[1]["id"], "flux-fast");
+        assert_eq!(models[1]["modelId"], "flux-fast");
         assert_eq!(models[1]["name"], "flux-fast");
 
         // session/load carries the same models block, without a sessionId.
