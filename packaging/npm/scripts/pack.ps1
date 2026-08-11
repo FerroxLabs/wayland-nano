@@ -45,16 +45,19 @@ $Matrix = [ordered]@{
 }
 
 function Get-HostPlatformKey {
-    if ($IsWindows) { return 'win32-x64' }
-    if ($IsMacOS) {
-        return ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') ? 'darwin-arm64' : 'darwin-x64'
+    # PS 5.1 lacks $IsWindows/$IsMacOS/$IsLinux (pwsh 7-only automatics).
+    $os = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
+    $isWin = [System.Environment]::OSVersion.Platform -eq 'Win32NT'
+    if ($isWin) { return 'win32-x64' }
+    if ($os -match 'Darwin') {
+        if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { return 'darwin-arm64' } return 'darwin-x64'
     }
-    return ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') ? 'linux-arm64' : 'linux-x64'
+    if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { return 'linux-arm64' } return 'linux-x64'
 }
 
 function Pack-One([string]$Key) {
     $triple = $Matrix[$Key]
-    $exe = $Key.StartsWith('win32') ? 'wayland-nano.exe' : 'wayland-nano'
+    $exe = 'wayland-nano'; if ($Key.StartsWith('win32')) { $exe = 'wayland-nano.exe' }
     $builtPath = Join-Path $RepoRoot "target\$triple\release\$exe"
 
     if (-not $SkipBuild) {
