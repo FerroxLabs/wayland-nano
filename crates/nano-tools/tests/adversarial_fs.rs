@@ -388,9 +388,10 @@ fn hard_link_creation_to_write_denied_target_fails() {
         }
         Ok(()) => {
             // Admin-context path (CI runners): creation succeeds, so the
-            // write-through must be denied by the policy layer instead.
-            let policy = nano_core::permissions::PermissionProfile::workspace_write()
-                .file_system_sandbox_policy();
+            // write-through must be denied at the policy layer instead —
+            // using this file's standard workspace policy (the multi-link
+            // check pins it in nano-core's own adversarial suite too).
+            let policy = workspace_policy(&ws);
             assert!(
                 !policy.can_write_path_with_cwd(&link, &ws),
                 "admin-planted hard link must be write-denied at the policy layer"
