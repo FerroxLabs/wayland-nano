@@ -1,0 +1,112 @@
+# Wayland Nano — publish workflow (tag-driven, provenance-signed)
+#
+# Fires on version tags (v*). Builds the release binaries on the matrix,
+# stages the npm package, publishes @waylandnano/nano with npm provenance
+# (Sigstore), and uploads the evidence bundle. The publish step needs ONE
+# owner action: add the waylandnano-scope npm automation token as the
+# NPM_TOKEN secret in the GitHub repo settings (Settings → Secrets →
+# Actions). The token never touches a file or chat.
+
+name: wayland-nano-release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write # npm provenance (Sigstore OIDC)
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            pkg: win32-x64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            pkg: darwin-arm64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            pkg: darwin-x64
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            pkg: linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            pkg: linux-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt, clippy
+          targets: ${{ matrix.target }}
+
+      # The gate must pass on the tagged commit before any artifact exists.
+      - name: gate-fmt
+        run: just gate-fmt
+      - name: gate-lint
+        run: just gate-lint
+      - name: Build workspace binaries (unix sandbox helpers)
+        if: runner.os != 'Windows'
+        run: cargo build --workspace --bins
+      - name: gate-test
+        run: just gate-test
+
+      - name: Release build
+        run: cargo build --release -p nano-cli --target ${{ matrix.target }}
+
+      - name: Stage binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="staging/binaries/${{ matrix.pkg }}"
+          mkdir -p "$dest"
+          bin="wayland-nano"
+          [ "${{ matrix.os }}" = "windows-latest" ] && bin="wayland-nano.exe"
+          cp "target/${{ matrix.target }}/release/$bin" "$dest/"
+          (cd "$dest" && sha256sum "$bin" > "$bin.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nano-bin-${{ matrix.pkg }}
+          path: staging/binaries/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Collect staged binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nano-bin-*
+          path: packaging/npm
+          merge-multiple: true
+
+      - name: Pack + publish (provenance)
+        working-directory: packaging/npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          node --check bin/install.js && node --check bin/wayland-nano.js
+          npm publish --provenance --access public --tag alpha
+
+      - name: Evidence bundle
+        run: powershell -NoProfile -File scripts/collect-evidence.ps1 -BundleDir artifacts/evidence-bundle -AllowMissing
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-bundle
+          path: artifacts/evidence-bundle/
