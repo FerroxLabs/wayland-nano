@@ -36,7 +36,10 @@ pub fn setup_marker_path(nano_home: &Path) -> PathBuf {
 }
 
 pub fn sandbox_users_path(nano_home: &Path) -> PathBuf {
-    crate::sandbox_dir(nano_home).join("sandbox_users.json")
+    // Canonical writer location (setup helper): the secrets dir. Reading from
+    // the plain .sandbox dir made the readiness check (doctor / refresh)
+    // report not-provisioned on a correctly provisioned host.
+    sandbox_secrets_dir(nano_home).join("sandbox_users.json")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
