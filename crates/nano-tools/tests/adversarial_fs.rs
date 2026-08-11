@@ -392,8 +392,21 @@ fn hard_link_creation_to_write_denied_target_fails() {
             // using this file's standard workspace policy (the multi-link
             // check pins it in nano-core's own adversarial suite too).
             let policy = workspace_policy(&ws);
+            // Diagnostics for CI environments (hosted runners' 8.3 TEMP paths
+            // make path-resolution behavior host-specific; if the policy call
+            // diverges there we need the runner's own values to see why).
+            let direct = std::fs::File::open(&link).is_ok();
+            let policy_says = policy.can_write_path_with_cwd(&link, &ws);
+            eprintln!(
+                "admin-branch diagnostics: link_exists={} file_open_ok={} policy_can_write={} ws={} link={}",
+                link.exists(),
+                direct,
+                policy_says,
+                ws.display(),
+                link.display()
+            );
             assert!(
-                !policy.can_write_path_with_cwd(&link, &ws),
+                !policy_says,
                 "admin-planted hard link must be write-denied at the policy layer"
             );
             let before = std::fs::read_to_string(&target).unwrap();
