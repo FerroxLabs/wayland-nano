@@ -107,8 +107,19 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: nano-bin-*
-          path: packaging/npm
+          # Artifact contents are <pkg>/wayland-nano[.exe]; the package layout
+          # (files: binaries/) and bin/install.js expect binaries/<pkg>/.
+          path: packaging/npm/binaries
           merge-multiple: true
+
+      - name: Verify staged package contents
+        working-directory: packaging/npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          count=$(find binaries -type f -name 'wayland-nano*' ! -name '*.sha256' | wc -l)
+          echo "staged binaries: $count"
+          [ "$count" -ge 5 ] || { echo "ERROR: expected 5 platform binaries, found $count"; exit 1; }
 
       - name: Pack + publish (provenance)
         working-directory: packaging/npm
