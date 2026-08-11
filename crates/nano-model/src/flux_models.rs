@@ -97,10 +97,34 @@ pub fn parse_models_body(text: &str) -> Result<Vec<FluxModel>, ModelError> {
 /// The vendored fixture catalog (fixtures-flux/models/, newest snapshot).
 /// Missing or malformed fixtures are an error, never a silent empty catalog
 /// (the fixture IS the offline evidence; its absence must fail loudly).
+///
+/// Resolution: the on-disk fixture is primary (dev freshness), with a
+/// compile-time-EMBEDDED copy of the newest snapshot as the fallback —
+/// `env!("CARGO_MANIFEST_DIR")` points at the BUILD machine's path, which
+/// does not exist on end-user machines running shipped binaries.
 pub fn fixture_catalog() -> Result<Vec<FluxModel>, ModelError> {
     let dir = format!("{}/fixtures-flux/models", env!("CARGO_MANIFEST_DIR"));
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .map_err(|e| ModelError::Protocol(format!("fixture dir {dir}: {e}")))?
+    match read_newest_fixture_from_disk(&dir) {
+        Ok(models) => Ok(models),
+        Err(disk_err) => {
+            let body = include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/fixtures-flux/models/",
+                env!("FLUX_MODELS_FIXTURE")
+            ));
+            parse_models_body(body).map_err(|embed_err| {
+                ModelError::Protocol(format!(
+                    "fixture dir {dir}: {disk_err}; embedded fallback also failed: {embed_err}"
+                ))
+            })
+        }
+    }
+}
+
+/// Reads the newest `*_models.json` under `dir` and parses it.
+fn read_newest_fixture_from_disk(dir: &str) -> Result<Vec<FluxModel>, ModelError> {
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .map_err(|e| ModelError::Protocol(format!("{e}")))?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.to_string_lossy().ends_with("_models.json"))
@@ -211,5 +235,25 @@ mod tests {
         // Second call comes from the in-process cache (same allocation).
         let second = catalog.models().await.expect("cached");
         assert!(std::ptr::eq(first.as_ptr(), second.as_ptr()));
+    }
+}
+
+#[cfg(test)]
+mod embed_tests {
+    //! The compile-time embedded fixture is the shipped-binary fallback:
+    //! `env!("CARGO_MANIFEST_DIR")` is the BUILD machine's path, which does
+    //! not exist on end-user machines — so the embedded copy must always
+    //! parse and be non-empty.
+    use super::parse_models_body;
+
+    #[test]
+    fn embedded_fixture_fallback_parses_and_is_non_empty() {
+        let body = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures-flux/models/",
+            env!("FLUX_MODELS_FIXTURE")
+        ));
+        let models = parse_models_body(body).expect("embedded fixture must parse");
+        assert!(!models.is_empty(), "embedded fixture must not be empty");
     }
 }
