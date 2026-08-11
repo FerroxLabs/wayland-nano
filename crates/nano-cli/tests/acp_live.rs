@@ -1081,12 +1081,12 @@ fn session_new_advertises_the_fixture_catalog_with_honest_caps() {
     assert!(
         available
             .iter()
-            .all(|m| m["id"].is_string() && m["name"].is_string()),
+            .all(|m| m["modelId"].is_string() && m["name"].is_string()),
         "every advertised model carries id + name: {available:?}"
     );
     for tier in ["flux-auto", "flux-reasoning", "flux-standard", "flux-fast"] {
         assert!(
-            available.iter().any(|m| m["id"] == tier),
+            available.iter().any(|m| m["modelId"] == tier),
             "the {tier} tier must be advertised"
         );
     }
