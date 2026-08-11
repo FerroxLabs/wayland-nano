@@ -57,6 +57,15 @@ jobs:
       - name: Build workspace binaries (unix sandbox helpers)
         if: runner.os != 'Windows'
         run: cargo build --workspace --bins
+
+      # The unix shell tests exercise the default bwrap path; hosted Ubuntu
+      # doesn't ship bubblewrap, and 24.04 restricts userns via AppArmor.
+      - name: Install bubblewrap (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl kernel.unprivileged_userns_clone=1 || true
       - name: gate-test
         run: just gate-test
 
