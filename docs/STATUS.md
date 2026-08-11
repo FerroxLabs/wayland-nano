@@ -25,7 +25,7 @@
   errors (deny) on both platforms; deterministic Windows pin test added.
   Addendum in tracka-comparison.md updated to CLEARED.
 - PENDING OWNER (unchanged): (1) elevated migration per docs/REBRAND.md
-  (kit in ../.tmp/); (2) npm waylandnano scope + NPM_TOKEN repo secret;
+  (kit in ../.tmp/); (2) npm unscoped `waylandnano` package (parity with getwayland) + NPM_TOKEN repo secret;
   (3) final promotion signature (record staged at
   shared/reviews/RC/owner-promotion.md); (4) archive the
   FerroxLabs/wayland-nano remote.
@@ -43,7 +43,7 @@
 - CI caught + fixed a modelId assertion miss (de1cae4); pack.ps1 PS5.1
   compat (5b961ff). Wave HEAD: de1cae4.
 - PENDING OWNER: (1) elevated migration (docs/REBRAND.md, kit in .tmp/);
-  (2) npm waylandnano scope + NPM_TOKEN repo secret (enables publish).
+  (2) npm unscoped `waylandnano` package (parity with getwayland) + NPM_TOKEN repo secret (enables publish).
 - Remaining mine: soak run, panel re-cert, Phase A/F close-out.
 - **Phase A COMPLETE except owner migration**: Track A verdict posted;
   rebrand committed + CI-green; 4 frozen contracts; sandbox fix port landed
@@ -58,7 +58,7 @@
   via UI PASS; MCP wired into acp-host (per-session registries, permission-
   gated) — UI re-proof pending; packaged smoke pending.
 - **Phase E**: scaffold + release.yml (tag-driven, provenance publish);
-  owner actions: create npm waylandnano scope + NPM_TOKEN repo secret.
+  owner actions: create npm unscoped `waylandnano` package (parity with getwayland) + NPM_TOKEN repo secret.
 - Wave committed as 70f0771 (MCP + sandbox port + models). CI validating.
 - **Phase A**: Track A verdict posted (`shared/reviews/tracka-comparison.md`,
   kill/archive recommended; salvage: hardlink spike + provisioning ADR +
@@ -81,7 +81,7 @@
   pinned, CDLA-Permissive allowed for webpki-roots), CycloneDX SBOM step on
   windows-latest leg, NOTICES.md, docs/COMPATIBILITY.md, evidence-bundle
   collector (scripts/collect-evidence.ps1, sha256 manifest, fail-closed).
-  Publish is owner-gated (npm waylandnano scope + token in CI secrets).
+  Publish is owner-gated (npm unscoped `waylandnano` package (parity with getwayland) + token in CI secrets).
 - Consolidated commit of the agent wave lands after the two running agents
   settle (their files interleave); tree currently compiles clean.
 

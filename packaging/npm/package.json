@@ -1,8 +1,7 @@
 {
-  "name": "@waylandnano/nano",
+  "name": "waylandnano",
   "version": "0.1.0-alpha.0",
-  "description": "Wayland Nano CLI — prebuilt native binary via npm (alpha, unsigned distribution scaffold)",
-  "private": true,
+  "description": "Wayland Nano CLI — prebuilt native binary via npm (alpha)",
   "license": "Apache-2.0",
   "bin": {
     "wayland-nano": "bin/wayland-nano.js"

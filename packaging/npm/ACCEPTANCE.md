@@ -4,7 +4,7 @@
 > NanoK3 codename — every command, file name, and output below (`nanok3`,
 > `bin/nanok3.js`, `nanok3-0.1.0-alpha.0.tgz`, `agentInfo.name=="nanok3"`, …)
 > is quoted as recorded and must not be rewritten. The current names are in
-> `docs/REBRAND.md` (package `@waylandnano/nano`, launcher
+> `docs/REBRAND.md` (package `waylandnano`, launcher
 > `bin/wayland-nano.js`, binary `wayland-nano[.exe]`).
 
 Date: 2026-08-10. Host: Windows 11 x86_64, Git Bash + PowerShell 7.

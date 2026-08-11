@@ -1,7 +1,7 @@
 # Wayland Nano — publish workflow (tag-driven, provenance-signed)
 #
 # Fires on version tags (v*). Builds the release binaries on the matrix,
-# stages the npm package, publishes @waylandnano/nano with npm provenance
+# stages the npm package, publishes `waylandnano` with npm provenance
 # (Sigstore), and uploads the evidence bundle. The publish step needs ONE
 # owner action: add the waylandnano-scope npm automation token as the
 # NPM_TOKEN secret in the GitHub repo settings (Settings → Secrets →
@@ -100,7 +100,17 @@ jobs:
         run: |
           set -euo pipefail
           node --check bin/install.js && node --check bin/wayland-nano.js
-          npm publish --provenance --access public --tag alpha
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "waylandnano@$VERSION" version >/dev/null 2>&1; then
+            echo "waylandnano@$VERSION already published — skipping (idempotent rerun)"
+            exit 0
+          fi
+          # Parity with getwayland: prerelease versions → next, stable → latest
+          case "$VERSION" in
+            *-*) DIST_TAG=next ;;
+            *) DIST_TAG=latest ;;
+          esac
+          npm publish --provenance --access public --tag "$DIST_TAG"
 
       - name: Evidence bundle
         run: powershell -NoProfile -File scripts/collect-evidence.ps1 -BundleDir artifacts/evidence-bundle -AllowMissing

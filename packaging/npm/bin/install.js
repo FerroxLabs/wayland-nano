@@ -5,16 +5,15 @@
 //
 // Pattern choice — single package with an in-tree `binaries/` layout,
 // NOT per-platform optionalDependencies packages:
-//   * optionalDependencies (@waylandnano/nano-win32-x64, @waylandnano/nano-darwin-arm64, ...)
+//   * optionalDependencies (waylandnano-win32-x64, waylandnano-darwin-arm64, ...)
 //     is the right pattern for a *published* package (per-platform tarballs
 //     shrink installs and let npm skip unsupported platforms), but it
 //     requires publishing N+1 packages and keeping their versions in lockstep.
-//   * This package is `private: true` for the alpha: we distribute one
-//     tarball (npm pack / GitHub release asset), so a single package with
-//     `binaries/<platform>-<arch>/wayland-nano[.exe]` is simpler to build, sign,
+//   * For the alpha we distribute one package with
+//     `binaries/<platform>-<arch>/wayland-nano[.exe]` — simpler to build, sign,
 //     and audit, and bin/install.js + bin/wayland-nano.js do the selection
 //     locally with zero third-party dependencies (pure node stdlib).
-//   * If/when we publish to the public registry, we can flip to
+//   * If/when we outgrow the single-tarball distribution, we can flip to
 //     optionalDependencies without changing the launcher contract
 //     (resolveNanoBinary below stays the single source of truth).
 

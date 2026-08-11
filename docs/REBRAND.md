@@ -17,7 +17,7 @@ after, then the provisioned-state migration (elevated owner step).
 | `~/.nanok3` home | `~/.nano` (override env `NANO_HOME`) |
 | `NANOK3_*` env keys | `NANO_*` |
 | `nanok3-linux-sandbox` helper | `wayland-nano-linux-sandbox` |
-| npm package | `@waylandnano/nano` |
+| npm package | `waylandnano` (unscoped — parity with `getwayland`) |
 | ACP agentInfo.name / Desktop agent id | `wayland-nano` / display "Wayland Nano" |
 | git identity in repo | "Wayland Nano" |
 

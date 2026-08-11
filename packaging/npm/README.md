@@ -1,10 +1,11 @@
-# @waylandnano/nano (npm package)
+# waylandnano (npm package)
 
 Alpha npm packaging for the Wayland Nano CLI. The package ships prebuilt
 native binaries and a zero-dependency Node shim — no compilation at install
 time, no third-party npm dependencies.
 
-> Alpha: `private: true`, unsigned. Do not publish to the public registry yet.
+> Alpha: unsigned binaries; published under the `next` dist-tag until stable
+> (parity with getwayland's prerelease rule).
 
 ## Install flow (alpha)
 
