@@ -751,3 +751,65 @@ fn git_metadata_case_and_trailing_dot_variants_stay_read_only() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// --- Fail-closed multi-link probe (panel debt O2) -----------------------------
+
+fn whoami() -> String {
+    let output = std::process::Command::new("whoami")
+        .output()
+        .expect("spawn whoami");
+    assert!(output.status.success(), "whoami failed");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn icacls(args: &[String]) {
+    let output = std::process::Command::new("icacls")
+        .args(args)
+        .output()
+        .expect("spawn icacls");
+    assert!(
+        output.status.success(),
+        "icacls {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+/// Deterministic pin for the fail-closed multi-link probe (RC panel debt O2):
+/// an existing in-workspace file the process cannot even OPEN must be
+/// write-denied — the probe cannot prove the file has a single name, so the
+/// write must not be allowed. Uses a self deny-ACE; deny ACEs evaluate before
+/// privileges, so this blocks `File::open` on elevated CI runners too
+/// (verified on windows-latest/windows-11-arm during the RC CI fix chain).
+#[test]
+fn unopenable_workspace_file_is_write_denied_fail_closed() {
+    let f = fixture("fail-closed");
+    let locked = f.ws.join("locked.txt");
+    std::fs::write(&locked, "nano-adv-locked").unwrap();
+
+    let policy = policy(&f);
+    assert!(
+        policy.can_write_path_with_cwd(&locked, &f.ws),
+        "control: a plain readable workspace file must be policy-writable"
+    );
+
+    let me = whoami();
+    let locked_arg = locked.display().to_string();
+    icacls(&[locked_arg.clone(), "/deny".into(), format!("{me}:(R)")]);
+
+    // Sanity: the OS deny really blocks the open on this host (it must on
+    // every Windows host — deny ACEs beat privileges). If it somehow does
+    // not, restore and skip rather than assert against a wrong premise.
+    if std::fs::File::open(&locked).is_ok() {
+        icacls(&[locked_arg, "/remove:d".into(), me]);
+        eprintln!("SKIP: deny (R) ACE did not block File::open on this host");
+        return;
+    }
+
+    assert!(
+        !policy.can_write_path_with_cwd(&locked, &f.ws),
+        "SECURITY HOLE: an existing workspace file that cannot be opened for \
+         probing was write-ALLOWED (fail-open probe)"
+    );
+
+    icacls(&[locked_arg, "/remove:d".into(), me]);
+}

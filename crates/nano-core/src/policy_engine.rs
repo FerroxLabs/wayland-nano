@@ -751,11 +751,15 @@ fn existing_file_has_multiple_links(path: &Path) -> bool {
     use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
 
     let Ok(file) = std::fs::File::open(path) else {
-        // Only reachable for an existing non-directory (callers gate on
-        // existence); a probe failure must deny, not silently allow.
-        return std::fs::symlink_metadata(path)
-            .map(|m| m.is_file())
-            .unwrap_or(false);
+        // Open failed. NotFound means the file vanished between the caller's
+        // existence gate and this probe (delete race): the write is a create,
+        // so allow. Any OTHER metadata failure means an existing file we
+        // cannot even inspect — deny (fail-closed, no micro fail-open).
+        return match std::fs::symlink_metadata(path) {
+            Ok(m) => m.is_file(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => true,
+        };
     };
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     // SAFETY: `file` is a valid open handle for the duration of the call and
@@ -767,12 +771,16 @@ fn existing_file_has_multiple_links(path: &Path) -> bool {
     info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 && info.nNumberOfLinks > 1
 }
 
-/// Unix counterpart: `nlink` is stable in std.
+/// Unix counterpart: `nlink` is stable in std. Same fail-closed doctrine:
+/// NotFound is a create (allow); any other probe failure on an existing file
+/// denies.
 #[cfg(unix)]
 fn existing_file_has_multiple_links(path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return false;
+    let metadata = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
     };
     metadata.is_file() && metadata.nlink() > 1
 }
