@@ -7,7 +7,7 @@ rust-version.workspace = true
 autobins = false
 
 [dependencies]
-nano-core = { path = "../nano-core" }
+nano-core = { version = "0.1.0", path = "../nano-core" }
 # anyhow/globset/regex-lite are unconditional (not Linux/macOS-only) because
 # the unix argv/policy builders compile under `cfg(any(target_os = ..., test))`
 # — and under the `unix-argv-builders` feature — so their pure string-building

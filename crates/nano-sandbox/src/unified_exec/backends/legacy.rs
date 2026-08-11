@@ -287,6 +287,8 @@ pub async fn spawn_windows_sandbox_session_legacy(
             readonly_sid: security.readonly_sid.as_ref(),
             readonly_sid_str: security.readonly_sid_str.as_deref(),
             write_root_sids: &security.write_root_sids,
+            legacy_user_sid: security.legacy_user_sid_ptr(),
+            effective_token: Some(security.h_token),
         },
     )?;
 
@@ -385,13 +387,27 @@ mod nano_tests {
     ) -> (String, String, i32) {
         let profile = PermissionProfile::workspace_write();
         let roots = [AbsolutePathBuf::from_absolute_path(workspace).unwrap()];
+        // Per-test TEMP/TMP so the scoped temp root (and its transactional ACL
+        // traversal) is private to this test; the fixed process-TEMP-derived
+        // root would race every other concurrent capture/legacy test.
+        let fixture_tmp = workspace.parent().expect("fixture tmp");
+        let env_map = HashMap::from([
+            (
+                "TEMP".to_string(),
+                fixture_tmp.to_string_lossy().into_owned(),
+            ),
+            (
+                "TMP".to_string(),
+                fixture_tmp.to_string_lossy().into_owned(),
+            ),
+        ]);
         let spawned = spawn_windows_sandbox_session_legacy(
             &profile,
             &roots,
             nano_home,
             command,
             cwd,
-            HashMap::new(),
+            env_map,
             None,
             &[],
             &[],

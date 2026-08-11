@@ -2,12 +2,18 @@
 //! launch (elevated and non-elevated), and completion verification.
 //!
 //! Provenance: ported from Codex `windows-sandbox-rs/src/setup.rs` (execution
-//! half) @ 646f7c0a. Transformations:
+//! half) @ 646f7c0a, plus the post-baseline bounded-helper-lifecycle fixes
+//! from Track A commits `fa0ee4da3` and `9e0e88504` (bounded waits,
+//! cooperative cancellation token, fail-closed taint/in-progress sentinels,
+//! RAII helper handle ownership, panic-contained singleflight leader, setup
+//! authority lane). Transformations:
 //! - codex_home -> nano_home naming;
 //! - SETUP_EXE_FILENAME -> "wayland-nano-sandbox-setup.exe" (dual-track isolation:
 //!   Track A's helper is "codex-windows-sandbox-setup.exe");
 //! - ElevationPayload.otel -> Option<telemetry::TelemetrySettings> (facade;
 //!   `global_telemetry_settings()` currently None on all paths);
+//! - is_protected_metadata_name -> nano_core::policy_engine::
+//!   PROTECTED_METADATA_PATH_NAMES (Track A used codex_protocol);
 //! - gather layer via crate::gather (ported separately).
 
 use crate::allow::AllowDenyPaths;
@@ -23,7 +29,6 @@ use crate::gather::gather_helper_read_roots;
 use crate::gather::gather_read_roots;
 use crate::helper_materialization::bundled_executable_path_for_exe;
 use crate::identity::sandbox_setup_is_complete;
-use crate::logging::current_log_file_path;
 use crate::logging::log_note;
 use crate::path_normalization::canonicalize_path;
 use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
@@ -47,13 +52,16 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use nano_core::abs::AbsolutePathBuf;
 use nano_core::permissions::PermissionProfile;
+use nano_core::policy_engine::PROTECTED_METADATA_PATH_NAMES;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::c_void;
+use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -68,6 +76,13 @@ use windows_sys::Win32::Security::FreeSid;
 use windows_sys::Win32::Security::SECURITY_NT_AUTHORITY;
 
 const ERROR_CANCELLED: u32 = 1223;
+/// Hard deadline for one helper run (Track A bounded-helper port: the donor
+/// waited INFINITE / blocked on `status()`, so a stuck helper hung the caller
+/// forever).
+const ELEVATED_SETUP_TIMEOUT_MS: u32 = 120_000;
+/// Grace window for the helper to observe the cooperative cancellation token
+/// before the orchestrator taints the home and force-terminates it.
+const ELEVATED_SETUP_CANCEL_GRACE_MS: u32 = 30_000;
 // Donor-local constants (windows-sys does not export these RIDs).
 const SECURITY_BUILTIN_DOMAIN_RID: u32 = 0x0000_0020;
 const DOMAIN_ALIAS_RID_ADMINS: u32 = 0x0000_0220;
@@ -159,6 +174,18 @@ impl SetupFlight {
 }
 
 static SETUP_FLIGHTS: OnceLock<Mutex<HashMap<String, Arc<SetupFlight>>>> = OnceLock::new();
+/// Serializes the machine-global setup authority: sandbox accounts, network
+/// policy, and workspace DACLs are machine-global, so two in-process leaders
+/// must never run helpers concurrently (Track A provisioning-boundary port).
+static SETUP_AUTHORITY_LANE: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn run_setup_authority_lane<T>(run: impl FnOnce() -> T) -> T {
+    let _guard = SETUP_AUTHORITY_LANE
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    run()
+}
 
 fn run_setup_singleflight(key: String, run: impl FnOnce() -> Result<()>) -> Result<()> {
     let flights = SETUP_FLIGHTS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -180,7 +207,12 @@ fn run_setup_singleflight(key: String, run: impl FnOnce() -> Result<()>) -> Resu
         return flight.wait();
     }
 
-    let result = run();
+    // A panicking leader must not strand every follower on the condvar: turn
+    // the panic into a shared error and let a later caller become leader.
+    let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!("setup singleflight leader panicked")),
+    };
     let shared_result = match &result {
         Ok(()) => Ok(()),
         Err(error) => Err(SharedSetupError::from_error(error)),
@@ -284,6 +316,7 @@ fn run_setup_refresh_inner(
     let (read_roots, write_roots) = build_payload_roots(&request, &overrides);
     let deny_read_paths = build_payload_deny_read_paths(overrides.deny_read_paths);
     let deny_write_paths = build_payload_deny_write_paths(&request, overrides.deny_write_paths);
+    let deny_write_paths_no_create = deny_write_paths_no_create(&deny_write_paths);
     let offline_proxy_settings =
         offline_proxy_settings_for_request(&request, offline_proxy_settings_override);
     let payload = ElevationPayload {
@@ -296,78 +329,17 @@ fn run_setup_refresh_inner(
         write_roots,
         deny_read_paths,
         deny_write_paths,
+        deny_write_paths_no_create,
         proxy_ports: offline_proxy_settings.proxy_ports,
         allow_local_binding: offline_proxy_settings.allow_local_binding,
         otel: None,
         real_user: std::env::var("USERNAME").unwrap_or_else(|_| "Administrators".to_string()),
         mode: SetupMode::Full,
         refresh_only: true,
+        cancellation_path: Some(new_setup_cancellation_path(request.nano_home)?),
     };
-    let json = serde_json::to_vec(&payload)?;
-    let b64 = BASE64_STANDARD.encode(json);
-    run_setup_singleflight(b64.clone(), || {
-        run_setup_refresh_payload(&b64, request.nano_home)
-    })
-}
-
-fn run_setup_refresh_payload(b64: &str, nano_home: &Path) -> Result<()> {
-    let exe = find_setup_exe();
-    let sbx_dir = crate::sandbox_dir(nano_home);
-    let log_path = current_log_file_path(&sbx_dir);
-    let cleared_report = match clear_setup_error_report(nano_home) {
-        Ok(()) => true,
-        Err(err) => {
-            log_note(
-                &format!("setup refresh: failed to clear setup_error.json before launch: {err}"),
-                Some(&sbx_dir),
-            );
-            false
-        }
-    };
-    // Refresh should never request elevation; ensure verb isn't set and we don't trigger UAC.
-    let mut cmd = Command::new(&exe);
-    cmd.arg(b64)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| nano_home.to_path_buf());
-    log_note(
-        &format!(
-            "setup refresh: spawning {} (cwd={}, payload_len={})",
-            exe.display(),
-            cwd.display(),
-            b64.len()
-        ),
-        Some(&sbx_dir),
-    );
-    let status = cmd.status().map_err(|err| {
-        let message = format!(
-            "setup refresh failed to launch helper: helper={}, cwd={}, log={}, error={err}",
-            exe.display(),
-            cwd.display(),
-            log_path.display()
-        );
-        log_note(&format!("setup refresh: {message}"), Some(&sbx_dir));
-        failure(SetupErrorCode::OrchestratorHelperLaunchFailed, message)
-    })?;
-    if !status.success() {
-        log_note(
-            &format!("setup refresh: exited with status {status:?}"),
-            Some(&sbx_dir),
-        );
-        return Err(report_helper_failure(
-            nano_home,
-            cleared_report,
-            status.code(),
-        ));
-    }
-    if let Err(err) = clear_setup_error_report(nano_home) {
-        log_note(
-            &format!("setup refresh: failed to clear setup_error.json after success: {err}"),
-            Some(&sbx_dir),
-        );
-    }
-    Ok(())
+    // Refresh never requests elevation; the helper runs as the current user.
+    run_setup_exe(&payload, /*needs_elevation*/ false, request.nano_home)
 }
 
 fn find_setup_exe() -> PathBuf {
@@ -425,15 +397,284 @@ fn run_setup_exe(
         )
     })?;
     let payload_b64 = BASE64_STANDARD.encode(payload_json.as_bytes());
-    run_setup_singleflight(payload_b64.clone(), || {
-        run_setup_exe_payload(&payload_b64, needs_elevation, nano_home)
+    let singleflight_key = setup_singleflight_key(payload)?;
+    run_setup_singleflight(singleflight_key, || {
+        run_setup_authority_lane(|| {
+            if payload.mode == SetupMode::Full {
+                use std::io::Write;
+                let in_progress = crate::sandbox_dir(nano_home).join("setup-in-progress");
+                let mut sentinel = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&in_progress)
+                .map_err(|err| {
+                    failure(
+                        SetupErrorCode::OrchestratorHelperLaunchFailed,
+                        format!(
+                            "failed to establish setup-in-progress sentinel {}: {err}; setup remains fail-closed. For manual recovery, first verify no wayland-nano-sandbox-setup process survives, then remove only this sentinel and rerun full provisioning",
+                            in_progress.display()
+                        ),
+                    )
+                })?;
+                sentinel.write_all(
+                    b"full setup launched; readiness disabled until verified completion",
+                )?;
+                sentinel.sync_all()?;
+            }
+            run_setup_exe_payload(
+                &payload_b64,
+                needs_elevation,
+                nano_home,
+                payload.cancellation_path.as_deref(),
+            )
+        })
     })
 }
 
-fn run_setup_exe_payload(payload_b64: &str, needs_elevation: bool, nano_home: &Path) -> Result<()> {
-    use windows_sys::Win32::System::Threading::GetExitCodeProcess;
-    use windows_sys::Win32::System::Threading::INFINITE;
-    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+/// The singleflight key excludes the per-run cancellation token so identical
+/// setup requests still share one in-flight helper.
+fn setup_singleflight_key(payload: &ElevationPayload) -> Result<String> {
+    let mut key_value = serde_json::to_value(payload)?;
+    if let Some(object) = key_value.as_object_mut() {
+        object.remove("cancellation_path");
+    }
+    Ok(BASE64_STANDARD.encode(serde_json::to_vec(&key_value)?))
+}
+
+/// The process handle has exactly one owner.  In particular, a handle borrowed
+/// from `Child` must never be wrapped in an independently-dropping raw handle.
+enum SetupProcess {
+    Child(Child),
+    Raw(RawSetupProcess),
+}
+
+struct RawSetupProcess {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    close: fn(windows_sys::Win32::Foundation::HANDLE),
+}
+
+fn close_setup_process_handle(handle: windows_sys::Win32::Foundation::HANDLE) {
+    unsafe { CloseHandle(handle) };
+}
+
+impl RawSetupProcess {
+    fn new(handle: windows_sys::Win32::Foundation::HANDLE) -> Self {
+        Self {
+            handle,
+            close: close_setup_process_handle,
+        }
+    }
+}
+
+impl Drop for RawSetupProcess {
+    fn drop(&mut self) {
+        if self.handle != 0 {
+            (self.close)(self.handle);
+            self.handle = 0;
+        }
+    }
+}
+
+impl SetupProcess {
+    fn handle(&self) -> windows_sys::Win32::Foundation::HANDLE {
+        match self {
+            Self::Child(child) => child.as_raw_handle() as _,
+            Self::Raw(raw) => raw.handle,
+        }
+    }
+
+    /// Confirm collection after a signalled wait. Raw handles are already
+    /// kernel-reaped; `Child::wait` only collects the Rust child bookkeeping.
+    fn confirm_reaped(&mut self) -> std::io::Result<()> {
+        if let Self::Child(child) = self {
+            child.wait().map(|_| ())?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SetupWait {
+    Signalled,
+    Timeout,
+    Failed(u32),
+    Unexpected(u32),
+}
+
+/// OS-facing half of the helper lifecycle, behind a trait so the state
+/// machine's exit/cleanup matrix is unit-testable without a real helper.
+trait SetupProcessOps {
+    fn wait(&mut self, process: &mut SetupProcess, timeout_ms: u32) -> SetupWait;
+    fn request_cancel(&mut self, cancellation_path: Option<&Path>) -> Result<(), String>;
+    fn persist_taint(&mut self, nano_home: &Path) -> Result<(), String>;
+    fn terminate(&mut self, process: &mut SetupProcess) -> Result<(), String>;
+    fn exit_code(&mut self, process: &mut SetupProcess) -> Result<u32, String>;
+    fn confirm_reaped(&mut self, process: &mut SetupProcess) -> Result<(), String>;
+    fn remove_cancel(&mut self, cancellation_path: Option<&Path>) -> Result<(), String>;
+}
+
+struct WinSetupProcessOps;
+
+impl SetupProcessOps for WinSetupProcessOps {
+    fn wait(&mut self, process: &mut SetupProcess, timeout_ms: u32) -> SetupWait {
+        use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+        let value = unsafe {
+            windows_sys::Win32::System::Threading::WaitForSingleObject(process.handle(), timeout_ms)
+        };
+        match value {
+            WAIT_OBJECT_0 => SetupWait::Signalled,
+            WAIT_TIMEOUT => SetupWait::Timeout,
+            WAIT_FAILED => SetupWait::Failed(unsafe { GetLastError() }),
+            other => SetupWait::Unexpected(other),
+        }
+    }
+
+    fn request_cancel(&mut self, path: Option<&Path>) -> Result<(), String> {
+        use std::io::Write;
+        let path = path.ok_or_else(|| "setup has no cancellation token".to_string())?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|err| format!("create cancellation token failed: {err}"))?;
+        file.write_all(b"cancel")
+            .map_err(|err| format!("write cancellation token failed: {err}"))
+    }
+
+    fn persist_taint(&mut self, nano_home: &Path) -> Result<(), String> {
+        std::fs::write(
+            crate::sandbox_dir(nano_home).join("setup-tainted"),
+            b"forced termination during setup; ACL rollback not guaranteed",
+        )
+        .map_err(|err| format!("persist setup taint failed: {err}"))
+    }
+
+    fn terminate(&mut self, process: &mut SetupProcess) -> Result<(), String> {
+        let ok =
+            unsafe { windows_sys::Win32::System::Threading::TerminateProcess(process.handle(), 1) };
+        if ok == 0 {
+            Err(format!("forced termination failed: {}", unsafe {
+                GetLastError()
+            }))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn exit_code(&mut self, process: &mut SetupProcess) -> Result<u32, String> {
+        let mut code = 0;
+        let ok = unsafe {
+            windows_sys::Win32::System::Threading::GetExitCodeProcess(process.handle(), &mut code)
+        };
+        if ok == 0 {
+            Err(format!("GetExitCodeProcess failed: {}", unsafe {
+                GetLastError()
+            }))
+        } else {
+            Ok(code)
+        }
+    }
+
+    fn confirm_reaped(&mut self, process: &mut SetupProcess) -> Result<(), String> {
+        process
+            .confirm_reaped()
+            .map_err(|err| format!("collect setup helper status failed: {err}"))
+    }
+
+    fn remove_cancel(&mut self, path: Option<&Path>) -> Result<(), String> {
+        let Some(path) = path else { return Ok(()) };
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(format!("remove cancellation token failed: {err}")),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SetupProcessResult {
+    exit_code: Option<u32>,
+    initial_wait: SetupWait,
+    forced: bool,
+    reaped: bool,
+    errors: Vec<String>,
+}
+
+/// Bounded helper lifecycle (Track A port): wait with a hard deadline; on
+/// timeout or wait anomaly request cooperative cancellation through the token
+/// file; if the grace window lapses, persist a fail-closed taint sentinel
+/// before force-terminating, then bound the reap wait as well.
+fn drive_setup_process(
+    process: &mut SetupProcess,
+    cancellation_path: Option<&Path>,
+    nano_home: &Path,
+    ops: &mut impl SetupProcessOps,
+) -> SetupProcessResult {
+    use windows_sys::Win32::Foundation::STILL_ACTIVE;
+    let initial_wait = ops.wait(process, ELEVATED_SETUP_TIMEOUT_MS);
+    let mut result = SetupProcessResult {
+        exit_code: None,
+        initial_wait,
+        forced: false,
+        reaped: false,
+        errors: Vec::new(),
+    };
+    if initial_wait == SetupWait::Signalled {
+        match ops.exit_code(process) {
+            Ok(code) if code != STILL_ACTIVE as u32 => {
+                result.exit_code = Some(code);
+                match ops.confirm_reaped(process) {
+                    Ok(()) => result.reaped = true,
+                    Err(err) => result.errors.push(err),
+                }
+                return result;
+            }
+            Ok(_) => result
+                .errors
+                .push("setup helper remained active after a signaled process wait".into()),
+            Err(err) => result.errors.push(err),
+        }
+    }
+    if let Err(err) = ops.request_cancel(cancellation_path) {
+        result.errors.push(err);
+    }
+    if ops.wait(process, ELEVATED_SETUP_CANCEL_GRACE_MS) != SetupWait::Signalled {
+        result.forced = true;
+        if let Err(err) = ops.persist_taint(nano_home) {
+            result.errors.push(err);
+        }
+        match ops.terminate(process) {
+            Ok(()) => match ops.wait(process, ELEVATED_SETUP_CANCEL_GRACE_MS) {
+                SetupWait::Signalled => match ops.confirm_reaped(process) {
+                    Ok(()) => result.reaped = true,
+                    Err(err) => result.errors.push(err),
+                },
+                wait => result.errors.push(format!(
+                    "forced helper cleanup wait returned {wait:?}; helper may be orphaned"
+                )),
+            },
+            Err(err) => result.errors.push(format!("{err}; helper may be orphaned")),
+        }
+    } else {
+        match ops.confirm_reaped(process) {
+            Ok(()) => result.reaped = true,
+            Err(err) => result.errors.push(err),
+        }
+    }
+    if result.reaped
+        && let Err(err) = ops.remove_cancel(cancellation_path)
+    {
+        result.errors.push(err);
+    }
+    result
+}
+
+fn run_setup_exe_payload(
+    payload_b64: &str,
+    needs_elevation: bool,
+    nano_home: &Path,
+    cancellation_path: Option<&Path>,
+) -> Result<()> {
     use windows_sys::Win32::UI::Shell::SEE_MASK_NOCLOSEPROCESS;
     use windows_sys::Win32::UI::Shell::SHELLEXECUTEINFOW;
     use windows_sys::Win32::UI::Shell::ShellExecuteExW;
@@ -452,24 +693,58 @@ fn run_setup_exe_payload(payload_b64: &str, needs_elevation: bool, nano_home: &P
     };
 
     if !needs_elevation {
-        let status = Command::new(&exe)
+        let child = Command::new(&exe)
             .arg(payload_b64)
             .creation_flags(0x08000000) // CREATE_NO_WINDOW
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()
+            .spawn()
             .map_err(|err| {
                 failure(
                     SetupErrorCode::OrchestratorHelperLaunchFailed,
                     format!("failed to launch setup helper (non-elevated): {err}"),
                 )
             })?;
-        if !status.success() {
+        let mut process = SetupProcess::Child(child);
+        let outcome = drive_setup_process(
+            &mut process,
+            cancellation_path,
+            nano_home,
+            &mut WinSetupProcessOps,
+        );
+        if outcome.initial_wait == SetupWait::Timeout {
+            return Err(failure(
+                SetupErrorCode::OrchestratorHelperTimedOut,
+                format!(
+                    "setup exceeded {ELEVATED_SETUP_TIMEOUT_MS} ms; cooperative cancellation requested; forced_termination={}; reaped={}; cleanup_errors={:?}",
+                    outcome.forced, outcome.reaped, outcome.errors
+                ),
+            ));
+        }
+        if outcome.initial_wait != SetupWait::Signalled {
+            return Err(failure(
+                SetupErrorCode::OrchestratorHelperLaunchFailed,
+                format!(
+                    "setup helper wait/status anomaly: {:?}; cleanup forced={} reaped={} errors={:?}",
+                    outcome.initial_wait, outcome.forced, outcome.reaped, outcome.errors
+                ),
+            ));
+        }
+        let Some(code) = outcome.exit_code else {
+            return Err(failure(
+                SetupErrorCode::OrchestratorHelperLaunchFailed,
+                format!(
+                    "setup helper exited without a status; cleanup forced={} reaped={} errors={:?}",
+                    outcome.forced, outcome.reaped, outcome.errors
+                ),
+            ));
+        };
+        if code != 0 {
             return Err(report_helper_failure(
                 nano_home,
                 cleared_report,
-                status.code(),
+                Some(code as i32),
             ));
         }
         verify_setup_completed(nano_home)?;
@@ -509,11 +784,41 @@ fn run_setup_exe_payload(payload_b64: &str, needs_elevation: bool, nano_home: &P
             format!("ShellExecuteExW failed to launch setup helper: {last_error}"),
         ));
     }
-    unsafe {
-        WaitForSingleObject(sei.hProcess, INFINITE);
-        let mut code: u32 = 1;
-        GetExitCodeProcess(sei.hProcess, &mut code);
-        CloseHandle(sei.hProcess);
+    {
+        let mut process = SetupProcess::Raw(RawSetupProcess::new(sei.hProcess));
+        let outcome = drive_setup_process(
+            &mut process,
+            cancellation_path,
+            nano_home,
+            &mut WinSetupProcessOps,
+        );
+        if outcome.initial_wait == SetupWait::Timeout {
+            return Err(failure(
+                SetupErrorCode::OrchestratorHelperTimedOut,
+                format!(
+                    "setup exceeded {ELEVATED_SETUP_TIMEOUT_MS} ms; cooperative cancellation requested; forced_termination={}; reaped={}; cleanup_errors={:?}",
+                    outcome.forced, outcome.reaped, outcome.errors
+                ),
+            ));
+        }
+        if outcome.initial_wait != SetupWait::Signalled {
+            return Err(failure(
+                SetupErrorCode::OrchestratorHelperLaunchFailed,
+                format!(
+                    "setup helper wait/status anomaly: {:?}; cleanup forced={} reaped={} errors={:?}",
+                    outcome.initial_wait, outcome.forced, outcome.reaped, outcome.errors
+                ),
+            ));
+        }
+        let Some(code) = outcome.exit_code else {
+            return Err(failure(
+                SetupErrorCode::OrchestratorHelperLaunchFailed,
+                format!(
+                    "setup helper exited without a status; cleanup forced={} reaped={} errors={:?}",
+                    outcome.forced, outcome.reaped, outcome.errors
+                ),
+            ));
+        };
         if code != 0 {
             return Err(report_helper_failure(
                 nano_home,
@@ -568,6 +873,7 @@ fn run_elevated_setup_inner(
     let (read_roots, write_roots) = build_payload_roots(&request, &overrides);
     let deny_read_paths = build_payload_deny_read_paths(overrides.deny_read_paths);
     let deny_write_paths = build_payload_deny_write_paths(&request, overrides.deny_write_paths);
+    let deny_write_paths_no_create = deny_write_paths_no_create(&deny_write_paths);
     let offline_proxy_settings =
         offline_proxy_settings_for_request(&request, offline_proxy_settings_override);
     let payload = ElevationPayload {
@@ -580,12 +886,14 @@ fn run_elevated_setup_inner(
         write_roots,
         deny_read_paths,
         deny_write_paths,
+        deny_write_paths_no_create,
         proxy_ports: offline_proxy_settings.proxy_ports,
         allow_local_binding: offline_proxy_settings.allow_local_binding,
         real_user: std::env::var("USERNAME").unwrap_or_else(|_| "Administrators".to_string()),
         otel: telemetry::global_telemetry_settings(),
         mode: SetupMode::Full,
         refresh_only: false,
+        cancellation_path: Some(new_setup_cancellation_path(request.nano_home)?),
     };
     let needs_elevation = !is_elevated().map_err(|err| {
         failure(
@@ -619,7 +927,8 @@ pub fn run_elevated_provisioning_setup(
             "sandbox provisioning setup must be run from an elevated process",
         ));
     }
-    let payload = provisioning_payload(nano_home, real_user, settings);
+    let mut payload = provisioning_payload(nano_home, real_user, settings);
+    payload.cancellation_path = Some(new_setup_cancellation_path(nano_home)?);
     run_setup_exe(&payload, /*needs_elevation*/ false, nano_home)
 }
 
@@ -640,12 +949,14 @@ pub fn provisioning_payload(
         write_roots: Vec::new(),
         deny_read_paths: Vec::new(),
         deny_write_paths: Vec::new(),
+        deny_write_paths_no_create: Vec::new(),
         proxy_ports: settings.proxy_ports,
         allow_local_binding: settings.allow_local_binding,
         otel: telemetry::global_telemetry_settings(),
         real_user: real_user.to_string(),
         mode: SetupMode::ProvisionOnly,
         refresh_only: false,
+        cancellation_path: None,
     }
 }
 
@@ -784,6 +1095,8 @@ pub struct ElevationPayload {
     deny_read_paths: Vec<PathBuf>,
     #[serde(default)]
     deny_write_paths: Vec<PathBuf>,
+    #[serde(default)]
+    deny_write_paths_no_create: Vec<PathBuf>,
     proxy_ports: Vec<u16>,
     #[serde(default)]
     allow_local_binding: bool,
@@ -792,9 +1105,58 @@ pub struct ElevationPayload {
     mode: SetupMode,
     #[serde(default)]
     refresh_only: bool,
+    cancellation_path: Option<PathBuf>,
 }
 
-#[derive(Clone, Copy, Serialize)]
+/// Protected workspace metadata (`.git`, `.agents`, `.nano`) must never be
+/// materialized by setup: a missing one stays absent (no-create contract),
+/// so a freshly minted deny target can never appear as an attacker-visible
+/// sentinel directory. (Track A port; the donor created every missing deny
+/// path, including protected metadata.)
+fn deny_write_paths_no_create(deny_write_paths: &[PathBuf]) -> Vec<PathBuf> {
+    deny_write_paths
+        .iter()
+        .filter(|path| path.file_name().is_some_and(is_protected_metadata_name))
+        .cloned()
+        .collect()
+}
+
+fn is_protected_metadata_name(name: &std::ffi::OsStr) -> bool {
+    PROTECTED_METADATA_PATH_NAMES
+        .iter()
+        .any(|protected| name == std::ffi::OsStr::new(protected))
+}
+
+/// Fresh per-run cancellation token path (`cancel-<guid>` under the sandbox
+/// dir). The helper validates the shape and parent strictly before honoring
+/// it, and the orchestrator creates the leaf only to request cancellation.
+fn new_setup_cancellation_path(nano_home: &Path) -> Result<PathBuf> {
+    use windows_sys::Win32::System::Com::CoCreateGuid;
+    let mut guid = unsafe { std::mem::zeroed() };
+    let result = unsafe { CoCreateGuid(&mut guid) };
+    if result < 0 {
+        return Err(failure(
+            SetupErrorCode::OrchestratorPayloadSerializeFailed,
+            format!("failed to create setup cancellation token: 0x{result:08x}"),
+        ));
+    }
+    Ok(crate::sandbox_dir(nano_home).join(format!(
+        "cancel-{:08x}{:04x}{:04x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        guid.data1,
+        guid.data2,
+        guid.data3,
+        guid.data4[0],
+        guid.data4[1],
+        guid.data4[2],
+        guid.data4[3],
+        guid.data4[4],
+        guid.data4[5],
+        guid.data4[6],
+        guid.data4[7]
+    )))
+}
+
+#[derive(Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum SetupMode {
     Full,
@@ -840,17 +1202,357 @@ mod tests {
             write_roots: Vec::new(),
             deny_read_paths: Vec::new(),
             deny_write_paths: Vec::new(),
+            deny_write_paths_no_create: Vec::new(),
             proxy_ports: vec![8080],
             allow_local_binding: false,
             otel: None,
             real_user: "dev".into(),
             mode: SetupMode::Full,
             refresh_only: true,
+            cancellation_path: None,
         };
         let json = serde_json::to_string(&payload).unwrap();
         assert!(json.contains("NanoSandboxOffline"));
         assert!(json.contains("\"mode\":\"full\""));
         assert!(json.contains("\"refresh_only\":true"));
+    }
+
+    #[test]
+    fn singleflight_leader_panic_becomes_shared_error_and_recovers() {
+        let panic_error = run_setup_singleflight("panic-key".to_string(), || -> Result<()> {
+            panic!("injected leader panic")
+        })
+        .expect_err("leader panic should become a shared error");
+        assert!(panic_error.to_string().contains("leader panicked"));
+        run_setup_singleflight("panic-key".to_string(), || Ok(()))
+            .expect("panic must not strand the flight");
+    }
+
+    #[test]
+    fn setup_authority_lane_excludes_overlap_and_recovers_from_panic() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let threads = (0..4)
+            .map(|_| {
+                let active = Arc::clone(&active);
+                let peak = Arc::clone(&peak);
+                std::thread::spawn(move || {
+                    run_setup_authority_lane(|| {
+                        let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(now, Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        active.fetch_sub(1, Ordering::SeqCst);
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().expect("authority worker");
+        }
+        assert_eq!(peak.load(Ordering::SeqCst), 1);
+        let _ = std::panic::catch_unwind(|| run_setup_authority_lane(|| panic!("injected")));
+        run_setup_authority_lane(|| ());
+    }
+
+    #[test]
+    fn raw_setup_process_closes_exactly_once_on_drop() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+        static CLOSES: AtomicUsize = AtomicUsize::new(0);
+        fn count_close(_: windows_sys::Win32::Foundation::HANDLE) {
+            CLOSES.fetch_add(1, Ordering::SeqCst);
+        }
+        CLOSES.store(0, Ordering::SeqCst);
+        {
+            let _process = RawSetupProcess {
+                handle: 1,
+                close: count_close,
+            };
+        }
+        assert_eq!(CLOSES.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn setup_process_state_machine_covers_exit_and_cleanup_matrix() {
+        use std::collections::VecDeque;
+
+        struct FakeOps {
+            waits: VecDeque<SetupWait>,
+            exit: std::result::Result<u32, String>,
+            cancel: std::result::Result<(), String>,
+            taint: std::result::Result<(), String>,
+            terminate: std::result::Result<(), String>,
+            reap: std::result::Result<(), String>,
+            remove: std::result::Result<(), String>,
+            calls: Vec<&'static str>,
+        }
+        impl SetupProcessOps for FakeOps {
+            fn wait(&mut self, _: &mut SetupProcess, _: u32) -> SetupWait {
+                self.calls.push("wait");
+                self.waits.pop_front().expect("scripted wait")
+            }
+            fn request_cancel(&mut self, _: Option<&Path>) -> std::result::Result<(), String> {
+                self.calls.push("cancel");
+                self.cancel.clone()
+            }
+            fn persist_taint(&mut self, _: &Path) -> std::result::Result<(), String> {
+                self.calls.push("taint");
+                self.taint.clone()
+            }
+            fn terminate(&mut self, _: &mut SetupProcess) -> std::result::Result<(), String> {
+                self.calls.push("terminate");
+                self.terminate.clone()
+            }
+            fn exit_code(&mut self, _: &mut SetupProcess) -> std::result::Result<u32, String> {
+                self.calls.push("exit");
+                self.exit.clone()
+            }
+            fn confirm_reaped(&mut self, _: &mut SetupProcess) -> std::result::Result<(), String> {
+                self.calls.push("reap");
+                self.reap.clone()
+            }
+            fn remove_cancel(&mut self, _: Option<&Path>) -> std::result::Result<(), String> {
+                self.calls.push("remove");
+                self.remove.clone()
+            }
+        }
+        struct Case {
+            name: &'static str,
+            waits: Vec<SetupWait>,
+            exit: std::result::Result<u32, String>,
+            cancel: std::result::Result<(), String>,
+            taint: std::result::Result<(), String>,
+            terminate: std::result::Result<(), String>,
+            reap: std::result::Result<(), String>,
+            remove: std::result::Result<(), String>,
+            forced: bool,
+            reaped: bool,
+            exit_code: Option<u32>,
+            errors: usize,
+        }
+        let ok = || Ok(());
+        let cases = vec![
+            Case {
+                name: "normal",
+                waits: vec![SetupWait::Signalled],
+                exit: Ok(0),
+                cancel: ok(),
+                taint: ok(),
+                terminate: ok(),
+                reap: ok(),
+                remove: ok(),
+                forced: false,
+                reaped: true,
+                exit_code: Some(0),
+                errors: 0,
+            },
+            Case {
+                name: "cooperative timeout",
+                waits: vec![SetupWait::Timeout, SetupWait::Signalled],
+                exit: Ok(0),
+                cancel: ok(),
+                taint: ok(),
+                terminate: ok(),
+                reap: ok(),
+                remove: ok(),
+                forced: false,
+                reaped: true,
+                exit_code: None,
+                errors: 0,
+            },
+            Case {
+                name: "forced reap",
+                waits: vec![SetupWait::Timeout, SetupWait::Timeout, SetupWait::Signalled],
+                exit: Ok(0),
+                cancel: ok(),
+                taint: ok(),
+                terminate: ok(),
+                reap: ok(),
+                remove: ok(),
+                forced: true,
+                reaped: true,
+                exit_code: None,
+                errors: 0,
+            },
+            Case {
+                name: "taint failure",
+                waits: vec![SetupWait::Timeout, SetupWait::Timeout, SetupWait::Signalled],
+                exit: Ok(0),
+                cancel: ok(),
+                taint: Err("taint".into()),
+                terminate: ok(),
+                reap: ok(),
+                remove: ok(),
+                forced: true,
+                reaped: true,
+                exit_code: None,
+                errors: 1,
+            },
+            Case {
+                name: "terminate survivor",
+                waits: vec![SetupWait::Timeout, SetupWait::Timeout],
+                exit: Ok(0),
+                cancel: ok(),
+                taint: ok(),
+                terminate: Err("terminate".into()),
+                reap: ok(),
+                remove: ok(),
+                forced: true,
+                reaped: false,
+                exit_code: None,
+                errors: 1,
+            },
+            Case {
+                name: "wait failed",
+                waits: vec![SetupWait::Failed(5), SetupWait::Signalled],
+                exit: Ok(0),
+                cancel: ok(),
+                taint: ok(),
+                terminate: ok(),
+                reap: ok(),
+                remove: ok(),
+                forced: false,
+                reaped: true,
+                exit_code: None,
+                errors: 0,
+            },
+            Case {
+                name: "unexpected wait",
+                waits: vec![SetupWait::Unexpected(7), SetupWait::Signalled],
+                exit: Ok(0),
+                cancel: ok(),
+                taint: ok(),
+                terminate: ok(),
+                reap: ok(),
+                remove: ok(),
+                forced: false,
+                reaped: true,
+                exit_code: None,
+                errors: 0,
+            },
+            Case {
+                name: "exit failure",
+                waits: vec![SetupWait::Signalled, SetupWait::Signalled],
+                exit: Err("exit".into()),
+                cancel: ok(),
+                taint: ok(),
+                terminate: ok(),
+                reap: ok(),
+                remove: ok(),
+                forced: false,
+                reaped: true,
+                exit_code: None,
+                errors: 1,
+            },
+            Case {
+                name: "still active token failures",
+                waits: vec![
+                    SetupWait::Signalled,
+                    SetupWait::Timeout,
+                    SetupWait::Signalled,
+                ],
+                exit: Ok(windows_sys::Win32::Foundation::STILL_ACTIVE as u32),
+                cancel: Err("token".into()),
+                taint: ok(),
+                terminate: ok(),
+                reap: ok(),
+                remove: Err("remove".into()),
+                forced: true,
+                reaped: true,
+                exit_code: None,
+                errors: 3,
+            },
+        ];
+        let home = tempfile::TempDir::new().expect("tempdir");
+        for case in cases {
+            let mut ops = FakeOps {
+                waits: case.waits.into(),
+                exit: case.exit,
+                cancel: case.cancel,
+                taint: case.taint,
+                terminate: case.terminate,
+                reap: case.reap,
+                remove: case.remove,
+                calls: vec![],
+            };
+            let mut process = SetupProcess::Raw(RawSetupProcess::new(0));
+            let result = drive_setup_process(
+                &mut process,
+                Some(Path::new("token")),
+                home.path(),
+                &mut ops,
+            );
+            assert_eq!(
+                (
+                    result.forced,
+                    result.reaped,
+                    result.exit_code,
+                    result.errors.len()
+                ),
+                (case.forced, case.reaped, case.exit_code, case.errors),
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                ops.calls.iter().filter(|call| **call == "remove").count(),
+                usize::from(result.reaped && case.name != "normal"),
+                "{} closes/removes once",
+                case.name
+            );
+            let expected_calls: &[&str] = match case.name {
+                "normal" => &["wait", "exit", "reap"],
+                "cooperative timeout" | "wait failed" | "unexpected wait" => {
+                    &["wait", "cancel", "wait", "reap", "remove"]
+                }
+                "forced reap" | "taint failure" => &[
+                    "wait",
+                    "cancel",
+                    "wait",
+                    "taint",
+                    "terminate",
+                    "wait",
+                    "reap",
+                    "remove",
+                ],
+                "terminate survivor" => &["wait", "cancel", "wait", "taint", "terminate"],
+                "exit failure" => &["wait", "exit", "cancel", "wait", "reap", "remove"],
+                "still active token failures" => &[
+                    "wait",
+                    "exit",
+                    "cancel",
+                    "wait",
+                    "taint",
+                    "terminate",
+                    "wait",
+                    "reap",
+                    "remove",
+                ],
+                other => panic!("missing expected trace for {other}"),
+            };
+            assert_eq!(
+                ops.calls, expected_calls,
+                "{} exact safety call order",
+                case.name
+            );
+            if case.name == "cooperative timeout" {
+                assert!(!ops.calls.contains(&"terminate"));
+            }
+        }
+    }
+
+    #[test]
+    fn deny_write_paths_no_create_covers_only_protected_metadata() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let missing_metadata = temp.path().join(".git");
+        assert_eq!(
+            deny_write_paths_no_create(&[
+                missing_metadata.clone(),
+                temp.path().join("ordinary-deny")
+            ]),
+            vec![missing_metadata]
+        );
     }
 
     #[test]

@@ -9,14 +9,16 @@ use anyhow::Context;
 use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use nano_sandbox::AclTreeTransaction;
+use nano_sandbox::NANO_ACL_QUIESCENT_PRECONDITION;
 use nano_sandbox::SETUP_VERSION;
 use nano_sandbox::SetupErrorCode;
 use nano_sandbox::SetupErrorReport;
 use nano_sandbox::SetupFailure;
-use nano_sandbox::add_deny_write_ace;
+use nano_sandbox::add_deny_write_ace_on_tree_in_transaction_cancellable;
 use nano_sandbox::convert_string_sid_to_sid;
 use nano_sandbox::ensure_allow_mask_aces_with_inheritance;
-use nano_sandbox::ensure_allow_write_aces;
+use nano_sandbox::ensure_allow_write_aces_on_tree_in_transaction_cancellable;
 use nano_sandbox::extract_setup_failure;
 use nano_sandbox::hide_newly_created_users;
 use nano_sandbox::install_wfp_filters;
@@ -27,6 +29,7 @@ use nano_sandbox::path_write_aces_need_refresh;
 use nano_sandbox::sandbox_bin_dir;
 use nano_sandbox::sandbox_dir;
 use nano_sandbox::sandbox_secrets_dir;
+use nano_sandbox::sandbox_setup_artifacts_are_complete;
 use nano_sandbox::setup_marker_path;
 use nano_sandbox::string_from_sid_bytes;
 use nano_sandbox::sync_persistent_deny_read_acls;
@@ -47,7 +50,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
-use std::sync::mpsc;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HLOCAL;
 use windows_sys::Win32::Foundation::LocalFree;
@@ -97,6 +99,10 @@ struct Payload {
     deny_read_paths: Vec<PathBuf>,
     #[serde(default)]
     deny_write_paths: Vec<PathBuf>,
+    /// Protected metadata deny targets (`.git`, `.agents`, `.nano`) that must
+    /// never be materialized when missing (Track A no-create contract).
+    #[serde(default)]
+    deny_write_paths_no_create: Vec<PathBuf>,
     proxy_ports: Vec<u16>,
     #[serde(default)]
     allow_local_binding: bool,
@@ -113,6 +119,12 @@ struct Payload {
     /// group, firewall rules, WFP objects, setup marker) and nothing else.
     #[serde(default)]
     uninstall: bool,
+    /// Cooperative cancellation token for the bounded helper lifecycle (Track
+    /// A port). Mandatory for Rust-orchestrated payloads; the Track-B
+    /// script-built modes above (`uninstall`, `refresh_marker_only`) do not
+    /// traverse workspace ACLs and are exempt.
+    #[serde(default)]
+    cancellation_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
@@ -456,6 +468,13 @@ fn real_main() -> Result<()> {
             format!("failed to create sandbox dir {}: {err}", sbx_dir.display()),
         ))
     })?;
+    // The cancellation token is honored during ACL traversal, so it must be
+    // exactly the orchestrator-issued path — never a preexisting or redirected
+    // file. Track-B script payloads (uninstall / refresh-marker-only) mutate
+    // no workspace ACLs and carry no token.
+    if !payload.uninstall && !payload.refresh_marker_only {
+        validate_cancellation_path(&payload, &sbx_dir)?;
+    }
     let mut log = log_writer(&sbx_dir).ok_or_else(|| {
         anyhow::Error::new(SetupFailure::new(
             SetupErrorCode::HelperLogFailed,
@@ -489,6 +508,51 @@ fn real_main() -> Result<()> {
     result
 }
 
+/// Strict, fail-closed validation of the orchestrator-issued cancellation
+/// token path (Track A port): `cancel-<32 hex>` directly inside the canonical
+/// sandbox dir, whose parent must not be a reparse point and whose leaf must
+/// not exist yet.
+fn validate_cancellation_path(payload: &Payload, sbx_dir: &Path) -> Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    let Some(path) = payload.cancellation_path.as_ref() else {
+        anyhow::bail!("setup payload is missing cancellation path");
+    };
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("cancellation path has no UTF-8 file name"))?;
+    let nonce = name
+        .strip_prefix("cancel-")
+        .ok_or_else(|| anyhow::anyhow!("cancellation path has invalid prefix"))?;
+    if nonce.len() != 32 || !nonce.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        anyhow::bail!("cancellation path has malformed GUID token");
+    }
+    let parent_metadata = std::fs::symlink_metadata(sbx_dir)?;
+    if parent_metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        anyhow::bail!("expected sandbox directory is a reparse point");
+    }
+    let expected_parent = dunce::canonicalize(sbx_dir)?;
+    let supplied_parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("cancellation path has no parent"))?;
+    let supplied_parent = dunce::canonicalize(supplied_parent)?;
+    if supplied_parent != expected_parent {
+        anyhow::bail!("cancellation path is outside the expected sandbox directory");
+    }
+    if path.try_exists()? {
+        let leaf_metadata = std::fs::symlink_metadata(path)?;
+        let kind = if leaf_metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            "reparse"
+        } else {
+            "preexisting"
+        };
+        anyhow::bail!("cancellation path has a {kind} leaf");
+    }
+    Ok(())
+}
+
 fn run_setup(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
     if payload.uninstall {
         return run_uninstall(payload, log, sbx_dir);
@@ -497,6 +561,8 @@ fn run_setup(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<(
         return run_refresh_marker_only(payload, log);
     }
     let writes_setup_marker = !payload.refresh_only && payload.mode != SetupMode::ReadAclsOnly;
+    let mutates_workspace_acls = payload.mode == SetupMode::Full;
+    let in_progress = sbx_dir.join("setup-in-progress");
     if writes_setup_marker {
         prepare_setup_marker(&payload.nano_home, &payload.real_user)?;
     }
@@ -513,6 +579,23 @@ fn run_setup(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<(
             &payload.proxy_ports,
             payload.allow_local_binding,
         )?;
+    }
+    if mutates_workspace_acls {
+        // A previous force-terminated helper left the home tainted; this run's
+        // verified completion is the audited repair that clears it. The
+        // in-progress sentinel is removed only after full readiness holds.
+        let taint = sbx_dir.join("setup-tainted");
+        if taint.try_exists()? {
+            log_line(
+                log,
+                "setup audit: repairing and clearing taint after successful full setup",
+            )?;
+            std::fs::remove_file(&taint)?;
+        }
+        if !sandbox_setup_artifacts_are_complete(&payload.nano_home) {
+            anyhow::bail!("setup completed ACL mutation without full readiness");
+        }
+        std::fs::remove_file(&in_progress)?;
     }
     Ok(())
 }
@@ -906,10 +989,20 @@ fn run_provision_only(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) ->
 }
 
 fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
+    let cancelled = || -> Result<bool> {
+        payload
+            .cancellation_path
+            .as_ref()
+            .map_or(Ok(false), |path| {
+                path.try_exists().context("query setup cancellation token")
+            })
+    };
     let refresh_only = payload.refresh_only;
+    log_line(log, "setup stage: identity provisioning start")?;
     if !refresh_only {
         provision_and_hide_sandbox_users(payload, log, sbx_dir)?;
     }
+    log_line(log, "setup stage: identity provisioning complete")?;
     let offline_sid = resolve_sid(&payload.offline_username).map_err(|err| {
         anyhow::Error::new(SetupFailure::new(
             SetupErrorCode::HelperSidResolveFailed,
@@ -938,7 +1031,9 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
 
     let mut refresh_errors: Vec<String> = Vec::new();
     if !refresh_only {
+        log_line(log, "setup stage: firewall configuration start")?;
         configure_offline_sandbox_network(payload, &offline_sid_str, log)?;
+        log_line(log, "setup stage: firewall configuration complete")?;
     }
 
     // Deny-read ACEs must be present before the sandboxed command starts. Apply
@@ -1052,139 +1147,257 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
                     root.display()
                 ),
             )?;
-            grant_tasks.push((root.clone(), root_cap_sid_str));
         }
+        // Descendants can have protected DACLs that do not inherit a refreshed root ACE, so walk
+        // every root even when the root itself is already current.
+        grant_tasks.push((root.clone(), root_cap_sid_str));
     }
 
-    let (tx, rx) = mpsc::channel::<(PathBuf, Result<bool>)>();
-    std::thread::scope(|scope| {
-        for (root, root_cap_sid_str) in grant_tasks {
-            let sid_strings = vec![sandbox_group_sid_str.clone(), root_cap_sid_str];
-            let tx = tx.clone();
-            scope.spawn(move || {
-                // Convert SID strings to psids locally in this thread.
-                let mut psids: Vec<*mut c_void> = Vec::new();
-                for sid_str in &sid_strings {
-                    if let Some(psid) = unsafe { convert_string_sid_to_sid(sid_str) } {
-                        psids.push(psid);
-                    } else {
-                        let _ = tx.send((root.clone(), Err(anyhow::anyhow!("convert SID failed"))));
-                        return;
-                    }
-                }
-
-                let res = unsafe { ensure_allow_write_aces(&root, &psids) };
-
-                for psid in psids {
-                    unsafe {
-                        LocalFree(psid as HLOCAL);
-                    }
-                }
-                let _ = tx.send((root, res));
-            });
-        }
-        drop(tx);
-        for (root, res) in rx {
-            match res {
-                Ok(_) => {}
-                Err(e) => {
-                    refresh_errors.push(format!("write ACE failed on {}: {}", root.display(), e));
-                    if log_line(
-                        log,
-                        &format!("write ACE grant failed on {}: {}", root.display(), e),
-                    )
-                    .is_err()
-                    {
-                        // ignore log errors inside scoped thread
-                    }
-                }
-            }
-        }
-    });
-
-    for path in &payload.deny_write_paths {
-        if !seen_deny_paths.insert(path.clone()) {
-            continue;
-        }
-
-        // These are deny-write carveouts, not deny-read paths. They may come from explicit
-        // read-only-under-a-writable-root carveouts in the transformed sandbox policy, or from
-        // legacy protected children such as `.git`, `.codex`, and `.agents`.
-        //
-        // Deny ACEs attach to filesystem objects; if an explicit policy carveout does not exist
-        // during setup, the sandbox could otherwise create it later under a writable parent and
-        // bypass the carveout. Materialize missing carveouts as directories so the deny-write ACL
-        // is present before the command starts. Legacy protected children are filtered before
-        // payload creation, so this should not create sentinel directories in a workspace.
-        if !path.exists() {
-            std::fs::create_dir_all(path)
-                .with_context(|| format!("failed to create deny-write path {}", path.display()))?;
-        }
-
-        let deny_sid_strs = workspace_write_cap_sids_for_path(
-            &payload.nano_home,
-            &payload.command_cwd,
-            &payload.write_roots,
-            path,
-        )?;
-        for deny_sid_str in deny_sid_strs {
-            let deny_psid = unsafe {
-                convert_string_sid_to_sid(&deny_sid_str)
-                    .ok_or_else(|| anyhow::anyhow!("convert deny capability SID failed"))?
-            };
-
-            match unsafe { add_deny_write_ace(path, deny_psid) } {
-                Ok(true) => {
-                    log_line(
-                        log,
-                        &format!("applied deny ACE to protect {}", path.display()),
-                    )?;
-                }
-                Ok(false) => {}
-                Err(err) => {
-                    refresh_errors.push(format!("deny ACE failed on {}: {err}", path.display()));
-                    log_line(
-                        log,
-                        &format!("deny ACE failed on {}: {err}", path.display()),
-                    )?;
-                }
-            }
-            unsafe {
-                LocalFree(deny_psid as HLOCAL);
-            }
-        }
-    }
-
-    lock_sandbox_bin_dir(payload, &sandbox_group_sid, log)?;
-
-    if refresh_only {
+    if refresh_only && !refresh_errors.is_empty() {
         log_line(
             log,
-            &format!(
-                "setup refresh: processed {} write roots (read roots delegated); errors={:?}",
-                payload.write_roots.len(),
-                refresh_errors
-            ),
+            &format!("setup refresh aborted before ACL mutation: {refresh_errors:?}"),
         )?;
+        anyhow::bail!("setup refresh had pre-ACL errors");
     }
-    if !refresh_only {
-        lock_persistent_sandbox_dirs(payload, &sandbox_group_sid, log)?;
+
+    // Wayland Nano inherited provisioning requires a quiescent same-user window: no same-user
+    // process may mutate workspace aliases while this setup phase runs. Concurrent same-user
+    // hard-link attack resistance is intentionally unsupported here and must be kernel-enforced
+    // before any shell exposure. Classify all deny paths once, then materialize only ordinary
+    // missing targets before the first transactional ACL mutation. Protected metadata is
+    // strictly no-create.
+    log_line(log, "setup stage: workspace ACL transaction start")?;
+    log_line(log, NANO_ACL_QUIESCENT_PRECONDITION)?;
+    let no_create_deny_paths: HashSet<&Path> = payload
+        .deny_write_paths_no_create
+        .iter()
+        .map(PathBuf::as_path)
+        .collect();
+    let mut skipped_missing_deny_paths = HashSet::new();
+    let mut deny_paths_to_materialize = Vec::new();
+    let mut materialized_deny_paths = HashSet::new();
+    for path in &payload.deny_write_paths {
+        if !materialized_deny_paths.insert(path.clone()) {
+            continue;
+        }
+        match classify_deny_write_path(path, no_create_deny_paths.contains(path.as_path()))
+            .with_context(|| format!("query deny-write path {}", path.display()))?
+        {
+            DenyWritePathDisposition::Existing => {}
+            DenyWritePathDisposition::SkipMissing => {
+                skipped_missing_deny_paths.insert(path.clone());
+            }
+            DenyWritePathDisposition::MaterializeMissing => {
+                deny_paths_to_materialize.push(path.clone());
+            }
+        }
     }
+    for path in deny_paths_to_materialize {
+        std::fs::create_dir_all(&path).with_context(|| {
+            format!(
+                "failed to pre-materialize deny-write path {}",
+                path.display()
+            )
+        })?;
+    }
+
+    // Process roots serially because roots can overlap. Concurrent DACL read/modify/write cycles
+    // on a shared descendant could otherwise lose one root's capability ACE.
+    let mut acl_transaction = AclTreeTransaction::new();
+    let acl_phase_result = (|| -> Result<()> {
+        for (root, root_cap_sid_str) in grant_tasks {
+            log_line(
+                log,
+                &format!("setup stage: grant workspace ACL start: {}", root.display()),
+            )?;
+            let sid_strings = [&sandbox_group_sid_str, &root_cap_sid_str];
+            let mut psids: Vec<*mut c_void> = Vec::new();
+            for sid_str in sid_strings {
+                if let Some(psid) = unsafe { convert_string_sid_to_sid(sid_str) } {
+                    psids.push(psid);
+                } else {
+                    break;
+                }
+            }
+            let res = if psids.len() == 2 {
+                unsafe {
+                    ensure_allow_write_aces_on_tree_in_transaction_cancellable(
+                        &root,
+                        &psids,
+                        &mut acl_transaction,
+                        &cancelled,
+                    )
+                }
+                .map(|changed| changed != 0)
+            } else {
+                Err(anyhow::anyhow!("convert SID failed"))
+            };
+            for psid in psids {
+                unsafe { LocalFree(psid as HLOCAL) };
+            }
+            if let Err(e) = res {
+                log_line(
+                    log,
+                    &format!("write ACE grant failed on {}: {}", root.display(), e),
+                )?;
+                return Err(e).with_context(|| format!("apply write ACL tree {}", root.display()));
+            }
+            log_line(
+                log,
+                &format!(
+                    "setup stage: grant workspace ACL complete: {}",
+                    root.display()
+                ),
+            )?;
+        }
+
+        for path in &payload.deny_write_paths {
+            if !seen_deny_paths.insert(path.clone()) {
+                continue;
+            }
+            if skipped_missing_deny_paths.contains(path) {
+                log_line(
+                    log,
+                    &format!(
+                        "deny workspace ACL target {} missing; preserving no-create contract",
+                        path.display()
+                    ),
+                )?;
+                continue;
+            }
+            log_line(
+                log,
+                &format!("setup stage: deny workspace ACL start: {}", path.display()),
+            )?;
+
+            // These are deny-write carveouts, not deny-read paths. They may come from explicit
+            // read-only-under-a-writable-root carveouts in the transformed sandbox policy, or from
+            // legacy protected children such as `.git`, `.nano`, and `.agents`.
+            //
+            let deny_sid_strs = workspace_write_cap_sids_for_path(
+                &payload.nano_home,
+                &payload.command_cwd,
+                &payload.write_roots,
+                path,
+            )?;
+            for deny_sid_str in deny_sid_strs {
+                let deny_psid = unsafe {
+                    convert_string_sid_to_sid(&deny_sid_str)
+                        .ok_or_else(|| anyhow::anyhow!("convert deny capability SID failed"))?
+                };
+
+                let deny_result = unsafe {
+                    add_deny_write_ace_on_tree_in_transaction_cancellable(
+                        path,
+                        deny_psid,
+                        &mut acl_transaction,
+                        &cancelled,
+                    )
+                };
+                unsafe {
+                    LocalFree(deny_psid as HLOCAL);
+                }
+                match deny_result {
+                    Ok(changed) if changed != 0 => {
+                        log_line(
+                            log,
+                            &format!("applied deny ACE to protect {}", path.display()),
+                        )?;
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        log_line(
+                            log,
+                            &format!("deny ACE failed on {}: {err}", path.display()),
+                        )?;
+                        return Err(err).with_context(|| {
+                            format!("apply deny-write ACL tree to {}", path.display())
+                        });
+                    }
+                }
+            }
+            log_line(
+                log,
+                &format!(
+                    "setup stage: deny workspace ACL complete: {}",
+                    path.display()
+                ),
+            )?;
+        }
+
+        lock_sandbox_bin_dir(payload, &sandbox_group_sid, log)?;
+
+        if refresh_only {
+            log_line(
+                log,
+                &format!(
+                    "setup refresh: processed {} write roots (read roots delegated); errors={:?}",
+                    payload.write_roots.len(),
+                    refresh_errors
+                ),
+            )?;
+        }
+        if !refresh_only {
+            lock_persistent_sandbox_dirs(payload, &sandbox_group_sid, log)?;
+        }
+
+        Ok(())
+    })();
+
+    if let Err(err) = acl_phase_result {
+        if let Err(rollback_err) = acl_transaction.rollback_now() {
+            anyhow::bail!(
+                "workspace ACL phase failed: {err}; rollback also failed: {rollback_err}"
+            );
+        }
+        return Err(err).context("workspace ACL phase rolled back");
+    }
+
+    acl_transaction
+        .commit()
+        .context("commit workspace ACL transaction")?;
+    log_line(log, "setup stage: workspace ACL transaction complete")?;
 
     unsafe {
         if !sandbox_group_psid.is_null() {
             LocalFree(sandbox_group_psid as HLOCAL);
         }
     }
-    if refresh_only && !refresh_errors.is_empty() {
-        log_line(
-            log,
-            &format!("setup refresh completed with errors: {refresh_errors:?}"),
-        )?;
-        anyhow::bail!("setup refresh had errors");
-    }
     log_note("setup binary completed", Some(sbx_dir));
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DenyWritePathDisposition {
+    Existing,
+    SkipMissing,
+    MaterializeMissing,
+}
+
+fn classify_deny_write_path(
+    path: &Path,
+    no_create: bool,
+) -> std::io::Result<DenyWritePathDisposition> {
+    classify_deny_write_path_with(path, no_create, |path| {
+        std::fs::symlink_metadata(path).map(|_| ())
+    })
+}
+
+fn classify_deny_write_path_with(
+    path: &Path,
+    no_create: bool,
+    query: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<DenyWritePathDisposition> {
+    match query(path) {
+        Ok(()) => Ok(DenyWritePathDisposition::Existing),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(if no_create {
+            DenyWritePathDisposition::SkipMissing
+        } else {
+            DenyWritePathDisposition::MaterializeMissing
+        }),
+        Err(err) => Err(err),
+    }
 }
 
 #[cfg(test)]
@@ -1196,9 +1409,19 @@ mod tests {
     use super::convert_string_sid_to_sid;
     use super::workspace_write_cap_sids_for_path;
     use base64::Engine;
+    use nano_sandbox::AclTreeTransaction;
+    use nano_sandbox::NANO_ACL_QUIESCENT_PRECONDITION;
+    use nano_sandbox::add_deny_write_ace;
+    use nano_sandbox::add_deny_write_ace_on_tree;
+    use nano_sandbox::add_deny_write_ace_on_tree_in_transaction;
     use nano_sandbox::ensure_allow_mask_aces;
     use nano_sandbox::ensure_allow_write_aces;
+    use nano_sandbox::ensure_allow_write_aces_on_tree;
+    use nano_sandbox::ensure_allow_write_aces_on_tree_in_transaction;
     use nano_sandbox::load_or_create_cap_sids;
+    use nano_sandbox::path_dacl_bytes;
+    use nano_sandbox::path_dacl_is_protected;
+    use nano_sandbox::path_has_write_deny_for_sid;
     use nano_sandbox::path_mask_allows;
     use nano_sandbox::path_write_aces_need_refresh;
     use nano_sandbox::telemetry::TelemetrySettings;
@@ -1208,6 +1431,7 @@ mod tests {
     use std::fs;
     use windows_sys::Win32::Foundation::HLOCAL;
     use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Storage::FileSystem::DELETE;
     use windows_sys::Win32::Storage::FileSystem::FILE_DELETE_CHILD;
 
     fn payload_json() -> serde_json::Value {
@@ -1374,7 +1598,7 @@ mod tests {
     }
 
     #[test]
-    fn write_root_refresh_ignores_inherited_delete_child_grant() {
+    fn write_root_refresh_rejects_inherited_delete_child_grant() {
         let temp = tempfile::tempdir().expect("tempdir");
         let nano_home = temp.path().join("codex-home");
         let parent = temp.path().join("parent");
@@ -1388,10 +1612,8 @@ mod tests {
         let seeded_explicit =
             unsafe { ensure_allow_mask_aces(&workspace, &[psid], WRITE_ROOT_ALLOW_MASK) }
                 .expect("seed explicit write ACE");
-        let seeded_parent = unsafe {
-            ensure_allow_mask_aces(&parent, &[psid], WRITE_ROOT_ALLOW_MASK | FILE_DELETE_CHILD)
-        }
-        .expect("seed inherited stale write ACE");
+        let seeded_parent = unsafe { ensure_allow_mask_aces(&parent, &[psid], 0x1000_0000) }
+            .expect("seed inherited stale write ACE");
         let has_inherited_delete_child = path_mask_allows(
             &workspace,
             &[psid],
@@ -1401,10 +1623,8 @@ mod tests {
         .expect("check inherited stale write ACE");
         let needs_refresh = path_write_aces_need_refresh(&workspace, &[psid])
             .expect("check inherited stale write ACE");
-        let first_refresh = unsafe { ensure_allow_write_aces(&workspace, &[psid]) }
-            .expect("first inherited write ACE refresh");
-        let second_refresh = unsafe { ensure_allow_write_aces(&workspace, &[psid]) }
-            .expect("second inherited write ACE refresh");
+        let refresh_error = unsafe { ensure_allow_write_aces_on_tree(&workspace, &[psid]) }
+            .expect_err("stale inherited delete-child grant must fail closed");
         unsafe {
             LocalFree(psid as HLOCAL);
         }
@@ -1415,11 +1635,407 @@ mod tests {
                 seeded_parent,
                 has_inherited_delete_child,
                 needs_refresh,
-                first_refresh,
-                second_refresh,
+                refresh_error
+                    .to_string()
+                    .contains("unsupported inherited FILE_DELETE_CHILD"),
             ),
-            (true, true, true, false, false, false)
+            (true, true, true, false, true)
         );
+    }
+
+    #[test]
+    fn deny_write_path_classification_is_no_follow_and_fail_closed() {
+        use super::DenyWritePathDisposition;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing_metadata = temp.path().join(".git");
+        assert_eq!(
+            super::classify_deny_write_path(&missing_metadata, true)
+                .expect("classify missing metadata"),
+            DenyWritePathDisposition::SkipMissing
+        );
+        assert!(!missing_metadata.exists());
+
+        let existing = temp.path().join(".codex");
+        fs::create_dir(&existing).expect("create metadata directory");
+        assert_eq!(
+            super::classify_deny_write_path(&existing, true).expect("classify existing metadata"),
+            DenyWritePathDisposition::Existing
+        );
+
+        // A successful no-follow query represents files, directories, dangling symlinks, and
+        // reparse points alike. Injection avoids requiring symlink privileges on the test host.
+        assert_eq!(
+            super::classify_deny_write_path_with(&missing_metadata, true, |_| Ok(()))
+                .expect("classify no-follow reparse result"),
+            DenyWritePathDisposition::Existing
+        );
+
+        let error = super::classify_deny_write_path_with(&missing_metadata, true, |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected",
+            ))
+        })
+        .expect_err("metadata query errors must fail closed");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+
+        let ordinary = temp.path().join("ordinary-deny");
+        assert_eq!(
+            super::classify_deny_write_path(&ordinary, false)
+                .expect("classify ordinary missing deny"),
+            DenyWritePathDisposition::MaterializeMissing
+        );
+        fs::create_dir_all(&ordinary).expect("materialize ordinary deny");
+        assert!(ordinary.is_dir());
+    }
+
+    #[test]
+    fn nano_acl_precondition_documents_quiescent_unsupported_hard_link_window() {
+        assert!(NANO_ACL_QUIESCENT_PRECONDITION.contains("quiescent same-user window"));
+        assert!(NANO_ACL_QUIESCENT_PRECONDITION.contains("hard-link mutation is unsupported"));
+    }
+
+    #[test]
+    fn cancellation_path_validation_is_strict_and_fail_closed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sbx_dir = temp.path().join(".sandbox");
+        fs::create_dir(&sbx_dir).expect("sandbox dir");
+        let mut value = payload_json();
+        value["nano_home"] = json!(temp.path());
+        let valid = sbx_dir.join("cancel-0123456789abcdef0123456789abcdef");
+        value["cancellation_path"] = json!(valid);
+        let payload: Payload = serde_json::from_value(value.clone()).expect("payload");
+        super::validate_cancellation_path(&payload, &sbx_dir).expect("valid cancellation path");
+
+        for invalid in [
+            sbx_dir.join("cancel-not-a-guid"),
+            temp.path().join("cancel-0123456789abcdef0123456789abcdef"),
+            sbx_dir.join(r"..\cancel-0123456789abcdef0123456789abcdef"),
+        ] {
+            value["cancellation_path"] = json!(invalid);
+            let payload: Payload = serde_json::from_value(value.clone()).expect("payload");
+            super::validate_cancellation_path(&payload, &sbx_dir)
+                .expect_err("invalid cancellation path must fail closed");
+        }
+
+        fs::write(&valid, b"preexisting").expect("precreate token");
+        value["cancellation_path"] = json!(valid);
+        let payload: Payload = serde_json::from_value(value.clone()).expect("payload");
+        super::validate_cancellation_path(&payload, &sbx_dir)
+            .expect_err("preexisting cancellation leaf must fail closed");
+
+        fs::remove_file(&valid).expect("remove preexisting token");
+        let real_sbx = temp.path().join("real-sandbox");
+        fs::rename(&sbx_dir, &real_sbx).expect("move sandbox dir");
+        let junction = std::process::Command::new("cmd.exe")
+            .args([
+                "/D",
+                "/C",
+                "mklink",
+                "/J",
+                &sbx_dir.display().to_string(),
+                &real_sbx.display().to_string(),
+            ])
+            .status()
+            .expect("create sandbox junction");
+        assert!(junction.success());
+        value["cancellation_path"] = json!(sbx_dir.join("cancel-0123456789abcdef0123456789abcdef"));
+        let payload: Payload = serde_json::from_value(value).expect("payload");
+        super::validate_cancellation_path(&payload, &sbx_dir)
+            .expect_err("reparse sandbox parent must fail closed");
+    }
+
+    #[test]
+    fn write_root_refresh_grants_delete_to_existing_descendants_and_preserves_denies() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nano_home = temp.path().join("codex-home");
+        let workspace = temp.path().join("workspace");
+        let nested = workspace.join("existing").join("nested");
+        let file = nested.join("file.txt");
+        let protected = workspace.join(".codex");
+        let protected_file = protected.join("state.json");
+        fs::create_dir_all(&nano_home).expect("create codex home");
+        fs::create_dir_all(&nested).expect("create nested directory");
+        fs::create_dir_all(&protected).expect("create protected directory");
+        fs::write(&file, b"existing").expect("create existing file");
+        fs::write(&protected_file, b"protected").expect("create protected file");
+
+        let sid = workspace_write_cap_sid_for_root(&nano_home, &workspace, &workspace)
+            .expect("workspace sid");
+        let psid = unsafe { convert_string_sid_to_sid(&sid).expect("convert workspace sid") };
+        let denied =
+            unsafe { add_deny_write_ace(&protected, psid) }.expect("seed protected metadata deny");
+        let changed = unsafe { ensure_allow_write_aces_on_tree(&workspace, &[psid]) }
+            .expect("refresh writable tree");
+        unsafe { add_deny_write_ace_on_tree(&protected, psid) }
+            .expect("reapply protected metadata deny tree");
+
+        let descendant_delete =
+            path_mask_allows(&file, &[psid], DELETE, true).expect("check descendant delete grant");
+        let root_delete_child = path_mask_allows(
+            &workspace,
+            &[psid],
+            FILE_DELETE_CHILD,
+            /*require_all_bits*/ false,
+        )
+        .expect("check root delete-child grant");
+        let nested_delete_child = path_mask_allows(
+            &nested,
+            &[psid],
+            FILE_DELETE_CHILD,
+            /*require_all_bits*/ false,
+        )
+        .expect("check nested delete-child grant");
+        let protected_deny = unsafe { path_has_write_deny_for_sid(&protected, psid) }
+            .expect("check protected metadata deny");
+        let protected_file_deny = unsafe { path_has_write_deny_for_sid(&protected_file, psid) }
+            .expect("check protected metadata descendant deny");
+        unsafe { LocalFree(psid as HLOCAL) };
+
+        assert!(denied);
+        assert!(changed > 0);
+        assert!(descendant_delete);
+        assert!(!root_delete_child);
+        assert!(!nested_delete_child);
+        assert!(protected_deny);
+        assert!(protected_file_deny);
+    }
+
+    #[test]
+    fn write_root_refresh_does_not_follow_junctions() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nano_home = temp.path().join("codex-home");
+        let workspace = temp.path().join("workspace");
+        let outside = temp.path().join("outside");
+        let junction = workspace.join("outside-link");
+        fs::create_dir_all(&nano_home).expect("create codex home");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        fs::create_dir_all(&outside).expect("create outside directory");
+        fs::write(outside.join("outside.txt"), b"outside").expect("create outside file");
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&outside)
+            .status()
+            .expect("launch mklink");
+        assert!(status.success(), "create test junction");
+
+        let sid = workspace_write_cap_sid_for_root(&nano_home, &workspace, &workspace)
+            .expect("workspace sid");
+        let psid = unsafe { convert_string_sid_to_sid(&sid).expect("convert workspace sid") };
+        unsafe { ensure_allow_write_aces_on_tree(&workspace, &[psid]) }
+            .expect("refresh writable tree");
+        let outside_allowed =
+            path_mask_allows(&outside, &[psid], DELETE, true).expect("check outside target");
+        unsafe { add_deny_write_ace_on_tree(&junction, psid) }
+            .expect("protect junction object without following target");
+        let junction_denied = unsafe { path_has_write_deny_for_sid(&junction, psid) }
+            .expect("check junction object deny");
+        let outside_denied = unsafe { path_has_write_deny_for_sid(&outside, psid) }
+            .expect("check junction target deny");
+        unsafe { LocalFree(psid as HLOCAL) };
+
+        assert!(
+            !outside_allowed,
+            "junction target must remain outside the grant scope"
+        );
+        assert!(
+            junction_denied,
+            "protected junction object must receive an explicit deny"
+        );
+        assert!(
+            !outside_denied,
+            "protected junction target must not receive the deny"
+        );
+    }
+
+    #[test]
+    fn write_root_refresh_rejects_hard_link_without_changing_outside_acl() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nano_home = temp.path().join("codex-home");
+        let workspace = temp.path().join("workspace");
+        let outside = temp.path().join("outside.txt");
+        let linked = workspace.join("linked.txt");
+        fs::create_dir_all(&nano_home).expect("create codex home");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        fs::write(&outside, b"outside").expect("create outside file");
+        fs::hard_link(&outside, &linked).expect("create in-root hard link");
+
+        let sid = workspace_write_cap_sid_for_root(&nano_home, &workspace, &workspace)
+            .expect("workspace sid");
+        let psid = unsafe { convert_string_sid_to_sid(&sid).expect("convert workspace sid") };
+        let error = unsafe { ensure_allow_write_aces_on_tree(&workspace, &[psid]) }
+            .expect_err("hard-linked descendant must fail closed");
+        let outside_allowed =
+            path_mask_allows(&outside, &[psid], DELETE, true).expect("check outside allow ACL");
+        unsafe { LocalFree(psid as HLOCAL) };
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported hard-linked writable file")
+        );
+        assert!(
+            !outside_allowed,
+            "outside hard-link target ACL must remain unchanged"
+        );
+    }
+
+    #[test]
+    fn deny_tree_rejects_hard_link_without_changing_outside_acl() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nano_home = temp.path().join("codex-home");
+        let workspace = temp.path().join("workspace");
+        let protected = workspace.join(".codex");
+        let outside = temp.path().join("outside.txt");
+        let linked = protected.join("linked.txt");
+        fs::create_dir_all(&nano_home).expect("create codex home");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        fs::create_dir_all(&protected).expect("create protected tree");
+        fs::write(&outside, b"outside").expect("create outside file");
+        fs::hard_link(&outside, &linked).expect("create protected hard link");
+
+        let sid = workspace_write_cap_sid_for_root(&nano_home, &workspace, &workspace)
+            .expect("workspace sid");
+        let psid = unsafe { convert_string_sid_to_sid(&sid).expect("convert workspace sid") };
+        let error = unsafe { add_deny_write_ace_on_tree(&protected, psid) }
+            .expect_err("protected hard link must fail closed");
+        let outside_denied =
+            unsafe { path_has_write_deny_for_sid(&outside, psid) }.expect("check outside deny ACL");
+        unsafe { LocalFree(psid as HLOCAL) };
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported hard-linked protected file")
+        );
+        assert!(
+            !outside_denied,
+            "outside hard-link target ACL must remain unchanged"
+        );
+    }
+
+    #[test]
+    fn acl_transaction_rolls_back_first_allow_root_when_second_root_is_unsafe() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nano_home = temp.path().join("codex-home");
+        let workspace = temp.path().join("workspace");
+        let safe_root = workspace.join("safe");
+        let unsafe_parent = workspace.join("unsafe-parent");
+        let unsafe_root = unsafe_parent.join("unsafe");
+        fs::create_dir_all(&nano_home).expect("create codex home");
+        fs::create_dir_all(&safe_root).expect("create safe root");
+        fs::create_dir_all(&unsafe_root).expect("create unsafe root");
+        let before = path_dacl_bytes(&safe_root).expect("capture safe root ACL");
+        let protected_before = path_dacl_is_protected(&safe_root).expect("safe root protection");
+
+        let sid = workspace_write_cap_sid_for_root(&nano_home, &workspace, &safe_root)
+            .expect("safe root sid");
+        let psid = unsafe { convert_string_sid_to_sid(&sid).expect("convert safe root sid") };
+        unsafe { ensure_allow_mask_aces(&unsafe_parent, &[psid], 0x1000_0000) }
+            .expect("seed inherited GENERIC_ALL on second root");
+        let mut transaction = AclTreeTransaction::new();
+        unsafe {
+            ensure_allow_write_aces_on_tree_in_transaction(&safe_root, &[psid], &mut transaction)
+        }
+        .expect("mutate safe first root");
+        let error = unsafe {
+            ensure_allow_write_aces_on_tree_in_transaction(&unsafe_root, &[psid], &mut transaction)
+        }
+        .expect_err("stale inherited second root must fail");
+        transaction.rollback_now().expect("roll back first root");
+        let after = path_dacl_bytes(&safe_root).expect("capture rolled back ACL");
+        let protected_after = path_dacl_is_protected(&safe_root).expect("rolled back protection");
+        unsafe { LocalFree(psid as HLOCAL) };
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported inherited FILE_DELETE_CHILD")
+        );
+        assert_eq!(
+            after, before,
+            "first root DACL must be restored byte-for-byte"
+        );
+        assert_eq!(protected_after, protected_before);
+    }
+
+    #[test]
+    fn acl_transaction_rolls_back_allows_when_deny_tree_is_unsafe() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nano_home = temp.path().join("codex-home");
+        let workspace = temp.path().join("workspace");
+        let safe_root = workspace.join("safe");
+        let protected = workspace.join(".codex");
+        let outside = temp.path().join("outside.txt");
+        fs::create_dir_all(&nano_home).expect("create codex home");
+        fs::create_dir_all(&safe_root).expect("create safe root");
+        fs::create_dir_all(&protected).expect("create protected root");
+        fs::write(&outside, b"outside").expect("create outside file");
+        fs::hard_link(&outside, protected.join("linked.txt")).expect("create protected link");
+        let before = path_dacl_bytes(&safe_root).expect("capture safe root ACL");
+
+        let sid = workspace_write_cap_sid_for_root(&nano_home, &workspace, &safe_root)
+            .expect("safe root sid");
+        let psid = unsafe { convert_string_sid_to_sid(&sid).expect("convert safe root sid") };
+        let mut transaction = AclTreeTransaction::new();
+        unsafe {
+            ensure_allow_write_aces_on_tree_in_transaction(&safe_root, &[psid], &mut transaction)
+        }
+        .expect("mutate safe allow root");
+        let error = unsafe {
+            add_deny_write_ace_on_tree_in_transaction(&protected, psid, &mut transaction)
+        }
+        .expect_err("unsafe deny tree must fail");
+        drop(transaction);
+        let after = path_dacl_bytes(&safe_root).expect("capture rolled back allow ACL");
+        unsafe { LocalFree(psid as HLOCAL) };
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported hard-linked protected file")
+        );
+        assert_eq!(
+            after, before,
+            "allow DACL must roll back after deny failure"
+        );
+    }
+
+    #[test]
+    fn acl_transaction_detects_link_injected_after_preflight_and_rolls_back() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nano_home = temp.path().join("codex-home");
+        let workspace = temp.path().join("workspace");
+        let safe_root = workspace.join("safe");
+        let file = safe_root.join("file.txt");
+        let injected_alias = temp.path().join("injected-alias.txt");
+        fs::create_dir_all(&nano_home).expect("create codex home");
+        fs::create_dir_all(&safe_root).expect("create safe root");
+        fs::write(&file, b"safe").expect("create safe file");
+        let before_root = path_dacl_bytes(&safe_root).expect("capture root ACL");
+        let before_file = path_dacl_bytes(&file).expect("capture file ACL");
+
+        let sid = workspace_write_cap_sid_for_root(&nano_home, &workspace, &safe_root)
+            .expect("safe root sid");
+        let psid = unsafe { convert_string_sid_to_sid(&sid).expect("convert safe root sid") };
+        let mut transaction = AclTreeTransaction::new();
+        unsafe {
+            ensure_allow_write_aces_on_tree_in_transaction(&safe_root, &[psid], &mut transaction)
+        }
+        .expect("apply transaction before injection");
+        fs::hard_link(&file, &injected_alias).expect("inject out-of-root alias after preflight");
+        let error = transaction
+            .commit()
+            .expect_err("commit must detect injected hard link");
+        let after_root = path_dacl_bytes(&safe_root).expect("capture rolled back root ACL");
+        let after_file = path_dacl_bytes(&file).expect("capture rolled back file ACL");
+        unsafe { LocalFree(psid as HLOCAL) };
+
+        assert!(error.to_string().contains("identity or link count changed"));
+        assert_eq!(after_root, before_root);
+        assert_eq!(after_file, before_file);
     }
 
     #[test]

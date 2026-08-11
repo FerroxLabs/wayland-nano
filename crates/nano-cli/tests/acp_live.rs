@@ -17,6 +17,7 @@ use nano_cli::acp_mode;
 use nano_model::types::{
     ContentBlock, ModelError, ModelEvent, ModelRequest, ModelResponse, Role, ToolCall, Usage,
 };
+use nano_protocol::acp::AvailableModel;
 use nano_session::{JournalWriter, Op, OpEnvelope};
 use std::collections::VecDeque;
 use std::io::{BufRead, Read, Write};
@@ -196,6 +197,9 @@ struct Harness {
     session_id: String,
     /// The initialize response, kept so tests can assert advertised caps.
     init_response: serde_json::Value,
+    /// The session/new response, kept so tests can assert the advertised
+    /// modes/models blocks.
+    session_new_response: serde_json::Value,
 }
 
 /// A unique temp dir per harness for the ACP session journals.
@@ -217,6 +221,68 @@ impl Harness {
     /// conversation calls session/new; a resuming one goes straight to
     /// session/load (Desktop's AcpConnection.resumeSession path).
     fn spawn_with(script: Vec<Step>, sessions_dir: &std::path::Path, new_session: bool) -> Self {
+        Self::spawn_with_catalog(
+            script,
+            sessions_dir,
+            new_session,
+            "mock",
+            vec![AvailableModel {
+                id: "mock".into(),
+                name: "mock".into(),
+            }],
+        )
+    }
+
+    /// spawn_with plus an explicit model catalog: the default model the
+    /// session starts on and the list session/new advertises (and
+    /// session/set_model validates against).
+    fn spawn_with_catalog(
+        script: Vec<Step>,
+        sessions_dir: &std::path::Path,
+        new_session: bool,
+        default_model: &str,
+        catalog: Vec<AvailableModel>,
+    ) -> Self {
+        Self::spawn_full(
+            script,
+            sessions_dir,
+            new_session,
+            default_model,
+            catalog,
+            Vec::new(),
+        )
+    }
+
+    /// spawn_with plus operator-supplied MCP servers (the NANO_MCP_SERVERS
+    /// analogue): merged into every session's fresh registry alongside the
+    /// session's own mcpServers param.
+    fn spawn_with_env_mcp(
+        script: Vec<Step>,
+        sessions_dir: &std::path::Path,
+        env_mcp_specs: Vec<nano_agent::mcp::McpServerSpec>,
+    ) -> Self {
+        Self::spawn_full(
+            script,
+            sessions_dir,
+            false,
+            "mock",
+            vec![AvailableModel {
+                id: "mock".into(),
+                name: "mock".into(),
+            }],
+            env_mcp_specs,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_full(
+        script: Vec<Step>,
+        sessions_dir: &std::path::Path,
+        new_session: bool,
+        default_model: &str,
+        catalog: Vec<AvailableModel>,
+        env_mcp_specs: Vec<nano_agent::mcp::McpServerSpec>,
+    ) -> Self {
         let (in_tx, in_rx) = std::sync::mpsc::channel::<String>();
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let (release_tx, release_rx) = tokio::sync::watch::channel(false);
@@ -231,12 +297,19 @@ impl Harness {
             requests: model_requests.clone(),
         };
         let sessions_dir = sessions_dir.to_path_buf();
+        let default_model = default_model.to_string();
         let handle = std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("tokio runtime");
             runtime.block_on(async move {
+                let config = acp_mode::ServeConfig {
+                    sessions_dir: &sessions_dir,
+                    default_model: &default_model,
+                    available_models: &catalog,
+                    env_mcp_specs: &env_mcp_specs,
+                };
                 acp_mode::serve(
                     ChannelReader {
                         rx: in_rx,
@@ -247,10 +320,9 @@ impl Harness {
                         tx: out_tx,
                         buf: Vec::new(),
                     },
-                    &sessions_dir,
+                    &config,
                     move || driver.clone(),
                     move |_| tools.clone(),
-                    "mock",
                 )
                 .await
             })
@@ -266,10 +338,15 @@ impl Harness {
             next_id: 1,
             session_id: String::new(),
             init_response: serde_json::Value::Null,
+            session_new_response: serde_json::Value::Null,
         };
         harness.init_response = harness.initialize();
         if new_session {
-            harness.session_id = harness.new_session();
+            harness.session_new_response = harness.new_session_response();
+            harness.session_id = harness.session_new_response["result"]["sessionId"]
+                .as_str()
+                .expect("sessionId")
+                .to_string();
         }
         harness
     }
@@ -286,15 +363,17 @@ impl Harness {
         init
     }
 
-    fn new_session(&mut self) -> String {
-        let created = self.request(
+    fn new_session_response(&mut self) -> serde_json::Value {
+        self.new_session_with_mcp(serde_json::json!([]))
+    }
+
+    /// session/new carrying the given `mcpServers` param value — the channel
+    /// Desktop publishes its MCP connectors through (AcpConnection.newSession).
+    fn new_session_with_mcp(&mut self, mcp_servers: serde_json::Value) -> serde_json::Value {
+        self.request(
             "session/new",
-            serde_json::json!({ "cwd": ".", "mcpServers": [] }),
-        );
-        created["result"]["sessionId"]
-            .as_str()
-            .expect("sessionId")
-            .to_string()
+            serde_json::json!({ "cwd": ".", "mcpServers": mcp_servers }),
+        )
     }
 
     fn send(&self, value: serde_json::Value) {
@@ -954,4 +1033,549 @@ fn session_load_replays_interrupted_tool_call_as_failed() {
 
     drop(client); // EOF → clean exit before the temp dir goes away
     let _ = std::fs::remove_dir_all(&sessions_dir);
+}
+
+// ── model catalog advertisement + session/set_model ────────────────────
+
+/// The catalog the production host advertises when offline/unkeyed: the
+/// vendored Flux /v1/models snapshot, mapped to the ACP wire shape.
+fn fixture_catalog() -> Vec<AvailableModel> {
+    nano_model::flux_models::fixture_catalog()
+        .expect("vendored flux models fixture must load")
+        .into_iter()
+        .map(|m| AvailableModel {
+            id: m.id,
+            name: m.name,
+        })
+        .collect()
+}
+
+#[test]
+fn session_new_advertises_the_fixture_catalog_with_honest_caps() {
+    let catalog = fixture_catalog();
+    let expected = catalog.len();
+    let mut client = Harness::spawn_with_catalog(
+        vec![Step::Respond(text_response("hi"))],
+        &temp_sessions_dir("catalog"),
+        true,
+        "flux-auto",
+        catalog,
+    );
+
+    // The models block is the exact shape Desktop consumes
+    // (AcpConnection.parseSessionCapabilities → AcpSessionModels).
+    let models = &client.session_new_response["result"]["models"];
+    assert_eq!(
+        models["currentModelId"], "flux-auto",
+        "response: {}",
+        client.session_new_response
+    );
+    let available = models["availableModels"]
+        .as_array()
+        .expect("availableModels array");
+    assert_eq!(
+        available.len(),
+        expected,
+        "session/new must advertise ≥ the fixture's models"
+    );
+    assert!(
+        available
+            .iter()
+            .all(|m| m["id"].is_string() && m["name"].is_string()),
+        "every advertised model carries id + name: {available:?}"
+    );
+    for tier in ["flux-auto", "flux-reasoning", "flux-standard", "flux-fast"] {
+        assert!(
+            available.iter().any(|m| m["id"] == tier),
+            "the {tier} tier must be advertised"
+        );
+    }
+
+    // Capability honesty: text-only prompts; MCP is advertised stdio-only
+    // (the block's PRESENCE is Desktop's stdio flag — acpTypes.ts — with
+    // http/sse honestly false), and it is backed by the live mcp_* tests
+    // below. skills remain unproven and unadvertised.
+    let caps = &client.init_response["result"]["agentCapabilities"];
+    assert_eq!(caps["promptCapabilities"]["text"], true);
+    assert_eq!(caps["promptCapabilities"]["image"], false);
+    assert_eq!(caps["promptCapabilities"]["embeddedContext"], false);
+    assert_eq!(
+        caps["mcpCapabilities"],
+        serde_json::json!({ "http": false, "sse": false }),
+        "mcpCapabilities must advertise exactly stdio support: {caps}"
+    );
+    assert!(
+        caps.get("skills").is_none(),
+        "unproven capabilities must not be advertised: {caps}"
+    );
+
+    // A turn before any switch runs on the default model.
+    let session_id = client.session_id.clone();
+    let prompt_id = client.send_prompt(&session_id, "hello");
+    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id));
+    assert_eq!(frames.last().unwrap()["result"]["stopReason"], "end_turn");
+    assert_eq!(
+        client.model_requests.lock().unwrap()[0].model,
+        "flux-auto",
+        "the first turn must run on the default model"
+    );
+}
+
+#[test]
+fn set_model_routes_the_next_turn_and_rejects_unknown_ids() {
+    let mut client = Harness::spawn_with_catalog(
+        vec![
+            Step::Respond(text_response("on auto")),
+            Step::Respond(text_response("on reasoning")),
+        ],
+        &temp_sessions_dir("setmodel"),
+        true,
+        "flux-auto",
+        fixture_catalog(),
+    );
+    let session_id = client.session_id.clone();
+
+    // Turn 1: the default model.
+    let prompt_id = client.send_prompt(&session_id, "first");
+    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id));
+    assert_eq!(frames.last().unwrap()["result"]["stopReason"], "end_turn");
+
+    // Unknown id: typed JSON-RPC error, fail-closed (Desktop greps the
+    // message for model_not_found), and the session model must NOT move.
+    let bad = client.request(
+        "session/set_model",
+        serde_json::json!({ "sessionId": session_id, "modelId": "gpt-bogus-9000" }),
+    );
+    assert_eq!(
+        bad["error"]["code"], -32602,
+        "unknown model id must be a typed error: {bad}"
+    );
+    assert!(
+        bad["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("model_not_found"),
+        "the error must name the failure: {bad}"
+    );
+
+    // Missing modelId: also typed, never a silent no-op.
+    let missing = client.request(
+        "session/set_model",
+        serde_json::json!({ "sessionId": session_id }),
+    );
+    assert_eq!(missing["error"]["code"], -32602, "{missing}");
+
+    // Valid id: ok, echoing the new current model.
+    let switched = client.request(
+        "session/set_model",
+        serde_json::json!({ "sessionId": session_id, "modelId": "flux-reasoning" }),
+    );
+    assert_eq!(
+        switched["result"]["models"]["currentModelId"], "flux-reasoning",
+        "set_model must confirm the switch: {switched}"
+    );
+
+    // Turn 2: the recorded model request proves the routing changed — and
+    // that the failed switches above never moved the session off the default
+    // before the valid one did.
+    let prompt_id = client.send_prompt(&session_id, "second");
+    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id));
+    assert_eq!(frames.last().unwrap()["result"]["stopReason"], "end_turn");
+    let requests = client.model_requests.lock().unwrap();
+    assert_eq!(requests.len(), 2, "one model call per turn");
+    assert_eq!(requests[0].model, "flux-auto", "turn 1 keeps the default");
+    assert_eq!(
+        requests[1].model, "flux-reasoning",
+        "turn 2 runs on the switched model"
+    );
+}
+
+#[test]
+fn set_model_and_set_mode_require_a_session_and_known_values() {
+    let mut client = Harness::spawn_with_catalog(
+        vec![],
+        &temp_sessions_dir("no-session"),
+        false, // no session/new: straight to the failing calls
+        "flux-auto",
+        fixture_catalog(),
+    );
+
+    let response = client.request(
+        "session/set_model",
+        serde_json::json!({ "sessionId": "nope", "modelId": "flux-auto" }),
+    );
+    assert_eq!(
+        response["error"]["code"], -32602,
+        "set_model without a session must be a typed error: {response}"
+    );
+
+    let response = client.request(
+        "session/set_mode",
+        serde_json::json!({ "sessionId": "nope", "modeId": "default" }),
+    );
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+
+    // With a session: the advertised "default" mode is accepted, anything
+    // else is a typed error (we advertise exactly one mode — honesty).
+    client.session_new_response = client.new_session_response();
+    client.session_id = client.session_new_response["result"]["sessionId"]
+        .as_str()
+        .expect("sessionId")
+        .to_string();
+    let session_id = client.session_id.clone();
+
+    let ok = client.request(
+        "session/set_mode",
+        serde_json::json!({ "sessionId": session_id, "modeId": "default" }),
+    );
+    assert!(
+        ok.get("error").is_none(),
+        "the advertised mode must be accepted: {ok}"
+    );
+
+    let bad = client.request(
+        "session/set_mode",
+        serde_json::json!({ "sessionId": session_id, "modeId": "yolo" }),
+    );
+    assert_eq!(
+        bad["error"]["code"], -32602,
+        "an unadvertised mode must be rejected: {bad}"
+    );
+}
+
+// ── MCP wiring (session/new mcpServers + NANO_MCP_SERVERS) ─────────────
+
+/// The cfg-split fake stdio MCP server (the same JSON-RPC line discipline as
+/// the fakes in nano-agent/src/mcp.rs and nano-mcp/src/client.rs): one tool
+/// `probe` whose call answers with a distinctive marker.
+#[cfg(windows)]
+fn fake_mcp_command() -> (String, Vec<String>) {
+    let script = r#"
+$reader = [System.Console]::In
+while ($true) {
+    $line = $reader.ReadLine()
+    if ($null -eq $line) { break }
+    $obj = $line | ConvertFrom-Json
+    if ($obj.method -eq "initialize") {
+        Write-Output ("{`"jsonrpc`":`"2.0`",`"id`":$($obj.id),`"result`":{`"protocolVersion`":`"2025-03-26`",`"capabilities`":{},`"serverInfo`":{`"name`":`"fake`",`"version`":`"0`"}}}")
+    } elseif ($obj.method -eq "tools/list") {
+        Write-Output ("{`"jsonrpc`":`"2.0`",`"id`":$($obj.id),`"result`":{`"tools`":[{`"name`":`"probe`",`"description`":`"fake probe`"}]}}")
+    } elseif ($obj.method -eq "tools/call") {
+        Write-Output ("{`"jsonrpc`":`"2.0`",`"id`":$($obj.id),`"result`":{`"content`":`"FAKE-PROBE-MARKER`",`"isError`":false}}")
+    }
+}
+"#;
+    (
+        "powershell.exe".to_string(),
+        vec![
+            "-NoProfile".to_string(),
+            "-Command".to_string(),
+            script.to_string(),
+        ],
+    )
+}
+
+/// Unix half of the fake stdio MCP server (see the windows half).
+#[cfg(unix)]
+fn fake_mcp_command() -> (String, Vec<String>) {
+    let script = r#"
+while IFS= read -r line; do
+    id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+    case "$line" in
+        *'"initialize"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"fake","version":"0"}}}\n' "$id" ;;
+        *'"tools/list"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"probe","description":"fake probe"}]}}\n' "$id" ;;
+        *'"tools/call"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"content":"FAKE-PROBE-MARKER","isError":false}}\n' "$id" ;;
+    esac
+done
+"#;
+    ("sh".to_string(), vec!["-c".to_string(), script.to_string()])
+}
+
+/// The fake server as a session/new `mcpServers` entry (Desktop's
+/// AcpSessionMcpServerStdio wire shape).
+fn fake_mcp_server_param() -> serde_json::Value {
+    let (command, args) = fake_mcp_command();
+    serde_json::json!({ "name": "fake", "command": command, "args": args, "env": [] })
+}
+
+/// The fake server as an operator-supplied spec (the NANO_MCP_SERVERS
+/// analogue the harness injects at serve level).
+fn fake_mcp_server_spec() -> nano_agent::mcp::McpServerSpec {
+    let (command, args) = fake_mcp_command();
+    nano_agent::mcp::McpServerSpec {
+        name: "fake".into(),
+        command,
+        args,
+        env: vec![],
+    }
+}
+
+/// Reads until the next permission request and approves it with the exact
+/// shape Desktop's "Allow once" maps to (AcpConnection.handlePermissionRequest).
+fn approve_next_permission(client: &Harness) -> serde_json::Value {
+    let frames = client.read_until(is_permission_request);
+    let request = frames.last().unwrap().clone();
+    let permission_id = request["id"].as_u64().expect("numeric request id");
+    client.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": permission_id,
+        "result": { "outcome": { "outcome": "selected", "optionId": "allow" } },
+    }));
+    request
+}
+
+fn tool_names(request: &ModelRequest) -> Vec<&str> {
+    request.tools.iter().map(|t| t.name.as_str()).collect()
+}
+
+/// The end-to-end wiring proof: session/new's mcpServers param registers the
+/// server, the model is advertised the namespaced tool, the call goes through
+/// the permission gate (mutating-unknown), routes to the fake server — never
+/// the core executor — and the marker round-trips into the next model request.
+#[test]
+fn mcp_servers_from_session_new_route_through_the_permission_gate() {
+    let mut client = Harness::spawn_with(
+        vec![
+            Step::Respond(tool_response(tool_call(
+                "c1",
+                "mcp__fake__probe",
+                serde_json::json!({"text": "ping"}),
+            ))),
+            Step::Respond(text_response("mcp answered")),
+        ],
+        &temp_sessions_dir("mcp-route"),
+        false,
+    );
+    let response = client.new_session_with_mcp(serde_json::json!([fake_mcp_server_param()]));
+    assert!(
+        response.get("error").is_none(),
+        "session/new with a working mcpServers entry must succeed: {response}"
+    );
+    let session_id = response["result"]["sessionId"]
+        .as_str()
+        .expect("sessionId")
+        .to_string();
+
+    let prompt_id = client.send_prompt(&session_id, "probe it");
+    // MCP tools are mutating-unknown: the call must ask, like shell/write.
+    let request = approve_next_permission(&client);
+    assert_eq!(
+        request["params"]["toolCall"]["title"], "mcp__fake__probe",
+        "the permission card must name the MCP tool: {request}"
+    );
+    assert!(
+        client.tool_calls.lock().unwrap().is_empty(),
+        "mcp__ calls must never reach the core executor"
+    );
+
+    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id));
+    assert_eq!(frames.last().unwrap()["result"]["stopReason"], "end_turn");
+    assert!(
+        frames.iter().any(
+            |f| f["params"]["update"]["sessionUpdate"] == "tool_call_update"
+                && f["params"]["update"]["toolCallId"] == "c1"
+                && f["params"]["update"]["status"] == "completed"
+        ),
+        "the MCP call must complete: {frames:?}"
+    );
+    assert!(
+        client.executed_tool_names().is_empty(),
+        "the MCP call routed to the registry, not the core tools"
+    );
+
+    let requests = client.model_requests.lock().unwrap();
+    assert_eq!(requests.len(), 2, "tool call, then the follow-up");
+    assert!(
+        requests[0]
+            .tools
+            .iter()
+            .any(|t| t.name == "mcp__fake__probe"),
+        "the MCP tool must be advertised to the model: {:?}",
+        tool_names(&requests[0])
+    );
+    assert!(
+        requests[1].messages.iter().any(|m| m.content.iter().any(
+            |b| matches!(b, ContentBlock::ToolResult { content, .. } if content.contains("FAKE-PROBE-MARKER"))
+        )),
+        "the fake server's marker must round-trip to the model: {:?}",
+        requests[1].messages
+    );
+}
+
+/// Isolation + fail-closed calls: a session whose session/new carried no
+/// mcpServers advertises no MCP tools, and a model-requested mcp__ call fails
+/// closed (unknown tool) even when the client approves the permission ask.
+#[test]
+fn session_without_mcp_servers_has_no_mcp_tools_and_calls_fail_closed() {
+    let mut client = Harness::spawn(vec![
+        Step::Respond(tool_response(tool_call(
+            "c1",
+            "mcp__fake__probe",
+            serde_json::json!({}),
+        ))),
+        Step::Respond(text_response("done")),
+    ]);
+    let session_id = client.session_id.clone();
+    let prompt_id = client.send_prompt(&session_id, "probe");
+
+    // Still gated (mutating-unknown), even though no server is registered.
+    approve_next_permission(&client);
+    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id));
+    assert_eq!(frames.last().unwrap()["result"]["stopReason"], "end_turn");
+    assert!(
+        frames.iter().any(
+            |f| f["params"]["update"]["sessionUpdate"] == "tool_call_update"
+                && f["params"]["update"]["toolCallId"] == "c1"
+                && f["params"]["update"]["status"] == "failed"
+        ),
+        "an mcp__ call with no registered server must fail closed: {frames:?}"
+    );
+    assert!(
+        client.executed_tool_names().is_empty(),
+        "the failed mcp__ call must not fall through to the core tools"
+    );
+    let requests = client.model_requests.lock().unwrap();
+    assert!(
+        requests[0]
+            .tools
+            .iter()
+            .all(|t| !t.name.starts_with("mcp__")),
+        "no MCP tools may be advertised without servers: {:?}",
+        tool_names(&requests[0])
+    );
+}
+
+/// Fail-soft registration: a server that will not spawn is logged and the
+/// session continues with core tools — session/new still succeeds and turns
+/// run normally.
+#[test]
+fn mcp_spawn_failure_logs_and_the_session_continues() {
+    let mut client = Harness::spawn_with(
+        vec![
+            Step::Respond(tool_response(tool_call(
+                "c1",
+                "fs_read",
+                serde_json::json!({"path": "note.txt"}),
+            ))),
+            Step::Respond(text_response("read done")),
+        ],
+        &temp_sessions_dir("mcp-failsoft"),
+        false,
+    );
+    let response = client.new_session_with_mcp(serde_json::json!([{
+        "name": "ghost",
+        "command": "wayland-nano-definitely-not-a-real-binary",
+        "args": [],
+        "env": []
+    }]));
+    assert!(
+        response.get("error").is_none() && response["result"]["sessionId"].is_string(),
+        "a broken MCP server must not fail session/new: {response}"
+    );
+    let session_id = response["result"]["sessionId"]
+        .as_str()
+        .expect("sessionId")
+        .to_string();
+
+    let prompt_id = client.send_prompt(&session_id, "read the note");
+    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id));
+    assert_eq!(frames.last().unwrap()["result"]["stopReason"], "end_turn");
+    assert_eq!(
+        client.executed_tool_names(),
+        vec!["fs_read".to_string()],
+        "core tools keep working when MCP registration failed"
+    );
+    let requests = client.model_requests.lock().unwrap();
+    assert!(
+        requests[0]
+            .tools
+            .iter()
+            .all(|t| !t.name.starts_with("mcp__")),
+        "a server that failed to spawn contributes no tools: {:?}",
+        tool_names(&requests[0])
+    );
+}
+
+/// Per-session registries: session A's mcpServers must not leak into session
+/// B on the same connection (each session/new builds a fresh registry).
+#[test]
+fn sessions_do_not_inherit_mcp_servers() {
+    let mut client = Harness::spawn_with(
+        vec![
+            Step::Respond(text_response("turn a")),
+            Step::Respond(text_response("turn b")),
+        ],
+        &temp_sessions_dir("mcp-isolation"),
+        false,
+    );
+    // Session A registers the fake server via the params channel.
+    let a = client.new_session_with_mcp(serde_json::json!([fake_mcp_server_param()]));
+    let session_a = a["result"]["sessionId"]
+        .as_str()
+        .expect("sessionId")
+        .to_string();
+    let prompt_id = client.send_prompt(&session_a, "first");
+    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id));
+    assert_eq!(frames.last().unwrap()["result"]["stopReason"], "end_turn");
+
+    // Session B (same connection) starts clean: no mcpServers, no leak.
+    let b = client.new_session_with_mcp(serde_json::json!([]));
+    let session_b = b["result"]["sessionId"]
+        .as_str()
+        .expect("sessionId")
+        .to_string();
+    let prompt_id = client.send_prompt(&session_b, "second");
+    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id));
+    assert_eq!(frames.last().unwrap()["result"]["stopReason"], "end_turn");
+
+    let requests = client.model_requests.lock().unwrap();
+    assert_eq!(requests.len(), 2, "one turn per session");
+    assert!(
+        requests[0]
+            .tools
+            .iter()
+            .any(|t| t.name == "mcp__fake__probe"),
+        "session A must see its own server: {:?}",
+        tool_names(&requests[0])
+    );
+    assert!(
+        requests[1]
+            .tools
+            .iter()
+            .all(|t| !t.name.starts_with("mcp__")),
+        "session B must not inherit session A's servers: {:?}",
+        tool_names(&requests[1])
+    );
+}
+
+/// The operator channel: NANO_MCP_SERVERS-style specs (injected at serve
+/// level, the way run() reads the env) merge into a session even when its
+/// mcpServers param is empty.
+#[test]
+fn env_mcp_servers_merge_into_sessions_without_param_servers() {
+    let mut client = Harness::spawn_with_env_mcp(
+        vec![Step::Respond(text_response("done"))],
+        &temp_sessions_dir("mcp-env"),
+        vec![fake_mcp_server_spec()],
+    );
+    let response = client.new_session_with_mcp(serde_json::json!([]));
+    let session_id = response["result"]["sessionId"]
+        .as_str()
+        .expect("sessionId")
+        .to_string();
+    let prompt_id = client.send_prompt(&session_id, "hello");
+    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id));
+    assert_eq!(frames.last().unwrap()["result"]["stopReason"], "end_turn");
+    let requests = client.model_requests.lock().unwrap();
+    assert!(
+        requests[0]
+            .tools
+            .iter()
+            .any(|t| t.name == "mcp__fake__probe"),
+        "operator-supplied (env) servers must merge into the session: {:?}",
+        tool_names(&requests[0])
+    );
 }

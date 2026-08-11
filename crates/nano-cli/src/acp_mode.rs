@@ -18,8 +18,21 @@
 //!   context so the next prompt continues with full prior history. Tool
 //!   outputs stay digest-only (the journal never carries payloads), so
 //!   restored tool results are marked elided rather than fabricated.
+//! - session/new (and session/load) advertise the Flux model catalog in the
+//!   `models` block Desktop's picker consumes; session/set_model switches
+//!   the session's model (validated against the advertised catalog — an
+//!   unknown id is a typed error, never a silent no-op), and the next turn's
+//!   model request carries the chosen id.
+//! - MCP is per-session: session/new (and session/load) register the
+//!   `mcpServers` param (Desktop-published connectors) plus NANO_MCP_SERVERS
+//!   (operator-supplied) into a FRESH registry — a session never inherits
+//!   another session's servers. Registration failures log and continue; the
+//!   turn executor is the MCP-merged one (mcp__ tools are advertised to the
+//!   model and routed on calls), and every mcp__ call goes through the
+//!   approval gate (mutating-unknown: never auto-approved).
 
 use nano_agent::loop_protection::TurnBudget;
+use nano_agent::mcp::{McpRegistry, McpServerSpec, McpToolExecutor};
 use nano_agent::turn::{
     ApprovalDecision, ApprovalGate, ModelDriver, ToolExecutor, TurnEngine, TurnState,
 };
@@ -28,9 +41,9 @@ use nano_egress::client::EgressClient;
 use nano_model::flux_completions::FluxCompletionsClient;
 use nano_model::types::{ContentBlock, Message, Role, ToolCall};
 use nano_protocol::acp::{
-    JsonRpcNotification, JsonRpcResponse, agent_capabilities, agent_message_chunk, prompt_result,
-    request_permission_request, session_load_result, session_new_result, tool_call_done,
-    tool_call_replay, tool_call_update, user_message_chunk,
+    AvailableModel, JsonRpcNotification, JsonRpcResponse, agent_capabilities, agent_message_chunk,
+    prompt_result, request_permission_request, session_load_result, session_new_result,
+    set_model_result, tool_call_done, tool_call_replay, tool_call_update, user_message_chunk,
 };
 use nano_session::op::{Op, OpEnvelope};
 use nano_session::reader::read_journal;
@@ -73,6 +86,15 @@ struct Session {
     /// Conversation context rebuilt from the journal; the next prompt starts
     /// with these messages so the model sees the full prior history.
     context: Vec<Message>,
+    /// The session's current model id (set via session/set_model, validated
+    /// against the advertised catalog). The next turn's model request carries
+    /// exactly this id.
+    model: String,
+    /// This session's MCP servers (registered at session/new or session/load
+    /// from the mcpServers param + NANO_MCP_SERVERS). Fresh per session;
+    /// dropping it kills the stdio children, so nothing leaks across
+    /// sessions. Shared with the running turn's MCP-merged executor.
+    mcp: Arc<Mutex<McpRegistry>>,
 }
 
 /// ACP session ids are filesystem-safe (they name the journal file) and
@@ -109,6 +131,36 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     let writer = std::io::stdout();
     let home = nano_home.to_path_buf();
     let sessions = home.join("sessions");
+    // The model catalog the session advertises and validates set_model
+    // against: live GET /v1/models once (cached in-process), vendored
+    // fixture when offline/unkeyed. If BOTH fail, advertise only the default
+    // model — honest (it really runs) and keeps the host usable.
+    let catalog =
+        nano_model::flux_models::ModelCatalog::new(EgressClient::flux(), Some(api_key.clone()));
+    let available: Vec<AvailableModel> = match catalog.models().await {
+        Ok(models) => models
+            .iter()
+            .map(|m| AvailableModel {
+                id: m.id.clone(),
+                name: m.name.clone(),
+            })
+            .collect(),
+        Err(err) => {
+            eprintln!(
+                "wayland-nano: model catalog unavailable ({err}); advertising the default model only"
+            );
+            vec![AvailableModel {
+                id: "flux-auto".into(),
+                name: "flux-auto".into(),
+            }]
+        }
+    };
+    // NOTE(wiring.rs): FluxDriver carries no model — the model id is a
+    // per-turn TurnEngine input (model_name → ModelRequest.model), so model
+    // switching needs no driver change. If a future driver needs per-model
+    // client state, wiring.rs could grow a `FluxDriver::with_model` or a
+    // set_model affordance; until then per-prompt model_name is the least
+    // churn and keeps wiring.rs untouched.
     let make_driver = move || {
         FluxDriver::new(
             FluxCompletionsClient::new(EgressClient::flux()),
@@ -122,30 +174,43 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         let shell = ShellTool::new(&home, workspace);
         RealToolExecutor::new(fs, shell, workspace)
     };
-    serve(
-        reader,
-        writer,
-        &sessions,
-        make_driver,
-        make_tools,
-        "flux-auto",
-    )
-    .await
+    // Operator-supplied MCP servers (NANO_MCP_SERVERS) merge into every
+    // session alongside the mcpServers param Desktop publishes.
+    let env_mcp_specs = crate::mcp_specs::mcp_specs_from_env();
+    let config = ServeConfig {
+        sessions_dir: &sessions,
+        default_model: "flux-auto",
+        available_models: &available,
+        env_mcp_specs: &env_mcp_specs,
+    };
+    serve(reader, writer, &config, make_driver, make_tools).await
 }
 
 /// The ACP host loop, generic over the byte streams and the model/tool
 /// factories so integration tests can drive it in-process with scripted
-/// doubles. `make_driver`/`make_tools` build a fresh pair per prompt (tools
-/// are anchored to the session workspace). `sessions_dir` is the journal
-/// root: each ACP session appends its ops to `<sessions_dir>/<id>.jsonl`,
-/// which is what `session/load` later restores from.
+/// Configuration bundle for `serve` — keeps the signature under the clippy
+/// argument ceiling as capabilities grow.
+pub struct ServeConfig<'a> {
+    /// Journal root: each ACP session appends to `<sessions_dir>/<id>.jsonl`.
+    pub sessions_dir: &'a std::path::Path,
+    /// Model a session starts on.
+    pub default_model: &'a str,
+    /// Catalog advertised in session/new (and session/load) and the set
+    /// session/set_model validates against.
+    pub available_models: &'a [AvailableModel],
+    /// Operator-supplied MCP servers (NANO_MCP_SERVERS in production) merged
+    /// into every session's fresh registry.
+    pub env_mcp_specs: &'a [McpServerSpec],
+}
+
+/// `make_driver`/`make_tools` build a fresh pair per prompt (tools are
+/// anchored to the session workspace).
 pub async fn serve<R, W, FD, FT, D, T>(
     reader: R,
     writer: W,
-    sessions_dir: &std::path::Path,
+    config: &ServeConfig<'_>,
     make_driver: FD,
     make_tools: FT,
-    model_name: &str,
 ) -> std::io::Result<i32>
 where
     R: BufRead + Send + 'static,
@@ -243,7 +308,7 @@ where
                                 .map(std::path::PathBuf::from)
                                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
                             let session_id = new_session_id();
-                            let journal = sessions_dir.join(format!("{session_id}.jsonl"));
+                            let journal = config.sessions_dir.join(format!("{session_id}.jsonl"));
                             // Fail closed: a session we cannot journal is a
                             // session we could not honestly resume later.
                             let journaled = JournalWriter::open(&journal).and_then(|mut w| {
@@ -270,6 +335,7 @@ where
                             let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                             *current_cancel.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(cancel.clone());
+                            let mcp = session_mcp_registry(&params, config.env_mcp_specs);
                             session = Some(Session {
                                 id: session_id.clone(),
                                 workspace: cwd,
@@ -277,8 +343,20 @@ where
                                 journal,
                                 turn_counter: 0,
                                 context: Vec::new(),
+                                model: config.default_model.to_string(),
+                                mcp,
                             });
-                            write_out(&out, &JsonRpcResponse::ok(id, session_new_result(&session_id)))?;
+                            write_out(
+                                &out,
+                                &JsonRpcResponse::ok(
+                                    id,
+                                    session_new_result(
+                                        &session_id,
+                                        config.default_model,
+                                        config.available_models,
+                                    ),
+                                ),
+                            )?;
                         }
                         "session/load" => {
                             if turn.is_some() {
@@ -314,7 +392,7 @@ where
                                 .and_then(|c| c.as_str())
                                 .map(std::path::PathBuf::from)
                                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-                            let journal = sessions_dir.join(format!("{session_id}.jsonl"));
+                            let journal = config.sessions_dir.join(format!("{session_id}.jsonl"));
                             // Unknown session: typed error, no fallback theatre —
                             // Desktop catches this and self-heals via session/new
                             // (AcpConnection.ts `resumeSession`).
@@ -378,6 +456,7 @@ where
                             let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                             *current_cancel.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(cancel.clone());
+                            let mcp = session_mcp_registry(&params, config.env_mcp_specs);
                             session = Some(Session {
                                 id: session_id.to_string(),
                                 workspace: cwd,
@@ -385,8 +464,107 @@ where
                                 journal,
                                 turn_counter,
                                 context,
+                                // The journal does not persist the model pick,
+                                // so a resumed session restarts on the default.
+                                // Follow-up: journal an Op::SetModel so a resume
+                                // restores the user's choice.
+                                model: config.default_model.to_string(),
+                                mcp,
                             });
-                            write_out(&out, &JsonRpcResponse::ok(id, session_load_result()))?;
+                            write_out(
+                                &out,
+                                &JsonRpcResponse::ok(
+                                    id,
+                                    session_load_result(config.default_model, config.available_models),
+                                ),
+                            )?;
+                        }
+                        // Desktop's model picker sends session/set_model
+                        // (AcpConnection.ts `setModel`, params {sessionId,
+                        // modelId}); session/set_mode is the mode analogue and
+                        // only the advertised "default" mode exists.
+                        "session/set_model" => {
+                            let Some(active) = session.as_mut() else {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32602,
+                                        "no session: call session/new first",
+                                    ),
+                                )?;
+                                continue;
+                            };
+                            let params = params.unwrap_or_default();
+                            let model_id = params
+                                .get("modelId")
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("");
+                            if model_id.is_empty() {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32602,
+                                        "session/set_model requires a modelId",
+                                    ),
+                                )?;
+                                continue;
+                            }
+                            // Fail closed: only ids from the advertised catalog
+                            // are routable; anything else is a typed error
+                            // (Desktop greps the message for model_not_found).
+                            if !config.available_models.iter().any(|m| m.id == model_id) {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32602,
+                                        format!(
+                                            "model_not_found: {model_id} is not in the advertised catalog"
+                                        ),
+                                    ),
+                                )?;
+                                continue;
+                            }
+                            active.model = model_id.to_string();
+                            write_out(
+                                &out,
+                                &JsonRpcResponse::ok(
+                                    id,
+                                    set_model_result(model_id, config.available_models),
+                                ),
+                            )?;
+                        }
+                        "session/set_mode" => {
+                            if session.is_none() {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32602,
+                                        "no session: call session/new first",
+                                    ),
+                                )?;
+                                continue;
+                            }
+                            let params = params.unwrap_or_default();
+                            let mode_id = params
+                                .get("modeId")
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("");
+                            if mode_id != "default" {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32602,
+                                        format!("unknown mode: {mode_id}"),
+                                    ),
+                                )?;
+                                continue;
+                            }
+                            write_out(&out, &JsonRpcResponse::ok(id, serde_json::json!({})))?;
                         }
                         "session/prompt" => {
                             if turn.is_some() {
@@ -442,6 +620,15 @@ where
                             let session_id = active.id.clone();
                             let workspace = active.workspace.clone();
                             let cancel = active.cancel.clone();
+                            // The session's current model (set via
+                            // session/set_model) is captured NOW: the whole
+                            // turn runs on it, and a later switch only takes
+                            // effect on the next prompt.
+                            let turn_model = active.model.clone();
+                            // The session's MCP registry: the turn executor
+                            // routes mcp__ calls through it (and advertises
+                            // its tools to the model) without taking ownership.
+                            let turn_mcp = active.mcp.clone();
                             // The turn future must own its handles: clone the
                             // loop-invariant Arcs before the `async move`.
                             let gate_out = out.clone();
@@ -453,6 +640,13 @@ where
                             let turn_future = async move {
                                 let driver = make_driver();
                                 let tools = make_tools(&workspace);
+                                // MCP-merged executor: mcp__ names route to the
+                                // session registry, everything else to the core
+                                // tools; the model sees both tool sets.
+                                let executor = McpToolExecutor::from_shared(turn_mcp, &tools);
+                                let mut tool_definitions = v1_tool_definitions();
+                                tool_definitions
+                                    .extend(executor.tool_definitions_from_registry());
                                 let gate = AcpApproval {
                                     session_id: session_id.clone(),
                                     out: gate_out,
@@ -462,10 +656,10 @@ where
                                 };
                                 let engine = TurnEngine {
                                     model: &driver,
-                                    tools: &tools,
+                                    tools: &executor,
                                     budget: TurnBudget::default(),
-                                    model_name: model_name.to_string(),
-                                    tool_definitions: v1_tool_definitions(),
+                                    model_name: turn_model,
+                                    tool_definitions,
                                     approval: Some(&gate),
                                 };
                                 let sink_session = session_id.clone();
@@ -547,6 +741,23 @@ where
             }
         }
     }
+}
+
+/// Builds one session's MCP registry: a FRESH registry per session/new or
+/// session/load (a session never inherits another session's servers, and the
+/// dropped registry kills its stdio children), merging operator-supplied
+/// NANO_MCP_SERVERS specs with the Desktop-published mcpServers param.
+/// Registration failures log to stderr and continue — the session proceeds
+/// with whatever registered (possibly only core tools).
+fn session_mcp_registry(
+    params: &serde_json::Value,
+    env_mcp_specs: &[McpServerSpec],
+) -> Arc<Mutex<McpRegistry>> {
+    let specs = env_mcp_specs
+        .iter()
+        .cloned()
+        .chain(crate::mcp_specs::mcp_specs_from_acp_params(params));
+    Arc::new(Mutex::new(crate::mcp_specs::register_all(specs)))
 }
 
 /// Owns stdin on its own thread: parses each line and forwards it. Client
@@ -692,7 +903,9 @@ impl<W: Write + Send> ApprovalGate for AcpApproval<W> {
 /// Read-only tools run without a Desktop prompt, matching Desktop's Default
 /// mode (its trusted/accept-edits auto-approve sets cover read/search, and
 /// plain read activity is never confirmation-gated). Anything that mutates
-/// (`fs_write`/`fs_edit`) or executes (`shell`) must ask.
+/// (`fs_write`/`fs_edit`) or executes (`shell`) must ask — and so must every
+/// `mcp__*` call: MCP tools are mutating-unknown, so they never match the
+/// read-only prefixes and always go through the permission gate.
 fn is_read_only_tool(name: &str) -> bool {
     name.starts_with("fs_read") || name.starts_with("search") || name.starts_with("glob")
 }

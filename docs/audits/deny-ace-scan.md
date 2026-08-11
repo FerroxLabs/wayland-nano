@@ -96,3 +96,39 @@ Do instead:
    must be recorded in `UPSTREAM.md`. Add this as a checklist item when that port is
    scheduled; no standing code change is warranted until then.
 3. Leave `docs/STATUS.md` debt note resolution to the owner (parent-managed file).
+
+## Re-check after the Track A port (2026-08-11)
+
+Scope: re-run of this audit's conclusion after the port-by-review of Track A's
+post-baseline sandbox fixes (commits `1dae2d8ae`, `33f112c87`, `fa0ee4da3`, `9e0e88504`,
+`1e3400144`, `f77057450`) into `crates/nano-sandbox/`.
+
+**Verdict: conclusion holds; the latent-risk caveat is now closed.**
+
+- The tree-grant family IS now ported (`ensure_allow_write_aces_on_tree*`,
+  `grant_legacy_user_delete_on_handle`) — and `token_effectively_allows_delete` was ported
+  in the same change, satisfying recommendation 2's pairing rule. The pairing is recorded
+  in `UPSTREAM.md` (Track A post-baseline port rows). Every legacy-DELETE fast path
+  (`dacl_mask_allows(..., DELETE, true) == true` in `grant_legacy_user_delete_on_handle`)
+  is verified with the `AccessCheck` oracle and *errors* on an effective denial, exactly
+  the discipline this audit flagged as required.
+- Recommendation 1 is done: `dacl_mask_allows` / `path_mask_allows` doc comments now state
+  the allow-only contract and forbid permit decisions.
+- The donor's lenient deny scans (`dacl_has_write_deny_for_sid` /
+  `dacl_has_read_deny_for_sid`, any-bit, silent on `GetAce` failure) are removed;
+  `DenyAceKind::already_present` is replaced by the all-bits, generic-mapped, explicit-only
+  `dacl_has_explicit_deny_mask`, and deny insertion is post-write verified and rolled back
+  on failure. The stale-allow exercise test now asserts via `path_has_write_deny_for_sid`.
+- Remaining allow-only call sites are unchanged in kind and still fail-safe: grant-time
+  idempotency in `ensure_allow_mask_aces_with_inheritance_impl` / refresh checks (skip →
+  lose access, never gain) and the world-write audit (over-flag only).
+- New fail-closed note: the ported verification makes ACL mutation *sensitive to
+  concurrent same-tree mutation by design* (quiescent precondition,
+  `NANO_ACL_QUIESCENT_PRECONDITION`). Concurrent legacy spawns or concurrent setup runs
+  against the same tree can now fail closed with a verification error where the donor
+  silently proceeded. That is the intended honest behavior; the per-test TEMP/TMP fixtures
+  keep the test suite quiescent, and production serialization of setup authority is
+  in-process via the setup authority lane (machine-global serialization remains the P2
+  broker's job per the Track A provisioning-boundary ADR).
+
+**No exploitable hole. No further code change required.**

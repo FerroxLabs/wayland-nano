@@ -209,8 +209,14 @@ impl std::fmt::Debug for WindowsSandboxCancellationToken {
 //  conpty exports omitted — D8.)
 #[cfg(target_os = "windows")]
 pub use acl::{
-    add_deny_read_ace, add_deny_write_ace, allow_null_device, ensure_allow_mask_aces,
-    ensure_allow_mask_aces_with_inheritance, ensure_allow_write_aces, fetch_dacl_handle,
+    AclTreeTransaction, NANO_ACL_QUIESCENT_PRECONDITION, add_deny_read_ace, add_deny_write_ace,
+    add_deny_write_ace_on_tree, add_deny_write_ace_on_tree_in_transaction,
+    add_deny_write_ace_on_tree_in_transaction_cancellable, allow_null_device,
+    ensure_allow_mask_aces, ensure_allow_mask_aces_with_inheritance, ensure_allow_write_aces,
+    ensure_allow_write_aces_on_tree, ensure_allow_write_aces_on_tree_for_legacy_user_and_token,
+    ensure_allow_write_aces_on_tree_in_transaction,
+    ensure_allow_write_aces_on_tree_in_transaction_cancellable, fetch_dacl_handle, path_dacl_bytes,
+    path_dacl_is_protected, path_has_delete_child_deny_for_sid, path_has_write_deny_for_sid,
     path_mask_allows, path_write_aces_need_refresh,
 };
 #[cfg(target_os = "windows")]
@@ -244,7 +250,9 @@ pub use hide_users::{
     hide_current_user_profile_dir, hide_newly_created_users, remove_userlist_entries,
 };
 #[cfg(target_os = "windows")]
-pub use identity::{require_logon_sandbox_creds, sandbox_setup_is_complete};
+pub use identity::{
+    require_logon_sandbox_creds, sandbox_setup_artifacts_are_complete, sandbox_setup_is_complete,
+};
 #[cfg(target_os = "windows")]
 pub use ipc_framed::{
     ErrorPayload, ErrorStage, ExitPayload, FramedMessage, IPC_PROTOCOL_VERSION, Message,

@@ -4,3 +4,4 @@
 
 pub mod acp_mode;
 pub mod flux_key;
+pub mod mcp_specs;

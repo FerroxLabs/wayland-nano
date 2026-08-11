@@ -44,7 +44,31 @@ pub struct SandboxCreds {
 ///
 /// This is a coarse readiness check; the execution-bound entry points perform
 /// the additional runtime validation for offline firewall settings.
+///
+/// Fail-closed on transient safety sentinels (Track A bounded-helper port):
+/// a `setup-tainted` or `setup-in-progress` file in the sandbox dir means a
+/// previous helper run did not verifiably complete, so readiness is reported
+/// as false even when the versioned artifacts happen to parse.
 pub fn sandbox_setup_is_complete(nano_home: &Path) -> bool {
+    let sandbox_dir = crate::sandbox_dir(nano_home);
+    if sandbox_dir
+        .join("setup-tainted")
+        .try_exists()
+        .unwrap_or(true)
+        || sandbox_dir
+            .join("setup-in-progress")
+            .try_exists()
+            .unwrap_or(true)
+    {
+        return false;
+    }
+    sandbox_setup_artifacts_are_complete(nano_home)
+}
+
+/// Checks versioned setup artifacts without considering transient safety sentinels.
+/// Only the elevated helper may use this immediately before atomically clearing
+/// `setup-in-progress` after a successful transaction.
+pub fn sandbox_setup_artifacts_are_complete(nano_home: &Path) -> bool {
     let marker_ok = matches!(load_marker(nano_home), Ok(Some(marker)) if marker.version_matches());
     if !marker_ok {
         return false;

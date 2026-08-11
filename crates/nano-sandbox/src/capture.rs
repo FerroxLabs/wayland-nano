@@ -23,22 +23,24 @@ use crate::spawn_prep::apply_legacy_session_acl_rules;
 use crate::spawn_prep::legacy_session_capability_roots;
 use crate::spawn_prep::prepare_legacy_session_security;
 use crate::spawn_prep::prepare_legacy_spawn_context;
-use crate::spawn_prep::root_capability_sids;
 use anyhow::Result;
 use nano_core::abs::AbsolutePathBuf;
 use nano_core::permissions::PermissionProfile;
 use std::collections::HashMap;
 use std::io;
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::ptr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use windows_sys::Win32::Foundation::CloseHandle;
+use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
 use windows_sys::Win32::Foundation::SetHandleInformation;
+use windows_sys::Win32::System::IO::CancelSynchronousIo;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::GetExitCodeProcess;
 use windows_sys::Win32::System::Threading::INFINITE;
@@ -50,6 +52,52 @@ enum WaitOutcome {
     Exited,
     TimedOut,
     Cancelled,
+}
+
+/// Collects a capture-reader thread with a bounded wait.
+///
+/// Track A fix (`f77057450`): the donor joined the reader threads with no
+/// bound — a sandboxed descendant that inherits the pipe write end keeps
+/// `ReadFile` blocked after the root process exits, hanging the caller
+/// forever. Here the reader gets a short drain window, then
+/// `CancelSynchronousIo` against the reader thread, then a timed-out error
+/// instead of an unbounded join.
+fn finish_capture_reader(
+    reader: std::thread::JoinHandle<Vec<u8>>,
+    stream_name: &str,
+) -> io::Result<Vec<u8>> {
+    let drain_deadline = Instant::now() + Duration::from_secs(1);
+    while !reader.is_finished() && Instant::now() < drain_deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // A descendant can inherit the root's pipe handles and keep ReadFile blocked
+    // after the root exits. Cancel only this reader's synchronous I/O; the
+    // process/job lifecycle has already been decided by the caller.
+    let cancel_deadline = Instant::now() + Duration::from_secs(1);
+    while !reader.is_finished() && Instant::now() < cancel_deadline {
+        let cancelled = unsafe { CancelSynchronousIo(reader.as_raw_handle() as HANDLE) };
+        if cancelled == 0 {
+            let error = unsafe { GetLastError() };
+            if error != ERROR_NOT_FOUND {
+                return Err(io::Error::other(format!(
+                    "CancelSynchronousIo failed for sandbox {stream_name} reader: {error}"
+                )));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    if !reader.is_finished() {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("sandbox {stream_name} reader did not stop after cancellation"),
+        ));
+    }
+
+    reader
+        .join()
+        .map_err(|_| io::Error::other(format!("sandbox {stream_name} reader panicked")))
 }
 
 fn wait_for_process(
@@ -218,6 +266,8 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
             readonly_sid: security.readonly_sid.as_ref(),
             readonly_sid_str: security.readonly_sid_str.as_deref(),
             write_root_sids: &security.write_root_sids,
+            legacy_user_sid: security.legacy_user_sid_ptr(),
+            effective_token: Some(security.h_token),
         },
     )?;
     let (stdin_pair, stdout_pair, stderr_pair) = unsafe { setup_stdio_pipes()? };
@@ -261,8 +311,6 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
         CloseHandle(err_w);
     }
 
-    let (tx_out, rx_out) = std::sync::mpsc::channel::<Vec<u8>>();
-    let (tx_err, rx_err) = std::sync::mpsc::channel::<Vec<u8>>();
     let t_out = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let mut tmp = [0u8; 8192];
@@ -282,7 +330,10 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
             }
             buf.extend_from_slice(&tmp[..read_bytes as usize]);
         }
-        let _ = tx_out.send(buf);
+        unsafe {
+            CloseHandle(out_r);
+        }
+        buf
     });
     let t_err = std::thread::spawn(move || {
         let mut buf = Vec::new();
@@ -303,7 +354,10 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
             }
             buf.extend_from_slice(&tmp[..read_bytes as usize]);
         }
-        let _ = tx_err.send(buf);
+        unsafe {
+            CloseHandle(err_r);
+        }
+        buf
     });
 
     let wait_outcome = wait_for_process(pi.hProcess, timeout_ms, cancellation.as_ref());
@@ -348,10 +402,10 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
         }
         CloseHandle(security.h_token);
     }
-    let _ = t_out.join();
-    let _ = t_err.join();
-    let stdout = rx_out.recv().unwrap_or_default();
-    let stderr = rx_err.recv().unwrap_or_default();
+    let stdout_result = finish_capture_reader(t_out, "stdout");
+    let stderr_result = finish_capture_reader(t_err, "stderr");
+    let stdout = stdout_result?;
+    let stderr = stderr_result?;
     let exit_code = if timed_out {
         128 + 64
     } else {
@@ -393,8 +447,16 @@ pub fn run_windows_sandbox_legacy_preflight(
     let current_dir = cwd.to_path_buf();
     let capability_roots =
         legacy_session_capability_roots(&permissions, &current_dir, env_map, codex_home);
-    let write_root_sids = root_capability_sids(codex_home, cwd, capability_roots)?;
-    apply_legacy_session_acl_rules(
+    // The legacy path grants the real user DELETE on existing descendants; the
+    // grant must be verified against the user's own effective token, so build
+    // the full session security (token included) instead of bare SIDs.
+    let security = prepare_legacy_session_security(
+        /*uses_write_capabilities*/ true,
+        codex_home,
+        cwd,
+        capability_roots,
+    )?;
+    let result = apply_legacy_session_acl_rules(
         &permissions,
         codex_home,
         &current_dir,
@@ -404,9 +466,13 @@ pub fn run_windows_sandbox_legacy_preflight(
         LegacyAclSids {
             readonly_sid: None,
             readonly_sid_str: None,
-            write_root_sids: &write_root_sids,
+            write_root_sids: &security.write_root_sids,
+            legacy_user_sid: security.legacy_user_sid_ptr(),
+            effective_token: Some(security.h_token),
         },
-    )?;
+    );
+    unsafe { CloseHandle(security.h_token) };
+    result?;
 
     Ok(())
 }
@@ -474,6 +540,30 @@ mod tests {
             .expect("unsupported profiles do not need ACL preflight");
         }
     }
+
+    #[test]
+    fn legacy_preflight_provisions_workspace_write_with_effective_token() {
+        // Track A port: the preflight must build the session token and verify
+        // the legacy DELETE grant against it, on a per-test quiescent tree.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        let nano_home = temp.path().join("home");
+        std::fs::create_dir_all(&workspace).expect("create workspace");
+        std::fs::write(workspace.join("fixture.txt"), "fixture").expect("seed fixture");
+        let env = HashMap::from([
+            ("TEMP".to_string(), workspace.to_string_lossy().into_owned()),
+            ("TMP".to_string(), workspace.to_string_lossy().into_owned()),
+        ]);
+
+        super::run_windows_sandbox_legacy_preflight(
+            &workspace_profile(NetworkSandboxPolicy::Restricted),
+            &[],
+            &nano_home,
+            &workspace,
+            &env,
+        )
+        .expect("workspace-write legacy preflight");
+    }
 }
 
 #[cfg(test)]
@@ -494,6 +584,25 @@ mod nano_tests {
         (workspace, nano_home)
     }
 
+    /// Per-test TEMP/TMP so `scope_temp_env` derives a per-test scoped temp
+    /// root. The transactional ACL traversal requires a quiescent tree: with
+    /// the process default, every capture/legacy test in every concurrent
+    /// `cargo test` process would mutate the same fixed
+    /// `%TEMP%\wayland-nano-temp` tree and the (correct) fail-closed
+    /// verification would trip on the cross-test race.
+    fn fixture_temp_env(fixture_tmp: &Path) -> HashMap<String, String> {
+        HashMap::from([
+            (
+                "TEMP".to_string(),
+                fixture_tmp.to_string_lossy().into_owned(),
+            ),
+            (
+                "TMP".to_string(),
+                fixture_tmp.to_string_lossy().into_owned(),
+            ),
+        ])
+    }
+
     #[test]
     fn workspace_write_capture_echoes_and_exits_without_timeout() {
         let (workspace, nano_home) = fixture_dirs("echo");
@@ -508,7 +617,7 @@ mod nano_tests {
                 "echo wayland-nano-capture".into(),
             ],
             &workspace,
-            HashMap::new(),
+            fixture_temp_env(workspace.parent().unwrap()),
             Some(20_000), // 20s bound: must not come anywhere near a timeout
             None,
             false,
@@ -540,7 +649,7 @@ mod nano_tests {
                 format!("echo data > \"{}\"", target.display()),
             ],
             &workspace,
-            HashMap::new(),
+            fixture_temp_env(workspace.parent().unwrap()),
             Some(20_000),
             None,
             false,
@@ -584,7 +693,7 @@ mod nano_tests {
                 "ping -t 127.0.0.1 > NUL".into(),
             ],
             &workspace,
-            HashMap::new(),
+            fixture_temp_env(workspace.parent().unwrap()),
             None, // no timeout: cancellation must be what ends it
             Some(token),
             false,

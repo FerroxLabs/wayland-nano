@@ -12,6 +12,7 @@ use nano_mcp::client::{McpClient, McpError};
 use nano_mcp::protocol::McpToolDescriptor;
 use nano_model::types::{ToolCall, ToolDefinition};
 
+#[derive(Clone)]
 pub struct McpServerSpec {
     pub name: String,
     pub command: String,
@@ -100,16 +101,26 @@ fn namespaced_definition(server: &str, tool: &McpToolDescriptor) -> ToolDefiniti
 /// everything else to the wrapped executor.
 #[derive(Debug)]
 pub struct McpToolExecutor<'a> {
-    registry: std::sync::Mutex<McpRegistry>,
+    registry: std::sync::Arc<std::sync::Mutex<McpRegistry>>,
     inner: &'a dyn ToolExecutor,
 }
 
 impl<'a> McpToolExecutor<'a> {
     pub fn new(registry: McpRegistry, inner: &'a dyn ToolExecutor) -> Self {
         Self {
-            registry: std::sync::Mutex::new(registry),
+            registry: std::sync::Arc::new(std::sync::Mutex::new(registry)),
             inner,
         }
+    }
+
+    /// Shares an existing registry (e.g. the per-session registry the ACP
+    /// host builds at session/new) instead of taking ownership of a fresh
+    /// one, so every turn of the session routes through the same servers.
+    pub fn from_shared(
+        registry: std::sync::Arc<std::sync::Mutex<McpRegistry>>,
+        inner: &'a dyn ToolExecutor,
+    ) -> Self {
+        Self { registry, inner }
     }
 
     /// The namespaced MCP tool definitions from the registry.

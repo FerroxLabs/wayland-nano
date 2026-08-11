@@ -15,14 +15,14 @@ path = "src/bin/acp_profile/main.rs"
 
 [dependencies]
 dirs-next = "2"
-nano-agent = { path = "../nano-agent" }
-nano-core = { path = "../nano-core" }
-nano-egress = { path = "../nano-egress" }
-nano-model = { path = "../nano-model" }
-nano-protocol = { path = "../nano-protocol" }
-nano-sandbox = { path = "../nano-sandbox" }
-nano-session = { path = "../nano-session" }
-nano-tools = { path = "../nano-tools" }
+nano-agent = { version = "0.1.0", path = "../nano-agent" }
+nano-core = { version = "0.1.0", path = "../nano-core" }
+nano-egress = { version = "0.1.0", path = "../nano-egress" }
+nano-model = { version = "0.1.0", path = "../nano-model" }
+nano-protocol = { version = "0.1.0", path = "../nano-protocol" }
+nano-sandbox = { version = "0.1.0", path = "../nano-sandbox" }
+nano-session = { version = "0.1.0", path = "../nano-session" }
+nano-tools = { version = "0.1.0", path = "../nano-tools" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
@@ -31,5 +31,5 @@ tokio = { version = "1", features = ["macros", "rt", "sync"] }
 [dev-dependencies]
 serde_json = "1"
 async-trait = "0.1"
-nano-agent = { path = "../nano-agent" }
-nano-model = { path = "../nano-model" }
+nano-agent = { version = "0.1.0", path = "../nano-agent" }
+nano-model = { version = "0.1.0", path = "../nano-model" }

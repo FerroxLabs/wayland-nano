@@ -7,9 +7,9 @@
 //! codex_utils_absolute_path -> nano_core::abs.
 
 use crate::acl::add_allow_ace;
-use crate::acl::add_deny_write_ace;
+use crate::acl::add_deny_write_ace_on_tree;
 use crate::acl::allow_null_device;
-use crate::acl::ensure_allow_write_aces;
+use crate::acl::ensure_allow_write_aces_on_tree_for_legacy_user_and_token;
 use crate::allow::AllowDenyPaths;
 use crate::allow::compute_allow_paths_for_permissions;
 use crate::cap::load_or_create_cap_sids;
@@ -50,6 +50,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Security::CopySid;
+use windows_sys::Win32::Security::GetLengthSid;
+use windows_sys::Win32::Security::GetTokenInformation;
+use windows_sys::Win32::Security::TOKEN_USER;
+use windows_sys::Win32::Security::TokenUser;
 
 pub struct SpawnContext {
     pub permissions: ResolvedWindowsSandboxPermissions,
@@ -76,6 +81,15 @@ pub struct LegacySessionSecurity {
     pub readonly_sid: Option<LocalSid>,
     pub readonly_sid_str: Option<String>,
     pub write_root_sids: Vec<RootCapabilitySid>,
+    legacy_user_sid: Option<Vec<u8>>,
+}
+
+impl LegacySessionSecurity {
+    pub fn legacy_user_sid_ptr(&self) -> Option<*mut c_void> {
+        self.legacy_user_sid
+            .as_ref()
+            .map(|sid| sid.as_ptr() as *mut c_void)
+    }
 }
 
 pub struct RootCapabilitySid {
@@ -88,6 +102,39 @@ pub struct LegacyAclSids<'a> {
     pub readonly_sid: Option<&'a LocalSid>,
     pub readonly_sid_str: Option<&'a str>,
     pub write_root_sids: &'a [RootCapabilitySid],
+    pub legacy_user_sid: Option<*mut c_void>,
+    pub effective_token: Option<HANDLE>,
+}
+
+/// Copies the user SID out of a token so the legacy-session ACL grant can
+/// name the real user (not just capability SIDs) on existing descendants.
+unsafe fn token_user_sid_bytes(token: HANDLE) -> Result<Vec<u8>> {
+    let mut needed = 0;
+    GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
+    if needed == 0 {
+        anyhow::bail!("TokenUser size query failed");
+    }
+    let mut buffer = vec![0u8; needed as usize];
+    if GetTokenInformation(
+        token,
+        TokenUser,
+        buffer.as_mut_ptr() as *mut c_void,
+        needed,
+        &mut needed,
+    ) == 0
+    {
+        anyhow::bail!("TokenUser query failed");
+    }
+    let user = std::ptr::read_unaligned(buffer.as_ptr() as *const TOKEN_USER);
+    let sid_len = GetLengthSid(user.User.Sid);
+    if sid_len == 0 {
+        anyhow::bail!("TokenUser SID length query failed");
+    }
+    let mut sid = vec![0u8; sid_len as usize];
+    if CopySid(sid_len, sid.as_mut_ptr() as *mut c_void, user.User.Sid) == 0 {
+        anyhow::bail!("TokenUser SID copy failed");
+    }
+    Ok(sid)
 }
 
 fn prepare_spawn_context_common(
@@ -162,13 +209,20 @@ pub fn prepare_legacy_session_security(
     capability_roots: impl IntoIterator<Item = PathBuf>,
 ) -> Result<LegacySessionSecurity> {
     let caps = load_or_create_cap_sids(codex_home)?;
-    let (h_token, readonly_sid, readonly_sid_str, write_root_sids) = unsafe {
+    let (h_token, readonly_sid, readonly_sid_str, write_root_sids, legacy_user_sid) = unsafe {
         if uses_write_capabilities {
             let write_root_sids = root_capability_sids(codex_home, cwd, capability_roots)?;
             if write_root_sids.is_empty() {
                 anyhow::bail!("workspace-write sandbox has no writable root capability SIDs");
             }
             let base = get_current_token_for_restriction()?;
+            let legacy_user_sid = match token_user_sid_bytes(base) {
+                Ok(sid) => sid,
+                Err(err) => {
+                    CloseHandle(base);
+                    return Err(err);
+                }
+            };
             let cap_ptrs: Vec<*mut c_void> = write_root_sids
                 .iter()
                 .map(|root| root.sid.as_ptr())
@@ -176,11 +230,11 @@ pub fn prepare_legacy_session_security(
             let h_token = create_workspace_write_token_with_caps_from(base, cap_ptrs.as_slice());
             CloseHandle(base);
             let h_token = h_token?;
-            (h_token, None, None, write_root_sids)
+            (h_token, None, None, write_root_sids, Some(legacy_user_sid))
         } else {
             let psid = LocalSid::from_string(&caps.readonly)?;
             let (h_token, _psid) = create_readonly_token_with_cap(psid.as_ptr())?;
-            (h_token, Some(psid), Some(caps.readonly), Vec::new())
+            (h_token, Some(psid), Some(caps.readonly), Vec::new(), None)
         }
     };
 
@@ -189,6 +243,7 @@ pub fn prepare_legacy_session_security(
         readonly_sid,
         readonly_sid_str,
         write_root_sids,
+        legacy_user_sid,
     })
 }
 
@@ -297,21 +352,40 @@ pub fn apply_legacy_session_acl_rules(
             }
             deny.insert(path.clone());
         }
+        // Materialize every carveout before refreshing writable-tree allows. The ACL traversal
+        // treats an explicit capability write deny as an excluded subtree, so repeated setup never
+        // grants or temporarily widens protected metadata and read-only paths.
+        for p in &deny {
+            for root_sid in deny_root_capabilities_for_path(p, acl_sids.write_root_sids) {
+                add_deny_write_ace_on_tree(p, root_sid.sid.as_ptr())
+                    .with_context(|| format!("deny sandbox writes to {}", p.display()))?;
+            }
+        }
         if let Some(readonly_sid) = acl_sids.readonly_sid {
             for p in &allow {
-                let _ = add_allow_ace(p, readonly_sid.as_ptr());
+                add_allow_ace(p, readonly_sid.as_ptr())
+                    .with_context(|| format!("grant readonly sandbox access to {}", p.display()))?;
             }
         } else {
             for p in &allow {
                 let Some(root_sid) = matching_root_capability(p, acl_sids.write_root_sids) else {
                     continue;
                 };
-                let _ = ensure_allow_write_aces(p, &[root_sid.sid.as_ptr()]);
-            }
-        }
-        for p in &deny {
-            for root_sid in deny_root_capabilities_for_path(p, acl_sids.write_root_sids) {
-                let _ = add_deny_write_ace(p, root_sid.sid.as_ptr());
+                let effective_token = acl_sids
+                    .effective_token
+                    .ok_or_else(|| anyhow::anyhow!("legacy effective token is missing"))?;
+                ensure_allow_write_aces_on_tree_for_legacy_user_and_token(
+                    p,
+                    &[root_sid.sid.as_ptr()],
+                    acl_sids.legacy_user_sid,
+                    effective_token,
+                )
+                .with_context(|| {
+                    format!(
+                        "grant transactional sandbox write access to {}",
+                        p.display()
+                    )
+                })?;
             }
         }
         if !additional_deny_read_paths.is_empty() {

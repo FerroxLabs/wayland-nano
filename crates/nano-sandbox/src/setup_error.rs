@@ -33,6 +33,8 @@ pub enum SetupErrorCode {
     OrchestratorHelperLaunchFailed,
     /// User canceled the UAC prompt while launching the helper.
     OrchestratorHelperLaunchCanceled,
+    /// Helper exceeded its deadline and cooperative cancellation was requested.
+    OrchestratorHelperTimedOut,
     /// Helper exited non-zero and no structured report was available.
     OrchestratorHelperExitNonzero,
     /// Helper exited non-zero and reading `setup_error.json` failed.
@@ -102,6 +104,7 @@ impl SetupErrorCode {
             Self::OrchestratorPayloadSerializeFailed => "orchestrator_payload_serialize_failed",
             Self::OrchestratorHelperLaunchFailed => "orchestrator_helper_launch_failed",
             Self::OrchestratorHelperLaunchCanceled => "orchestrator_helper_launch_canceled",
+            Self::OrchestratorHelperTimedOut => "orchestrator_helper_timed_out",
             Self::OrchestratorHelperExitNonzero => "orchestrator_helper_exit_nonzero",
             Self::OrchestratorHelperReportReadFailed => "orchestrator_helper_report_read_failed",
             Self::OrchestratorHelperIncomplete => "orchestrator_helper_incomplete",

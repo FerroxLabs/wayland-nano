@@ -69,7 +69,6 @@ use windows_sys::Win32::Security::Authorization::EXPLICIT_ACCESS_W;
 use windows_sys::Win32::Security::Authorization::GRANT_ACCESS;
 use windows_sys::Win32::Security::PSECURITY_DESCRIPTOR;
 use windows_sys::Win32::System::Rpc::RPC_C_AUTHN_DEFAULT;
-use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::core::GUID;
 
 use filter_specs::ConditionSpec;
@@ -81,6 +80,13 @@ const PROVIDER_NAME: &str = "Wayland Nano Sandbox WFP";
 const PROVIDER_DESCRIPTION: &str = "Persistent WFP provider for Wayland Nano sandbox filters";
 const SUBLAYER_NAME: &str = "Wayland Nano Sandbox WFP";
 const SUBLAYER_DESCRIPTION: &str = "Persistent WFP sublayer for Wayland Nano sandbox filters";
+/// Bounds contention on WFP's global write transaction lock. This must remain
+/// comfortably below the elevated setup helper's 120-second deadline so the
+/// caller can report the WFP error and continue setup normally. (Track A fix:
+/// the donor waited INFINITE, which could strand the bounded helper wait.)
+const WFP_TRANSACTION_WAIT_TIMEOUT_MS: u32 = 30_000;
+const _: () = assert!(WFP_TRANSACTION_WAIT_TIMEOUT_MS > 0);
+const _: () = assert!(WFP_TRANSACTION_WAIT_TIMEOUT_MS < 120_000);
 
 // WFP identifies persistent providers, sublayers, and filters by stable GUIDs.
 // These values are Wayland Nano-owned identities, freshly generated for the
@@ -121,13 +127,17 @@ struct Engine {
 
 impl Engine {
     fn open() -> Result<Self> {
+        Self::open_with_transaction_wait_timeout(WFP_TRANSACTION_WAIT_TIMEOUT_MS)
+    }
+
+    fn open_with_transaction_wait_timeout(transaction_wait_timeout_ms: u32) -> Result<Self> {
         let session_name = to_wide(OsStr::new(SESSION_NAME));
         let mut session: FWPM_SESSION0 = unsafe { zeroed() };
         session.displayData = FWPM_DISPLAY_DATA0 {
             name: session_name.as_ptr() as *mut _,
             description: null_mut(),
         };
-        session.txnWaitTimeoutInMSec = INFINITE;
+        session.txnWaitTimeoutInMSec = transaction_wait_timeout_ms;
 
         let mut handle = HANDLE::default();
         let result = unsafe {
@@ -595,5 +605,42 @@ mod tests {
             assert_ne!(key_tuple(&spec.key), key_tuple(&PROVIDER_KEY));
             assert_ne!(key_tuple(&spec.key), key_tuple(&SUBLAYER_KEY));
         }
+    }
+
+    #[test]
+    fn transaction_wait_timeout_precedes_elevated_setup_deadline() {
+        let timeout_ms = std::hint::black_box(super::WFP_TRANSACTION_WAIT_TIMEOUT_MS);
+        assert!(timeout_ms > 0);
+        assert!(timeout_ms < 120_000);
+    }
+
+    /// Exercises the real, system-wide WFP write lock. It is ignored by default
+    /// because opening a write transaction requires an elevated test process.
+    #[test]
+    #[ignore = "requires an elevated Windows process and the Base Filtering Engine service"]
+    fn contending_transaction_fails_within_session_timeout() {
+        use super::Engine;
+        use std::time::Duration;
+        use std::time::Instant;
+
+        const CONTENTION_TIMEOUT_MS: u32 = 100;
+
+        let first_engine = Engine::open_with_transaction_wait_timeout(CONTENTION_TIMEOUT_MS)
+            .expect("open first WFP engine");
+        let _first_transaction = first_engine
+            .begin_transaction()
+            .expect("begin first WFP transaction");
+        let second_engine = Engine::open_with_transaction_wait_timeout(CONTENTION_TIMEOUT_MS)
+            .expect("open second WFP engine");
+
+        let started = Instant::now();
+        let result = second_engine.begin_transaction();
+        let elapsed = started.elapsed();
+
+        assert!(result.is_err(), "contending transaction unexpectedly began");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "contending transaction exceeded its bounded wait: {elapsed:?}"
+        );
     }
 }

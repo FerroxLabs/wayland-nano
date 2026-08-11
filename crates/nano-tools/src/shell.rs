@@ -144,6 +144,21 @@ impl ShellTool {
         command: &str,
         timeout: Option<std::time::Duration>,
     ) -> Result<ShellOutput, ShellError> {
+        self.run_with_env(shell, command, timeout, HashMap::new())
+    }
+
+    /// `run` with extra environment entries for the captured child. Tests use
+    /// this to give each test its own TEMP/TMP: the transactional ACL
+    /// traversal requires a quiescent tree, and a shared scoped temp root
+    /// races under parallel cargo test (fail-closed verification trips).
+    #[cfg(windows)]
+    pub fn run_with_env(
+        &self,
+        shell: ShellKind,
+        command: &str,
+        timeout: Option<std::time::Duration>,
+        extra_env: HashMap<String, String>,
+    ) -> Result<ShellOutput, ShellError> {
         let started = std::time::Instant::now();
         let roots = [AbsolutePathBuf::from_absolute_path(&self.workspace)
             .map_err(|e| ShellError::Spawn(format!("workspace root: {e}")))?];
@@ -153,7 +168,7 @@ impl ShellTool {
             &self.nano_home,
             Self::argv(shell, command),
             &self.workspace,
-            HashMap::new(),
+            extra_env,
             timeout.map(|t| t.as_millis() as u64),
             None,
             false,
@@ -579,16 +594,26 @@ mod tests {
         (tmp, home, ws)
     }
 
+    /// Per-test TEMP/TMP so the sandbox capture ACLs a per-test scoped temp
+    /// root instead of the shared one (parallel cargo test races the
+    /// fail-closed ACL verification otherwise).
+    #[cfg(windows)]
+    fn fixture_env(tmp: &tempfile::TempDir) -> HashMap<String, String> {
+        let p = tmp.path().to_string_lossy().into_owned();
+        HashMap::from([("TEMP".to_string(), p.clone()), ("TMP".to_string(), p)])
+    }
+
     #[cfg(windows)]
     #[test]
     fn cmd_echo_returns_zero_and_output() {
         let (_tmp, home, ws) = fixture();
         let tool = ShellTool::new(&home, &ws);
         let out = tool
-            .run(
+            .run_with_env(
                 ShellKind::Cmd,
                 "echo nano-shell",
                 Some(std::time::Duration::from_secs(60)),
+                fixture_env(&_tmp),
             )
             .expect("spawn");
         assert_eq!(out.exit_code, 0);
@@ -603,10 +628,11 @@ mod tests {
         let (_tmp, home, ws) = fixture();
         let tool = ShellTool::new(&home, &ws);
         let out = tool
-            .run(
+            .run_with_env(
                 ShellKind::Cmd,
                 "echo data > shell-out.txt && type shell-out.txt",
                 Some(std::time::Duration::from_secs(60)),
+                fixture_env(&_tmp),
             )
             .expect("spawn");
         assert_eq!(out.exit_code, 0);
@@ -620,10 +646,11 @@ mod tests {
         let (_tmp, home, ws) = fixture();
         let tool = ShellTool::new(&home, &ws);
         let out = tool
-            .run(
+            .run_with_env(
                 ShellKind::Cmd,
                 "exit 3",
                 Some(std::time::Duration::from_secs(60)),
+                fixture_env(&_tmp),
             )
             .expect("spawn");
         assert_eq!(out.exit_code, 3);

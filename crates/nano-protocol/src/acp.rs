@@ -339,7 +339,10 @@ mod tests {
         // stdio-only MCP: the block's presence advertises stdio to Desktop
         // (acpTypes.ts), http/sse stay honestly false.
         let mcp = &caps["agentCapabilities"]["mcpCapabilities"];
-        assert!(mcp.is_object(), "mcpCapabilities must be advertised: {caps}");
+        assert!(
+            mcp.is_object(),
+            "mcpCapabilities must be advertised: {caps}"
+        );
         assert_eq!(mcp["http"], false);
         assert_eq!(mcp["sse"], false);
     }
