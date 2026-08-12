@@ -333,3 +333,17 @@ promotes/closes entries; builders append only.
 - **Close means:** a design/panel decision adds a task-family variant to
   `NanoErrorKind` (serde-compatible vocabulary extension) and threads it
   through the spawn-failure path.
+
+## F-24: Backend name does not cross the ACP wire card or journal-rebuilt context (P1 re-proof, leg R2 residual) — OPEN, small
+
+- **Filed:** 2026-08-12, from the P1 fix re-proof (leg R2). The masking bug
+  itself is dead (9849541): the failing turn's model-facing error names the
+  backend (`web_search backend brave failed: ...`) and the wire card carries
+  the real typed kind (`model_server_4xx`), never the "unavailable" mask.
+- **Residual:** the backend-naming string does not survive (a) the ACP wire
+  card — digest + static presentation by C7 design — or (b) the
+  journal-rebuilt cross-turn context (`<presentation> [output elided]`). A
+  verbatim-quote follow-up reproduces the static presentation, not the
+  backend-naming string, so a later turn cannot learn WHICH backend failed.
+- **Close means:** include the backend name in the C7 wire-card presentation
+  payload (or the elided journal rebuild) for backend-typed tool errors.
