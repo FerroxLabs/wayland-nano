@@ -263,6 +263,50 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
             "Goal operation failed",
             "Check goal status, then retry",
         ),
+        // ── P2a §7 vision intake family ─────────────────────────────────
+        // Intake/rung rejections of `session/prompt`: request-level
+        // rejections (-32602), same family as InvalidParams/ModelNotFound.
+        NanoErrorKind::ModelLacksVision => response(
+            -32602,
+            false,
+            "This model can't process images",
+            "Switch to a vision-capable model (/model)",
+        ),
+        NanoErrorKind::ImageInvalid => response(
+            -32602,
+            false,
+            "The image couldn't be read",
+            "Corrupt or not really an image",
+        ),
+        NanoErrorKind::ImageUnsupportedFormat => response(
+            -32602,
+            false,
+            "That image format isn't supported",
+            "Convert to PNG or JPEG and retry",
+        ),
+        NanoErrorKind::ImageTooLarge => response(
+            -32602,
+            false,
+            "The image is too large",
+            "Limit: 50 MiB file / 768 KiB after compression",
+        ),
+        NanoErrorKind::ImageTooMany => response(
+            -32602,
+            false,
+            "Too many images in one prompt",
+            "Limit: 16 images",
+        ),
+        // Resume-degradation kinds surface via session/update notices, never
+        // as error responses; the tool-card surface carries the static
+        // presentation (the SandboxSetup precedent).
+        NanoErrorKind::AttachmentMissing => card(
+            "An earlier attachment couldn't be restored from the attachment store",
+            "",
+        ),
+        NanoErrorKind::AttachmentStoreError => card(
+            "The attachment store is unavailable or insecurely configured",
+            "",
+        ),
         // Unknown kinds classify TERMINAL in both clients and never retry
         // (design §2/D2 forward-compat rule).
         NanoErrorKind::Unknown => response(
@@ -318,6 +362,13 @@ pub const ALL_KINDS: &[NanoErrorKind] = &[
     NanoErrorKind::InvalidParams,
     NanoErrorKind::SessionForkFailed,
     NanoErrorKind::GoalOpFailed,
+    NanoErrorKind::ModelLacksVision,
+    NanoErrorKind::ImageInvalid,
+    NanoErrorKind::ImageUnsupportedFormat,
+    NanoErrorKind::ImageTooLarge,
+    NanoErrorKind::ImageTooMany,
+    NanoErrorKind::AttachmentMissing,
+    NanoErrorKind::AttachmentStoreError,
 ];
 
 /// The static, provider-free presentation for one kind: title plus the
@@ -433,9 +484,10 @@ mod tests {
 
     /// Pinned count: adding a kind without updating ALL_KINDS fails here;
     /// adding one without a spec fails to compile (exhaustive match above).
+    /// P2a §7 added the seven vision-intake kinds (41 → 48).
     #[test]
     fn all_kinds_count_is_pinned() {
-        assert_eq!(ALL_KINDS.len(), 41);
+        assert_eq!(ALL_KINDS.len(), 48);
     }
 
     /// The drift alarm: the committed JSON artifact must be byte-identical

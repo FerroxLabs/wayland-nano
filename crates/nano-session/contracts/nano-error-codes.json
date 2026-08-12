@@ -327,6 +327,62 @@
       "surface": "error_response",
       "title": "Goal operation failed",
       "wireCode": -32603
+    },
+    {
+      "hint": "Switch to a vision-capable model (/model)",
+      "kind": "model_lacks_vision",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "This model can't process images",
+      "wireCode": -32602
+    },
+    {
+      "hint": "Corrupt or not really an image",
+      "kind": "image_invalid",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "The image couldn't be read",
+      "wireCode": -32602
+    },
+    {
+      "hint": "Convert to PNG or JPEG and retry",
+      "kind": "image_unsupported_format",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "That image format isn't supported",
+      "wireCode": -32602
+    },
+    {
+      "hint": "Limit: 50 MiB file / 768 KiB after compression",
+      "kind": "image_too_large",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "The image is too large",
+      "wireCode": -32602
+    },
+    {
+      "hint": "Limit: 16 images",
+      "kind": "image_too_many",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Too many images in one prompt",
+      "wireCode": -32602
+    },
+    {
+      "hint": "",
+      "kind": "attachment_missing",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "An earlier attachment couldn't be restored from the attachment store",
+      "wireCode": -32603
+    },
+    {
+      "hint": "",
+      "kind": "attachment_store_error",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "The attachment store is unavailable or insecurely configured",
+      "wireCode": -32603
     }
   ],
   "generator": "cargo run -p nano-cli --bin gen_error_table",

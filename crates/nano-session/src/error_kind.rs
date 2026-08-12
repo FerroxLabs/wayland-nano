@@ -88,6 +88,29 @@ pub enum NanoErrorKind {
     /// A `_wayland/goal/*` failure (C11): transition rejection or journal
     /// I/O — same static-presentation discipline.
     GoalOpFailed,
+    // ── vision intake family (P2a §7; all fail-closed, never retryable) ───
+    /// An image-bearing prompt/request against a current model leaf that is
+    /// not vision-proven in the static catalog (§6.2 rungs 1+3). Zero egress
+    /// precedes this rejection.
+    ModelLacksVision,
+    /// Sniff failure, claim-vs-sniff mismatch, corrupt/truncated decode,
+    /// structural-parse failure, or a contained decoder panic (§4.3).
+    ImageInvalid,
+    /// The sniffed format is outside the closed intake set {png, jpeg, gif,
+    /// webp} (SVG/BMP/TIFF are rejected by construction, §4.3 step 2).
+    ImageUnsupportedFormat,
+    /// File bytes, header-declared pixels/dimensions, or the post-ladder
+    /// wire payload exceeded a §4.2 cap (binary units throughout).
+    ImageTooLarge,
+    /// More than 16 images or more than 50 MiB aggregate in one prompt
+    /// (§4.2 count/aggregate caps).
+    ImageTooMany,
+    /// Resume rehydration found a digest with no verifiable blob, or a
+    /// malformed digest (§5.3) — resume continues with a loud placeholder.
+    AttachmentMissing,
+    /// Attachment store open/audit/IO failure, incl. the Windows ACL audit
+    /// (§5.5) and GC lock failure (§5.4). Fail-closed.
+    AttachmentStoreError,
     /// A kind written by a newer build (forward tolerance — deserialize
     /// only; never constructed by this build's mappers).
     #[serde(other)]
