@@ -946,7 +946,28 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(page.content.starts_with("mark"));
+        // Line 500 is a ~1 MiB sparse-zero line: the page hard-cuts it at
+        // the byte budget (bounded memory) with an intra-line byte cursor.
+        assert!(page.content.len() <= 100 * 1024);
+        assert_eq!(
+            page.cursor,
+            PageCursor::LineTruncated {
+                line_offset: 500,
+                byte_offset_in_line: 100 * 1024,
+            }
+        );
+        // And the byte resume at depth completes too.
+        let page = tools
+            .read_file(
+                &file,
+                &ReadBounds {
+                    line_offset: Some(500),
+                    byte_offset_in_line: Some(100 * 1024),
+                    max_lines: 2,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert!(page.content.len() <= 100 * 1024);
     }
 }
