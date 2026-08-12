@@ -15,6 +15,10 @@ nano-egress = { version = "0.1.0", path = "../nano-egress" }
 serde_json = "1"
 thiserror = "2"
 
+[target.'cfg(unix)'.dependencies]
+# Process-group kill for the C6 task kill domain (run_task).
+libc = "0.2"
+
 [dev-dependencies]
 # Feature-unify the pure unix argv/policy builders into test builds so the
 # shell transform wiring is unit-tested on every host (they are pure string

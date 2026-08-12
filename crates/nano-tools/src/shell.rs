@@ -105,6 +105,104 @@ pub enum ShellError {
 
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 
+/// C6 kill domain (design §10): the registry of OS teardown handles for ONE
+/// background task. Every command a child task runs registers its handle
+/// here at spawn time — through [`ShellTool::run_task`], the ONLY process
+/// launch path a child executor holds (the enforceable construction
+/// boundary, codex r2) — and task teardown iterates [`Self::terminate_all`].
+///
+/// Windows: per-command Job Object handles created WITHOUT breakaway
+/// permission (`run_windows_sandbox_capture_for_task`), so
+/// CREATE_BREAKAWAY_FROM_JOB grandchildren cannot escape. Unix: per-command
+/// process groups (each capture spawns its command as a process-group
+/// leader; teardown SIGKILLs the group).
+#[derive(Debug, Default)]
+pub struct KillRegistry {
+    #[cfg(windows)]
+    jobs: std::sync::Mutex<Vec<std::sync::Arc<nano_sandbox::job::JobObject>>>,
+    #[cfg(unix)]
+    groups: std::sync::Mutex<Vec<i32>>,
+}
+
+impl KillRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Live registered handles (test observability + teardown diagnostics).
+    pub fn registered_count(&self) -> usize {
+        #[cfg(windows)]
+        {
+            self.jobs.lock().unwrap_or_else(|p| p.into_inner()).len()
+        }
+        #[cfg(unix)]
+        {
+            self.groups.lock().unwrap_or_else(|p| p.into_inner()).len()
+        }
+        #[cfg(not(any(windows, unix)))]
+        {
+            0
+        }
+    }
+
+    /// Terminate every registered command tree. Best-effort per handle —
+    /// an individual failure is logged, never panics and never stops the
+    /// sweep (a teardown that aborts halfway would orphan the rest).
+    pub fn terminate_all(&self) {
+        #[cfg(windows)]
+        {
+            let jobs: Vec<_> = self.jobs.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            for job in &jobs {
+                if let Err(err) = job.terminate() {
+                    eprintln!("wayland-nano: task job terminate failed: {err}");
+                }
+            }
+        }
+        #[cfg(unix)]
+        {
+            let groups: Vec<i32> = self
+                .groups
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            for pgid in groups {
+                // Negative pid: the whole process group.
+                let rc = unsafe { libc::kill(-pgid, libc::SIGKILL) };
+                if rc != 0 {
+                    let err = std::io::Error::last_os_error();
+                    // ESRCH = the group already exited — not a failure.
+                    if err.raw_os_error() != Some(libc::ESRCH) {
+                        eprintln!("wayland-nano: task process-group kill failed: {err}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn job_sink(
+        &self,
+    ) -> &std::sync::Mutex<Vec<std::sync::Arc<nano_sandbox::job::JobObject>>> {
+        &self.jobs
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn register_group(&self, pgid: i32) {
+        self.groups
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(pgid);
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn deregister_group(&self, pgid: i32) {
+        self.groups
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|g| *g != pgid);
+    }
+}
+
 #[derive(Debug)]
 pub struct ShellTool {
     /// Read by the Windows capture path (sandbox setup state lives under the
@@ -189,6 +287,47 @@ impl ShellTool {
         })
     }
 
+    /// C6: run a command as part of a background task — identical to
+    /// [`Self::run`], but the spawn goes through the no-breakaway capture
+    /// variant and its Job Object handle is registered with the task's kill
+    /// domain, so task teardown terminates the whole command tree.
+    #[cfg(windows)]
+    pub fn run_task(
+        &self,
+        shell: ShellKind,
+        command: &str,
+        timeout: Option<std::time::Duration>,
+        registry: &KillRegistry,
+    ) -> Result<ShellOutput, ShellError> {
+        let started = std::time::Instant::now();
+        let roots = [AbsolutePathBuf::from_absolute_path(&self.workspace)
+            .map_err(|e| ShellError::Spawn(format!("workspace root: {e}")))?];
+        let result: CaptureResult = nano_sandbox::capture::run_windows_sandbox_capture_for_task(
+            &PermissionProfile::workspace_write(),
+            &roots,
+            &self.nano_home,
+            Self::argv(shell, command),
+            &self.workspace,
+            HashMap::new(),
+            timeout.map(|t| t.as_millis() as u64),
+            registry.job_sink(),
+        )
+        .map_err(|e| ShellError::Spawn(format!("{e:#}")))?;
+
+        let (stdout, out_trunc) = truncate_lossy(result.stdout, MAX_OUTPUT_BYTES);
+        let (stderr, err_trunc) = truncate_lossy(result.stderr, MAX_OUTPUT_BYTES);
+
+        Ok(ShellOutput {
+            exit_code: result.exit_code,
+            stdout,
+            stderr,
+            timed_out: result.timed_out,
+            truncated: out_trunc || err_trunc,
+            shell,
+            duration: started.elapsed(),
+        })
+    }
+
     /// Executes `command` contained to the workspace (workspace-write
     /// profile), with output bounds and an optional timeout.
     ///
@@ -220,7 +359,46 @@ impl ShellTool {
         let profile = unix_workspace_write_profile();
         let platform =
             platform_sandbox_command(unix_shell_argv(command), &profile, &self.workspace)?;
-        let result = capture_unix_command_env(platform, &self.workspace, timeout, extra_env)?;
+        let result = capture_unix_command_env(platform, &self.workspace, timeout, extra_env, None)?;
+
+        let (stdout, out_trunc) = truncate_lossy(result.stdout, MAX_OUTPUT_BYTES);
+        let (stderr, err_trunc) = truncate_lossy(result.stderr, MAX_OUTPUT_BYTES);
+
+        Ok(ShellOutput {
+            exit_code: result.exit_code,
+            stdout,
+            stderr,
+            timed_out: result.timed_out,
+            truncated: out_trunc || err_trunc,
+            shell,
+            duration: started.elapsed(),
+        })
+    }
+
+    /// C6 unix arm of [`Self::run_task`]: the command spawns as a
+    /// process-group leader and its group registers with the task's kill
+    /// domain; teardown SIGKILLs the group (and a timeout kills the whole
+    /// group, not just the root process).
+    #[cfg(unix)]
+    pub fn run_task(
+        &self,
+        shell: ShellKind,
+        command: &str,
+        timeout: Option<std::time::Duration>,
+        registry: &KillRegistry,
+    ) -> Result<ShellOutput, ShellError> {
+        let _ = shell; // unix always runs sh -c (see unix_shell_argv)
+        let started = std::time::Instant::now();
+        let profile = unix_workspace_write_profile();
+        let platform =
+            platform_sandbox_command(unix_shell_argv(command), &profile, &self.workspace)?;
+        let result = capture_unix_command_env(
+            platform,
+            &self.workspace,
+            timeout,
+            HashMap::new(),
+            Some(registry),
+        )?;
 
         let (stdout, out_trunc) = truncate_lossy(result.stdout, MAX_OUTPUT_BYTES);
         let (stderr, err_trunc) = truncate_lossy(result.stderr, MAX_OUTPUT_BYTES);
@@ -243,6 +421,20 @@ impl ShellTool {
         _shell: ShellKind,
         _command: &str,
         _timeout: Option<std::time::Duration>,
+    ) -> Result<ShellOutput, ShellError> {
+        Err(ShellError::SandboxUnavailable(
+            "no sandbox backend exists for this platform; refusing to run unsandboxed".into(),
+        ))
+    }
+
+    /// No sandbox backend exists for this target — fail closed, always.
+    #[cfg(not(any(windows, unix)))]
+    pub fn run_task(
+        &self,
+        _shell: ShellKind,
+        _command: &str,
+        _timeout: Option<std::time::Duration>,
+        _registry: &KillRegistry,
     ) -> Result<ShellOutput, ShellError> {
         Err(ShellError::SandboxUnavailable(
             "no sandbox backend exists for this platform; refusing to run unsandboxed".into(),
@@ -489,12 +681,16 @@ struct UnixCaptureResult {
 /// reader threads, a poll loop against the deadline, kill past the timeout,
 /// and the same synthetic timeout exit code (128 + 64) the Windows capture
 /// reports. `extra_env` entries are merged over the inherited environment.
+/// With `registry` (C6 task mode) the child becomes a process-group leader,
+/// the group is registered for teardown, and a timeout SIGKILLs the whole
+/// group rather than the root process alone.
 #[cfg(unix)]
 fn capture_unix_command_env(
     platform: PlatformCommand,
     cwd: &Path,
     timeout: Option<std::time::Duration>,
     extra_env: HashMap<String, String>,
+    registry: Option<&KillRegistry>,
 ) -> Result<UnixCaptureResult, ShellError> {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
@@ -518,9 +714,18 @@ fn capture_unix_command_env(
     if let Some(arg0) = platform.arg0 {
         command.arg0(arg0);
     }
+    if registry.is_some() {
+        // Own process group (pgid = child pid): the kill domain addresses
+        // the whole tree, not just the root.
+        command.process_group(0);
+    }
     let mut child = command
         .spawn()
         .map_err(|e| ShellError::Spawn(format!("{e}")))?;
+    let pgid = registry.map(|_| child.id() as i32);
+    if let (Some(registry), Some(pgid)) = (registry, pgid) {
+        registry.register_group(pgid);
+    }
 
     let mut stdout_pipe = child.stdout.take();
     let mut stderr_pipe = child.stderr.take();
@@ -552,6 +757,9 @@ fn capture_unix_command_env(
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
             Err(e) => {
+                if let (Some(registry), Some(pgid)) = (registry, pgid) {
+                    registry.deregister_group(pgid);
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(ShellError::Spawn(format!("wait failed: {e}")));
@@ -559,11 +767,20 @@ fn capture_unix_command_env(
         }
     };
     if timed_out {
+        if let Some(pgid) = pgid {
+            // Task mode: kill the whole process group, not just the root.
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        }
         let _ = child.kill();
     }
     let status = child
         .wait()
         .map_err(|e| ShellError::Spawn(format!("reap failed: {e}")))?;
+    if let (Some(registry), Some(pgid)) = (registry, pgid) {
+        registry.deregister_group(pgid);
+    }
     let _ = t_out.join();
     let _ = t_err.join();
     let stdout = rx_out.recv().unwrap_or_default();

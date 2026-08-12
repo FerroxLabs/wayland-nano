@@ -281,4 +281,149 @@ mod nano_tests {
             );
         });
     }
+
+    /// Re-exec helper for the breakaway test: runs INSIDE the job as the
+    /// child process. Attempts to spawn a grandchild with
+    /// CREATE_BREAKAWAY_FROM_JOB and reports the outcome to the file named
+    /// by NANO_JOB_BREAKAWAY_REPORT as `spawned <pid>` or
+    /// `spawn-failed <error>`, then sleeps so the parent test can terminate
+    /// the job around it. A no-op without the marker env var.
+    #[test]
+    fn breakaway_helper_entry() {
+        if std::env::var_os("NANO_JOB_BREAKAWAY_HELPER").is_none() {
+            return;
+        }
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::CREATE_BREAKAWAY_FROM_JOB;
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+        let spawned = std::process::Command::new("ping.exe")
+            .args(["-t", "127.0.0.1"])
+            .creation_flags(CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW)
+            // Null stdio: a surviving (breakaway) grandchild must never
+            // hold the test harness's pipes open.
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let report = match spawned {
+            Ok(child) => format!("spawned {}", child.id()),
+            Err(err) => format!("spawn-failed {err}"),
+        };
+        let path = std::env::var("NANO_JOB_BREAKAWAY_REPORT").expect("report path");
+        std::fs::write(path, report).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(120));
+    }
+
+    /// C6 mandatory amendment (claude): a job created WITHOUT breakaway
+    /// permission refuses a CREATE_BREAKAWAY_FROM_JOB grandchild outright —
+    /// so no descendant can escape `terminate()`. The control leg (default
+    /// `create()`, BREAKAWAY_OK) shows the grandchild DOES escape and
+    /// survive `terminate()`, proving the test can tell the two apart.
+    #[test]
+    fn breakaway_attempting_grandchild_cannot_escape_no_breakaway_job() {
+        use windows_sys::Win32::System::Threading::OpenProcess;
+        use windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
+        use windows_sys::Win32::System::Threading::PROCESS_TERMINATE;
+
+        fn alive(pid: u32) -> bool {
+            // A terminated process OBJECT lingers while anyone holds a
+            // handle (the helper holds its Child), so aliveness is the exit
+            // code, not the object.
+            let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+            if handle == 0 {
+                return false;
+            }
+            let mut code: u32 = 0;
+            let got = unsafe {
+                windows_sys::Win32::System::Threading::GetExitCodeProcess(handle, &mut code)
+            };
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(handle);
+            }
+            const STILL_ACTIVE: u32 = 259;
+            got != 0 && code == STILL_ACTIVE
+        }
+
+        fn run_leg(allow_breakaway: bool, report_path: &std::path::Path) -> String {
+            let job = if allow_breakaway {
+                JobObject::create().unwrap()
+            } else {
+                JobObject::create_without_breakaway().unwrap()
+            };
+            let exe = std::env::current_exe().unwrap();
+            let mut cmd = Command::new(exe);
+            cmd.args([
+                "--exact",
+                "job::nano_tests::breakaway_helper_entry",
+                "--test-threads=1",
+            ])
+            .env("NANO_JOB_BREAKAWAY_HELPER", "1")
+            .env("NANO_JOB_BREAKAWAY_REPORT", report_path)
+            .kill_on_drop(true);
+            let mut child = job.spawn_contained(&mut cmd).unwrap();
+            // Wait for the helper's report file (it writes before sleeping).
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let report = loop {
+                if let Ok(report) = std::fs::read_to_string(report_path) {
+                    break report.trim().to_string();
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "helper report timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            };
+            // Teardown: terminate the job (kills the helper tree).
+            job.terminate().unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            });
+            report
+        }
+
+        let tmp = std::env::temp_dir().join(format!("nano-job-breakaway-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // Under a no-breakaway job the grandchild spawn is REFUSED.
+        let report = run_leg(false, &tmp.join("report-nb.txt"));
+        assert!(
+            report.starts_with("spawn-failed"),
+            "no-breakaway job must refuse the breakaway grandchild: {report:?}"
+        );
+
+        // Control: under the default (BREAKAWAY_OK) job the grandchild
+        // spawns and SURVIVES job termination — the exact escape the
+        // amendment forbids on the task path. Clean it up explicitly.
+        let report = run_leg(true, &tmp.join("report-ok.txt"));
+        let pid: u32 = report
+            .strip_prefix("spawned ")
+            .and_then(|p| p.parse().ok())
+            .unwrap_or_else(|| panic!("control leg must spawn the grandchild: {report:?}"));
+        let survived = alive(pid);
+        // Always reap the control grandchild before asserting (a failed
+        // assert must not leak it).
+        let terminated = unsafe {
+            windows_sys::Win32::System::Threading::TerminateProcess(
+                OpenProcess(PROCESS_TERMINATE, 0, pid),
+                1,
+            )
+        };
+        assert!(terminated != 0, "control grandchild reaped");
+        assert!(
+            survived,
+            "breakaway grandchild must SURVIVE terminate under the default job (control)"
+        );
+        // Process object teardown is asynchronous: poll for death.
+        let death_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while alive(pid) && std::time::Instant::now() < death_deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(!alive(pid), "reaped grandchild must be gone");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

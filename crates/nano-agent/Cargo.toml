@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+nano-core = { version = "0.1.0", path = "../nano-core" }
 nano-skills = { version = "0.1.0", path = "../nano-skills" }
 nano-mcp = { version = "0.1.0", path = "../nano-mcp" }
 nano-tools = { version = "0.1.0", path = "../nano-tools" }
@@ -14,12 +15,12 @@ nano-egress = { version = "0.1.0", path = "../nano-egress" }
 async-trait = "0.1"
 nano-model = { version = "0.1.0", path = "../nano-model" }
 nano-session = { version = "0.1.0", path = "../nano-session" }
+sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt", "time"] }
 serde_json = "1"
 thiserror = "2"
 
 [dev-dependencies]
-nano-core = { version = "0.1.0", path = "../nano-core" }
 nano-egress = { version = "0.1.0", path = "../nano-egress" }
 futures-util = "0.3"
 tempfile = "3"

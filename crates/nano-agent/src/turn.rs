@@ -267,8 +267,9 @@ impl<'a> TurnEngine<'a> {
             .await
     }
 
-    /// Runs a turn with prepended context messages (skill activation,
-    /// AGENTS.md, restored session blocks — C10).
+    /// Runs a turn with SEVERAL prepended context messages (skill
+    /// activation, AGENTS.md, restored session blocks — C10; the C5 memory
+    /// block), in order, before the user input.
     pub async fn run_turn_with_context_messages(
         &self,
         turn_id: &str,

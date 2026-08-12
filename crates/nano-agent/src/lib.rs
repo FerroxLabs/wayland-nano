@@ -8,7 +8,9 @@ pub mod compact;
 pub mod error_map;
 pub mod loop_protection;
 pub mod mcp;
+pub mod memory;
 pub mod skills;
+pub mod tasks;
 pub mod turn;
 pub mod wiring;
 

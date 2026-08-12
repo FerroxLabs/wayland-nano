@@ -195,6 +195,13 @@ impl Harness {
                 let sandbox_probe = move || sandbox_available;
                 let router = nano_cli::provider_router::ProviderRouter::default();
                 ensure_test_flux_key();
+                // C5: memory store for this harness (writes off unless a
+                // test opts in).
+                let memory_config = acp_mode::MemoryHostConfig {
+                    dir: sessions_dir.parent().expect("root").join("memory"),
+                    write_enabled: false,
+                    block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
+                };
                 let config = acp_mode::ServeConfig {
                     sessions_dir: &sessions_dir,
                     default_model: "mock",
@@ -206,6 +213,7 @@ impl Harness {
                     sandbox_probe: &sandbox_probe,
                     router: &router,
                     journal_append_failer: None,
+                    memory: &memory_config,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -368,6 +376,188 @@ fn journal_modes(dirs: &TestDirs, session_id: &str) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+/// F-C2-1 driver: start a two-write turn, and when the FIRST write's
+/// permission prompt parks the turn, send `set_mode` mid-park (WITHOUT
+/// answering), give the reader thread a beat to relay, then answer allow.
+/// Returns once the prompt AND the queued set_mode have both been answered.
+/// `permission_frames` afterwards tells whether the SECOND write prompted.
+fn park_then_flip(
+    host: &mut Harness,
+    session_id: &str,
+    mode: &str,
+) -> (serde_json::Value, serde_json::Value) {
+    host.next_id += 1;
+    let prompt_id = host.next_id;
+    host.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": prompt_id, "method": "session/prompt",
+        "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": "write two files"}]},
+    }));
+    host.next_id += 1;
+    let mode_id = host.next_id;
+    let mut prompt_response = None;
+    let mut mode_response = None;
+    let mut flipped = false;
+    while prompt_response.is_none() || mode_response.is_none() {
+        let frame = host.next_frame();
+        if frame.get("method").and_then(|m| m.as_str()) == Some("session/request_permission") {
+            let permission_id = frame["id"].as_u64().expect("permission id");
+            if !flipped {
+                flipped = true;
+                // The turn is PARKED inside the gate right now: flip the mode
+                // mid-park, wait for the reader-thread relay (the journal
+                // cannot show it — ModeSet is journaled by the main loop
+                // after the park — so the wait is time-based), then answer.
+                host.send(serde_json::json!({
+                    "jsonrpc": "2.0", "id": mode_id, "method": "session/set_mode",
+                    "params": {"sessionId": session_id, "modeId": mode},
+                }));
+                std::thread::sleep(Duration::from_millis(300));
+            } else {
+                // A SECOND prompt means the flip did NOT reach the running
+                // turn's gate (the de-escalation leg asserts this arm never
+                // fires; the escalation leg asserts it does). Answer it so
+                // the turn can finish.
+            }
+            host.send(serde_json::json!({
+                "jsonrpc": "2.0", "id": permission_id,
+                "result": {"outcome": {"outcome": "selected", "optionId": "allow"}}
+            }));
+            continue;
+        }
+        match frame.get("id").and_then(|v| v.as_u64()) {
+            Some(id) if id == prompt_id => prompt_response = Some(frame),
+            Some(id) if id == mode_id => mode_response = Some(frame),
+            _ => {}
+        }
+    }
+    // The queued set_mode is journaled by the main loop exactly once — and
+    // by now it has been (its response arrived).
+    (
+        prompt_response.expect("prompt ack"),
+        mode_response.expect("mode ack"),
+    )
+}
+
+/// F-C2-1 (de-escalation relayed mid-park): flipping default→read_only
+/// while the turn is PARKED at the first write's permission prompt tightens
+/// the running turn — the SECOND write is denied at the gate with NO
+/// permission frame and a mode-naming denial in the model's context. The
+/// ModeSet is journaled (by the main loop, once the park ends) exactly once.
+#[test]
+fn mid_park_de_escalation_tightens_the_running_turn() {
+    let dirs = TestDirs::new();
+    let mut host = Harness::spawn(
+        vec![
+            tool_response(ToolCall {
+                id: "c1".into(),
+                name: "fs_write".into(),
+                arguments: serde_json::json!({"path": "a.txt", "content": "x"}),
+            }),
+            tool_response(ToolCall {
+                id: "c2".into(),
+                name: "fs_write".into(),
+                arguments: serde_json::json!({"path": "b.txt", "content": "y"}),
+            }),
+            text_response("done"),
+        ],
+        &dirs.sessions(),
+        false,
+    );
+    let session_id = host.new_session(&dirs.workspace());
+
+    let (prompt_response, mode_response) = park_then_flip(&mut host, &session_id, "read_only");
+    assert_eq!(prompt_response["result"]["stopReason"], "end_turn");
+    assert_eq!(
+        mode_response["result"]["modes"]["currentModeId"], "read_only",
+        "the ack carries the modes block (C10 shape)"
+    );
+    assert_eq!(
+        host.permission_frames(),
+        1,
+        "the relayed de-escalation denied the second write WITHOUT a prompt"
+    );
+    let carried = {
+        let requests = host.model_requests.lock().unwrap();
+        requests.iter().any(|request| {
+            request.messages.iter().any(|message| {
+                message.content.iter().any(|block| {
+                    matches!(
+                        block,
+                        nano_model::types::ContentBlock::ToolResult { content, .. }
+                        if content.contains("denied by approval gate: session is in read_only mode")
+                    )
+                })
+            })
+        })
+    };
+    assert!(carried, "the second write's denial must name the mode");
+    assert_eq!(
+        journal_modes(&dirs, &session_id),
+        ["read_only"],
+        "the main loop journaled the accepted set_mode exactly once"
+    );
+    host.shutdown();
+}
+
+/// F-C2-1 (escalation still deferred): flipping default→full_auto mid-park
+/// relays NOTHING — the second write STILL prompts (the running turn keeps
+/// its captured ceiling), and the escalation takes effect only via the main
+/// loop's journal-first path for the NEXT turn.
+#[test]
+fn mid_park_escalation_is_still_deferred() {
+    let dirs = TestDirs::new();
+    let mut host = Harness::spawn(
+        vec![
+            tool_response(ToolCall {
+                id: "c1".into(),
+                name: "fs_write".into(),
+                arguments: serde_json::json!({"path": "a.txt", "content": "x"}),
+            }),
+            tool_response(ToolCall {
+                id: "c2".into(),
+                name: "fs_write".into(),
+                arguments: serde_json::json!({"path": "b.txt", "content": "y"}),
+            }),
+            text_response("done"),
+            // The post-escalation turn: a third contained write, then text.
+            tool_response(ToolCall {
+                id: "c3".into(),
+                name: "fs_write".into(),
+                arguments: serde_json::json!({"path": "c.txt", "content": "z"}),
+            }),
+            text_response("done again"),
+        ],
+        &dirs.sessions(),
+        false,
+    );
+    let session_id = host.new_session(&dirs.workspace());
+
+    let (prompt_response, mode_response) = park_then_flip(&mut host, &session_id, "full_auto");
+    assert_eq!(prompt_response["result"]["stopReason"], "end_turn");
+    assert_eq!(
+        mode_response["result"]["modes"]["currentModeId"], "full_auto",
+        "the ack carries the modes block (C10 shape)"
+    );
+    assert_eq!(
+        host.permission_frames(),
+        2,
+        "escalation must NOT affect the running turn: both writes prompted"
+    );
+    assert_eq!(journal_modes(&dirs, &session_id), ["full_auto"]);
+
+    // The escalation applies from the NEXT turn: a third write under the now
+    // journaled full_auto mode auto-approves without a prompt.
+    let before = host.permission_frames();
+    let response = host.prompt(&session_id, "write c.txt");
+    assert_eq!(response["result"]["stopReason"], "end_turn");
+    assert_eq!(
+        host.permission_frames() - before,
+        0,
+        "the NEXT turn captures full_auto"
+    );
+    host.shutdown();
 }
 
 fn assert_advertises_three_modes(result: &serde_json::Value) {

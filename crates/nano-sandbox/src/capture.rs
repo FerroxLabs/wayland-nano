@@ -14,7 +14,7 @@ use crate::logging::log_failure;
 use crate::logging::log_note;
 use crate::logging::log_success;
 use crate::process::ConsoleMode;
-use crate::process::create_process_as_user;
+use crate::process::create_process_as_user_with_job_policy;
 use crate::sandbox_utils::ensure_nano_home_exists;
 use crate::spawn_prep::LegacyAclSids;
 use crate::spawn_prep::SpawnPrepOptions;
@@ -200,8 +200,72 @@ pub fn run_windows_sandbox_capture(
     )
 }
 
+/// The C6 background-task capture variant: the command's job is created
+/// WITHOUT breakaway permission (a CREATE_BREAKAWAY_FROM_JOB grandchild can
+/// never escape teardown) and its handle is pushed onto `job_sink` so the
+/// task registry can terminate the whole command tree at teardown; the
+/// handle is removed again when the command completes.
+#[allow(clippy::too_many_arguments)]
+pub fn run_windows_sandbox_capture_for_task(
+    permission_profile: &PermissionProfile,
+    workspace_roots: &[AbsolutePathBuf],
+    codex_home: &Path,
+    command: Vec<String>,
+    cwd: &Path,
+    env_map: HashMap<String, String>,
+    timeout_ms: Option<u64>,
+    job_sink: &std::sync::Mutex<Vec<std::sync::Arc<crate::job::JobObject>>>,
+) -> Result<CaptureResult> {
+    capture_inner(
+        permission_profile,
+        workspace_roots,
+        codex_home,
+        command,
+        cwd,
+        env_map,
+        timeout_ms,
+        None,
+        &[],
+        &[],
+        false,
+        /*allow_breakaway*/ false,
+        Some(job_sink),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run_windows_sandbox_capture_with_filesystem_overrides(
+    permission_profile: &PermissionProfile,
+    workspace_roots: &[AbsolutePathBuf],
+    codex_home: &Path,
+    command: Vec<String>,
+    cwd: &Path,
+    env_map: HashMap<String, String>,
+    timeout_ms: Option<u64>,
+    cancellation: Option<WindowsSandboxCancellationToken>,
+    additional_deny_read_paths: &[AbsolutePathBuf],
+    additional_deny_write_paths: &[AbsolutePathBuf],
+    use_private_desktop: bool,
+) -> Result<CaptureResult> {
+    capture_inner(
+        permission_profile,
+        workspace_roots,
+        codex_home,
+        command,
+        cwd,
+        env_map,
+        timeout_ms,
+        cancellation,
+        additional_deny_read_paths,
+        additional_deny_write_paths,
+        use_private_desktop,
+        /*allow_breakaway*/ true,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_inner(
     permission_profile: &PermissionProfile,
     workspace_roots: &[AbsolutePathBuf],
     codex_home: &Path,
@@ -213,6 +277,8 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
     additional_deny_read_paths: &[AbsolutePathBuf],
     additional_deny_write_paths: &[AbsolutePathBuf],
     use_private_desktop: bool,
+    allow_breakaway: bool,
+    job_sink: Option<&std::sync::Mutex<Vec<std::sync::Arc<crate::job::JobObject>>>>,
 ) -> Result<CaptureResult> {
     let additional_deny_read_paths = additional_deny_read_paths
         .iter()
@@ -273,7 +339,7 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
     let (stdin_pair, stdout_pair, stderr_pair) = unsafe { setup_stdio_pipes()? };
     let ((in_r, in_w), (out_r, out_w), (err_r, err_w)) = (stdin_pair, stdout_pair, stderr_pair);
     let spawn_res = unsafe {
-        create_process_as_user(
+        create_process_as_user_with_job_policy(
             security.h_token,
             &command,
             cwd,
@@ -282,6 +348,7 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
             Some((in_r, out_w, err_w)),
             ConsoleMode::Inherit,
             use_private_desktop,
+            allow_breakaway,
         )
     };
     let created = match spawn_res {
@@ -302,6 +369,15 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
     let pi = created.process_info;
     let job = Arc::clone(&created.job);
     let _desktop = created;
+    // C6: register the job handle with the task's kill domain BEFORE the
+    // wait begins, so a teardown racing the command still terminates it;
+    // deregister when the command is reaped (a live sink entry must always
+    // mean a live command tree).
+    if let Some(sink) = job_sink {
+        sink.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(Arc::clone(&job));
+    }
 
     unsafe {
         CloseHandle(in_r);
@@ -391,6 +467,12 @@ pub fn run_windows_sandbox_capture_with_filesystem_overrides(
             &format!("capture failed to preserve descendants after root exit: {err}"),
             logs_base_dir,
         );
+    }
+
+    if let Some(sink) = job_sink {
+        sink.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|registered| !Arc::ptr_eq(registered, &job));
     }
 
     unsafe {

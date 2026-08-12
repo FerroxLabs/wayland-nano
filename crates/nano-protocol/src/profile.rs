@@ -15,7 +15,10 @@ pub fn v1_capabilities() -> NanoCapabilities {
     NanoCapabilities {
         cost_attribution: true,
         mcp: true,
-        memory_enabled: false,
+        // C5: read-side memory injection is live (writes stay gated by host
+        // config — the flag asserts the read side only, per the doc line on
+        // the field).
+        memory_enabled: true,
         plugins: false,
         streaming_tools: true,
         structured_traces: true,

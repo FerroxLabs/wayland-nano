@@ -4,7 +4,10 @@
 //! Live I/O design:
 //! - A dedicated thread owns stdin and forwards parsed frames over a channel,
 //!   so `session/cancel` and permission responses are read *while* a turn
-//!   runs (the old sequential loop was deaf mid-turn).
+//!   runs (the old sequential loop was deaf mid-turn); a `session/set_mode`
+//!   DE-escalation is likewise relayed straight into the session's shared
+//!   mode cell so a turn parked at a permission prompt tightens on its very
+//!   next approval check (F-C2-1 — escalations are never relayed).
 //! - The engine's streaming sink forwards every op as an ACP `session/update`
 //!   the moment it is journaled — no after-the-fact batch replay.
 //! - Mutating/executing tools go through [`AcpApproval`], whose behavior is
@@ -73,6 +76,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 /// Frames the stdin reader thread forwards to the main loop.
+#[derive(Debug)]
 enum Inbound {
     Request {
         id: serde_json::Value,
@@ -91,6 +95,10 @@ enum Inbound {
 /// main loop never has to (it may itself be blocked inside the gate).
 type PendingMap =
     Arc<Mutex<std::collections::HashMap<u64, std::sync::mpsc::Sender<serde_json::Value>>>>;
+
+/// The active session's shared mode cell, exposed to the reader thread for
+/// the F-C2-1 mid-park de-escalation relay (see `reader_loop`).
+type CurrentMode = Arc<Mutex<Option<Arc<Mutex<PermissionMode>>>>>;
 
 struct Session {
     id: String,
@@ -133,6 +141,10 @@ struct Session {
     /// dropping it kills the stdio children, so nothing leaks across
     /// sessions. Shared with the running turn's MCP-merged executor.
     mcp: Arc<Mutex<McpRegistry>>,
+    /// C6: this session's background-task registry. Fresh per session; its
+    /// Drop tears every child down (bounded), and the reader thread holds a
+    /// handle so session/cancel cascades to children mid-poll.
+    tasks: Arc<nano_agent::tasks::TaskRegistry>,
 }
 
 /// ACP session ids are filesystem-safe (they name the journal file) and
@@ -348,6 +360,32 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     // Operator-supplied MCP servers (NANO_MCP_SERVERS) merge into every
     // session alongside the mcpServers param Desktop publishes.
     let env_mcp_specs = crate::mcp_specs::mcp_specs_from_env();
+    // C5: memory. Writes are opt-in (NANO_MEMORY_WRITE=1/true); the block
+    // cap override is downward-only (a larger value is a typed config error,
+    // not a silent clamp — same posture as the C1 overrides).
+    let memory_write = std::env::var("NANO_MEMORY_WRITE")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    let memory_block_cap = match parse_env_u64("NANO_MEMORY_BLOCK_CHARS") {
+        Ok(Some(cap)) if cap as usize > nano_agent::memory::MEMORY_BLOCK_CHAR_CAP => {
+            eprintln!(
+                "wayland-nano: NANO_MEMORY_BLOCK_CHARS is downward-only (max {})",
+                nano_agent::memory::MEMORY_BLOCK_CHAR_CAP
+            );
+            return Ok(2);
+        }
+        Ok(Some(cap)) => cap as usize,
+        Ok(None) => nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
+        Err(err) => {
+            eprintln!("wayland-nano: {err}");
+            return Ok(2);
+        }
+    };
+    let memory_config = MemoryHostConfig {
+        dir: nano_home.join("memory"),
+        write_enabled: memory_write,
+        block_cap: memory_block_cap,
+    };
     let config = ServeConfig {
         sessions_dir: &sessions,
         default_model: &default_model,
@@ -359,6 +397,7 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         sandbox_probe: &sandbox_probe,
         router: &router,
         journal_append_failer: None,
+        memory: &memory_config,
     };
     serve(reader, writer, &config, make_driver, make_tools).await
 }
@@ -429,6 +468,22 @@ pub struct ServeConfig<'a> {
     /// wires None.
     #[doc(hidden)]
     pub journal_append_failer: Option<&'a dyn Fn() -> bool>,
+    /// C5: cross-session memory. Read/injection is always available over the
+    /// user-managed store; the write tools exist only when the operator
+    /// opted in (NANO_MEMORY_WRITE).
+    pub memory: &'a MemoryHostConfig,
+}
+
+/// C5 memory wiring for the ACP host.
+pub struct MemoryHostConfig {
+    /// The store root (`<nano_home>/memory`).
+    pub dir: std::path::PathBuf,
+    /// NANO_MEMORY_WRITE: agent-authored memory writes (memory_save /
+    /// memory_delete) — default OFF (panel ruling Q1).
+    pub write_enabled: bool,
+    /// NANO_MEMORY_BLOCK_CHARS: downward-only override of the 24k injected
+    /// block cap.
+    pub block_cap: usize,
 }
 
 /// How a finished prompt answers the client (C7/D1): a normal `stopReason`
@@ -465,14 +520,14 @@ pub async fn serve<R, W, FD, FT, D, T>(
 where
     R: BufRead + Send + 'static,
     W: Write + Send + 'static,
-    FD: Fn(&crate::provider_router::ProviderBinding) -> D,
+    FD: Fn(&crate::provider_router::ProviderBinding) -> D + Send + Sync + 'static,
     FT: Fn(
         &std::path::Path,
         PermissionMode,
         &std::path::Path,
         Option<DiffHook>,
     ) -> (T, nano_core::permissions::FileSystemSandboxPolicy),
-    D: ModelDriver,
+    D: ModelDriver + 'static,
     T: ToolExecutor,
 {
     let out = Arc::new(Mutex::new(writer));
@@ -482,11 +537,70 @@ where
     // the turn future is mid-poll (tool execution runs synchronously).
     let current_cancel: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>> =
         Arc::new(Mutex::new(None));
+    // F-C2-1: the active session's shared mode cell, exposed to the reader
+    // thread for the same reason. While a turn is parked inside the approval
+    // gate (a synchronous wait the main loop cannot interleave with), a
+    // session/set_mode request would sit in the inbound channel until the
+    // turn ends — so the reader thread relays a DE-escalation straight into
+    // the cell, where the gate's min(captured, current) sees it on the very
+    // next approval check. Escalations are NEVER relayed (they must not
+    // affect the running turn, and an un-journaled escalation would be a
+    // fail-open audit gap); the main loop's validate → journal → mutate →
+    // ack sequence still processes the queued request exactly once.
+    let current_mode: CurrentMode = Arc::new(Mutex::new(None));
+    // C6: the active session's task registry, exposed to the reader thread
+    // so session/cancel CASCADES to children mid-poll (set every child flag
+    // + terminate registered kill handles — fast, no waits).
+    let current_tasks: Arc<Mutex<Option<Arc<nano_agent::tasks::TaskRegistry>>>> =
+        Arc::new(Mutex::new(None));
+    // The driver factory is Arc'd so the per-turn arm AND each session's
+    // task registry (C6: every child builds its own driver on its own
+    // thread, bound to the session's provider) share it.
+    let make_driver = Arc::new(make_driver);
+    // C6: builds a session's child-driver factory by resolving the session
+    // model's provider binding NOW (fail-closed: a resolution failure
+    // becomes a typed task_spawn error, never a silent fallback onto
+    // another provider).
+    let task_nano_home = config
+        .sessions_dir
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| config.sessions_dir.to_path_buf());
+    let make_task_driver_factory = {
+        let make_driver = make_driver.clone();
+        move |model: &str| -> Arc<dyn Fn() -> Result<Arc<dyn ModelDriver>, String> + Send + Sync> {
+            let env_reader = |name: &str| std::env::var(name).ok();
+            match config
+                .router
+                .resolve_binding(model, &env_reader, unix_now_secs())
+            {
+                Ok(binding) => {
+                    let make_driver = make_driver.clone();
+                    Arc::new(move || Ok(Arc::new(make_driver(&binding)) as Arc<dyn ModelDriver>))
+                }
+                Err(err) => {
+                    let message = format!("task driver unavailable: {err:?}");
+                    Arc::new(move || Err(message.clone()))
+                }
+            }
+        }
+    };
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Inbound>();
     std::thread::spawn({
         let pending = pending.clone();
         let current_cancel = current_cancel.clone();
-        move || reader_loop(reader, tx, pending, current_cancel)
+        let current_mode = current_mode.clone();
+        let current_tasks = current_tasks.clone();
+        move || {
+            reader_loop(
+                reader,
+                tx,
+                pending,
+                current_cancel,
+                current_mode,
+                current_tasks,
+            )
+        }
     });
 
     let mut session: Option<Session> = None;
@@ -501,6 +615,13 @@ where
 
     loop {
         if !stdin_open && turn.is_none() {
+            // C6: the host is exiting — tear the session's children down
+            // (bounded; a wedged child detaches and KILL_ON_JOB_CLOSE is
+            // the process-exit backstop). The registry Drop would do this
+            // too; doing it here keeps the ordering explicit.
+            if let Some(active) = session.take() {
+                active.tasks.teardown_all();
+            }
             return Ok(0); // stdin closed and no turn in flight: clean exit
         }
         // Biased: inbound frames (cancel, responses) are handled before the
@@ -528,9 +649,11 @@ where
                         if method == "session/cancel" {
                             // Step-boundary cancel: the engine checks the flag
                             // between steps and the approval gate polls it while
-                            // waiting on a permission response.
+                            // waiting on a permission response. C6: cascades to
+                            // children (their own flags + kill handles).
                             if let Some(active) = &session {
                                 active.cancel.store(true, Ordering::SeqCst);
+                                active.tasks.cancel_all();
                             }
                         }
                     }
@@ -596,6 +719,9 @@ where
                             let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                             *current_cancel.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(cancel.clone());
+                            let mode_cell = Arc::new(Mutex::new(PermissionMode::default()));
+                            *current_mode.lock().unwrap_or_else(|p| p.into_inner()) =
+                                Some(mode_cell.clone());
                             let mcp = session_mcp_registry(&params, config.env_mcp_specs);
                             // C10 §3: the plan posture cell. Fail-closed
                             // construction — a sessions dir that cannot be
@@ -623,6 +749,19 @@ where
                             // the bounded, UNTRUSTED-labeled AGENTS.md block
                             // (rendered fresh per rebuild), nothing else.
                             let context = session_context_prefix(&cwd, &todos, &plan);
+                            // C6: replacing a live session tears its children
+                            // down first (bounded, then detach).
+                            if let Some(old) = session.take() {
+                                old.tasks.teardown_all();
+                            }
+                            let tasks = Arc::new(nano_agent::tasks::TaskRegistry::new(
+                                &task_nano_home,
+                                &cwd,
+                                config.default_model.to_string(),
+                                make_task_driver_factory(config.default_model),
+                            ));
+                            *current_tasks.lock().unwrap_or_else(|p| p.into_inner()) =
+                                Some(tasks.clone());
                             session = Some(Session {
                                 id: session_id.clone(),
                                 workspace: cwd,
@@ -631,11 +770,12 @@ where
                                 turn_counter: 0,
                                 context,
                                 model: config.default_model.to_string(),
-                                mode: Arc::new(Mutex::new(PermissionMode::default())),
+                                mode: mode_cell,
                                 plan,
                                 todos,
                                 mode_changes: 0,
                                 mcp,
+                                tasks,
                             });
                             write_out(
                                 &out,
@@ -760,6 +900,9 @@ where
                             let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                             *current_cancel.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(cancel.clone());
+                            let mode_cell = Arc::new(Mutex::new(PermissionMode::default()));
+                            *current_mode.lock().unwrap_or_else(|p| p.into_inner()) =
+                                Some(mode_cell.clone());
                             let mcp = session_mcp_registry(&params, config.env_mcp_specs);
                             // C10 §3: same fail-closed posture construction
                             // as session/new. The posture itself is NEVER
@@ -790,6 +933,19 @@ where
                             ));
                             let mut context = session_context_prefix(&cwd, &todos, &plan);
                             context.extend(context_messages);
+                            // C6: replacing a live session tears its children
+                            // down first (bounded, then detach).
+                            if let Some(old) = session.take() {
+                                old.tasks.teardown_all();
+                            }
+                            let tasks = Arc::new(nano_agent::tasks::TaskRegistry::new(
+                                &task_nano_home,
+                                &cwd,
+                                config.default_model.to_string(),
+                                make_task_driver_factory(config.default_model),
+                            ));
+                            *current_tasks.lock().unwrap_or_else(|p| p.into_inner()) =
+                                Some(tasks.clone());
                             session = Some(Session {
                                 id: session_id.to_string(),
                                 workspace: cwd,
@@ -807,11 +963,12 @@ where
                                 // session starts in `default`; ModeSet ops
                                 // are audit history only and elevated
                                 // autonomy always takes a fresh set_mode.
-                                mode: Arc::new(Mutex::new(PermissionMode::default())),
+                                mode: mode_cell,
                                 plan,
                                 todos,
                                 mode_changes: 0,
                                 mcp,
+                                tasks,
                             });
                             write_out(
                                 &out,
@@ -913,7 +1070,12 @@ where
                         // (unlike session/compact) this runs while a turn
                         // is in flight; ModeSet is context-neutral on
                         // replay, so interleaving with turn envelopes is
-                        // harmless.
+                        // harmless. While the turn is PARKED inside the
+                        // gate's synchronous prompt wait this loop cannot
+                        // run at all — the reader thread relays a
+                        // de-escalation straight into the cell for that
+                        // case (F-C2-1); this arm then journals and re-sets
+                        // the same value when the loop regains control.
                         "session/set_mode" => {
                             let Some(active) = session.as_mut() else {
                                 write_out(
@@ -1112,7 +1274,7 @@ where
                             active.cancel.store(false, Ordering::SeqCst);
                             active.turn_counter += 1;
                             let turn_id = format!("{}-turn-{}", active.id, active.turn_counter);
-                            let prior_context = active.context.clone();
+                            let mut prior_context = active.context.clone();
                             // C1: resolve this turn's context-management
                             // config against the ACTIVE model's catalog
                             // window. Overrides are downward-only; an
@@ -1122,6 +1284,24 @@ where
                                 &active.model,
                                 config.catalog,
                             );
+                            // C5 §6: prepend the memory block, rendered FRESH
+                            // from the store at every prompt — never cached
+                            // at session open — so a save/delete/hand-edit in
+                            // turn N is visible from turn N+1. Read errors
+                            // fail open (no block). The ACP seam has no
+                            // skills block, so skills_chars is 0 here.
+                            if let Some(memory_block) =
+                                nano_agent::memory::prepare_memory_context(
+                                    &nano_agent::memory::MemoryStore::from_dir(
+                                        config.memory.dir.clone(),
+                                    ),
+                                    catalog_window,
+                                    0,
+                                    config.memory.block_cap,
+                                )
+                            {
+                                prior_context.insert(0, memory_block);
+                            }
                             let compaction = match nano_agent::compact::resolve_compaction_config(
                                 catalog_window,
                                 config.window_override,
@@ -1214,6 +1394,9 @@ where
                                 .plan_file()
                                 .to_path_buf();
                             let journal_path = active.journal.clone();
+                            // The session's task registry (C6): the turn's
+                            // executor routes task_* calls through it.
+                            let turn_tasks = active.tasks.clone();
                             // The turn future must own its handles: clone the
                             // loop-invariant Arcs before the `async move`.
                             let gate_out = out.clone();
@@ -1221,7 +1404,9 @@ where
                             let gate_ids = permission_ids.clone();
                             let sink_out = out.clone();
                             let sandbox_probe = config.sandbox_probe;
-                            let make_driver = &make_driver;
+                            let memory_dir = config.memory.dir.clone();
+                            let memory_write = config.memory.write_enabled;
+                            let make_driver = make_driver.clone();
                             let make_tools = &make_tools;
                             let turn_future = async move {
                                 // The binding's bare model id goes on the
@@ -1268,6 +1453,19 @@ where
                                 let mut tool_definitions = v1_tool_definitions();
                                 tool_definitions
                                     .extend(mcp_executor.tool_definitions_from_registry());
+                                // C5: the memory family routes through its own
+                                // chokepoint wrapper (validation + redaction +
+                                // caps). Read tools always; write tools only
+                                // behind the operator opt-in — the listing the
+                                // model sees reflects exactly that.
+                                let memory_executor = nano_agent::memory::MemoryToolExecutor::new(
+                                    nano_agent::memory::MemoryStore::from_dir(memory_dir),
+                                    memory_write,
+                                    &mcp_executor,
+                                );
+                                tool_definitions.extend(
+                                    nano_agent::memory::memory_tool_definitions(memory_write),
+                                );
                                 let gate = AcpApproval {
                                     session_id: session_id.clone(),
                                     out: gate_out,
@@ -1296,13 +1494,23 @@ where
                                 // route questions through the gate's ONE ask
                                 // channel.
                                 let executor = crate::session_tools::SessionTools::new(
-                                    &mcp_executor,
+                                    &memory_executor,
                                     &gate,
                                     todos_cell,
                                     plan_cell,
                                     journal_path,
                                     session_id.clone(),
                                 );
+                                // C6: the task family routes through the
+                                // session's registry
+                                // (spawn/poll/cancel/apply) — outermost, so
+                                // task_* calls never reach the inner layers.
+                                let executor = nano_agent::tasks::TaskToolExecutor::new(
+                                    turn_tasks,
+                                    &executor,
+                                );
+                                tool_definitions
+                                    .extend(nano_agent::tasks::task_tool_definitions());
                                 let engine = TurnEngine {
                                     model: &driver,
                                     tools: &executor,
@@ -1671,11 +1879,29 @@ fn session_mcp_registry(
 /// *responses* (id, no method) that match a pending permission request are
 /// delivered straight to the waiting gate; everything else goes to the main
 /// loop. EOF or a dead receiver ends the thread.
+///
+/// Two relays land HERE because the main loop may be parked mid-poll inside
+/// the turn (the approval gate waits synchronously on the client):
+/// - `session/cancel` fires the session's cancel flag immediately;
+/// - `session/set_mode` with a DE-escalating mode id mutates the session's
+///   shared mode cell immediately (F-C2-1), so the parked turn's gate sees
+///   it via min(captured, current) on its very next approval check.
+///
+/// The set_mode relay is de-escalation-only and fail-safe by construction:
+/// an escalation is never relayed (it must not affect the running turn, and
+/// an un-journaled escalation would be a fail-open audit gap), an unknown id
+/// relays nothing, and any lock failure relays nothing — the queued request
+/// still reaches the main loop, whose validate → journal → mutate → ack
+/// sequence remains the single journaling point (the relay only re-sets a
+/// value the loop will set again). A relay error can therefore only ever
+/// mean MORE prompts, never fewer.
 fn reader_loop<R: BufRead>(
     mut reader: R,
     tx: tokio::sync::mpsc::UnboundedSender<Inbound>,
     pending: PendingMap,
     current_cancel: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>>,
+    current_mode: CurrentMode,
+    current_tasks: Arc<Mutex<Option<Arc<nano_agent::tasks::TaskRegistry>>>>,
 ) {
     let mut line = String::new();
     loop {
@@ -1706,21 +1932,61 @@ fn reader_loop<R: BufRead>(
             .map(str::to_string);
         let id = value.get("id").cloned().filter(|i| !i.is_null());
         let inbound = match (method, id) {
-            (Some(method), Some(id)) => Inbound::Request {
-                id,
-                method,
-                params: value.get("params").cloned(),
-            },
+            (Some(method), Some(id)) => {
+                if method == "session/set_mode" {
+                    // F-C2-1 de-escalation relay: while the main loop is
+                    // parked inside the gate's synchronous prompt wait, this
+                    // request would sit in the channel until the turn ends.
+                    // A DE-escalation is written straight into the session's
+                    // shared mode cell — the running turn's gate observes it
+                    // via min(captured, current) on its very next approval
+                    // check. Escalations relay NOTHING (min() already keeps
+                    // them off the running turn, and the journal-first
+                    // discipline in the main loop must remain the only path
+                    // that can raise the recorded mode). Any error here
+                    // (unknown id, poisoned lock, no session) simply skips
+                    // the relay: fail-safe = more prompts, never fewer.
+                    let mode_id = value
+                        .get("params")
+                        .and_then(|p| p.get("modeId"))
+                        .and_then(|m| m.as_str());
+                    if let Some(mode) = mode_id.and_then(PermissionMode::parse)
+                        && let Some(cell) = current_mode
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .as_ref()
+                    {
+                        let mut guard = cell.lock().unwrap_or_else(|p| p.into_inner());
+                        if mode < *guard {
+                            *guard = mode;
+                        }
+                    }
+                }
+                Inbound::Request {
+                    id,
+                    method,
+                    params: value.get("params").cloned(),
+                }
+            }
             (Some(method), None) => {
                 if method == "session/cancel" {
                     // Fire the flag right here: the main loop may be mid-poll
                     // inside the turn and unable to relay it for whole steps.
+                    // C6: cascade to children too — every child flag set and
+                    // every registered kill handle terminated (fast, no waits).
                     if let Some(flag) = current_cancel
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .as_ref()
                     {
                         flag.store(true, Ordering::SeqCst);
+                    }
+                    if let Some(tasks) = current_tasks
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .as_ref()
+                    {
+                        tasks.cancel_all();
                     }
                 }
                 Inbound::Notification { method }
@@ -2017,9 +2283,21 @@ impl<W: Write> AcpApproval<W> {
 /// plain read activity is never confirmation-gated). Anything that mutates
 /// (`fs_write`/`fs_edit`) or executes (`shell`) must ask — and so must every
 /// `mcp__*` call: MCP tools are mutating-unknown, so they never match the
-/// read-only prefixes and always go through the permission gate.
+/// read-only prefixes and always go through the permission gate. C5:
+/// `memory_list`/`memory_read` are read-only; `memory_save`/`memory_delete`
+/// mutate the user-managed store and always ask (under read_only they are
+/// categorically denied, like every other mutation). C6: task polls
+/// (`task_status`/`task_result`/`task_list`) are read-only; task_spawn,
+/// task_cancel, and task_apply change live state and always ask.
 fn is_read_only_tool(name: &str) -> bool {
-    name.starts_with("fs_read") || name.starts_with("search") || name.starts_with("glob")
+    name.starts_with("fs_read")
+        || name.starts_with("search")
+        || name.starts_with("glob")
+        || name.starts_with("memory_list")
+        || name.starts_with("memory_read")
+        || name.starts_with("task_status")
+        || name.starts_with("task_result")
+        || name.starts_with("task_list")
 }
 
 /// Interprets a `session/request_permission` response. Approves only an
@@ -3138,5 +3416,104 @@ mod tests {
             "exit journaled"
         );
         assert_eq!(rig.prompt_count(), 1);
+    }
+
+    // ── F-C2-1: the reader-thread de-escalation relay ─────────────────────
+
+    /// Drive reader_loop over a scripted stdin and collect what it forwarded.
+    fn run_reader(script: &str, cell: Option<PermissionMode>) -> (Vec<Inbound>, CurrentMode) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Inbound>();
+        let pending: PendingMap = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let current_cancel: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>> =
+            Arc::new(Mutex::new(None));
+        let current_mode: CurrentMode = Arc::new(Mutex::new(cell.map(|m| Arc::new(Mutex::new(m)))));
+        let current_tasks: Arc<Mutex<Option<Arc<nano_agent::tasks::TaskRegistry>>>> =
+            Arc::new(Mutex::new(None));
+        reader_loop(
+            std::io::Cursor::new(script.as_bytes().to_vec()),
+            tx,
+            pending,
+            current_cancel,
+            current_mode.clone(),
+            current_tasks,
+        );
+        // reader_loop returns at EOF; everything it sent is queued on rx.
+        let mut forwarded = Vec::new();
+        while let Ok(inbound) = rx.try_recv() {
+            forwarded.push(inbound);
+        }
+        (forwarded, current_mode)
+    }
+
+    fn cell_value(cell: &CurrentMode) -> PermissionMode {
+        *cell
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .expect("session mode cell")
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn set_mode_line(id: u64, mode: &str) -> String {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"session/set_mode\",\"params\":{{\"sessionId\":\"s\",\"modeId\":\"{mode}\"}}}}\n"
+        )
+    }
+
+    /// F-C2-1 regression (relay leg): a mid-park DE-escalation mutates the
+    /// shared mode cell IMMEDIATELY — before the main loop could ever
+    /// process the queued request — and the request is still forwarded so
+    /// the main loop journals + acks it exactly once.
+    #[test]
+    fn reader_relays_de_escalation_into_the_mode_cell() {
+        let (forwarded, cell) = run_reader(
+            &set_mode_line(7, "read_only"),
+            Some(PermissionMode::FullAuto),
+        );
+        assert_eq!(
+            cell_value(&cell),
+            PermissionMode::ReadOnly,
+            "de-escalation must land in the cell mid-poll"
+        );
+        assert!(
+            matches!(&forwarded[..], [Inbound::Request { method, .. }] if method == "session/set_mode"),
+            "the request must still reach the main loop for journal+ack: {forwarded:?}"
+        );
+    }
+
+    /// F-C2-1 regression (deferral leg): an escalation relays NOTHING — the
+    /// running turn keeps its captured ceiling and the journal-first main
+    /// loop remains the only path that raises the recorded mode.
+    #[test]
+    fn reader_never_relays_escalation() {
+        let (forwarded, cell) = run_reader(
+            &set_mode_line(7, "full_auto"),
+            Some(PermissionMode::Default),
+        );
+        assert_eq!(
+            cell_value(&cell),
+            PermissionMode::Default,
+            "escalation must NOT be relayed mid-poll"
+        );
+        assert_eq!(forwarded.len(), 1, "request still forwarded");
+
+        // Lateral moves relay nothing either (only a strict de-escalation).
+        let (_, cell) = run_reader(&set_mode_line(7, "default"), Some(PermissionMode::Default));
+        assert_eq!(cell_value(&cell), PermissionMode::Default);
+    }
+
+    /// Fail-safe: an unknown mode id relays nothing (the main loop rejects
+    /// it with a typed error later); no active session relays nothing and
+    /// never panics.
+    #[test]
+    fn reader_relay_is_fail_safe_on_garbage_and_no_session() {
+        let (forwarded, cell) =
+            run_reader(&set_mode_line(7, "yolo"), Some(PermissionMode::FullAuto));
+        assert_eq!(cell_value(&cell), PermissionMode::FullAuto);
+        assert_eq!(forwarded.len(), 1, "unknown id still reaches the main loop");
+
+        let (forwarded, _) = run_reader(&set_mode_line(7, "read_only"), None);
+        assert_eq!(forwarded.len(), 1, "no session: forwarded, nothing relayed");
     }
 }

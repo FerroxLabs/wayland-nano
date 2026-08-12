@@ -1,0 +1,11 @@
+{"dir":">","frame":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"wayland-nano","version":"0.1.0"}}}}
+{"dir":">","frame":{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","id":2,"result":{"sessionId":"wayland-nano-session-recorded","models":{"currentModelId":"flux-auto","availableModels":[{"modelId":"flux-auto","name":"Flux Auto"}]}}}}
+{"dir":">","frame":{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"kind":"read","rawInput":{"path":"big.txt"},"sessionUpdate":"tool_call","status":"in_progress","title":"fs_read","toolCallId":"call-1"}}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"rawOutput":"len:102400","sessionUpdate":"tool_call_update","status":"completed","toolCallId":"call-1"}}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"kind":"read","rawInput":{"path":"big.txt","line_offset":1000,"file_token":"m:1-l:296250"},"sessionUpdate":"tool_call","status":"in_progress","title":"fs_read","toolCallId":"call-2"}}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"rawOutput":"len:96450","sessionUpdate":"tool_call_update","status":"completed","toolCallId":"call-2"}}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Read both pages of big.txt."}}}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}}
