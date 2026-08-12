@@ -271,10 +271,13 @@ async fn chain_cancel_is_terminal_never_falls_through() {
     );
 }
 
-/// §8: all tiers down → the typed terminal Unavailable from the tail (the
-/// executor maps it to `is_error = true`; never a silent empty success).
+/// F-P1-1 (honest failure propagation): every CONFIGURED tier down → the
+/// chain propagates the LAST backend's typed error, naming the backend —
+/// the construction-time Unavailable tail NEVER masks a real failure.
+/// (`Unavailable` survives only when nothing resolved; see
+/// `tool_wraps_the_chain_and_names_it`.)
 #[tokio::test]
-async fn chain_all_down_is_typed_unavailable() {
+async fn chain_all_down_propagates_the_last_backend_error() {
     let a = std::sync::Arc::new(ScriptedBackend::failing("flux"));
     let b = std::sync::Arc::new(ScriptedBackend::failing("brave"));
     let tail = std::sync::Arc::new(UnavailableSearchBackend::new(
@@ -284,9 +287,14 @@ async fn chain_all_down_is_typed_unavailable() {
     let err = chain
         .search(&parsed_args(), None)
         .await
-        .expect_err("typed unavailable");
-    assert!(matches!(err, SearchBackendError::Unavailable(_)));
-    assert!(err.to_string().contains("FLUX_API_KEY"), "{err}");
+        .expect_err("typed backend failure, never the Unavailable mask");
+    match err {
+        SearchBackendError::Backend { backend, kind } => {
+            assert_eq!(backend, "brave", "the LAST backend's typed error");
+            assert!(matches!(kind, BackendErrorKind::Parse(_)), "{kind}");
+        }
+        other => panic!("expected the last backend's typed error, got {other:?}"),
+    }
 }
 
 /// The tool layer maps backend errors 1:1 and reports the resolved chain id.
@@ -535,9 +543,69 @@ async fn flux_backend_round_trip_is_isolated_and_normalized() {
     let messages = request_body["messages"].as_array().expect("messages");
     assert_eq!(messages.len(), 1, "no conversation context ever");
     assert_eq!(messages[0]["role"], "user");
-    assert_eq!(messages[0]["content"], "wayland nano");
+    // F-P1-2: the keyword query goes on the wire shaped as a search
+    // command — a constant prefix, never context.
+    assert_eq!(
+        messages[0]["content"],
+        "Search the web and answer concisely with sources: wayland nano"
+    );
     assert!(request_body.get("system").is_none());
     assert!(request_body["max_tokens"].as_u64().unwrap() <= 1024);
+}
+
+/// F-P1-2 fixture: the shaping is deterministic — a bare keyword query
+/// gets wrapped in the grounding instruction; a query the caller already
+/// phrased as a search command passes through byte-identically.
+#[test]
+fn shape_grounding_query_wraps_keywords_and_passes_commands_through() {
+    assert_eq!(
+        shape_grounding_query("current stable Python version"),
+        "Search the web and answer concisely with sources: current stable Python version"
+    );
+    // The pass-through heuristic is case-insensitive on the first word.
+    for command in [
+        "Search the web for the current stable Python version",
+        "search the web and tell me the current stable Python version",
+        "SEARCH: wayland nano",
+    ] {
+        assert_eq!(shape_grounding_query(command), command, "{command}");
+    }
+    // "search" not in first position does NOT count as a command.
+    assert_eq!(
+        shape_grounding_query("please search for wayland nano"),
+        "Search the web and answer concisely with sources: please search for wayland nano"
+    );
+}
+
+/// F-P1-2 wire pin: a caller-supplied search command reaches the request
+/// body UNCHANGED — the backend never double-wraps.
+#[tokio::test]
+async fn flux_backend_passes_a_search_command_query_through_unchanged() {
+    let body = serde_json::json!({
+        "choices": [{"message": {"content": "answer [1]"}}],
+        "citations": ["https://example.com/a"],
+        "search_results": [
+            {"title": "A", "url": "https://example.com/a", "snippet": "alpha"}
+        ]
+    })
+    .to_string();
+    let server = MockServer::serve_once(move |_req| http_ok("application/json", &body));
+    let meter = std::sync::Arc::new(StubCostMeter::new());
+    let backend = flux_backend(&server.base, meter).expect("metered");
+    let args = SearchArgs::parse(&serde_json::json!({
+        "query": "Search the web for the current stable Python version"
+    }))
+    .unwrap();
+    backend.search(&args, None).await.expect("ok");
+
+    let captured = server.captured();
+    let body_start = captured.find("\r\n\r\n").expect("request head");
+    let request_body: serde_json::Value =
+        serde_json::from_str(&captured[body_start + 4..]).expect("json body");
+    assert_eq!(
+        request_body["messages"][0]["content"],
+        "Search the web for the current stable Python version"
+    );
 }
 
 /// A prose-only grounding answer (no search_results) is a typed Backend

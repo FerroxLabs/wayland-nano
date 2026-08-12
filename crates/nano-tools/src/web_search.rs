@@ -51,6 +51,9 @@ const DIRECT_BACKEND_MAX_LIMIT: u32 = 20;
 /// Validated web_search arguments (clamps applied). The query is EXACTLY
 /// what the model typed — no file contents, no conversation context, no
 /// auto-attached anything (design §2.1; load-bearing for Flux isolation).
+/// The ONE exception is the Flux tier's deterministic search-command
+/// shaping ([`shape_grounding_query`], F-P1-2): a constant prefix, never
+/// context — the isolation property is untouched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchArgs {
     pub query: String,
@@ -279,6 +282,30 @@ impl FluxSearchBackend {
     }
 }
 
+/// F-P1-2: the live probe matrix (shared/reviews/RC evidence, 2026-08-12)
+/// proves Flux grounding is QUERY-PHRASING-DEPENDENT — bare keyword queries
+/// return an ungrounded prose completion (0/4 grounded → typed parse
+/// failure), while search-command phrasings ground reliably (8/8, 20
+/// results each). Shape the query as a search command before it goes on
+/// the wire: a short constant prefix (minimal token cost, deterministic),
+/// never conversation context. A caller that already phrased the query as
+/// a search command passes through unchanged.
+const GROUNDING_QUERY_PREFIX: &str = "Search the web and answer concisely with sources: ";
+
+/// Shape `query` for the Flux grounding call (see [`GROUNDING_QUERY_PREFIX`]).
+/// The pass-through heuristic is deliberately simple: a query whose first
+/// word is "search" (case-insensitive) is already a search command.
+fn shape_grounding_query(query: &str) -> String {
+    let already_a_command = query
+        .get(..6)
+        .is_some_and(|head| head.eq_ignore_ascii_case("search"));
+    if already_a_command {
+        query.to_string()
+    } else {
+        format!("{GROUNDING_QUERY_PREFIX}{query}")
+    }
+}
+
 #[async_trait::async_trait]
 impl SearchBackend for FluxSearchBackend {
     async fn search(
@@ -290,10 +317,14 @@ impl SearchBackend for FluxSearchBackend {
             cancel,
             observer: None,
         };
+        // F-P1-2: shape the query as a search command (see
+        // `shape_grounding_query`) — bare keyword queries ground
+        // unreliably against the live Flux endpoint.
+        let shaped_query = shape_grounding_query(&args.query);
         let outcome: GroundingOutcome = grounded_search(
             &self.client,
             &self.api_key,
-            &args.query,
+            &shaped_query,
             args.allowed_domains.as_deref(),
             self.max_tokens,
             &hooks,
@@ -566,8 +597,12 @@ impl SearchBackend for UnavailableSearchBackend {
 /// fall through ONLY on typed `Err(Backend { .. })`. `Ok` — even empty — is
 /// final. `Err(Cancelled)` NEVER falls through: it aborts the chain and
 /// propagates immediately (a cancelled search fires no further network I/O
-/// at the next tier). `Err(Unavailable)` is terminal-typed (the ladder's
-/// last word), never a fall-through trigger either.
+/// at the next tier). `Err(Unavailable)` comes from the construction-time
+/// belt-and-braces tail (nothing resolved/configured, D3) and is the
+/// ladder's last word ONLY when no configured backend ever ran — F-P1-1:
+/// when every CONFIGURED backend has failed, the chain propagates the LAST
+/// backend's typed error (with the backend name) instead of masking it as
+/// `Unavailable`.
 pub struct ChainedSearchBackend {
     tiers: Vec<std::sync::Arc<dyn SearchBackend>>,
 }
@@ -601,21 +636,28 @@ impl SearchBackend for ChainedSearchBackend {
         cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<SearchOutcome, SearchBackendError> {
         let mut last_backend: Option<SearchBackendError> = None;
+        let mut tail_unavailable: Option<SearchBackendError> = None;
         for tier in &self.tiers {
             match tier.search(args, cancel).await {
                 Ok(outcome) => return Ok(outcome),
                 // D11: cancellation is terminal at every layer.
                 Err(err @ SearchBackendError::Cancelled) => return Err(err),
-                Err(err @ SearchBackendError::Unavailable(_)) => return Err(err),
+                // The construction-time tail (nothing resolved/configured):
+                // recorded, not terminal — a configured backend's typed
+                // failure outranks it (F-P1-1).
+                Err(err @ SearchBackendError::Unavailable(_)) => tail_unavailable = Some(err),
                 Err(err @ SearchBackendError::Backend { .. }) => last_backend = Some(err),
             }
         }
-        // No tier served and none was terminal (empty or all-Backend ladder
-        // without an Unavailable tail): the typed last word is the LAST
-        // backend failure, or Unavailable for an empty ladder.
-        match last_backend {
-            Some(err) => Err(err),
-            None => Err(SearchBackendError::Unavailable(
+        // No tier served. F-P1-1 (honest failure propagation): when any
+        // CONFIGURED backend failed, the typed last word is the LAST
+        // backend failure — naming the backend — never the Unavailable
+        // mask. `Unavailable` is reserved for "nothing resolved/configured"
+        // (the tail, or an empty ladder).
+        match (last_backend, tail_unavailable) {
+            (Some(err), _) => Err(err),
+            (None, Some(err)) => Err(err),
+            (None, None) => Err(SearchBackendError::Unavailable(
                 "no search backends in the chain".into(),
             )),
         }
