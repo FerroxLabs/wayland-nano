@@ -295,7 +295,10 @@ impl Harness {
                 let router = nano_cli::provider_router::ProviderRouter::default();
                 ensure_test_flux_key();
                 let memory_config = acp_mode::MemoryHostConfig {
-                    dir: sessions_dir_for_thread.parent().expect("root").join("memory"),
+                    dir: sessions_dir_for_thread
+                        .parent()
+                        .expect("root")
+                        .join("memory"),
                     write_enabled: false,
                     block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
                 };
@@ -682,7 +685,10 @@ fn full_auto_never_auto_approves_plan_exit() {
     let body = question["params"]["toolCall"]["rawInput"]["question"]
         .as_str()
         .expect("question body");
-    assert!(body.contains("ship the feature"), "plan text presented: {body}");
+    assert!(
+        body.contains("ship the feature"),
+        "plan text presented: {body}"
+    );
     // Approve.
     let id = question["id"].as_u64().expect("id");
     harness.send(serde_json::json!({
@@ -1033,17 +1039,21 @@ fn questionless_host_fails_closed_with_typed_unavailability() {
     )));
     assert!(!outcome.ok);
     assert!(
-        outcome.output.contains("this host cannot answer mid-turn questions"),
+        outcome
+            .output
+            .contains("this host cannot answer mid-turn questions"),
         "{}",
         outcome.output
     );
 
     // Plan entry works (journaled), but the exit cannot be approved on a
     // questionless host — fail closed, posture stays.
-    let outcome = rt.block_on(tools.execute(&tool_call("u2", "enter_plan_mode", serde_json::json!({}))));
+    let outcome =
+        rt.block_on(tools.execute(&tool_call("u2", "enter_plan_mode", serde_json::json!({}))));
     assert!(outcome.ok, "{}", outcome.output);
     std::fs::write(sessions.join("s.plan.md"), "the plan").unwrap();
-    let outcome = rt.block_on(tools.execute(&tool_call("u3", "exit_plan_mode", serde_json::json!({}))));
+    let outcome =
+        rt.block_on(tools.execute(&tool_call("u3", "exit_plan_mode", serde_json::json!({}))));
     assert!(!outcome.ok);
     assert!(
         outcome.output.contains("cannot answer questions"),
@@ -1089,7 +1099,10 @@ fn todo_read_path_and_auto_allow_in_full_auto_and_read_only() {
         !frames.iter().any(is_permission_request),
         "todo never prompts in full_auto"
     );
-    assert!(harness.model_saw("2 item(s)"), "read path returned the list");
+    assert!(
+        harness.model_saw("2 item(s)"),
+        "read path returned the list"
+    );
     assert!(harness.model_saw("alpha") && harness.model_saw("beta"));
     // Session tools never reach the base executor.
     assert!(harness.tool_calls.lock().unwrap().is_empty());
@@ -1111,10 +1124,9 @@ fn todo_read_path_and_auto_allow_in_full_auto_and_read_only() {
         "todo never prompts in read_only"
     );
     assert!(
-        harness
-            .journal_ops()
-            .iter()
-            .any(|op| matches!(op, Op::TodoSet { items } if items.len() == 1 && items[0].id == "t3")),
+        harness.journal_ops().iter().any(
+            |op| matches!(op, Op::TodoSet { items } if items.len() == 1 && items[0].id == "t3")
+        ),
         "the read_only write journaled journal-first"
     );
 }
@@ -1138,7 +1150,10 @@ fn overfilled_journal_restores_through_the_bounded_block() {
     let mut text = String::new();
     text.push_str(&serde_json::json!({"v":1,"id":"g1","ts":"now","op":{"type":"session_begin","session_id":session_id,"cwd":"."}}).to_string());
     text.push('\n');
-    text.push_str(&serde_json::json!({"v":1,"id":"t1","ts":"now","op":{"type":"todo_set","items":items}}).to_string());
+    text.push_str(
+        &serde_json::json!({"v":1,"id":"t1","ts":"now","op":{"type":"todo_set","items":items}})
+            .to_string(),
+    );
     text.push('\n');
     std::fs::write(&journal, text).expect("hand-crafted journal");
 
@@ -1240,9 +1255,7 @@ fn diff_frames_for_new_overwrite_and_edit_with_digest_only_journal() {
     // content rides the diff block, never rawOutput.
     let done = frames
         .iter()
-        .find(|f| {
-            f.pointer("/params/update/status").and_then(|s| s.as_str()) == Some("completed")
-        })
+        .find(|f| f.pointer("/params/update/status").and_then(|s| s.as_str()) == Some("completed"))
         .expect("done frame");
     assert_eq!(
         done["params"]["update"]["rawOutput"], "len:7",
@@ -1293,9 +1306,7 @@ fn diff_frames_for_new_overwrite_and_edit_with_digest_only_journal() {
     assert_eq!(block["newText"], "v3 contents");
     let done = frames
         .iter()
-        .find(|f| {
-            f.pointer("/params/update/status").and_then(|s| s.as_str()) == Some("completed")
-        })
+        .find(|f| f.pointer("/params/update/status").and_then(|s| s.as_str()) == Some("completed"))
         .expect("done frame");
     assert_eq!(
         done["params"]["update"]["rawOutput"], "len:16",
@@ -1312,10 +1323,7 @@ fn diff_frames_for_new_overwrite_and_edit_with_digest_only_journal() {
         "no diff payload keys in the journal"
     );
     for op in harness.journal_ops() {
-        if let Op::ToolResult {
-            output_digest, ..
-        } = op
-        {
+        if let Op::ToolResult { output_digest, .. } = op {
             assert!(!output_digest.is_empty(), "digest present");
         }
     }
@@ -1362,9 +1370,7 @@ fn sensitive_path_write_emits_no_diff_frame() {
     );
     let done = frames
         .iter()
-        .find(|f| {
-            f.pointer("/params/update/status").and_then(|s| s.as_str()) == Some("failed")
-        })
+        .find(|f| f.pointer("/params/update/status").and_then(|s| s.as_str()) == Some("failed"))
         .expect("failed tool card");
     assert_eq!(done["params"]["update"]["toolCallId"], "s1");
 }

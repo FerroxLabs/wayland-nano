@@ -135,7 +135,10 @@ fn c10_tui_question_modal_round_trip() {
     let mut world = World::new(QUESTION_JOURNEY, 100, 30, None);
     world.type_and_submit("ask me");
     let screen = world.screen();
-    assert!(screen.contains("Which approach?"), "question modal: {screen}");
+    assert!(
+        screen.contains("Which approach?"),
+        "question modal: {screen}"
+    );
     assert!(screen.contains("Refactor"), "option 1: {screen}");
     assert!(screen.contains("Rewrite"), "option 2: {screen}");
     assert!(screen.contains("Defer"), "option 3: {screen}");
