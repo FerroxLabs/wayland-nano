@@ -12,7 +12,7 @@ use nano_model::provider_catalog::{PROVIDERS, WireKind};
 /// sha256 of data/providerCatalog.vendored.json. Any byte change to the
 /// vendored file fails this test — endpoint changes are deliberate,
 /// reviewed, and recorded here.
-const RECORDED_SHA256: &str = "288fe0f5d7fc88f9406e93327cef9d1d2c0183e396daaf71784eb9072c55dfbf";
+const RECORDED_SHA256: &str = "9fc5271004ac70bc093f02c395cf043d73b31e64543ff6bf5161a73b27c0fc91";
 
 const VENDORED: &[u8] = include_bytes!("../data/providerCatalog.vendored.json");
 

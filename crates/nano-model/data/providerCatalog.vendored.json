@@ -37,7 +37,7 @@
       "wire": "openai-completions",
       "api_path": "/chat/completions",
       "env_var": "OPENROUTER_API_KEY",
-      "proven": false
+      "proven": true
     },
     {
       "id": "groq",

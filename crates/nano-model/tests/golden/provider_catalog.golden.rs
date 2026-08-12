@@ -42,7 +42,7 @@ pub static PROVIDERS: &[ProviderSpec] = &[
         env_var: "OPENROUTER_API_KEY",
         bearer_env: "WAYLAND_NANO_OAUTH_BEARER_OPENROUTER",
         bearer_expires_env: "WAYLAND_NANO_OAUTH_BEARER_OPENROUTER_EXPIRES_AT_UNIX_SECS",
-        proven: false,
+        proven: true,
     },
     ProviderSpec {
         id: "groq",
