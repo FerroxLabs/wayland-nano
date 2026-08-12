@@ -70,8 +70,21 @@ impl OpenAiCompletionsClient {
         self
     }
 
-    fn endpoint(&self) -> String {
+    pub(crate) fn endpoint(&self) -> String {
         format!("{}{}", self.base_url.trim_end_matches('/'), self.api_path)
+    }
+
+    /// P1 grounding seam (flux_grounding.rs): the isolated web_search
+    /// completion sends through the SAME egress client (the Flux base is
+    /// already allowlisted — zero new egress surface).
+    pub(crate) fn egress(&self) -> &EgressClient {
+        &self.egress
+    }
+
+    /// P1 grounding seam: the Q2-bounded retry policy (retry sleeps are
+    /// cancel-selectable via `run_with_retries`).
+    pub(crate) fn retry_config(&self) -> &RetryConfig {
+        &self.retry
     }
 
     pub async fn complete(
@@ -301,7 +314,7 @@ fn parse_tool_call(call: &serde_json::Value) -> Option<ToolCall> {
     })
 }
 
-fn parse_usage(usage: Option<&serde_json::Value>) -> Usage {
+pub(crate) fn parse_usage(usage: Option<&serde_json::Value>) -> Usage {
     let Some(usage) = usage else {
         return Usage::default();
     };

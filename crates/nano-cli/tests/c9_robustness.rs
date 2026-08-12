@@ -240,6 +240,8 @@ impl Harness {
                     reasoning_effort,
                     verbosity: None,
                     cron_home: None,
+                    search: None,
+                    search_meter: None,
                     sandbox_probe: &sandbox_probe,
                     journal_append_failer: None,
                     router: &router,

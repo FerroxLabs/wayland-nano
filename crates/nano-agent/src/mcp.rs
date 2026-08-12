@@ -182,6 +182,21 @@ impl ToolExecutor for McpToolExecutor<'_> {
             },
         }
     }
+
+    /// P1: thread the turn's cancel flag through to the inner executor
+    /// (web_search's in-flight cancellation); the mcp__ arms are the
+    /// synchronous single-flight client (its full-duplex dispatcher is P3).
+    async fn execute_cancellable(
+        &self,
+        call: &ToolCall,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ToolOutcome {
+        if call.name.starts_with("mcp__") {
+            self.execute(call).await
+        } else {
+            self.inner.execute_cancellable(call, cancel).await
+        }
+    }
 }
 
 #[cfg(test)]

@@ -326,13 +326,16 @@ pub async fn run_exec_turn<D, T, W>(
     journal: Arc<Mutex<JournalWriter>>,
     events: Arc<Mutex<ExecEvents<W>>>,
     extra_tool_definitions: &[nano_model::types::ToolDefinition],
+    // P1: the advertised surface mirrors the executor's resolved backend
+    // (design §2.3) — false keeps the pre-P1 surface byte-identical.
+    web_search_backed: bool,
 ) -> ExecTurnOutcome
 where
     D: nano_agent::turn::ModelDriver,
     T: nano_agent::turn::ToolExecutor,
     W: Write + Send,
 {
-    let mut tool_definitions = v1_tool_definitions();
+    let mut tool_definitions = v1_tool_definitions(web_search_backed);
     tool_definitions.extend(extra_tool_definitions.iter().cloned());
     let engine = TurnEngine {
         model: driver,

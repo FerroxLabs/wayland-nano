@@ -32,6 +32,10 @@ pub async fn run_exec_with<W, FD, FT, D, T>(
     model_name: &str,
     make_driver: FD,
     make_tools: FT,
+    // P1: whether the executor stack carries a resolved web_search backend
+    // (the make_tools closure attached it) — the advertised surface must
+    // match the executor's capability exactly (design §2.3 double guard).
+    web_search_backed: bool,
     sandbox_available: bool,
     mcp_specs: &[nano_agent::mcp::McpServerSpec],
     out: W,
@@ -125,6 +129,7 @@ where
             &journal,
             &events,
             &extra_definitions,
+            web_search_backed,
             &params.prompt,
         )
         .await;
@@ -247,6 +252,7 @@ where
                     journal_now,
                     events_now,
                     &defs_now,
+                    web_search_backed,
                 )
                 .await;
                 GoalTurnOutcome {
@@ -292,6 +298,7 @@ async fn run_plain_turn<FD, D, T, W>(
     journal: &Arc<Mutex<JournalWriter>>,
     events: &Arc<Mutex<ExecEvents<W>>>,
     extra_definitions: &[nano_model::types::ToolDefinition],
+    web_search_backed: bool,
     prompt: &str,
 ) -> crate::exec_mode::ExecTurnOutcome
 where
@@ -314,6 +321,7 @@ where
         journal.clone(),
         events.clone(),
         extra_definitions,
+        web_search_backed,
     )
     .await
 }
@@ -357,6 +365,15 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
             api_key.clone(),
         )
     };
+    // P1: web_search — the key-gated ladder, resolved ONCE at host start.
+    // The meter handle is Lane B's session CostMeter; the stub stands the
+    // seam up (no pricing, no cap authority) until it lands.
+    let search_meter: Arc<dyn nano_model::metering::UsageSink> =
+        Arc::new(nano_model::metering::StubCostMeter::new());
+    let search = crate::search_specs::web_search_tool_from_env(Some(search_meter.clone()));
+    let search_tool = search.as_ref().map(|resolved| resolved.tool.clone());
+    let tools_search = search_tool.clone();
+    let tools_meter = search_meter.clone();
     let make_tools = move |workspace: &Path,
                            mode: PermissionMode|
           -> (
@@ -379,6 +396,10 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
         if let Some(fetch) = crate::fetch_specs::web_fetch_tool_from_env() {
             executor = executor.with_web_fetch(fetch);
         }
+        // P1: web_search with the session meter handle (design §2.5).
+        if let Some(tool) = &tools_search {
+            executor = executor.with_web_search(tool.clone(), tools_meter.clone());
+        }
         (executor, policy)
     };
     let sandbox_available = platform_sandbox_available(nano_home);
@@ -390,6 +411,7 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
         "flux-auto",
         make_driver,
         make_tools,
+        search_tool.is_some(),
         sandbox_available,
         &crate::mcp_specs::mcp_specs_from_env(),
         std::io::stdout(),

@@ -141,6 +141,15 @@ pub struct TaskRegistry {
     /// Fail-closed: a factory error (e.g. the session's provider binding
     /// could not resolve) makes task_spawn a typed error, never a fallback.
     driver_factory: Arc<dyn Fn() -> Result<Arc<dyn ModelDriver>, String> + Send + Sync>,
+    /// P1 (D12): the session's resolved web_search chain, cloned into every
+    /// child (Arc-cheap) so children are advertised — and can execute —
+    /// exactly what the parent surface carries. None = unbacked = the child
+    /// surface omits the tool and a forced invocation is the typed denial.
+    web_search: Option<nano_tools::web_search::WebSearchTool>,
+    /// P1: the SAME session meter handle the parent executor holds — child
+    /// grounding usage lands in the one session meter (design §3.3 live
+    /// path; the parent-journal rollup is Lane B's durable half).
+    usage_sink: Option<Arc<dyn nano_model::metering::UsageSink>>,
     /// Defensive depth guard (children never receive a registry — the
     /// `task_*` family is absent from their tool definitions — but a
     /// registry constructed at MAX depth refuses to spawn regardless).
@@ -173,9 +182,24 @@ impl TaskRegistry {
             workspace: workspace.to_path_buf(),
             model_name,
             driver_factory,
+            web_search: None,
+            usage_sink: None,
             spawn_depth: 0,
             counter: AtomicU64::new(1),
         }
+    }
+
+    /// P1 (D12): attach the session's resolved web_search chain AND the
+    /// session meter handle — children get both, so child searches are
+    /// metered by construction (design §2.3/§3.3).
+    pub fn with_web_search(
+        mut self,
+        tool: nano_tools::web_search::WebSearchTool,
+        meter: Arc<dyn nano_model::metering::UsageSink>,
+    ) -> Self {
+        self.web_search = Some(tool);
+        self.usage_sink = Some(meter);
+        self
     }
 
     /// Test seam for the depth guard: a registry at the depth limit refuses
@@ -296,6 +320,8 @@ impl TaskRegistry {
             nano_home: self.nano_home.clone(),
             model_name: self.model_name.clone(),
             driver,
+            web_search: self.web_search.clone(),
+            usage_sink: self.usage_sink.clone(),
             done_tx,
         };
         let join = std::thread::Builder::new()
@@ -636,6 +662,10 @@ struct ChildContext {
     nano_home: PathBuf,
     model_name: String,
     driver: Arc<dyn ModelDriver>,
+    /// P1 (D12): the session's resolved web_search chain + meter handle,
+    /// cloned from the registry (Arc-cheap); None = unbacked.
+    web_search: Option<nano_tools::web_search::WebSearchTool>,
+    usage_sink: Option<Arc<dyn nano_model::metering::UsageSink>>,
     done_tx: std::sync::mpsc::Sender<ChildOutcome>,
 }
 
@@ -689,6 +719,13 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
     // here, and this executor holds NO other process-launch path.
     let executor = RealToolExecutor::new(fs, shell, &ctx.workspace_copy)
         .with_task_kill_registry(ctx.kills.clone());
+    // P1 (D12): children get the session's resolved search chain AND its
+    // meter handle — child searches are metered by construction (design
+    // §2.3/§3.3), so exposure cannot bypass the cap.
+    let executor = match (&ctx.web_search, &ctx.usage_sink) {
+        (Some(tool), Some(meter)) => executor.with_web_search(tool.clone(), meter.clone()),
+        _ => executor,
+    };
     let gate = TaskApproval {
         policy,
         cwd: ctx.workspace_copy.clone(),
@@ -700,8 +737,10 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
         model_name: ctx.model_name.clone(),
         // Depth limit (tested invariant): the task family is ABSENT from
         // child tool definitions; memory tools are absent too (children
-        // never write memory).
-        tool_definitions: v1_tool_definitions(),
+        // never write memory). P1 (D12): web_search is advertised exactly
+        // when the session resolved a backend — the same backend-aware
+        // construction as the parent surface.
+        tool_definitions: v1_tool_definitions(ctx.web_search.is_some()),
         approval: Some(&gate),
         compaction: None,
         // Children run the pre-C9 engine posture: no steer queue, no
@@ -977,6 +1016,11 @@ impl ApprovalGate for TaskApproval {
             // Sandboxed at spawn; the spawn-time transform is the
             // fail-closed authority (run_task, never an unregistered exec).
             "shell" => ApprovalDecision::Approve,
+            // P1 (D12): web_search is non-interactive, and child searches
+            // are metered through the shared session handle (§3.3) — the
+            // tool's own deny-by-default posture governs unbacked
+            // configurations, so the gate approves it like the read tools.
+            "web_search" => ApprovalDecision::Approve,
             _ => ApprovalDecision::Deny,
         }
     }
@@ -1144,6 +1188,21 @@ impl ToolExecutor for TaskToolExecutor<'_> {
             _ => self.inner.execute(call).await,
         }
     }
+
+    /// P1: thread the turn's cancel flag through to the inner executor
+    /// (web_search's in-flight cancellation); the task_* arms are
+    /// synchronous registry operations.
+    async fn execute_cancellable(
+        &self,
+        call: &ToolCall,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ToolOutcome {
+        match call.name.as_str() {
+            "task_spawn" | "task_status" | "task_result" | "task_list" | "task_cancel"
+            | "task_apply" => self.execute(call).await,
+            _ => self.inner.execute_cancellable(call, cancel).await,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1164,11 +1223,23 @@ mod tests {
         routes: Mutex<std::collections::HashMap<String, std::collections::VecDeque<ModelResponse>>>,
         block_keys: Vec<String>,
         release: Option<Arc<std::sync::atomic::AtomicBool>>,
+        /// P1: tool names advertised on each request (child-surface pin).
+        seen_defs: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl ScriptedDriver {
+        fn seen_defs_handle(&self) -> Arc<Mutex<Vec<String>>> {
+            self.seen_defs.clone()
+        }
     }
 
     #[async_trait::async_trait]
     impl ModelDriver for ScriptedDriver {
         async fn complete(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError> {
+            self.seen_defs
+                .lock()
+                .unwrap()
+                .extend(request.tools.iter().map(|t| t.name.clone()));
             let key = request
                 .messages
                 .iter()
@@ -1341,6 +1412,13 @@ mod tests {
             gate.approve(&call("shell", serde_json::json!({"command": "ls"}))),
             ApprovalDecision::Approve
         );
+        // P1 (D12): web_search is approved for children (non-interactive,
+        // metered through the shared session handle); web_fetch stays
+        // denied (asserted below) — the C6 egress posture is unchanged.
+        assert_eq!(
+            gate.approve(&call("web_search", serde_json::json!({"query": "x"}))),
+            ApprovalDecision::Approve
+        );
         // Everything interactive: immediate typed denial. The uncontained
         // write anchors at the FILESYSTEM ROOT, not a tempdir sibling: the
         // workspace_write policy includes the tmp roots, so a `..` escape
@@ -1408,6 +1486,7 @@ mod tests {
                 routes: Mutex::new(routes),
                 block_keys: vec![],
                 release: None,
+                seen_defs: Default::default(),
             },
         );
         let id = registry.spawn("child job", Some("demo")).expect("spawn");
@@ -1458,6 +1537,7 @@ mod tests {
                 routes: Mutex::new(routes),
                 block_keys: vec!["slow job".to_string()],
                 release: Some(release.clone()),
+                seen_defs: Default::default(),
             },
         );
         for _ in 0..4 {
@@ -1495,6 +1575,7 @@ mod tests {
                 routes: Mutex::new(routes),
                 block_keys: vec!["wedged job".to_string()],
                 release: Some(release.clone()),
+                seen_defs: Default::default(),
             },
         );
         let wedged = registry.spawn("wedged job", None).unwrap();
@@ -1539,6 +1620,7 @@ mod tests {
                 routes: Mutex::new(routes),
                 block_keys: vec!["job one".to_string(), "job two".to_string()],
                 release: Some(release.clone()),
+                seen_defs: Default::default(),
             },
         );
         let a = registry.spawn("job one", None).unwrap();
@@ -1574,6 +1656,7 @@ mod tests {
                 routes: Mutex::new(routes),
                 block_keys: vec![],
                 release: None,
+                seen_defs: Default::default(),
             },
         );
         let id = registry.spawn("writer job", None).unwrap();
@@ -1623,5 +1706,138 @@ mod tests {
             registry.apply("task-nope", None),
             Err(TaskError::NotFound(_))
         ));
+    }
+
+    // ── P1 child web_search exposure (design §8, D12) ────────────────────
+
+    /// A scripted search backend for the child battery: returns a grounded
+    /// outcome carrying usage, so the meter feed is observable.
+    struct ScriptedSearchBackend;
+
+    #[async_trait::async_trait]
+    impl nano_tools::web_search::SearchBackend for ScriptedSearchBackend {
+        async fn search(
+            &self,
+            _args: &nano_tools::web_search::SearchArgs,
+            _cancel: Option<&std::sync::atomic::AtomicBool>,
+        ) -> Result<nano_tools::web_search::SearchOutcome, nano_tools::web_search::SearchBackendError>
+        {
+            Ok(nano_tools::web_search::SearchOutcome {
+                results: vec![nano_tools::web_search::SearchHit {
+                    title: "A".into(),
+                    url: "https://example.com/a".into(),
+                    snippet: "alpha".into(),
+                    date: None,
+                }],
+                citations: Vec::new(),
+                grounding_usage: Some(nano_tools::web_search::GroundingUsage {
+                    usage: Usage {
+                        input_tokens: 8,
+                        output_tokens: 3,
+                        ..Usage::default()
+                    },
+                    reported: true,
+                }),
+                backend: "flux".into(),
+            })
+        }
+
+        fn backend_id(&self) -> &str {
+            "flux"
+        }
+    }
+
+    /// D12 (r2 claude-F6): a registry wired with the session search chain +
+    /// meter spawns children whose surface ADVERTISES web_search (asserted
+    /// at the tasks.rs call site via the driver's captured definitions) and
+    /// whose searches are METERED by construction — the grounding usage
+    /// lands in the one session handle against the child's tool call id.
+    #[test]
+    fn child_search_exposure_is_advertised_and_metered() {
+        let dirs = dirs();
+        let mut routes: std::collections::HashMap<
+            String,
+            std::collections::VecDeque<ModelResponse>,
+        > = std::collections::HashMap::new();
+        routes.insert(
+            "search please".to_string(),
+            std::collections::VecDeque::from([
+                tool_response(ToolCall {
+                    id: "child-search-1".into(),
+                    name: "web_search".into(),
+                    arguments: serde_json::json!({"query": "wayland nano"}),
+                }),
+                text_response("done"),
+            ]),
+        );
+        let driver = Arc::new(ScriptedDriver {
+            routes: Mutex::new(routes),
+            ..ScriptedDriver::default()
+        });
+        let seen = driver.seen_defs_handle();
+        let factory: Arc<dyn Fn() -> Result<Arc<dyn ModelDriver>, String> + Send + Sync> =
+            Arc::new(move || Ok(driver.clone()));
+        let meter = Arc::new(nano_model::metering::StubCostMeter::new());
+        let registry = TaskRegistry::new(&dirs.home, &dirs.workspace, "mock".into(), factory)
+            .with_web_search(
+                nano_tools::web_search::WebSearchTool::new(Arc::new(ScriptedSearchBackend)),
+                meter.clone(),
+            );
+        let id = registry.spawn("search please", None).unwrap();
+        let status = wait_terminal(&registry, &id);
+        assert!(status.starts_with("done"), "{status}");
+
+        // The metered feed: one grounding record, the child's call id.
+        let records = meter.records();
+        assert_eq!(records.len(), 1, "child search metered: {records:?}");
+        assert_eq!(records[0].tool_call_id.as_deref(), Some("child-search-1"));
+        assert_eq!(records[0].model, "flux-fast");
+        assert_eq!(records[0].usage.input_tokens, 8);
+
+        // The child surface advertised web_search (captured at the engine's
+        // tool_definitions — the tasks.rs backend-aware call site).
+        let defs = seen.lock().unwrap();
+        assert!(
+            defs.iter().any(|n| n == "web_search"),
+            "backed child surface advertises web_search: {defs:?}"
+        );
+    }
+
+    /// The unbacked registry: the child surface OMITS web_search (the
+    /// don't-register half) and a forced invocation is the typed denial.
+    #[test]
+    fn child_search_unbacked_is_unadvertised_and_denied() {
+        let dirs = dirs();
+        let mut routes: std::collections::HashMap<
+            String,
+            std::collections::VecDeque<ModelResponse>,
+        > = std::collections::HashMap::new();
+        routes.insert(
+            "search please".to_string(),
+            std::collections::VecDeque::from([
+                tool_response(ToolCall {
+                    id: "child-search-2".into(),
+                    name: "web_search".into(),
+                    arguments: serde_json::json!({"query": "wayland nano"}),
+                }),
+                text_response("done"),
+            ]),
+        );
+        let driver = Arc::new(ScriptedDriver {
+            routes: Mutex::new(routes),
+            ..ScriptedDriver::default()
+        });
+        let seen = driver.seen_defs_handle();
+        let factory: Arc<dyn Fn() -> Result<Arc<dyn ModelDriver>, String> + Send + Sync> =
+            Arc::new(move || Ok(driver.clone()));
+        let registry = TaskRegistry::new(&dirs.home, &dirs.workspace, "mock".into(), factory);
+        let id = registry.spawn("search please", None).unwrap();
+        let status = wait_terminal(&registry, &id);
+        assert!(status.starts_with("done"), "{status}");
+        let defs = seen.lock().unwrap();
+        assert!(
+            !defs.is_empty() && !defs.iter().any(|n| n == "web_search"),
+            "unbacked child surface never advertises web_search: {defs:?}"
+        );
     }
 }
