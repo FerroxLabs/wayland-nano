@@ -4,7 +4,11 @@
 //! (nano-model). Loop protection: repeated-action breaker, no-progress
 //! detection, failure streaks, budgets.
 
+pub mod bootstrap;
+pub mod clock;
 pub mod compact;
+pub mod cron;
+pub mod goal;
 pub mod loop_protection;
 pub mod mcp;
 pub mod skills;
@@ -14,3 +18,11 @@ pub mod wiring;
 #[cfg(test)]
 #[path = "turn_tests.rs"]
 mod turn_tests;
+
+#[cfg(test)]
+#[path = "goal_tests.rs"]
+mod goal_tests;
+
+#[cfg(test)]
+#[path = "cron_tests.rs"]
+mod cron_tests;

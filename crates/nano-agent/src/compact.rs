@@ -283,7 +283,7 @@ pub async fn compact_messages(
     compaction_id: &str,
     covers_op_ids: Vec<String>,
     changed_files: Vec<String>,
-    emit: &mut dyn FnMut(Op) -> bool,
+    emit: &mut (dyn FnMut(Op) -> bool + Send),
 ) -> Result<(), CompactionError> {
     if !emit(Op::CompactionBegin {
         compaction_id: compaction_id.to_string(),
