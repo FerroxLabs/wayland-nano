@@ -33,6 +33,12 @@ pub enum NanoErrorKind {
     ModelServer4xx,
     ModelTransport,
     ModelProtocol,
+    /// Structured-output validation still failing after the one allowed
+    /// re-ask (C9 §4.3).
+    ModelOutputSchema,
+    /// A requested parameter is known-unsupported on this (surface, model)
+    /// — rejected before network I/O (C9 §4, ladder rung 3).
+    ModelUnsupportedParam,
     EgressDenied,
     // ── tool family (failed tool cards) ─────────────────────────────────
     FsReadDenied,

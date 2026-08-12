@@ -67,6 +67,7 @@ fn engine_for<'a>(
         tool_definitions: v1_tool_definitions(),
         approval: Some(approve_all),
         compaction: None,
+        robustness: Default::default(),
     }
 }
 

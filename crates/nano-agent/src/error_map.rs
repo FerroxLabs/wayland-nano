@@ -11,13 +11,17 @@ use crate::turn::TypedError;
 /// Model-family mapping, including the nested egress forms.
 pub fn kind_of_model(err: &ModelError) -> NanoErrorKind {
     match err {
-        ModelError::Auth(_) => NanoErrorKind::ModelAuth,
+        ModelError::Auth { .. } => NanoErrorKind::ModelAuth,
         ModelError::RateLimited { .. } => NanoErrorKind::ModelRateLimited,
         ModelError::ContextOverflow(_) => NanoErrorKind::ModelContextOverflow,
         ModelError::Entitlement(_) => NanoErrorKind::ModelEntitlement,
         ModelError::Server { status, .. } => kind_of_status(*status),
-        ModelError::Transport(_) => NanoErrorKind::ModelTransport,
+        ModelError::Transport { .. } => NanoErrorKind::ModelTransport,
         ModelError::Protocol(_) => NanoErrorKind::ModelProtocol,
+        // C9: structured-output rejection after the one re-ask, and the
+        // pre-network unsupported-parameter rejection — both terminal.
+        ModelError::OutputSchema(_) => NanoErrorKind::ModelOutputSchema,
+        ModelError::UnsupportedParam { .. } => NanoErrorKind::ModelUnsupportedParam,
         // ModelError::Cancelled is deliberately never an error kind on the
         // wire — it is stopReason:"cancelled" (design §3).
         ModelError::Cancelled => NanoErrorKind::UserCancelled,

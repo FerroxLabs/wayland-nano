@@ -9,11 +9,12 @@
 //! - alias routing differs per surface — this adapter only speaks Completions.
 
 use crate::flux_common::{classify_transport, read_error_body, sse_integrity_error};
-use crate::retry::RetryPolicy;
+use crate::params::Surface;
+use crate::retry::RetryConfig;
 use crate::sse::SseParser;
 use crate::types::{
-    ContentBlock, Message, ModelError, ModelEvent, ModelRequest, ModelResponse, Role, ToolCall,
-    ToolDefinition, Usage,
+    CallHooks, ContentBlock, Message, ModelError, ModelEvent, ModelObservation, ModelRequest,
+    ModelResponse, Role, ToolCall, ToolDefinition, Usage,
 };
 use nano_egress::client::EgressClient;
 
@@ -33,7 +34,7 @@ pub struct OpenAiCompletionsClient {
     egress: EgressClient,
     base_url: String,
     api_path: String,
-    retry: RetryPolicy,
+    retry: RetryConfig,
 }
 
 /// Back-compat alias (codex NB / claude NB: no rename churn). Existing call
@@ -46,7 +47,7 @@ impl OpenAiCompletionsClient {
             egress,
             base_url: FLUX_BASE.to_string(),
             api_path: COMPLETIONS_PATH.to_string(),
-            retry: RetryPolicy::default(),
+            retry: RetryConfig::default(),
         }
     }
 
@@ -62,6 +63,13 @@ impl OpenAiCompletionsClient {
         self
     }
 
+    /// Test seam: a custom retry configuration (the production default is
+    /// the Q2-bounded policy).
+    pub fn with_retry_config(mut self, retry: RetryConfig) -> Self {
+        self.retry = retry;
+        self
+    }
+
     fn endpoint(&self) -> String {
         format!("{}{}", self.base_url.trim_end_matches('/'), self.api_path)
     }
@@ -71,43 +79,80 @@ impl OpenAiCompletionsClient {
         request: &ModelRequest,
         api_key: &str,
     ) -> Result<ModelResponse, ModelError> {
-        let body = build_request_body(request);
-        let mut attempt = 0;
-        loop {
-            let builder = self
-                .egress
-                .request(reqwest::Method::POST, &self.endpoint())?
-                .bearer_auth(api_key)
-                .json(&body);
+        self.complete_with_hooks(request, api_key, &CallHooks::none())
+            .await
+    }
 
-            let outcome = async {
-                let response = builder.send().await.map_err(classify_transport)?;
-                let status = response.status().as_u16();
-                if status != 200 {
-                    return Err(classify_status(status, read_error_body(response).await));
-                }
-                let text = response.text().await.map_err(classify_transport)?;
-                if request.stream {
-                    parse_sse_completion_stream(&text)
-                } else {
-                    parse_completion_body(&text)
-                }
-            }
-            .await;
+    /// The hooked entry point (C9): cancel-selectable reconnect sleeps,
+    /// typed observations (reconnect state, inert-param notices, rate-limit
+    /// snapshots), the Q3 param ladder, and structured-output validation.
+    /// Known-unsupported params are rejected BEFORE any network I/O.
+    pub async fn complete_with_hooks(
+        &self,
+        request: &ModelRequest,
+        api_key: &str,
+        hooks: &CallHooks<'_>,
+    ) -> Result<ModelResponse, ModelError> {
+        // Rung-3 rejections (and every param decision) happen HERE — before
+        // a single packet: plan first, network second.
+        let mut body = build_request_body(request);
+        let notices = crate::params::apply_params(Surface::Completions, &mut body, request)?;
+        for notice in notices {
+            hooks.observe(notice);
+        }
+        let mut response = crate::retry::run_with_retries(&self.retry, hooks, || async {
+            self.attempt(&body, request.stream, api_key, hooks).await
+        })
+        .await?;
+        if request.output_schema.is_some() {
+            // One canonical extracted value, validated before the caller
+            // sees the response; a failure carries the literal re-ask text.
+            crate::structured::extract_and_validate(Surface::Completions, request, &mut response)?;
+        }
+        Ok(response)
+    }
 
-            match outcome {
-                Ok(events_response) => return Ok(events_response),
-                Err(err) => match self.retry.decide(attempt, &err) {
-                    crate::retry::RetryAction::Retry {
-                        attempt: next,
-                        delay_ms,
-                    } => {
-                        attempt = next;
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    }
-                    crate::retry::RetryAction::GiveUp => return Err(err),
-                },
-            }
+    /// One wire attempt. Re-invoked byte-identically by the retry driver;
+    /// never mutates anything outside itself.
+    async fn attempt(
+        &self,
+        body: &serde_json::Value,
+        stream: bool,
+        api_key: &str,
+        hooks: &CallHooks<'_>,
+    ) -> Result<ModelResponse, ModelError> {
+        let builder = self
+            .egress
+            .request(reqwest::Method::POST, &self.endpoint())?
+            .bearer_auth(api_key)
+            .json(body);
+
+        let response = builder
+            .send()
+            .await
+            .map_err(|e| classify_transport(e, false))?;
+        // Rate-limit headers are observability, never control flow: a
+        // parsed snapshot rides the observation channel, a malformed or
+        // absent set yields None (UIs render "unknown").
+        if let Some(snapshot) =
+            crate::rate_limits::parse_headers(response.headers(), crate::rate_limits::now_ms())
+        {
+            hooks.observe(ModelObservation::RateLimit(snapshot));
+        }
+        let status = response.status().as_u16();
+        if status != 200 {
+            return Err(classify_status(status, read_error_body(response).await));
+        }
+        // The response has started (status 200): a body-read failure is
+        // MidStream by construction.
+        let text = response
+            .text()
+            .await
+            .map_err(|e| classify_transport(e, true))?;
+        if stream {
+            parse_sse_completion_stream(&text)
+        } else {
+            parse_completion_body(&text)
         }
     }
 }

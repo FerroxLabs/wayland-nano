@@ -63,6 +63,30 @@ impl ModelDriver for FluxDriver {
             FluxClient::Anthropic(client) => client.complete(request, &self.api_key).await,
         }
     }
+
+    async fn complete_observed(
+        &self,
+        request: &ModelRequest,
+        hooks: &nano_model::types::CallHooks<'_>,
+    ) -> Result<ModelResponse, ModelError> {
+        match &self.client {
+            FluxClient::Completions(client) => {
+                client
+                    .complete_with_hooks(request, &self.api_key, hooks)
+                    .await
+            }
+            FluxClient::Responses(client) => {
+                client
+                    .complete_with_hooks(request, &self.api_key, hooks)
+                    .await
+            }
+            FluxClient::Anthropic(client) => {
+                client
+                    .complete_with_hooks(request, &self.api_key, hooks)
+                    .await
+            }
+        }
+    }
 }
 
 /// One of the C8 provider wire surfaces (§4): the generalized OpenAI

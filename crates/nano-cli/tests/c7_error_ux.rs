@@ -281,6 +281,8 @@ impl Harness {
                     router: &router,
                     journal_append_failer: failer_ref,
                     memory: &memory_config,
+                    reasoning_effort: None,
+                    verbosity: None,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -454,7 +456,10 @@ fn model_errors_surface_as_typed_error_responses_without_provider_text() {
     let canary = "CANARY-provider-prose-\u{1b}[31m";
     let cases: Vec<(ModelError, &str, bool)> = vec![
         (
-            ModelError::Auth(format!("bad key: {canary}")),
+            ModelError::Auth {
+                message: format!("bad key: {canary}"),
+                status: Some(401),
+            },
             "model_auth",
             false,
         ),
@@ -487,7 +492,10 @@ fn model_errors_surface_as_typed_error_responses_without_provider_text() {
             false,
         ),
         (
-            ModelError::Transport(format!("reset: {canary}")),
+            ModelError::Transport {
+                phase: nano_model::types::TransportPhase::Connect,
+                message: format!("reset: {canary}"),
+            },
             "model_transport",
             true,
         ),
@@ -691,6 +699,8 @@ fn real_executor_denial_maps_through() {
                 router: &router,
                 journal_append_failer: None,
                 memory: &memory_config,
+                reasoning_effort: None,
+                verbosity: None,
             };
             let driver = MockDriver {
                 script: Arc::new(Mutex::new(

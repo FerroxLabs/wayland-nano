@@ -341,6 +341,7 @@ async fn c2_kill_mid_edit_journal_disk_equivalence_and_resume_no_double_apply() 
         tool_definitions: v1_tool_definitions(),
         approval: Some(&approve_all),
         compaction: None,
+        robustness: Default::default(),
     };
 
     let journal_path = home.join("c2-kill-wire.jsonl");
@@ -418,6 +419,7 @@ async fn c2_kill_mid_edit_journal_disk_equivalence_and_resume_no_double_apply() 
         tool_definitions: v1_tool_definitions(),
         approval: Some(&approve_all),
         compaction: None,
+        robustness: Default::default(),
     };
     let resumed = {
         let mut writer = JournalWriter::open(&journal_path).unwrap();

@@ -10,6 +10,7 @@ pub mod loop_protection;
 pub mod mcp;
 pub mod memory;
 pub mod skills;
+pub mod steer;
 pub mod tasks;
 pub mod turn;
 pub mod wiring;
@@ -17,3 +18,7 @@ pub mod wiring;
 #[cfg(test)]
 #[path = "turn_tests.rs"]
 mod turn_tests;
+
+#[cfg(test)]
+#[path = "c9_tests.rs"]
+mod c9_tests;

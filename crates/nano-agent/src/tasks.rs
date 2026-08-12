@@ -704,6 +704,10 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
         tool_definitions: v1_tool_definitions(),
         approval: Some(&gate),
         compaction: None,
+        // Children run the pre-C9 engine posture: no steer queue, no
+        // observer channel, no sticky params — a background task takes its
+        // instructions at spawn and reports at completion.
+        robustness: crate::turn::TurnRobustness::default(),
     };
     let steps = ctx.steps.clone();
     let mut sink = move |envelope: &OpEnvelope| -> bool {

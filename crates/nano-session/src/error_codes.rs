@@ -160,6 +160,18 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
             "Malformed provider stream",
             "Report; not retryable",
         ),
+        NanoErrorKind::ModelOutputSchema => response(
+            -32603,
+            false,
+            "Structured output rejected",
+            "Loosen the schema or retry without it",
+        ),
+        NanoErrorKind::ModelUnsupportedParam => response(
+            -32603,
+            false,
+            "Parameter unsupported on this model",
+            "Clear the named setting, then retry",
+        ),
         NanoErrorKind::EgressDenied => response(
             -32603,
             false,
@@ -256,6 +268,8 @@ pub const ALL_KINDS: &[NanoErrorKind] = &[
     NanoErrorKind::ModelServer4xx,
     NanoErrorKind::ModelTransport,
     NanoErrorKind::ModelProtocol,
+    NanoErrorKind::ModelOutputSchema,
+    NanoErrorKind::ModelUnsupportedParam,
     NanoErrorKind::EgressDenied,
     NanoErrorKind::FsReadDenied,
     NanoErrorKind::FsWriteDenied,
@@ -400,7 +414,7 @@ mod tests {
     /// adding one without a spec fails to compile (exhaustive match above).
     #[test]
     fn all_kinds_count_is_pinned() {
-        assert_eq!(ALL_KINDS.len(), 36);
+        assert_eq!(ALL_KINDS.len(), 38);
     }
 
     /// The drift alarm: the committed JSON artifact must be byte-identical

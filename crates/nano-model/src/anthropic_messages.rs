@@ -37,11 +37,12 @@
 use crate::flux_common::{
     FLUX_BASE, classify_status, classify_transport, read_error_body, sse_integrity_error,
 };
-use crate::retry::RetryPolicy;
+use crate::params::Surface;
+use crate::retry::RetryConfig;
 use crate::sse::SseParser;
 use crate::types::{
-    ContentBlock, Message, ModelError, ModelEvent, ModelRequest, ModelResponse, Role, ToolCall,
-    ToolDefinition, Usage,
+    CallHooks, ContentBlock, Message, ModelError, ModelEvent, ModelObservation, ModelRequest,
+    ModelResponse, Role, ToolCall, ToolDefinition, Usage,
 };
 use nano_egress::client::EgressClient;
 
@@ -65,7 +66,7 @@ pub struct AnthropicMessagesClient {
     egress: EgressClient,
     base_url: String,
     messages_path: String,
-    retry: RetryPolicy,
+    retry: RetryConfig,
 }
 
 impl AnthropicMessagesClient {
@@ -74,7 +75,7 @@ impl AnthropicMessagesClient {
             egress,
             base_url: FLUX_BASE.to_string(),
             messages_path: MESSAGES_PATH.to_string(),
-            retry: RetryPolicy::default(),
+            retry: RetryConfig::default(),
         }
     }
 
@@ -91,12 +92,19 @@ impl AnthropicMessagesClient {
         self
     }
 
+    /// Test seam: a custom retry configuration (the production default is
+    /// the Q2-bounded policy).
+    pub fn with_retry_config(mut self, retry: RetryConfig) -> Self {
+        self.retry = retry;
+        self
+    }
+
+    fn endpoint(&self, path: &str) -> String {
+        format!("{}{}", self.base_url.trim_end_matches('/'), path)
+    }
+
     fn messages_endpoint(&self) -> String {
-        format!(
-            "{}{}",
-            self.base_url.trim_end_matches('/'),
-            self.messages_path
-        )
+        self.endpoint(&self.messages_path)
     }
 
     fn count_tokens_endpoint(&self) -> String {
@@ -108,44 +116,70 @@ impl AnthropicMessagesClient {
         request: &ModelRequest,
         api_key: &str,
     ) -> Result<ModelResponse, ModelError> {
-        let body = build_request_body(request);
-        let mut attempt = 0;
-        loop {
-            let builder = self
-                .egress
-                .request(reqwest::Method::POST, &self.messages_endpoint())?
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01")
-                .json(&body);
+        self.complete_with_hooks(request, api_key, &CallHooks::none())
+            .await
+    }
 
-            let outcome = async {
-                let response = builder.send().await.map_err(classify_transport)?;
-                let status = response.status().as_u16();
-                if status != 200 {
-                    return Err(classify_status(status, read_error_body(response).await));
-                }
-                let text = response.text().await.map_err(classify_transport)?;
-                if request.stream {
-                    parse_sse_message_stream(&text)
-                } else {
-                    parse_message_body(&text)
-                }
-            }
-            .await;
+    /// The hooked entry point (C9) — see FluxCompletionsClient. Anthropic
+    /// strict structured output maps to a forced tool and extracts the
+    /// forced call's INPUT (never the final text); non-strict schema and
+    /// verbosity are known-unsupported here and reject before network I/O.
+    pub async fn complete_with_hooks(
+        &self,
+        request: &ModelRequest,
+        api_key: &str,
+        hooks: &CallHooks<'_>,
+    ) -> Result<ModelResponse, ModelError> {
+        let mut body = build_request_body(request);
+        let notices = crate::params::apply_params(Surface::Anthropic, &mut body, request)?;
+        for notice in notices {
+            hooks.observe(notice);
+        }
+        let mut response = crate::retry::run_with_retries(&self.retry, hooks, || async {
+            self.attempt(&body, request.stream, api_key, hooks).await
+        })
+        .await?;
+        if request.output_schema.is_some() {
+            crate::structured::extract_and_validate(Surface::Anthropic, request, &mut response)?;
+        }
+        Ok(response)
+    }
 
-            match outcome {
-                Ok(events_response) => return Ok(events_response),
-                Err(err) => match self.retry.decide(attempt, &err) {
-                    crate::retry::RetryAction::Retry {
-                        attempt: next,
-                        delay_ms,
-                    } => {
-                        attempt = next;
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    }
-                    crate::retry::RetryAction::GiveUp => return Err(err),
-                },
-            }
+    async fn attempt(
+        &self,
+        body: &serde_json::Value,
+        stream: bool,
+        api_key: &str,
+        hooks: &CallHooks<'_>,
+    ) -> Result<ModelResponse, ModelError> {
+        let builder = self
+            .egress
+            .request(reqwest::Method::POST, &self.messages_endpoint())?
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(body);
+
+        let response = builder
+            .send()
+            .await
+            .map_err(|e| classify_transport(e, false))?;
+        if let Some(snapshot) =
+            crate::rate_limits::parse_headers(response.headers(), crate::rate_limits::now_ms())
+        {
+            hooks.observe(ModelObservation::RateLimit(snapshot));
+        }
+        let status = response.status().as_u16();
+        if status != 200 {
+            return Err(classify_status(status, read_error_body(response).await));
+        }
+        let text = response
+            .text()
+            .await
+            .map_err(|e| classify_transport(e, true))?;
+        if stream {
+            parse_sse_message_stream(&text)
+        } else {
+            parse_message_body(&text)
         }
     }
 
@@ -160,8 +194,7 @@ impl AnthropicMessagesClient {
         api_key: &str,
     ) -> Result<u64, ModelError> {
         let body = build_count_tokens_body(request);
-        let mut attempt = 0;
-        loop {
+        crate::retry::run_with_retries(&self.retry, &CallHooks::none(), || async {
             let builder = self
                 .egress
                 .request(reqwest::Method::POST, &self.count_tokens_endpoint())?
@@ -169,31 +202,21 @@ impl AnthropicMessagesClient {
                 .header("anthropic-version", "2023-06-01")
                 .json(&body);
 
-            let outcome = async {
-                let response = builder.send().await.map_err(classify_transport)?;
-                let status = response.status().as_u16();
-                if status != 200 {
-                    return Err(classify_status(status, read_error_body(response).await));
-                }
-                let text = response.text().await.map_err(classify_transport)?;
-                parse_count_tokens_body(&text)
+            let response = builder
+                .send()
+                .await
+                .map_err(|e| classify_transport(e, false))?;
+            let status = response.status().as_u16();
+            if status != 200 {
+                return Err(classify_status(status, read_error_body(response).await));
             }
-            .await;
-
-            match outcome {
-                Ok(count) => return Ok(count),
-                Err(err) => match self.retry.decide(attempt, &err) {
-                    crate::retry::RetryAction::Retry {
-                        attempt: next,
-                        delay_ms,
-                    } => {
-                        attempt = next;
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    }
-                    crate::retry::RetryAction::GiveUp => return Err(err),
-                },
-            }
-        }
+            let text = response
+                .text()
+                .await
+                .map_err(|e| classify_transport(e, true))?;
+            parse_count_tokens_body(&text)
+        })
+        .await
     }
 }
 

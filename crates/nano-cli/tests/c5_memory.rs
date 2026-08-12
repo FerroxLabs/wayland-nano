@@ -213,6 +213,8 @@ impl Harness {
                     sandbox_probe: &sandbox_probe,
                     router: &router,
                     memory: &memory_config,
+                    reasoning_effort: None,
+                    verbosity: None,
                     journal_append_failer: None,
                 };
                 acp_mode::serve(

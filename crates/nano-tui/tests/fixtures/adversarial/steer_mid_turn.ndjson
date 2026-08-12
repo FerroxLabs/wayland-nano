@@ -1,0 +1,16 @@
+{"dir":">","frame":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"nanoExtensions":{"session/steer":{"version":1}}},"agentInfo":{"name":"wayland-nano","version":"0.1.0"}}}}
+{"dir":">","frame":{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","id":2,"result":{"sessionId":"wayland-nano-session-recorded","models":{"currentModelId":"flux-auto","availableModels":[{"modelId":"flux-auto","name":"Flux Auto"}]}}}}
+{"dir":">","frame":{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"sessionUpdate":"reconnecting","attempt":1,"nextDelayMs":5000,"deadlineRemainingMs":295000}}}}
+{"dir":">","frame":{"jsonrpc":"2.0","id":4,"method":"session/steer","params":{}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","id":4,"result":{"queued":true,"position":1}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"sessionUpdate":"rate_limit","snapshot":{"captured_at_ms":1700000000000,"scope":"openai-default","requests_remaining":90,"requests_limit":100}}}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"also check the tests"}}}}}
+{"dir":">","frame":{"jsonrpc":"2.0","id":5,"method":"session/steer","params":{}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","id":5,"result":{"queued":true,"position":1}}}
+{"dir":">","frame":{"jsonrpc":"2.0","method":"session/cancel","params":{}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"sessionUpdate":"steer_dropped","requestId":"5","textDigest":"len:7"}}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Partial answer."}}}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","id":3,"result":{"stopReason":"cancelled"}}}

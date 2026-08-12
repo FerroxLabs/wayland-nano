@@ -193,6 +193,14 @@ pub fn agent_capabilities() -> serde_json::Value {
             "mcpCapabilities": {
                 "http": false,
                 "sse": false
+            },
+            // C9: extension-method advertisement with a version marker, the
+            // same discipline as session/compact / session/set_model.
+            // Clients discover support HERE, never by probing; a client
+            // that sends an unknown method gets the standard JSON-RPC
+            // -32601 fallback.
+            "nanoExtensions": {
+                "session/steer": { "version": 1 }
             }
         },
         "agentInfo": {
@@ -448,6 +456,102 @@ pub fn compaction_notice(session_id: &str, status: &str) -> JsonRpcNotification 
             "update": {
                 "sessionUpdate": "compaction",
                 "status": status
+            }
+        }),
+    )
+}
+
+// ── C9 robustness-pack wire shapes ──────────────────────────────────────
+
+/// The `session/steer` extension method (C9 Q1 RULED shape (b)): mid-turn
+/// user input that the running turn drains at its next loop top. The
+/// response resolves IMMEDIATELY with the enqueue ack — it is NOT the turn
+/// result (the terminal result still belongs to the original prompt).
+pub const SESSION_STEER_METHOD: &str = "session/steer";
+
+/// session/steer queued ack: the submitter's proof of acceptance.
+pub fn steer_queued_result(position: usize) -> serde_json::Value {
+    serde_json::json!({ "queued": true, "position": position })
+}
+
+/// The dropped-steer notice (C9 §3.3): because the queued ack resolves
+/// before any later cancellation, a drop-on-cancel travels as a LATER
+/// session/update carrying the submitter's request id and the steer text
+/// digest (never the text itself — it was never model-visible). Exactly
+/// one notice per dropped steer; none is dropped silently.
+pub fn steer_dropped_notice(
+    session_id: &str,
+    request_id: &str,
+    text_digest: &str,
+) -> JsonRpcNotification {
+    JsonRpcNotification::new(
+        "session/update",
+        serde_json::json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "steer_dropped",
+                "requestId": request_id,
+                "textDigest": text_digest
+            }
+        }),
+    )
+}
+
+/// Reconnect banner (C9 §2.2): one notice per reconnect sleep, typed
+/// fields only — UIs render, never parse strings.
+pub fn reconnect_notice(
+    session_id: &str,
+    attempt: u32,
+    next_delay_ms: u64,
+    deadline_remaining_ms: u64,
+) -> JsonRpcNotification {
+    JsonRpcNotification::new(
+        "session/update",
+        serde_json::json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "reconnecting",
+                "attempt": attempt,
+                "nextDelayMs": next_delay_ms,
+                "deadlineRemainingMs": deadline_remaining_ms
+            }
+        }),
+    )
+}
+
+/// Loud inert-param notice (C9 §4, Q3 rung 2): a requested param was
+/// omitted from the wire (or mapped-but-recorded-inert) on this surface.
+pub fn param_inert_notice(
+    session_id: &str,
+    param: &str,
+    surface: &str,
+    detail: &str,
+) -> JsonRpcNotification {
+    JsonRpcNotification::new(
+        "session/update",
+        serde_json::json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "param_inert",
+                "param": param,
+                "surface": surface,
+                "detail": detail
+            }
+        }),
+    )
+}
+
+/// Rate-limit observation (C9 §5, Q4): the coalesced latest snapshot per
+/// turn iteration. `snapshot` is the serialized RateLimitSnapshot (all
+/// fields optional — UIs render "unknown" on absence, never a guess).
+pub fn rate_limit_notice(session_id: &str, snapshot: serde_json::Value) -> JsonRpcNotification {
+    JsonRpcNotification::new(
+        "session/update",
+        serde_json::json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "rate_limit",
+                "snapshot": snapshot
             }
         }),
     )

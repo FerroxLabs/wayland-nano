@@ -54,20 +54,23 @@ impl FluxModelsClient {
             .bearer_auth(api_key)
             .send()
             .await
-            .map_err(classify_transport)?;
+            .map_err(|e| classify_transport(e, false))?;
         let status = response.status().as_u16();
         if status != 200 {
             let body = response.text().await.unwrap_or_default();
             return Err(crate::flux_completions::classify_status(status, body));
         }
-        let text = response.text().await.map_err(classify_transport)?;
+        let text = response
+            .text()
+            .await
+            .map_err(|e| classify_transport(e, true))?;
         parse_models_body(&text)
     }
 }
 
-fn classify_transport(err: reqwest::Error) -> ModelError {
-    // Single redaction path, same as the completions adapter.
-    ModelError::Transport(nano_egress::client::sanitize_transport_error(&err))
+fn classify_transport(err: reqwest::Error, response_started: bool) -> ModelError {
+    // Same typed-phase mapping as the three wire surfaces.
+    crate::flux_common::classify_transport(err, response_started)
 }
 
 /// Parse the OpenAI-style list body (`{"object":"list","data":[{"id":…}]}`).

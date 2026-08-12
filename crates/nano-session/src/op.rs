@@ -167,6 +167,28 @@ pub enum Op {
         /// The PermissionMode wire id ("read_only" | "default" | "full_auto").
         mode: String,
     },
+    /// A drained mid-turn steer (C9): journaled DURABLY at drain time,
+    /// BEFORE the in-memory history mutation, so the journal records what
+    /// the model actually saw, in order. Enqueued-but-undrained steers are
+    /// never journaled. User text is journaled verbatim (same rule as
+    /// `TurnBegin.input`); replay folds it as a user message exactly like
+    /// the TurnBegin input fold, so kill-resume reconstructs steer-adjusted
+    /// context byte-identically.
+    SteerInput {
+        turn_id: String,
+        text: String,
+    },
+    /// The one allowed structured-output re-ask (C9 §4.3): the LITERAL
+    /// feedback text the model saw, journaled at the moment the feedback
+    /// message enters history (journal-first, fail-closed on append
+    /// failure). Replay folds it as a user message, so kill-resume
+    /// reconstructs the re-asked context byte-identically regardless of
+    /// template wording changes across versions. A re-ask is a new
+    /// journaled sampling step with its own budget accounting, NOT a retry.
+    SchemaReask {
+        turn_id: String,
+        feedback: String,
+    },
     /// Forward tolerance: any Op type this build does not know. Skipped on
     /// replay; the raw line stays in the journal for future readers.
     #[serde(other)]

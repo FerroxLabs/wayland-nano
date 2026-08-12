@@ -9,7 +9,12 @@ use crate::loop_protection::{
     BudgetTracker, NoProgressTracker, ProgressAction, ProgressSignals, RepeatAction, RepeatBreaker,
     ToolCallKey, TurnBudget,
 };
-use nano_model::types::{Message, ModelError, ModelEvent, ModelRequest, ModelResponse, ToolCall};
+use crate::steer::SteerHandle;
+use nano_model::auth::RefreshOutcome;
+use nano_model::types::{
+    CallHooks, Message, ModelError, ModelEvent, ModelObservation, ModelRequest, ModelResponse,
+    ToolCall,
+};
 use nano_session::NanoErrorKind;
 use nano_session::op::{Op, OpEnvelope};
 use std::fmt::Debug;
@@ -19,6 +24,18 @@ use std::fmt::Debug;
 #[async_trait::async_trait]
 pub trait ModelDriver: Debug + Send + Sync {
     async fn complete(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError>;
+
+    /// The hooked variant (C9): cancel-selectable reconnect sleeps and the
+    /// typed observation channel. Drivers that cannot consume hooks fall
+    /// back to the plain call — hooks are then inert, never misrouted.
+    async fn complete_observed(
+        &self,
+        request: &ModelRequest,
+        hooks: &CallHooks<'_>,
+    ) -> Result<ModelResponse, ModelError> {
+        let _ = hooks;
+        self.complete(request).await
+    }
 }
 
 /// One tool invocation the engine can perform (fs/shell/etc. register here).
@@ -145,6 +162,30 @@ pub struct TurnEngine<'a> {
     /// the active model. `None` disables auto-compaction (unit tests); the
     /// production host always resolves a config.
     pub compaction: Option<CompactionConfig>,
+    /// The C9 robustness seams (steer queue, 401 refresh, observations,
+    /// model params). `Default` = every seam off (pre-C9 behavior).
+    pub robustness: TurnRobustness<'a>,
+}
+
+/// The C9 robustness seams, bundled so hosts opt in wholesale. All-off is
+/// exactly the pre-C9 engine.
+#[derive(Default)]
+pub struct TurnRobustness<'a> {
+    /// Mid-turn steer queue (§3): drained at loop top only, journal-first,
+    /// closed by the engine exactly once at turn end.
+    pub steer: Option<SteerHandle>,
+    /// The 401 recovery seam (§2.4, Q5): the credential provider's refresh
+    /// trait; the one-shot state machine lives here in the turn. `None` =
+    /// static-key behavior: a 401 takes zero retries.
+    pub auth_refresh: Option<&'a dyn nano_model::auth::AuthRefresh>,
+    /// The host's typed observation sink (reconnect banners, inert-param
+    /// notices, rate-limit snapshots).
+    pub observer: Option<&'a (dyn Fn(ModelObservation) + Send + Sync)>,
+    /// Cross-surface model params (§4): run through the Q3 capability
+    /// ladder inside the surface adapter.
+    pub reasoning_effort: Option<nano_model::types::ReasoningEffort>,
+    pub verbosity: Option<nano_model::types::Verbosity>,
+    pub output_schema: Option<serde_json::Value>,
 }
 
 /// Decides whether a tool call may execute. Production prompts via the host;
@@ -379,9 +420,33 @@ impl<'a> TurnEngine<'a> {
         let mut compact_guard = AutoCompactGuard::default();
         let mut compaction_counter = 0u32;
         let mut reactive_compaction_used = false;
+        // C9 per-turn one-shot states (§2.4 auth refresh, §4.3 schema
+        // re-ask): both reset here, so each turn gets exactly one of each.
+        let mut auth_retry_used = false;
+        let mut reask_used = false;
+        // C9 rate-limit coalescing: latest-wins per iteration. The Mutex
+        // pair is written by the observation closure (an Fn) and flushed to
+        // the host observer at loop top and turn end.
+        let latest_rate_limit =
+            std::sync::Mutex::new(None::<nano_model::rate_limits::RateLimitSnapshot>);
+        let rate_limit_dirty = std::sync::Mutex::new(false);
+        // Flush the coalesced rate-limit snapshot to the host observer.
+        let flush_rate_limit = |dirty: &std::sync::Mutex<bool>,
+                                latest: &std::sync::Mutex<
+            Option<nano_model::rate_limits::RateLimitSnapshot>,
+        >| {
+            let was_dirty =
+                std::mem::replace(&mut *dirty.lock().unwrap_or_else(|p| p.into_inner()), false);
+            if was_dirty && let Some(host) = self.robustness.observer {
+                let snapshot = latest.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                if let Some(snapshot) = snapshot {
+                    host(ModelObservation::RateLimit(snapshot));
+                }
+            }
+        };
 
         transition(&mut state, &mut history, TurnState::Understand);
-        loop {
+        'turn: loop {
             if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst)) {
                 state = TurnState::Stopped(StopInfo::new(
                     NanoErrorKind::UserCancelled,
@@ -467,16 +532,138 @@ impl<'a> TurnEngine<'a> {
                 }
             }
 
+            // ── C9 steer drain: loop top ONLY, after the cancel check and
+            // the C1 compaction seam, before ModelRequest construction ──
+            // The same adjacency-safe point C1 certified: no tool batch is
+            // in flight, so a user message can never strand a tool_use.
+            // Journal-first: Op::SteerInput lands DURABLY before the
+            // in-memory history mutates; an append failure aborts the turn
+            // fail-closed with history untouched. Undrained steers are
+            // never journaled (replay can never resurrect input the model
+            // never saw). Steers drained here BYPASS the proactive token
+            // check for this iteration by design — C1's reactive-overflow
+            // retry is the documented backstop.
+            if let Some(handle) = &self.robustness.steer {
+                for item in handle.drain_for(turn_id) {
+                    if !emit(
+                        &mut ops,
+                        Op::SteerInput {
+                            turn_id: turn_id.into(),
+                            text: item.text.clone(),
+                        },
+                    ) {
+                        state = TurnState::Failed(TypedError::new(
+                            NanoErrorKind::JournalUnavailable,
+                            "steer journal append failed (fail-closed: history unmutated)",
+                        ));
+                        emit(
+                            &mut ops,
+                            Op::TurnEnd {
+                                turn_id: turn_id.into(),
+                                outcome: nano_session::op::TurnOutcome::Failed,
+                            },
+                        );
+                        break 'turn;
+                    }
+                    // Multi-steer shape: separate user messages, one per
+                    // steer, each submitter's intent verbatim. A surface
+                    // whose provider rejects consecutive user roles
+                    // coalesces at request-build time (per-surface,
+                    // fixture-pinned) — never here, never mixed.
+                    messages.push(Message::user(item.text));
+                }
+            }
+            // Coalesced rate-limit snapshot (latest-wins per iteration).
+            flush_rate_limit(&rate_limit_dirty, &latest_rate_limit);
+
             let request = ModelRequest {
                 model: self.model_name.clone(),
                 messages: messages.clone(),
                 tools: self.tool_definitions.clone(),
                 max_tokens: Some(4096),
                 stream: false,
+                reasoning_effort: self.robustness.reasoning_effort,
+                verbosity: self.robustness.verbosity,
+                output_schema: self.robustness.output_schema.clone(),
                 ..Default::default()
             };
-            let response = match self.model.complete(&request).await {
+            // C9 observation plumbing: rate-limit snapshots coalesce
+            // latest-wins (flushed at the next loop top / turn end); every
+            // other observation forwards to the host IMMEDIATELY — a
+            // reconnect banner after the fact is useless.
+            let observing = |observation: ModelObservation| match observation {
+                ModelObservation::RateLimit(snapshot) => {
+                    *latest_rate_limit.lock().unwrap_or_else(|p| p.into_inner()) = Some(snapshot);
+                    *rate_limit_dirty.lock().unwrap_or_else(|p| p.into_inner()) = true;
+                }
+                other => {
+                    if let Some(host) = self.robustness.observer {
+                        host(other);
+                    }
+                }
+            };
+            let hooks = CallHooks {
+                cancel,
+                observer: Some(&observing),
+            };
+            let response = match self.model.complete_observed(&request, &hooks).await {
+                // C9 §2.4 one-shot 401 seam (Q5 RULED): exactly one retry
+                // of the same byte-identical request, only after a
+                // successful refresh, only for HTTP 401. 403, non-HTTP auth
+                // errors, a second 401, a refresh failure, and the
+                // static-key (no provider) case are all terminal.
+                Err(
+                    err @ ModelError::Auth {
+                        status: Some(401), ..
+                    },
+                ) if !auth_retry_used => {
+                    auth_retry_used = true;
+                    match self.robustness.auth_refresh {
+                        Some(provider) => match provider.refresh().await {
+                            RefreshOutcome::Refreshed => {
+                                self.model.complete_observed(&request, &hooks).await
+                            }
+                            RefreshOutcome::NotRefreshable | RefreshOutcome::Failed(_) => Err(err),
+                        },
+                        None => Err(err),
+                    }
+                }
+                other => other,
+            };
+            let response = match response {
                 Ok(r) => r,
+                // C9 §4.3 schema re-ask: ONE re-ask, a new journaled
+                // sampling step (NOT a retry). Journal-first: the LITERAL
+                // feedback text lands durable before history mutates; the
+                // step budget is consumed at the next loop top. A second
+                // schema failure falls through to the generic failure.
+                Err(ModelError::OutputSchema(feedback))
+                    if request.output_schema.is_some() && !reask_used =>
+                {
+                    reask_used = true;
+                    if !emit(
+                        &mut ops,
+                        Op::SchemaReask {
+                            turn_id: turn_id.into(),
+                            feedback: feedback.clone(),
+                        },
+                    ) {
+                        state = TurnState::Failed(TypedError::new(
+                            NanoErrorKind::JournalUnavailable,
+                            "schema re-ask journal append failed (fail-closed: history unmutated)",
+                        ));
+                        emit(
+                            &mut ops,
+                            Op::TurnEnd {
+                                turn_id: turn_id.into(),
+                                outcome: nano_session::op::TurnOutcome::Failed,
+                            },
+                        );
+                        break;
+                    }
+                    messages.push(Message::user(feedback));
+                    continue; // the re-asked sampling step
+                }
                 // [R1] Reactive overflow: the tail heuristic undershot and the
                 // model rejected the request — route into the SAME compaction
                 // path exactly once instead of failing the turn. A second
@@ -580,6 +767,19 @@ impl<'a> TurnEngine<'a> {
             }
 
             if tool_calls.is_empty() {
+                // C9 §3.2 codex parity: pending steers mean the turn is NOT
+                // done — they drain at the next loop top and the model gets
+                // another sampling step. Cancel still wins: the loop-top
+                // cancel check runs BEFORE the drain.
+                if self
+                    .robustness
+                    .steer
+                    .as_ref()
+                    .is_some_and(|handle| handle.has_pending())
+                {
+                    transition(&mut state, &mut history, TurnState::Understand);
+                    continue;
+                }
                 // No more actions: verify then complete.
                 transition(&mut state, &mut history, TurnState::Verify);
                 emit(
@@ -760,6 +960,16 @@ impl<'a> TurnEngine<'a> {
                 }
             }
         }
+
+        // C9: the turn owns the steer queue lifecycle — close it exactly
+        // once, on ANY exit (completion, failure, cancel). Still-queued
+        // steers drop WITH per-submitter notification (cancel-beats-steer:
+        // a cancelled turn's pending steers are dropped here, each notified
+        // exactly once). Then flush the final coalesced rate-limit snapshot.
+        if let Some(handle) = &self.robustness.steer {
+            handle.close();
+        }
+        flush_rate_limit(&rate_limit_dirty, &latest_rate_limit);
 
         TurnResult {
             state,

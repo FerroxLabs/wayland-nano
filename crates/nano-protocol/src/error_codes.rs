@@ -17,12 +17,15 @@ mod tests {
     /// explicit match constructs one instance per `ModelError` variant (a
     /// newly added variant breaks THIS test's compilation), and every
     /// nested `EgressError` variant is covered too. The table's retryable
-    /// flag must equal the engine's own `is_retryable` verdict throughout.
+    /// flag must equal the engine's own classification verdict throughout.
+    /// (Post-C9 oracle: `classify`, not `is_retryable` — the reconnect class
+    /// IS retried, by the bounded reconnect loop rather than the fast
+    /// RetryPolicy, so `is_retryable` alone would under-report it.)
     #[test]
     fn table_retryable_agrees_with_engine_retry_policy() {
         use nano_agent::error_map::kind_of_model;
         use nano_egress::client::EgressError;
-        use nano_model::retry::is_retryable;
+        use nano_model::retry::classify;
         use nano_model::types::ModelError;
 
         let mut cases: Vec<ModelError> = Vec::new();
@@ -30,7 +33,10 @@ mod tests {
         // the source enum. (The anchor values themselves are never used;
         // the arms push fresh instances.)
         let push = |anchor: &ModelError, cases: &mut Vec<ModelError>| match anchor {
-            ModelError::Auth(_) => cases.push(ModelError::Auth("bad key".into())),
+            ModelError::Auth { .. } => cases.push(ModelError::Auth {
+                message: "bad key".into(),
+                status: Some(401),
+            }),
             ModelError::RateLimited { .. } => cases.push(ModelError::RateLimited {
                 retry_after_ms: Some(500),
             }),
@@ -48,8 +54,19 @@ mod tests {
                     message: "bad".into(),
                 });
             }
-            ModelError::Transport(_) => cases.push(ModelError::Transport("reset".into())),
+            ModelError::Transport { .. } => cases.push(ModelError::Transport {
+                phase: nano_model::types::TransportPhase::Connect,
+                message: "reset".into(),
+            }),
             ModelError::Protocol(_) => cases.push(ModelError::Protocol("bad json".into())),
+            ModelError::OutputSchema(_) => {
+                cases.push(ModelError::OutputSchema("field missing".into()))
+            }
+            ModelError::UnsupportedParam { .. } => cases.push(ModelError::UnsupportedParam {
+                param: "verbosity".into(),
+                surface: "anthropic".into(),
+                message: "known-unsupported here".into(),
+            }),
             ModelError::Cancelled => cases.push(ModelError::Cancelled),
             ModelError::Egress(_) => {
                 for err in [
@@ -94,7 +111,10 @@ mod tests {
             }
         };
         for anchor in [
-            ModelError::Auth(String::new()),
+            ModelError::Auth {
+                message: String::new(),
+                status: None,
+            },
             ModelError::RateLimited {
                 retry_after_ms: None,
             },
@@ -104,14 +124,23 @@ mod tests {
                 status: 500,
                 message: String::new(),
             },
-            ModelError::Transport(String::new()),
+            ModelError::Transport {
+                phase: nano_model::types::TransportPhase::MidStream,
+                message: String::new(),
+            },
             ModelError::Protocol(String::new()),
+            ModelError::OutputSchema(String::new()),
+            ModelError::UnsupportedParam {
+                param: String::new(),
+                surface: String::new(),
+                message: String::new(),
+            },
             ModelError::Cancelled,
             ModelError::Egress(EgressError::Transport(String::new())),
         ] {
             push(&anchor, &mut cases);
         }
-        assert_eq!(cases.len(), 19);
+        assert_eq!(cases.len(), 21);
         for err in &cases {
             if matches!(err, ModelError::Cancelled) {
                 continue; // never an error kind — stopReason:"cancelled"
@@ -119,7 +148,7 @@ mod tests {
             let kind = kind_of_model(err);
             assert_eq!(
                 spec(kind).retryable,
-                is_retryable(err).is_some(),
+                classify(err).is_some(),
                 "{err:?} → {kind:?}: table and retry.rs disagree"
             );
         }
@@ -128,7 +157,7 @@ mod tests {
     /// The shim must not drift from the canonical module.
     #[test]
     fn shim_re_exports_the_canonical_table() {
-        assert_eq!(ALL_KINDS.len(), 36);
+        assert_eq!(ALL_KINDS.len(), 38);
         assert_eq!(
             spec(NanoErrorKind::ModelRateLimited).title,
             nano_session::error_codes::spec(NanoErrorKind::ModelRateLimited).title

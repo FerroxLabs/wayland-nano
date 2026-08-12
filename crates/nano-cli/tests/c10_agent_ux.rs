@@ -241,6 +241,8 @@ impl Harness {
                     router: &router,
                     journal_append_failer: None,
                     memory: &memory_config,
+                    reasoning_effort: None,
+                    verbosity: None,
                 };
                 acp_mode::serve(
                     ChannelReader {

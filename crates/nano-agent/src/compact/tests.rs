@@ -129,6 +129,7 @@ fn engine<'a>(
         tool_definitions: vec![],
         approval: None,
         compaction,
+        robustness: Default::default(),
     }
 }
 

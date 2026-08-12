@@ -109,6 +109,7 @@ mod tests {
             tool_definitions: vec![],
             approval: None,
             compaction: None,
+            robustness: Default::default(),
         };
 
         let result = engine.run_turn("t1", "fix the build").await;
@@ -184,6 +185,7 @@ mod tests {
             tool_definitions: vec![],
             approval: None,
             compaction: None,
+            robustness: Default::default(),
         };
 
         let result = engine.run_turn("t2", "loop forever").await;
@@ -250,6 +252,7 @@ mod tests {
             tool_definitions: vec![],
             approval: None,
             compaction: None,
+            robustness: Default::default(),
         };
 
         let sink_seen = seen.clone();
@@ -319,6 +322,7 @@ mod tests {
             tool_definitions: vec![],
             approval: None,
             compaction: None,
+            robustness: Default::default(),
         };
 
         let result = engine.run_turn("t3", "make no progress").await;
@@ -374,6 +378,7 @@ mod tests {
             tool_definitions: vec![],
             approval: Some(&ModeDenyGate),
             compaction: None,
+            robustness: Default::default(),
         };
 
         let result = engine.run_turn("t5", "write the file").await;
