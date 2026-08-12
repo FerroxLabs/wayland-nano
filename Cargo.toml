@@ -22,6 +22,22 @@ edition = "2024"
 license = "Apache-2.0"
 rust-version = "1.85"
 
+[workspace.dependencies]
+# P2a §4.7: base64 promoted from nano-sandbox to the workspace table.
+base64 = "0.22"
+# P2a §4.7/D8: NEW dependency for the hardened image loader. Pinned exact;
+# default-features OFF and the decoder feature allowlist is exactly
+# {png, jpeg, gif, webp} at the LINK level (SVG/BMP/TIFF and every other
+# decoder are excluded by construction). Consumers must use
+# `image.workspace = true` and may NOT add features locally — the
+# feature-lock test in nano-tools/src/image.rs asserts this manifest.
+image = { version = "=0.25.10", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
