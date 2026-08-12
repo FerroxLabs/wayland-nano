@@ -18,6 +18,7 @@ const SPLIT_ESCAPE: &str = include_str!("fixtures/adversarial/split_escape.ndjso
 const APPROVAL_SPOOF: &str = include_str!("fixtures/adversarial/approval_spoof.ndjson");
 const TORN_RESUME: &str = include_str!("fixtures/adversarial/torn_resume.ndjson");
 const CANCEL_MID_TURN: &str = include_str!("fixtures/adversarial/cancel_mid_turn.ndjson");
+const COMPACT: &str = include_str!("fixtures/adversarial/compact.ndjson");
 
 /// The recorded full journey is two lifetimes in one file: phase 1 ends at
 /// the second `initialize` expectation (the relaunch). Split there.
@@ -366,4 +367,30 @@ fn scan_fixture(path: &std::path::Path) {
             );
         }
     }
+}
+
+/// C1 §7/§9 (TUI scripted drive): /compact sends session/compact and the
+/// host's compaction notices render as system notes; a notice carrying
+/// escape sequences is sanitized on the render path.
+#[test]
+fn l2_compact_command_sends_request_and_renders_notices() {
+    lint_fixture(COMPACT, &[FULL_JOURNEY, PTY_JOURNEY], &["compaction"][..])
+        .unwrap_or_else(|e| panic!("compact fixture failed the lint: {e}"));
+    let mut world = World::new(COMPACT, 80, 24, None);
+    assert!(world.screen().contains("session ready"));
+    world.type_and_submit("/compact");
+    let screen = world.screen();
+    assert!(
+        screen.contains("context compaction: begin"),
+        "begin notice renders: {screen}"
+    );
+    assert!(
+        screen.contains("context compaction: complete"),
+        "complete notice renders: {screen}"
+    );
+    // The hostile-status notice rendered its text but no escape sequence
+    // survived the sanitizer into the terminal grid.
+    assert!(screen.contains("forged"), "sanitized text kept: {screen}");
+    assert!(!screen.contains('\u{1b}'), "no raw ESC on screen");
+    world.finish();
 }

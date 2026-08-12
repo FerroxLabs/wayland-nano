@@ -64,3 +64,20 @@ pub fn classify_status(status: u16, body: String) -> ModelError {
 pub fn sse_integrity_error(err: crate::sse::SseError) -> ModelError {
     ModelError::Protocol(format!("sse stream rejected: {err}"))
 }
+
+/// Conservative context-window fallback for models the Flux catalog does
+/// not classify with `max_input_tokens` (C1). 128k is below every window
+/// the current Flux catalog reports, so unknown models trigger compaction
+/// EARLY, never late; the reactive-overflow path backstops any tier whose
+/// real window is smaller still.
+pub const DEFAULT_CONTEXT_WINDOW_TOKENS: u64 = 128_000;
+
+/// The model's context window: the catalog's `max_input_tokens` when the
+/// router reports it for this id, else [`DEFAULT_CONTEXT_WINDOW_TOKENS`].
+pub fn context_window_for(model_id: &str, catalog: &[crate::flux_models::FluxModel]) -> u64 {
+    catalog
+        .iter()
+        .find(|m| m.id == model_id)
+        .and_then(|m| m.max_input_tokens)
+        .unwrap_or(DEFAULT_CONTEXT_WINDOW_TOKENS)
+}

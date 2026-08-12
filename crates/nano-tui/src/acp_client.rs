@@ -49,6 +49,11 @@ pub enum SessionUpdate {
         status: String,
         raw_output: String,
     },
+    /// Context-compaction lifecycle notice (C1 §7): begin/complete/cancel,
+    /// rendered as a system note in the transcript.
+    Compaction {
+        status: String,
+    },
     /// Forward-additive: kinds v1 doesn't render. Tolerated, never panics
     /// (torn/unknown replay frames must not kill the TUI, design §8).
     Unknown(String),
@@ -191,6 +196,13 @@ fn parse_session_update(update: &Value) -> SessionUpdate {
                 .unwrap_or("")
                 .to_string(),
         },
+        "compaction" => SessionUpdate::Compaction {
+            status: update
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        },
         other => SessionUpdate::Unknown(other.to_string()),
     }
 }
@@ -314,6 +326,12 @@ pub fn prompt_params(session_id: &str, text: &str) -> Value {
 
 pub fn set_model_params(session_id: &str, model_id: &str) -> Value {
     json!({"sessionId": session_id, "modelId": model_id})
+}
+
+/// session/compact (C1): manual engine-side compaction of the session
+/// context, journaled identically to the auto path.
+pub fn compact_params(session_id: &str) -> Value {
+    json!({"sessionId": session_id})
 }
 
 pub fn cancel_notification(session_id: &str) -> Value {
@@ -517,6 +535,9 @@ mod tests {
         let set = request(5, "session/set_model", set_model_params("s1", "flux-fast"));
         assert_eq!(set["params"]["modelId"], "flux-fast");
 
+        let compact = request(6, "session/compact", compact_params("s1"));
+        assert_eq!(compact["params"]["sessionId"], "s1");
+
         let cancel = cancel_notification("s1");
         assert_eq!(cancel["method"], "session/cancel");
         assert!(cancel.get("id").is_none());
@@ -558,6 +579,16 @@ mod tests {
                 title: "shell".into(),
                 status: "in_progress".into(),
                 raw_input: json!({"command": "ls"}),
+            })
+        );
+
+        // Compaction notices parse to their own variant (C1).
+        let notice = json!({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":"s","update":{"sessionUpdate":"compaction","status":"complete"}}});
+        assert_eq!(
+            classify(&notice),
+            Inbound::Update(SessionUpdate::Compaction {
+                status: "complete".into()
             })
         );
 

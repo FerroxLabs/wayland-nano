@@ -42,9 +42,11 @@ use nano_model::flux_completions::FluxCompletionsClient;
 use nano_model::types::{ContentBlock, Message, Role, ToolCall};
 use nano_protocol::acp::{
     AvailableModel, JsonRpcNotification, JsonRpcResponse, agent_capabilities, agent_message_chunk,
-    prompt_result, request_permission_request, session_load_result, session_new_result,
-    set_model_result, tool_call_done, tool_call_replay, tool_call_update, user_message_chunk,
+    compaction_notice, prompt_result, request_permission_request, session_load_result,
+    session_new_result, set_model_result, tool_call_done, tool_call_replay, tool_call_update,
+    user_message_chunk,
 };
+use nano_session::SessionState;
 use nano_session::op::{Op, OpEnvelope};
 use nano_session::reader::read_journal;
 use nano_session::writer::JournalWriter;
@@ -137,22 +139,50 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     // model — honest (it really runs) and keeps the host usable.
     let catalog =
         nano_model::flux_models::ModelCatalog::new(EgressClient::flux(), Some(api_key.clone()));
-    let available: Vec<AvailableModel> = match catalog.models().await {
-        Ok(models) => models
-            .iter()
-            .map(|m| AvailableModel {
-                id: m.id.clone(),
-                name: m.name.clone(),
-            })
-            .collect(),
+    // The resolved catalog doubles as the C1 context-window source
+    // (`max_input_tokens` per model id; unknown models fall back to 128k).
+    let (catalog_models, available): (
+        Vec<nano_model::flux_models::FluxModel>,
+        Vec<AvailableModel>,
+    ) = match catalog.models().await {
+        Ok(models) => (
+            models.to_vec(),
+            models
+                .iter()
+                .map(|m| AvailableModel {
+                    id: m.id.clone(),
+                    name: m.name.clone(),
+                })
+                .collect(),
+        ),
         Err(err) => {
             eprintln!(
                 "wayland-nano: model catalog unavailable ({err}); advertising the default model only"
             );
-            vec![AvailableModel {
-                id: "flux-auto".into(),
-                name: "flux-auto".into(),
-            }]
+            (
+                Vec::new(),
+                vec![AvailableModel {
+                    id: "flux-auto".into(),
+                    name: "flux-auto".into(),
+                }],
+            )
+        }
+    };
+    // C1 config overrides (env is the only config channel that exists).
+    // Both are DOWNWARD-ONLY; a non-numeric value is a typed config error,
+    // not a silent ignore.
+    let window_override = match parse_env_u64("NANO_CONTEXT_WINDOW_TOKENS") {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("wayland-nano: {err}");
+            return Ok(2);
+        }
+    };
+    let limit_override = match parse_env_u64("NANO_AUTO_COMPACT_TOKENS") {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("wayland-nano: {err}");
+            return Ok(2);
         }
     };
     // NOTE(wiring.rs): FluxDriver carries no model — the model id is a
@@ -182,8 +212,24 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         default_model: "flux-auto",
         available_models: &available,
         env_mcp_specs: &env_mcp_specs,
+        catalog: &catalog_models,
+        window_override,
+        limit_override,
     };
     serve(reader, writer, &config, make_driver, make_tools).await
+}
+
+/// Parses an optional numeric env override. Unset/empty is `None`; a value
+/// that is not a positive integer is a typed config error (fail-closed).
+fn parse_env_u64(name: &str) -> Result<Option<u64>, String> {
+    match std::env::var(name) {
+        Ok(raw) if !raw.trim().is_empty() => raw
+            .trim()
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|_| format!("{name} must be a positive integer, got {raw:?}")),
+        _ => Ok(None),
+    }
 }
 
 /// The ACP host loop, generic over the byte streams and the model/tool
@@ -201,6 +247,14 @@ pub struct ServeConfig<'a> {
     /// Operator-supplied MCP servers (NANO_MCP_SERVERS in production) merged
     /// into every session's fresh registry.
     pub env_mcp_specs: &'a [McpServerSpec],
+    /// Resolved Flux catalog (C1 context-window source); may be empty when
+    /// the catalog was unavailable, in which case every model gets the 128k
+    /// conservative default.
+    pub catalog: &'a [nano_model::flux_models::FluxModel],
+    /// NANO_CONTEXT_WINDOW_TOKENS — downward-only override.
+    pub window_override: Option<u64>,
+    /// NANO_AUTO_COMPACT_TOKENS — downward-only override.
+    pub limit_override: Option<u64>,
 }
 
 /// `make_driver`/`make_tools` build a fresh pair per prompt (tools are
@@ -599,6 +653,33 @@ where
                             active.turn_counter += 1;
                             let turn_id = format!("{}-turn-{}", active.id, active.turn_counter);
                             let prior_context = active.context.clone();
+                            // C1: resolve this turn's context-management
+                            // config against the ACTIVE model's catalog
+                            // window. Overrides are downward-only; an
+                            // override that exceeds the active model's window
+                            // is a typed error, never a silent clamp.
+                            let catalog_window = nano_model::flux_common::context_window_for(
+                                &active.model,
+                                config.catalog,
+                            );
+                            let compaction = match nano_agent::compact::resolve_compaction_config(
+                                catalog_window,
+                                config.window_override,
+                                config.limit_override,
+                            ) {
+                                Ok(config) => config,
+                                Err(err) => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err(
+                                            id,
+                                            -32602,
+                                            format!("compaction config: {err}"),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                            };
                             // Fail closed: a turn we cannot journal is a turn
                             // that would silently break a later resume.
                             let journal_writer = match JournalWriter::open(&active.journal) {
@@ -661,21 +742,30 @@ where
                                     model_name: turn_model,
                                     tool_definitions,
                                     approval: Some(&gate),
+                                    compaction: Some(compaction),
                                 };
                                 let sink_session = session_id.clone();
                                 let mut journal_writer = journal_writer;
-                                let mut sink = move |envelope: &OpEnvelope| {
+                                let mut sink = move |envelope: &OpEnvelope| -> bool {
                                     // Journal first: the durable record leads
-                                    // the live frame, never the other way.
-                                    if let Err(err) = journal_writer.append(envelope) {
-                                        eprintln!(
-                                            "wayland-nano: session journal append failed: {err}"
-                                        );
-                                    }
+                                    // the live frame, never the other way. The
+                                    // compaction commit protocol reads this
+                                    // return value — its in-memory swap only
+                                    // happens behind a durable Complete.
+                                    let journaled = match journal_writer.append(envelope) {
+                                        Ok(_) => true,
+                                        Err(err) => {
+                                            eprintln!(
+                                                "wayland-nano: session journal append failed: {err}"
+                                            );
+                                            false
+                                        }
+                                    };
                                     let mut guard =
                                         sink_out.lock().unwrap_or_else(|p| p.into_inner());
                                     let _ =
                                         write_op_frame(&mut *guard, &sink_session, envelope);
+                                    journaled
                                 };
                                 let result = engine
                                     .run_turn_streaming_with_context(
@@ -694,6 +784,152 @@ where
                                 (result.final_text, stop_reason.to_string())
                             };
                             turn = Some(Box::pin(turn_future));
+                        }
+                        // Manual /compact (C1 §7): the SAME compaction
+                        // pipeline as the auto path, engine-side, journaled
+                        // identically (Begin/Complete + notices), never
+                        // counted toward the auto-compaction loop guard.
+                        // NOTE(deviation from the design doc's transport
+                        // rationale): the doc assumed the TUI links an
+                        // in-process acp-host; it does not (subprocess +
+                        // JSON-RPC, and nano-tui links no engine crates), so
+                        // the command rides a `session/compact` request
+                        // exactly parallel to session/set_model.
+                        "session/compact" => {
+                            if turn.is_some() {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(id, -32602, "turn in progress"),
+                                )?;
+                                continue;
+                            }
+                            let Some(active) = session.as_mut() else {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32602,
+                                        "no session: call session/new first",
+                                    ),
+                                )?;
+                                continue;
+                            };
+                            // Fail closed: a compaction we cannot journal must
+                            // never swap the in-memory history.
+                            let mut writer = match JournalWriter::open(&active.journal) {
+                                Ok(writer) => writer,
+                                Err(err) => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err(
+                                            id,
+                                            -32603,
+                                            format!("cannot open session journal: {err}"),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                            };
+                            let report = match read_journal(&active.journal) {
+                                Ok(report) => report,
+                                Err(err) => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err(
+                                            id,
+                                            -32603,
+                                            format!("session journal unreadable: {err}"),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                            };
+                            let sequence = report
+                                .envelopes
+                                .iter()
+                                .filter(|e| matches!(e.op, Op::CompactionBegin { .. }))
+                                .count()
+                                + 1;
+                            let compaction_id = format!("{}-compact-{sequence}", active.id);
+                            let covers_op_ids =
+                                report.envelopes.iter().map(|e| e.id.clone()).collect();
+                            let changed_files: Vec<String> =
+                                SessionState::fold(&report.envelopes)
+                                    .changed_files
+                                    .into_iter()
+                                    .collect();
+                            let driver = make_driver();
+                            let model_name = active.model.clone();
+                            let session_id = active.id.clone();
+                            let mut context = std::mem::take(&mut active.context);
+                            let mut op_sequence = 0u32;
+                            let notice_id = compaction_id.clone();
+                            let notice_session = session_id.clone();
+                            let notice_out = out.clone();
+                            let mut emit = |op: Op| -> bool {
+                                op_sequence += 1;
+                                let status = match &op {
+                                    Op::CompactionBegin { .. } => Some("begin"),
+                                    Op::CompactionComplete { .. } => Some("complete"),
+                                    Op::CompactionCancel { .. } => Some("cancel"),
+                                    _ => None,
+                                };
+                                let envelope = OpEnvelope::new(
+                                    format!("{notice_id}-op-{op_sequence}"),
+                                    "now",
+                                    op,
+                                );
+                                let journaled = match writer.append(&envelope) {
+                                    Ok(_) => true,
+                                    Err(err) => {
+                                        eprintln!(
+                                            "wayland-nano: session journal append failed: {err}"
+                                        );
+                                        false
+                                    }
+                                };
+                                if let Some(status) = status {
+                                    let mut guard = notice_out
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner());
+                                    let _ = write_json(
+                                        &mut *guard,
+                                        &compaction_notice(&notice_session, status),
+                                    );
+                                }
+                                journaled
+                            };
+                            let outcome = nano_agent::compact::compact_messages(
+                                &driver,
+                                &model_name,
+                                &mut context,
+                                &compaction_id,
+                                covers_op_ids,
+                                changed_files,
+                                &mut emit,
+                            )
+                            .await;
+                            // On failure the context came back untouched
+                            // (compact_messages never swaps without a durable
+                            // Complete); on success it IS the compacted one.
+                            active.context = context;
+                            match outcome {
+                                Ok(()) => write_out(
+                                    &out,
+                                    &JsonRpcResponse::ok(
+                                        id,
+                                        serde_json::json!({ "compacted": true }),
+                                    ),
+                                )?,
+                                Err(err) => write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32603,
+                                        format!("compaction failed: {err}"),
+                                    ),
+                                )?,
+                            }
                         }
                         other => {
                             write_out(&out, &JsonRpcResponse::method_not_found(id, other))?;
@@ -970,6 +1206,14 @@ fn replay_frames(session_id: &str, envelopes: &[OpEnvelope]) -> Vec<JsonRpcNotif
                     frames.push(tool_call_replay(session_id, call_id, name, args, false));
                 }
             },
+            // Historical compaction events surface as the same system notices
+            // the live path emits (C1 §7).
+            Op::CompactionComplete { .. } => {
+                frames.push(compaction_notice(session_id, "complete"));
+            }
+            Op::CompactionCancel { .. } => {
+                frames.push(compaction_notice(session_id, "cancel"));
+            }
             _ => {}
         }
     }
@@ -981,7 +1225,15 @@ fn replay_frames(session_id: &str, envelopes: &[OpEnvelope]) -> Vec<JsonRpcNotif
 /// result carries an explicit elision marker instead of the original output:
 /// the model sees that the call happened and whether it succeeded, never a
 /// fabricated payload.
-fn messages_from_envelopes(envelopes: &[OpEnvelope]) -> Vec<Message> {
+/// Rebuilds model-consumable conversation context from journaled ops. Tool
+/// payloads are NOT persisted (digest-only journals), so a restored tool
+/// result carries an explicit elision marker instead of the original output:
+/// the model sees that the call happened and whether it succeeded, never a
+/// fabricated payload. `CompactionComplete` folds through the canonical
+/// builder (C1 §6), so a resumed context is byte-identical to the live
+/// post-compaction one over the compacted prefix. Pub for the C1 replay /
+/// fault-injection tests; not part of the wire surface.
+pub fn messages_from_envelopes(envelopes: &[OpEnvelope]) -> Vec<Message> {
     let mut messages = Vec::new();
     let mut assistant: Vec<ContentBlock> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -1024,18 +1276,31 @@ fn messages_from_envelopes(envelopes: &[OpEnvelope]) -> Vec<Message> {
                 ..
             } => {
                 flush_assistant(&mut messages, &mut assistant);
-                messages.push(Message {
-                    role: Role::Tool,
-                    content: vec![ContentBlock::ToolResult {
-                        tool_use_id: call_id.clone(),
-                        content: format!(
-                            "[tool output elided from journal: ok={ok}, digest={output_digest}]"
-                        ),
-                        is_error: !ok,
-                    }],
-                });
+                // [R1] The ONE synthesized-result encoding, shared with the
+                // compaction repair pass and repeat-protection skips.
+                messages.push(Message::tool_result(
+                    call_id,
+                    format!("[tool output elided from journal: ok={ok}, digest={output_digest}]"),
+                    !ok,
+                ));
             }
             Op::TurnEnd { .. } => flush_assistant(&mut messages, &mut assistant),
+            // [R1/R2] The canonical replay arm: fold the SAME
+            // build_compacted_history the live path used, with the journaled
+            // summary; later envelopes append after it. The pending-assistant
+            // flush BEFORE the builder call is mandatory — without it the
+            // builder sees a history missing the in-flight assistant
+            // message. covers_op_ids is audit metadata only; the builder's
+            // own rules decide what survives, identically live and on replay.
+            // Forged/malformed compaction ops are tolerated: no panics, and
+            // real user messages survive the builder by construction.
+            Op::CompactionComplete { summary, .. } => {
+                flush_assistant(&mut messages, &mut assistant);
+                messages = nano_agent::compact::build_compacted_history(
+                    std::mem::take(&mut messages),
+                    summary,
+                );
+            }
             _ => {}
         }
     }
@@ -1065,6 +1330,13 @@ fn write_op_frame<W: Write>(
             writer,
             &tool_call_done(session_id, call_id, *ok, output_digest),
         ),
+        // C1 §7: compaction lifecycle events surface as session/update
+        // notices so both UIs can render the event in the transcript.
+        Op::CompactionBegin { .. } => write_json(writer, &compaction_notice(session_id, "begin")),
+        Op::CompactionComplete { .. } => {
+            write_json(writer, &compaction_notice(session_id, "complete"))
+        }
+        Op::CompactionCancel { .. } => write_json(writer, &compaction_notice(session_id, "cancel")),
         _ => Ok(()),
     }
 }

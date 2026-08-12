@@ -52,6 +52,25 @@ impl Message {
             content: vec![ContentBlock::Text { text: text.into() }],
         }
     }
+
+    /// The ONE synthesized-tool-result encoding (C1): journal-resume elision,
+    /// the compaction repair pass, and repeat-protection skips all build their
+    /// synthetic results through here so the Completions and Anthropic wire
+    /// surfaces can never diverge in role/content encoding.
+    pub fn tool_result(
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
+        Self {
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: tool_use_id.into(),
+                content: content.into(),
+                is_error,
+            }],
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -299,6 +299,24 @@ pub fn prompt_result(stop_reason: &str) -> serde_json::Value {
     serde_json::json!({ "stopReason": stop_reason })
 }
 
+/// A context-compaction lifecycle notice (C1 §7): emitted on
+/// CompactionBegin/Complete/Cancel so UIs can render the event as a system
+/// note in the transcript. `status` is "begin" | "complete" | "cancel".
+/// Clients that do not know the kind tolerate it (unknown sessionUpdate
+/// kinds convert to zero messages — pinned by Desktop's adapter tests).
+pub fn compaction_notice(session_id: &str, status: &str) -> JsonRpcNotification {
+    JsonRpcNotification::new(
+        "session/update",
+        serde_json::json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "compaction",
+                "status": status
+            }
+        }),
+    )
+}
+
 /// session/request_permission request payload (agent → host).
 pub fn request_permission_request(
     id: u64,

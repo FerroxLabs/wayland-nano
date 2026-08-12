@@ -4,6 +4,7 @@
 //! States (every one testable): RECEIVE → UNDERSTAND → PLAN → ACT → OBSERVE
 //! → CONTINUE/REPLAN → VERIFY → COMPLETE. No cognitive theatre.
 
+use crate::compact::{AutoCompactGuard, CompactionConfig, TokenTracker, compact_messages};
 use crate::loop_protection::{
     BudgetTracker, NoProgressTracker, ProgressAction, ProgressSignals, RepeatAction, RepeatBreaker,
     ToolCallKey, TurnBudget,
@@ -83,6 +84,10 @@ pub struct TurnEngine<'a> {
     pub tool_definitions: Vec<nano_model::types::ToolDefinition>,
     /// Approval gate consulted before every side-effecting tool execution.
     pub approval: Option<&'a dyn ApprovalGate>,
+    /// Context-management settings (C1): window + 90% auto-compact limit for
+    /// the active model. `None` disables auto-compaction (unit tests); the
+    /// production host always resolves a config.
+    pub compaction: Option<CompactionConfig>,
 }
 
 /// Decides whether a tool call may execute. Production prompts via the host;
@@ -138,13 +143,15 @@ impl<'a> TurnEngine<'a> {
     /// Runs a turn like [`Self::run_turn_cancellable`], additionally invoking
     /// `sink` with every op the moment it is recorded — before the turn
     /// completes. Streaming hosts (ACP) use this to forward frames live
-    /// instead of replaying `result.ops` after the fact.
+    /// instead of replaying `result.ops` after the fact. The sink returns
+    /// whether the op is DURABLY journaled: the compaction commit protocol
+    /// (C1 §6) swaps in-memory history only behind a durable Complete.
     pub async fn run_turn_streaming(
         &self,
         turn_id: &str,
         input: &str,
         cancel: Option<&std::sync::atomic::AtomicBool>,
-        sink: &mut dyn FnMut(&OpEnvelope),
+        sink: &mut dyn FnMut(&OpEnvelope) -> bool,
     ) -> TurnResult {
         self.run_turn_inner(turn_id, input, Vec::new(), cancel, Some(sink))
             .await
@@ -159,7 +166,7 @@ impl<'a> TurnEngine<'a> {
         input: &str,
         prior: Vec<Message>,
         cancel: Option<&std::sync::atomic::AtomicBool>,
-        sink: &mut dyn FnMut(&OpEnvelope),
+        sink: &mut dyn FnMut(&OpEnvelope) -> bool,
     ) -> TurnResult {
         self.run_turn_inner(turn_id, input, prior, cancel, Some(sink))
             .await
@@ -171,16 +178,21 @@ impl<'a> TurnEngine<'a> {
         input: &str,
         context: Vec<Message>,
         cancel: Option<&std::sync::atomic::AtomicBool>,
-        sink: Option<&mut dyn FnMut(&OpEnvelope)>,
+        sink: Option<&mut dyn FnMut(&OpEnvelope) -> bool>,
     ) -> TurnResult {
         let mut ops: Vec<OpEnvelope> = Vec::new();
         let mut next_id = 0u32;
         let mut sink = sink;
-        let mut emit = |ops: &mut Vec<OpEnvelope>, op: Op| {
+        // Emits one op into the turn record and through the sink. Returns
+        // whether the op is durably recorded (no sink = in-memory only, e.g.
+        // unit tests, which counts as recorded for protocol purposes).
+        let mut emit = |ops: &mut Vec<OpEnvelope>, op: Op| -> bool {
             next_id += 1;
             ops.push(OpEnvelope::new(format!("{turn_id}-{next_id}"), "now", op));
             if let Some(sink) = sink.as_deref_mut() {
-                sink(ops.last().expect("op just pushed"));
+                sink(ops.last().expect("op just pushed"))
+            } else {
+                true
             }
         };
 
@@ -206,6 +218,13 @@ impl<'a> TurnEngine<'a> {
         let mut messages = context;
         messages.push(Message::user(input));
         let mut final_text = String::new();
+        // C1 context management: server-anchored token accounting, the
+        // consecutive-ineffective-compaction guard, and the one-shot reactive
+        // overflow retry.
+        let mut tokens = TokenTracker::default();
+        let mut compact_guard = AutoCompactGuard::default();
+        let mut compaction_counter = 0u32;
+        let mut reactive_compaction_used = false;
 
         transition(&mut state, &mut history, TurnState::Understand);
         loop {
@@ -226,6 +245,65 @@ impl<'a> TurnEngine<'a> {
             }
             budget_tracker.record_step();
 
+            // ── C1 compaction seam: loop top only, pre-next-model-call ──
+            // NEVER inside the tool-batch loop (a mid-batch swap would strand
+            // tool_use blocks awaiting tool_results). No approval can be
+            // pending here: approvals only exist inside a tool batch, and the
+            // previous iteration's batch completed before this seam.
+            if let Some(config) = self.compaction {
+                let estimate = tokens.estimate(&messages);
+                if estimate < config.auto_compact_limit {
+                    // Any re-baseline below the trigger re-arms the guard.
+                    compact_guard.reset();
+                } else {
+                    compaction_counter += 1;
+                    let compaction_id = format!("{turn_id}-compact-{compaction_counter}");
+                    let covers_op_ids = ops.iter().map(|e| e.id.clone()).collect();
+                    let changed_files = collect_changed_files(&ops);
+                    let mut journal_emit = |op: Op| emit(&mut ops, op);
+                    let outcome = compact_messages(
+                        self.model,
+                        &self.model_name,
+                        &mut messages,
+                        &compaction_id,
+                        covers_op_ids,
+                        changed_files,
+                        &mut journal_emit,
+                    )
+                    .await;
+                    if let Err(err) = outcome {
+                        state = TurnState::Failed(format!("auto-compaction failed: {err}"));
+                        emit(
+                            &mut ops,
+                            Op::TurnEnd {
+                                turn_id: turn_id.into(),
+                                outcome: nano_session::op::TurnOutcome::Failed,
+                            },
+                        );
+                        break;
+                    }
+                    // Post-compaction recompute: drop the stale server sample;
+                    // the next real sample re-baselines.
+                    tokens.reset();
+                    if tokens.estimate(&messages) >= config.auto_compact_limit
+                        && compact_guard.record_ineffective()
+                    {
+                        state = TurnState::Failed(
+                            "auto-compaction loop guard: two consecutive compactions failed to bring the context under the limit"
+                                .into(),
+                        );
+                        emit(
+                            &mut ops,
+                            Op::TurnEnd {
+                                turn_id: turn_id.into(),
+                                outcome: nano_session::op::TurnOutcome::Failed,
+                            },
+                        );
+                        break;
+                    }
+                }
+            }
+
             let request = ModelRequest {
                 model: self.model_name.clone(),
                 messages: messages.clone(),
@@ -236,11 +314,52 @@ impl<'a> TurnEngine<'a> {
             };
             let response = match self.model.complete(&request).await {
                 Ok(r) => r,
+                // [R1] Reactive overflow: the tail heuristic undershot and the
+                // model rejected the request — route into the SAME compaction
+                // path exactly once instead of failing the turn. A second
+                // overflow after that compaction falls through to the generic
+                // failure below.
+                Err(ModelError::ContextOverflow(_))
+                    if self.compaction.is_some() && !reactive_compaction_used =>
+                {
+                    reactive_compaction_used = true;
+                    compaction_counter += 1;
+                    let compaction_id = format!("{turn_id}-compact-{compaction_counter}");
+                    let covers_op_ids = ops.iter().map(|e| e.id.clone()).collect();
+                    let changed_files = collect_changed_files(&ops);
+                    let mut journal_emit = |op: Op| emit(&mut ops, op);
+                    let outcome = compact_messages(
+                        self.model,
+                        &self.model_name,
+                        &mut messages,
+                        &compaction_id,
+                        covers_op_ids,
+                        changed_files,
+                        &mut journal_emit,
+                    )
+                    .await;
+                    if let Err(err) = outcome {
+                        state = TurnState::Failed(format!("reactive compaction failed: {err}"));
+                        emit(
+                            &mut ops,
+                            Op::TurnEnd {
+                                turn_id: turn_id.into(),
+                                outcome: nano_session::op::TurnOutcome::Failed,
+                            },
+                        );
+                        break;
+                    }
+                    tokens.reset();
+                    continue; // retry the model call once, post-compaction
+                }
                 Err(err) => {
                     state = TurnState::Failed(format!("model call failed: {err}"));
                     break;
                 }
             };
+            // The server sample is authoritative (C1 §2): the LAST REQUEST's
+            // input_tokens, covering the messages as they stood at the call.
+            tokens.record_usage(&response.usage, messages.len());
 
             if matches!(state, TurnState::Understand | TurnState::Replan) {
                 transition(&mut state, &mut history, TurnState::Plan);
@@ -310,30 +429,47 @@ impl<'a> TurnEngine<'a> {
 
             transition(&mut state, &mut history, TurnState::Act);
             let mut step_progress = ProgressSignals::default();
-            for call in &tool_calls {
+            for (index, call) in tool_calls.iter().enumerate() {
                 budget_tracker.record_tool_call();
                 let key = ToolCallKey::new(&call.name, &call.arguments);
                 match protection.check(&key) {
                     RepeatAction::Allow => {}
                     RepeatAction::Remind(reminder) => {
+                        // C1 source fix (was turn.rs:318-321): the assistant
+                        // ToolUse is already journaled above, so a skipped
+                        // call MUST still be paired with a synthesized
+                        // tool_result — the shared encoding keeps the
+                        // Completions/Anthropic surfaces from diverging.
+                        messages.push(Message::tool_result(
+                            &call.id,
+                            "[tool call skipped: repeat-protection reminder issued]",
+                            true,
+                        ));
                         messages.push(Message::system(reminder));
                         continue;
                     }
                     RepeatAction::ForceStop(reason) => {
+                        // C1 source fix (was turn.rs:322-325): pair the
+                        // current AND every remaining call in the batch
+                        // before stopping, so no ToolUse is ever stranded.
+                        for skipped in &tool_calls[index..] {
+                            messages.push(Message::tool_result(
+                                &skipped.id,
+                                "[tool call skipped: repeat-protection force stop]",
+                                true,
+                            ));
+                        }
                         state = TurnState::Stopped(reason);
                         break;
                     }
                 }
                 if let Some(gate) = self.approval {
                     if gate.approve(call) == ApprovalDecision::Deny {
-                        messages.push(Message {
-                            role: nano_model::types::Role::Tool,
-                            content: vec![nano_model::types::ContentBlock::ToolResult {
-                                tool_use_id: call.id.clone(),
-                                content: "denied by approval gate".into(),
-                                is_error: true,
-                            }],
-                        });
+                        messages.push(Message::tool_result(
+                            &call.id,
+                            "denied by approval gate",
+                            true,
+                        ));
                         continue;
                     }
                 }
@@ -418,4 +554,21 @@ impl<'a> TurnEngine<'a> {
             ops,
         }
     }
+}
+
+/// Durable-effect inventory at compaction time (C1 §6): the union of
+/// `changed_files` over journaled tool results. The summary replaces the
+/// transcript; effects must survive or replay diverges.
+fn collect_changed_files(ops: &[OpEnvelope]) -> Vec<String> {
+    let mut files: Vec<String> = ops
+        .iter()
+        .filter_map(|envelope| match &envelope.op {
+            Op::ToolResult { changed_files, .. } => Some(changed_files.iter().cloned()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    files.sort();
+    files.dedup();
+    files
 }

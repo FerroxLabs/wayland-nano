@@ -14,11 +14,13 @@
 pub mod compact;
 pub mod op;
 pub mod reader;
+pub mod redaction;
 pub mod replay;
 pub mod writer;
 
-pub use op::{Op, OpEnvelope, SCHEMA_VERSION, TurnOutcome};
+pub use op::{CompactionCancelReason, Op, OpEnvelope, SCHEMA_VERSION, TurnOutcome};
 pub use reader::{JournalReport, read_journal};
+pub use redaction::{RedactionError, SecretKind, scan_for_secrets};
 pub use replay::{CompactionPhase, SessionState};
 pub use writer::JournalWriter;
 

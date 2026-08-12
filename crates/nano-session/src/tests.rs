@@ -144,6 +144,34 @@ fn stranded_compaction_running_resets_to_idle() {
 }
 
 #[test]
+fn compaction_cancel_reason_is_bounded_and_back_compatible() {
+    // Journals written before the reason field existed still load.
+    let old =
+        r#"{"v":1,"id":"9","ts":"now","op":{"type":"compaction_cancel","compaction_id":"k1"}}"#;
+    let envelope: OpEnvelope = serde_json::from_str(old).expect("pre-reason journal must parse");
+    let Op::CompactionCancel { reason, .. } = envelope.op else {
+        panic!("cancel op")
+    };
+    assert_eq!(reason, crate::op::CompactionCancelReason::Unspecified);
+    // A reason written by a NEWER build degrades to Unknown, never an error.
+    let future = r#"{"v":1,"id":"9","ts":"now","op":{"type":"compaction_cancel","compaction_id":"k1","reason":"quantum_flux"}}"#;
+    let envelope: OpEnvelope = serde_json::from_str(future).expect("future reason must parse");
+    let Op::CompactionCancel { reason, .. } = envelope.op else {
+        panic!("cancel op")
+    };
+    assert_eq!(reason, crate::op::CompactionCancelReason::Unknown);
+    // Round-trip of a current reason.
+    let op = Op::CompactionCancel {
+        compaction_id: "k1".into(),
+        reason: crate::op::CompactionCancelReason::RedactionHit,
+    };
+    let json = serde_json::to_value(&op).unwrap();
+    assert_eq!(json["reason"], "redaction_hit");
+    let back: Op = serde_json::from_value(json).unwrap();
+    assert_eq!(back, op);
+}
+
+#[test]
 fn crash_mid_turn_marks_interrupted_without_duplicate_effects() {
     let ops = &session_ops()[..4]; // cut before TurnEnd
     let state = SessionState::fold(ops);

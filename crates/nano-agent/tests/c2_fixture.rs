@@ -66,6 +66,7 @@ fn engine_for<'a>(
         model_name: "flux-fast".into(),
         tool_definitions: v1_tool_definitions(),
         approval: Some(approve_all),
+        compaction: None,
     }
 }
 

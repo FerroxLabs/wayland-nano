@@ -1,0 +1,12 @@
+# Redaction corpus — NEGATIVES: every line MUST pass scan_for_secrets.
+# Ordinary summary prose and short lookalikes that must NOT trip the gate.
+Summary: refactored crates/nano-agent/src/turn.rs to record token usage.
+Decisions: keep the deny-by-default egress policy; next step is C2 tests.
+The task list mentioned sk-impossible deadlines and ghp_editor.rs tweaks.
+ask nicely, desk lamp, risk assessment, pipeline sk-ipped
+AKIA is four letters of a word, not a key id here.
+xoxo hugs and kisses, not a Slack token.
+The private key discussion stayed conceptual; no PEM block was emitted.
+sk-short
+ghp_short
+wayland-nano-canary-x

@@ -13,10 +13,14 @@ pub const MODELS_PATH: &str = "/v1/models";
 
 /// One catalog entry. `name` is the human label the ACP client renders;
 /// Flux's /v1/models carries only `id`, so the id doubles as the label.
+/// `max_input_tokens` is the model's context window when the router reports
+/// it (C1 token accounting); tiers that omit it fall back to the
+/// conservative default in `flux_common`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FluxModel {
     pub id: String,
     pub name: String,
+    pub max_input_tokens: Option<u64>,
 }
 
 /// GET /v1/models over the policy-gated egress client.
@@ -86,6 +90,9 @@ pub fn parse_models_body(text: &str) -> Result<Vec<FluxModel>, ModelError> {
         models.push(FluxModel {
             id: id.to_string(),
             name: id.to_string(),
+            max_input_tokens: entry
+                .get("max_input_tokens")
+                .and_then(serde_json::Value::as_u64),
         });
     }
     if models.is_empty() {

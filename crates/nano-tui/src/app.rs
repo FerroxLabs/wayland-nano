@@ -43,6 +43,7 @@ enum Pending {
     SessionLoad,
     Prompt,
     SetModel,
+    Compact,
 }
 
 /// The open modal, if any.
@@ -341,6 +342,7 @@ impl App {
         match slash_commands::parse(&text) {
             None => self.submit_prompt(conn, &text),
             Some(SlashCommand::Model) => self.open_model_picker(),
+            Some(SlashCommand::Compact) => self.submit_compact(conn),
             Some(SlashCommand::Status) => {
                 self.transcript.push_note(&self.status.report());
                 // C1: /status doctor data comes from the short-lived
@@ -354,10 +356,37 @@ impl App {
             Some(SlashCommand::Quit) => self.begin_quit(conn),
             Some(SlashCommand::Unknown(command)) => {
                 self.transcript.push_note(&format!(
-                    "unknown command: {command} (have: /model /status /doctor /quit)"
+                    "unknown command: {command} (have: /model /status /doctor /compact /quit)"
                 ));
             }
         }
+    }
+
+    /// `/compact` (C1 §7): engine-side manual compaction via session/compact.
+    /// The host rejects it while a turn runs; the TUI blocks it early for a
+    /// clearer note. Begin/complete surface as compaction session/update
+    /// notices from the host.
+    fn submit_compact<C: Connection>(&mut self, conn: &mut C) {
+        if !self.ready {
+            self.transcript
+                .push_note("not connected yet — wait for the session");
+            return;
+        }
+        if self.turn_active {
+            self.transcript
+                .push_note("cannot compact while a turn is running");
+            return;
+        }
+        let Some(session_id) = self.session_id.clone() else {
+            return;
+        };
+        self.transcript.push_note("compacting context…");
+        self.send_request(
+            conn,
+            "session/compact",
+            acp_client::compact_params(&session_id),
+            Pending::Compact,
+        );
     }
 
     fn submit_prompt<C: Connection>(&mut self, conn: &mut C, text: &str) {
@@ -494,6 +523,7 @@ impl App {
                     self.status.wire = WireState::Ready;
                 }
                 Pending::SetModel => {}
+                Pending::Compact => {}
             }
             return;
         }
@@ -580,6 +610,14 @@ impl App {
                         .push_note("set_model response carried no models block");
                 }
             }
+            Pending::Compact => {
+                // The begin/complete notices already narrate the transcript;
+                // the response only confirms the wire call succeeded.
+                if result.get("compacted").and_then(Value::as_bool) != Some(true) {
+                    self.transcript
+                        .push_note("session/compact returned an unexpected result");
+                }
+            }
         }
     }
 
@@ -606,6 +644,12 @@ impl App {
                     .push_tool_result(&call_id, &status, &raw_output);
             }
             SessionUpdate::Unknown(_) => {}
+            SessionUpdate::Compaction { status } => {
+                // Model-generated summaries never reach this string — it is a
+                // bounded status word — and push_note sanitizes regardless.
+                self.transcript
+                    .push_note(&format!("context compaction: {status}"));
+            }
         }
     }
 

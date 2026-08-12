@@ -203,6 +203,9 @@ impl Recorder {
                     default_model: "flux-auto",
                     available_models: &catalog(),
                     env_mcp_specs: &[],
+                    catalog: &[],
+                    window_override: None,
+                    limit_override: None,
                 };
                 acp_mode::serve(
                     ChannelReader {

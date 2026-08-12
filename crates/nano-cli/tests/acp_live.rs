@@ -309,6 +309,9 @@ impl Harness {
                     default_model: &default_model,
                     available_models: &catalog,
                     env_mcp_specs: &env_mcp_specs,
+                    catalog: &[],
+                    window_override: None,
+                    limit_override: None,
                 };
                 acp_mode::serve(
                     ChannelReader {

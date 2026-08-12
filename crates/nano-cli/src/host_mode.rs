@@ -67,6 +67,7 @@ pub async fn run(
         model_name: "flux-auto".into(),
         tool_definitions,
         approval: Some(&approve_all),
+        compaction: None,
     };
     let skill_context = std::sync::Arc::new(skill_context);
 

@@ -340,6 +340,7 @@ async fn c2_kill_mid_edit_journal_disk_equivalence_and_resume_no_double_apply() 
         model_name: "scripted".into(),
         tool_definitions: v1_tool_definitions(),
         approval: Some(&approve_all),
+        compaction: None,
     };
 
     let journal_path = home.join("c2-kill-wire.jsonl");
@@ -356,6 +357,7 @@ async fn c2_kill_mid_edit_journal_disk_equivalence_and_resume_no_double_apply() 
             {
                 kill_ref.store(true, Ordering::SeqCst);
             }
+            true
         };
         engine
             .run_turn_streaming("c2-kill", TASK, Some(&kill), &mut sink)
@@ -415,11 +417,13 @@ async fn c2_kill_mid_edit_journal_disk_equivalence_and_resume_no_double_apply() 
         model_name: "scripted".into(),
         tool_definitions: v1_tool_definitions(),
         approval: Some(&approve_all),
+        compaction: None,
     };
     let resumed = {
         let mut writer = JournalWriter::open(&journal_path).unwrap();
         let mut sink = move |envelope: &OpEnvelope| {
             writer.append(envelope).expect("journal append");
+            true
         };
         resume_engine
             .run_turn_streaming_with_context("c2-kill-resume", "continue", prior, None, &mut sink)

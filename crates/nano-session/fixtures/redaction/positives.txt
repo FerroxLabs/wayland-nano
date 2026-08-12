@@ -1,0 +1,13 @@
+# Redaction corpus — POSITIVES: every line MUST trip scan_for_secrets.
+# Synthetic canaries only; no real credential ever appears in this repo.
+# Comment lines start with '#'.
+sk-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
+prefix text sk-zzzzzzzzzzzzzzzzzzzzzzzz trailing
+ghp_a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8
+gho_a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8
+github_pat_11ABCDEFG0_a1b2c3d4e5f6a7b8c9d0e1f2
+AKIAIOSFODNN7EXAMPLE
+xoxb-123456789012-abcdefghijkl
+-----BEGIN OPENSSH PRIVATE KEY-----
+-----BEGIN RSA PRIVATE KEY-----
+wayland-nano-canary-a1b2c3d4

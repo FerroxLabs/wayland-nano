@@ -106,6 +106,7 @@ mod tests {
             model_name: "mock".into(),
             tool_definitions: vec![],
             approval: None,
+            compaction: None,
         };
 
         let result = engine.run_turn("t1", "fix the build").await;
@@ -180,6 +181,7 @@ mod tests {
             model_name: "mock".into(),
             tool_definitions: vec![],
             approval: None,
+            compaction: None,
         };
 
         let result = engine.run_turn("t2", "loop forever").await;
@@ -245,6 +247,7 @@ mod tests {
             model_name: "mock".into(),
             tool_definitions: vec![],
             approval: None,
+            compaction: None,
         };
 
         let sink_seen = seen.clone();
@@ -255,6 +258,7 @@ mod tests {
                 .unwrap_or("")
                 .to_string();
             sink_seen.lock().unwrap().push(label);
+            true
         };
         let result = engine
             .run_turn_streaming("t4", "read then reply", None, &mut sink)
@@ -312,6 +316,7 @@ mod tests {
             model_name: "mock".into(),
             tool_definitions: vec![],
             approval: None,
+            compaction: None,
         };
 
         let result = engine.run_turn("t3", "make no progress").await;

@@ -14,6 +14,7 @@ nano-model = { version = "0.1.0", path = "../nano-model" }
 nano-session = { version = "0.1.0", path = "../nano-session" }
 tokio = { version = "1", features = ["macros", "rt", "time"] }
 serde_json = "1"
+thiserror = "2"
 
 [dev-dependencies]
 nano-core = { version = "0.1.0", path = "../nano-core" }

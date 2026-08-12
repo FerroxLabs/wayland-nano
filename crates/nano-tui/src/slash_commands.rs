@@ -1,10 +1,11 @@
 //! Slash commands (composer prefix `/`): `/model`, `/status`, `/doctor`,
-//! `/quit` — the v1 set (design doc §4).
+//! `/compact`, `/quit` — the v1 set (design doc §4).
 //!
 //! `/status` and `/doctor` data path (normative, panel condition C1): both
 //! run `wayland-nano doctor` as a SHORT-LIVED SUBPROCESS and render the
 //! result; the TUI never links nano-cli and never reimplements doctor's
-//! probes.
+//! probes. `/compact` (C1) sends `session/compact` over the ACP wire — the
+//! compaction itself runs engine-side in the acp-host.
 
 /// Parsed composer submission starting with `/`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +16,8 @@ pub enum SlashCommand {
     Status,
     /// Full doctor output.
     Doctor,
+    /// Compact the session context now (engine-side, journaled).
+    Compact,
     /// Shut down (cancel any turn, kill the host, restore the terminal).
     Quit,
     /// Unknown `/...` input — reported, never executed.
@@ -33,6 +36,7 @@ pub fn parse(text: &str) -> Option<SlashCommand> {
         "/model" => SlashCommand::Model,
         "/status" => SlashCommand::Status,
         "/doctor" => SlashCommand::Doctor,
+        "/compact" => SlashCommand::Compact,
         "/quit" => SlashCommand::Quit,
         other => SlashCommand::Unknown(other.to_string()),
     })
@@ -47,6 +51,7 @@ mod tests {
         assert_eq!(parse("/model"), Some(SlashCommand::Model));
         assert_eq!(parse("/status"), Some(SlashCommand::Status));
         assert_eq!(parse("/doctor"), Some(SlashCommand::Doctor));
+        assert_eq!(parse("/compact"), Some(SlashCommand::Compact));
         assert_eq!(parse("/quit"), Some(SlashCommand::Quit));
         assert_eq!(
             parse("/bogus"),

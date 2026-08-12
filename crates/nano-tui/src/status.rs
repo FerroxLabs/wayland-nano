@@ -51,14 +51,16 @@ impl Status {
     /// The one-line status bar content.
     pub fn line(&self) -> String {
         let session = self.session_id.as_deref().unwrap_or("none");
-        let short_session: String = session.chars().take(28).collect();
+        // 19 chars keeps the whole line inside an 80-column terminal now
+        // that the hint bar carries /compact (C1).
+        let short_session: String = session.chars().take(19).collect();
         let doctor = self
             .doctor_summary
             .as_deref()
             .map(|s| format!(" | doctor: {s}"))
             .unwrap_or_default();
         format!(
-            " {} | {} | {}{} | /model /status /doctor /quit ",
+            " {} | {} | {}{} | /model /status /doctor /compact /quit ",
             self.model, self.wire, short_session, doctor
         )
     }
