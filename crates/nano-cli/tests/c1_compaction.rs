@@ -87,6 +87,11 @@ impl Write for ChannelWriter {
 #[derive(Debug)]
 enum Step {
     Respond(ModelResponse),
+    /// Park (async) until the test releases, then respond. While parked the
+    /// turn is OBSERVABLY in flight (the host's select loop is free) — this
+    /// is what makes a mid-turn rejection deterministic instead of a race
+    /// against the reader thread (same pattern as acp_live.rs).
+    WaitForRelease(ModelResponse),
 }
 
 #[derive(Debug, Clone)]
@@ -95,11 +100,14 @@ struct MockDriver {
     /// Summarization-call responses (last message is the SUMMARIZATION_PROMPT).
     summaries: Arc<Mutex<VecDeque<Result<ModelResponse, ModelError>>>>,
     requests: Arc<Mutex<Vec<ModelRequest>>>,
+    calls: Arc<AtomicU64>,
+    release: tokio::sync::watch::Receiver<bool>,
 }
 
 #[async_trait::async_trait]
 impl ModelDriver for MockDriver {
     async fn complete(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         self.requests.lock().unwrap().push(request.clone());
         let is_summary = request
             .messages
@@ -114,13 +122,22 @@ impl ModelDriver for MockDriver {
                 .pop_front()
                 .expect("summary script exhausted");
         }
-        let Step::Respond(response) = self
+        let step = self
             .script
             .lock()
             .unwrap()
             .pop_front()
             .expect("mock driver script exhausted");
-        Ok(response)
+        match step {
+            Step::Respond(response) => Ok(response),
+            Step::WaitForRelease(response) => {
+                let mut release = self.release.clone();
+                while !*release.borrow() {
+                    release.changed().await.expect("release sender alive");
+                }
+                Ok(response)
+            }
+        }
     }
 }
 
@@ -187,6 +204,8 @@ struct Harness {
     to_host: Option<std::sync::mpsc::Sender<String>>,
     frames: std::sync::mpsc::Receiver<String>,
     model_requests: Arc<Mutex<Vec<ModelRequest>>>,
+    driver_calls: Arc<AtomicU64>,
+    release_tx: tokio::sync::watch::Sender<bool>,
     handle: Option<std::thread::JoinHandle<std::io::Result<i32>>>,
     next_id: u64,
     session_id: String,
@@ -210,10 +229,14 @@ impl Harness {
         let (in_tx, in_rx) = std::sync::mpsc::channel::<String>();
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         let model_requests = Arc::new(Mutex::new(Vec::new()));
+        let (release_tx, release_rx) = tokio::sync::watch::channel(false);
+        let driver_calls = Arc::new(AtomicU64::new(0));
         let driver = MockDriver {
             script: Arc::new(Mutex::new(script.into())),
             summaries: Arc::new(Mutex::new(summaries.into())),
             requests: model_requests.clone(),
+            calls: driver_calls.clone(),
+            release: release_rx,
         };
         let sessions_dir = sessions_dir.to_path_buf();
         let handle = std::thread::spawn(move || {
@@ -268,6 +291,8 @@ impl Harness {
             to_host: Some(in_tx),
             frames: out_rx,
             model_requests,
+            driver_calls: driver_calls.clone(),
+            release_tx,
             handle: Some(handle),
             next_id: 1,
             session_id: String::new(),
@@ -304,6 +329,21 @@ impl Harness {
             .recv_timeout(TIMEOUT)
             .expect("frame within timeout");
         serde_json::from_str(&line).expect("frame json")
+    }
+
+    /// Blocks until the mock driver has been called `n` times — i.e. the
+    /// engine really is parked inside the nth model call. Gating on this
+    /// (not on a frame's arrival) is what makes the mid-turn tests
+    /// deterministic (same pattern as acp_live.rs).
+    fn wait_for_driver_calls(&self, n: u64) {
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while self.driver_calls.load(Ordering::SeqCst) < n {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "driver call count {n} not reached within timeout"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
@@ -487,13 +527,16 @@ fn manual_compact_via_session_compact() {
 #[test]
 fn compact_during_turn_is_rejected() {
     let dir = temp_sessions_dir("busy");
-    // A turn that needs a summarization... no: simply a turn in flight. The
-    // scripted driver's single response never arrives until we let the turn
-    // finish — but serve processes compact only between turns, and rejects
-    // it while `turn.is_some()`. Script one normal response; send compact
-    // immediately after prompt without waiting for the prompt response.
+    // Deterministic mid-turn rejection: the scripted driver's single
+    // response is PARKED on the release latch, so the turn is observably in
+    // flight (driver called, not returned) when the compact arrives —
+    // asserting "turn in progress" against a turn that may have already
+    // completed would race the reader thread on contended runners (the
+    // ubuntu-22.04 CI leg lost that race: the instant mock turn finished
+    // before the compact frame was processed, the compact arm ran, and the
+    // empty summary script panicked).
     let mut harness = Harness::spawn(
-        vec![Step::Respond(text_response("slow answer", 100))],
+        vec![Step::WaitForRelease(text_response("slow answer", 100))],
         vec![],
         &dir,
         true,
@@ -505,24 +548,22 @@ fn compact_during_turn_is_rejected() {
         "params": { "sessionId": harness.session_id,
                     "prompt": [{ "type": "text", "text": "hi" }] }
     }));
+    // The turn is REALLY in flight — parked inside the model call.
+    harness.wait_for_driver_calls(1);
     let compact_id = harness.next_id;
     harness.next_id += 1;
     harness.send(&serde_json::json!({
         "jsonrpc": "2.0", "id": compact_id, "method": "session/compact",
         "params": { "sessionId": harness.session_id }
     }));
-    // Collect both responses; the compact one must be the typed rejection.
-    let mut compact_response = None;
-    let mut prompt_response = None;
-    while compact_response.is_none() || prompt_response.is_none() {
+    // The compact response must be the typed rejection while the turn is
+    // parked.
+    let compact_response = loop {
         let frame = harness.next_frame();
-        match frame.get("id").and_then(|v| v.as_u64()) {
-            Some(id) if id == compact_id => compact_response = Some(frame),
-            Some(id) if id == prompt_id => prompt_response = Some(frame),
-            _ => {}
+        if frame.get("id").and_then(|v| v.as_u64()) == Some(compact_id) {
+            break frame;
         }
-    }
-    let compact_response = compact_response.unwrap();
+    };
     assert_eq!(
         compact_response["error"]["code"], -32602,
         "{compact_response}"
@@ -533,7 +574,18 @@ fn compact_during_turn_is_rejected() {
             .unwrap_or("")
             .contains("turn in progress")
     );
-    assert_eq!(prompt_response.unwrap()["result"]["stopReason"], "end_turn");
+    // Release the parked model; the turn completes.
+    harness
+        .release_tx
+        .send(true)
+        .expect("release the parked turn");
+    let prompt_response = loop {
+        let frame = harness.next_frame();
+        if frame.get("id").and_then(|v| v.as_u64()) == Some(prompt_id) {
+            break frame;
+        }
+    };
+    assert_eq!(prompt_response["result"]["stopReason"], "end_turn");
 }
 
 /// Kill-resume fidelity, scoped per §6: kill after a compacting turn; the
