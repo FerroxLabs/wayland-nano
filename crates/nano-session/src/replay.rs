@@ -124,6 +124,9 @@ impl SessionState {
             // Assistant text is transcript, not execution state: replay cares
             // about open work and durable effects, not the wording of replies.
             Op::AssistantText { .. } => {}
+            // Mode changes are audit history only (C2): context-neutral on
+            // replay, never restored into session state.
+            Op::ModeSet { .. } => {}
             Op::Unknown => {}
         }
     }

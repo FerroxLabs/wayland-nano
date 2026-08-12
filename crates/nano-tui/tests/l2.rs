@@ -61,7 +61,9 @@ fn lint_all_adversarial() {
 /// (a) prompt → streamed agent_message_chunk renders incrementally;
 /// (b) session/request_permission → approved via the modal → tool result;
 /// (c) /model → picker → session/set_model → status line updates;
-/// (d) kill + relaunch → session/load replay renders the prior transcript.
+/// (d) /mode → picker → session/set_mode ×2 → status line updates (C2);
+/// (e) kill + relaunch → session/load replay renders the prior transcript,
+///     with the mode back at `default` (never resurrected, C2 panel Q5).
 #[test]
 fn l2_acceptance_full_journey() {
     lint_all_adversarial();
@@ -143,13 +145,51 @@ fn l2_acceptance_full_journey() {
         "status line updated: {screen}"
     );
 
+    // (d) /mode (C2): picker over the advertised availableModes →
+    // session/set_mode → status line mode slot updates; flip default →
+    // full_auto → default. The picker preselects the CURRENT mode, so one
+    // Down from `default` lands on `full_auto`, one Up lands back.
+    world.type_and_submit("/mode");
+    let screen = world.screen();
+    assert!(
+        screen.contains("Switch permission mode"),
+        "picker: {screen}"
+    );
+    assert!(screen.contains("Full Auto"), "advertised modes: {screen}");
+    assert!(
+        screen.contains("Default (current)"),
+        "current mode: {screen}"
+    );
+    world.key(KeyCode::Down);
+    world.key(KeyCode::Enter);
+    let screen = world.screen();
+    assert!(
+        screen.contains("mode switched to full_auto"),
+        "note: {screen}"
+    );
+    assert!(
+        screen
+            .lines()
+            .last()
+            .is_some_and(|l| l.contains("full_auto")),
+        "status line mode slot: {screen}"
+    );
+    world.type_and_submit("/mode");
+    world.key(KeyCode::Up);
+    world.key(KeyCode::Enter);
+    let screen = world.screen();
+    assert!(
+        screen.contains("mode switched to default"),
+        "note: {screen}"
+    );
+
     // The recorded phase-1 tail (a bare session/cancel between turns) is
     // not reproducible through TUI inputs — the TUI only cancels mid-turn;
     // that path has its own scenario (l2_cancel_mid_turn).
     let remaining = world.finish_partial();
     assert_eq!(remaining, ["Notification(\"session/cancel\")".to_string()]);
 
-    // ── lifetime 2: kill + relaunch → session/load replay (d) ─────────
+    // ── lifetime 2: kill + relaunch → session/load replay (e) ─────────
     let world = World::new(
         &phase2,
         80,
@@ -170,6 +210,15 @@ fn l2_acceptance_full_journey() {
             "replay missing {expected:?}: {screen}"
         );
     }
+    // C2 (panel Q5): the resumed session is back in `default` — the mode
+    // was journaled as audit history, never resurrected.
+    assert!(
+        screen
+            .lines()
+            .last()
+            .is_some_and(|l| l.contains("| default |")),
+        "status line mode after resume: {screen}"
+    );
     world.finish();
 }
 

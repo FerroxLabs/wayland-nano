@@ -131,6 +131,66 @@ fn duplicate_ids_never_double_apply() {
 }
 
 #[test]
+fn mode_set_round_trips_and_is_context_neutral_on_replay() {
+    // The C2 audit op serializes under its own type tag...
+    let op = Op::ModeSet {
+        mode: "full_auto".into(),
+    };
+    let json = serde_json::to_value(&op).unwrap();
+    assert_eq!(json["type"], "mode_set");
+    assert_eq!(json["mode"], "full_auto");
+    let back: Op = serde_json::from_value(json).unwrap();
+    assert_eq!(back, op);
+    // ...and replay folds it as pure audit history: every PUBLIC piece of
+    // execution state is identical with and without the op (the private
+    // idempotence set legitimately differs — it saw one more id).
+    let mut ops = session_ops();
+    ops.push(env(
+        "6",
+        Op::ModeSet {
+            mode: "full_auto".into(),
+        },
+    ));
+    let with_mode = SessionState::fold(&ops);
+    let without_mode = SessionState::fold(&session_ops());
+    assert_eq!(with_mode.session_id, without_mode.session_id);
+    assert_eq!(with_mode.cwd, without_mode.cwd);
+    assert_eq!(with_mode.open_turn, without_mode.open_turn);
+    assert_eq!(with_mode.turn_interrupted, without_mode.turn_interrupted);
+    assert_eq!(with_mode.open_tool_calls, without_mode.open_tool_calls);
+    assert_eq!(with_mode.changed_files, without_mode.changed_files);
+    assert_eq!(with_mode.compaction, without_mode.compaction);
+    assert_eq!(
+        with_mode.last_compaction_summary,
+        without_mode.last_compaction_summary
+    );
+}
+
+#[test]
+fn mode_set_from_a_newer_build_with_extra_fields_still_parses() {
+    // Forward tolerance within the variant: unknown fields are ignored.
+    let future = r#"{"v":1,"id":"m1","ts":"now","op":{"type":"mode_set","mode":"full_auto","actor":"host"}}"#;
+    let envelope: OpEnvelope = serde_json::from_str(future).expect("future mode_set must parse");
+    assert_eq!(
+        envelope.op,
+        Op::ModeSet {
+            mode: "full_auto".into()
+        }
+    );
+    // A mode id this build does not know stays opaque String data — the
+    // journal is audit history, never a parse-time gate (set_mode rejects
+    // unknown ids long before anything reaches the journal).
+    let unknown = r#"{"v":1,"id":"m2","ts":"now","op":{"type":"mode_set","mode":"quantum"}}"#;
+    let envelope: OpEnvelope = serde_json::from_str(unknown).unwrap();
+    assert_eq!(
+        envelope.op,
+        Op::ModeSet {
+            mode: "quantum".into()
+        }
+    );
+}
+
+#[test]
 fn stranded_compaction_running_resets_to_idle() {
     let mut ops = session_ops();
     ops.push(env(

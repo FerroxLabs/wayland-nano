@@ -43,6 +43,7 @@ enum Pending {
     SessionLoad,
     Prompt,
     SetModel,
+    SetMode,
     Compact,
 }
 
@@ -53,6 +54,7 @@ enum Modal {
         view: ListSelectionView,
     },
     ModelPicker(ListSelectionView),
+    ModePicker(ListSelectionView),
 }
 
 pub struct App {
@@ -69,6 +71,9 @@ pub struct App {
     seen_permission_ids: HashSet<u64>,
     session_id: Option<String>,
     resume_session: Option<String>,
+    /// The mode id a session/set_mode request is carrying (C2): the ack is
+    /// an empty object, so the requested id is applied on success.
+    requested_mode: Option<String>,
     cwd: String,
     nano_home: std::path::PathBuf,
     turn_active: bool,
@@ -95,6 +100,7 @@ impl App {
             seen_permission_ids: HashSet::new(),
             session_id: None,
             resume_session,
+            requested_mode: None,
             cwd,
             nano_home,
             turn_active: false,
@@ -108,13 +114,15 @@ impl App {
         self.modal.is_some()
     }
 
-    /// The model-picker / approval modal's view, for the renderer.
+    /// The model-picker / mode-picker / approval modal's view, for the
+    /// renderer.
     pub fn modal_view(&self) -> Option<(&str, &ListSelectionView, Option<&str>)> {
         match &self.modal {
             Some(Modal::Approval { request, view }) => {
                 Some(("approval", view, Some(request.raw_input.as_str())))
             }
             Some(Modal::ModelPicker(view)) => Some(("model", view, None)),
+            Some(Modal::ModePicker(view)) => Some(("mode", view, None)),
             None => None,
         }
     }
@@ -307,6 +315,26 @@ impl App {
                     ModalOutcome::Cancelled => {}
                 }
             }
+            Modal::ModePicker(view) => {
+                let mut view = view;
+                match view.handle_key(key) {
+                    ModalOutcome::Open => {
+                        self.modal = Some(Modal::ModePicker(view));
+                    }
+                    ModalOutcome::Selected(mode_id) => {
+                        if let Some(session_id) = self.session_id.clone() {
+                            self.requested_mode = Some(mode_id.clone());
+                            self.send_request(
+                                conn,
+                                "session/set_mode",
+                                acp_client::set_mode_params(&session_id, &mode_id),
+                                Pending::SetMode,
+                            );
+                        }
+                    }
+                    ModalOutcome::Cancelled => {}
+                }
+            }
         }
     }
 
@@ -342,6 +370,7 @@ impl App {
         match slash_commands::parse(&text) {
             None => self.submit_prompt(conn, &text),
             Some(SlashCommand::Model) => self.open_model_picker(),
+            Some(SlashCommand::Mode) => self.open_mode_picker(),
             Some(SlashCommand::Compact) => self.submit_compact(conn),
             Some(SlashCommand::Status) => {
                 self.transcript.push_note(&self.status.report());
@@ -356,7 +385,7 @@ impl App {
             Some(SlashCommand::Quit) => self.begin_quit(conn),
             Some(SlashCommand::Unknown(command)) => {
                 self.transcript.push_note(&format!(
-                    "unknown command: {command} (have: /model /status /doctor /compact /quit)"
+                    "unknown command: {command} (have: /model /mode /status /doctor /compact /quit)"
                 ));
             }
         }
@@ -442,6 +471,37 @@ impl App {
         )));
     }
 
+    /// `/mode` (C2): a picker over the advertised availableModes, sending
+    /// session/set_mode. The advertised ids render as-is — a newer agent's
+    /// unknown mode is the host's to accept or reject, never the TUI's to
+    /// pre-filter.
+    fn open_mode_picker(&mut self) {
+        if self.status.modes.is_empty() {
+            self.transcript
+                .push_note("no permission modes advertised by the session");
+            return;
+        }
+        let items = self
+            .status
+            .modes
+            .iter()
+            .map(|(id, name)| ListItem {
+                id: id.clone(),
+                name: if name.is_empty() {
+                    id.clone()
+                } else {
+                    name.clone()
+                },
+                description: None,
+                is_current: *id == self.status.mode,
+            })
+            .collect();
+        self.modal = Some(Modal::ModePicker(ListSelectionView::new(
+            "Switch permission mode (session/set_mode)",
+            items,
+        )));
+    }
+
     fn begin_quit<C: Connection>(&mut self, conn: &mut C) {
         if self.turn_active
             && let Some(session_id) = self.session_id.clone()
@@ -523,6 +583,10 @@ impl App {
                     self.status.wire = WireState::Ready;
                 }
                 Pending::SetModel => {}
+                Pending::SetMode => {
+                    // The mode visibly did not change.
+                    self.requested_mode = None;
+                }
                 Pending::Compact => {}
             }
             return;
@@ -567,6 +631,10 @@ impl App {
                     self.status.model = current;
                     self.status.models = models;
                 }
+                if let Some((current, modes)) = acp_client::parse_modes(&result) {
+                    self.status.mode = current;
+                    self.status.modes = modes;
+                }
                 self.ready = true;
                 self.status.wire = WireState::Ready;
                 self.transcript
@@ -576,6 +644,13 @@ impl App {
                 if let Some((current, models)) = acp_client::parse_models(&result) {
                     self.status.model = current;
                     self.status.models = models;
+                }
+                // C2 (panel Q5): a resumed session always comes back in
+                // `default` — the load response's modes block says so, and
+                // the status line must show it (never a resurrected mode).
+                if let Some((current, modes)) = acp_client::parse_modes(&result) {
+                    self.status.mode = current;
+                    self.status.modes = modes;
                 }
                 self.ready = true;
                 self.status.wire = WireState::Ready;
@@ -608,6 +683,22 @@ impl App {
                 } else {
                     self.transcript
                         .push_note("set_model response carried no models block");
+                }
+            }
+            Pending::SetMode => {
+                // The ACP ack is an empty object: apply the mode this
+                // request asked for (the host validated it — a rejected id
+                // arrived as an error and never reaches this arm).
+                match self.requested_mode.take() {
+                    Some(mode) => {
+                        self.status.mode = mode.clone();
+                        self.transcript
+                            .push_note(&format!("mode switched to {mode}"));
+                    }
+                    None => {
+                        self.transcript
+                            .push_note("set_mode acked with no requested mode");
+                    }
                 }
             }
             Pending::Compact => {

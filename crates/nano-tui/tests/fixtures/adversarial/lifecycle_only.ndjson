@@ -1,4 +1,4 @@
 {"dir":">","frame":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}}
 {"dir":"<","frame":{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"wayland-nano","version":"0.1.0"}}}}
 {"dir":">","frame":{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}}
-{"dir":"<","frame":{"jsonrpc":"2.0","id":2,"result":{"sessionId":"wayland-nano-session-recorded","models":{"currentModelId":"flux-auto","availableModels":[{"modelId":"flux-auto","name":"Flux Auto"},{"modelId":"flux-fast","name":"Flux Fast"}]}}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","id":2,"result":{"sessionId":"wayland-nano-session-recorded","modes":{"availableModes":[{"id":"read_only","name":"Read Only"},{"id":"default","name":"Default"},{"id":"full_auto","name":"Full Auto"}],"currentModeId":"default"},"models":{"currentModelId":"flux-auto","availableModels":[{"modelId":"flux-auto","name":"Flux Auto"},{"modelId":"flux-fast","name":"Flux Fast"}]}}}}

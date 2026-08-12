@@ -14,4 +14,5 @@ pub mod codec;
 pub mod corpus;
 pub mod host;
 pub mod messages;
+pub mod permission_mode;
 pub mod profile;

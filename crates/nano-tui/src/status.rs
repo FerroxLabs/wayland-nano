@@ -30,6 +30,11 @@ pub struct Status {
     pub session_id: Option<String>,
     pub model: String,
     pub models: Vec<(String, String)>,
+    /// The session's permission mode id (C2), from the advertised `modes`
+    /// block; `?` until the session advertises one.
+    pub mode: String,
+    /// The advertised availableModes (id, name) the /mode picker lists.
+    pub modes: Vec<(String, String)>,
     pub wire: WireState,
     /// Last doctor run's summary line (`summary: N fail, M warn`), if any.
     pub doctor_summary: Option<String>,
@@ -41,6 +46,8 @@ impl Default for Status {
             session_id: None,
             model: "?".to_string(),
             models: Vec::new(),
+            mode: "?".to_string(),
+            modes: Vec::new(),
             wire: WireState::Connecting,
             doctor_summary: None,
         }
@@ -48,20 +55,21 @@ impl Default for Status {
 }
 
 impl Status {
-    /// The one-line status bar content.
+    /// The one-line status bar content: model | mode | wire | session |
+    /// doctor | commands (C2 adds the mode slot).
     pub fn line(&self) -> String {
         let session = self.session_id.as_deref().unwrap_or("none");
-        // 19 chars keeps the whole line inside an 80-column terminal now
-        // that the hint bar carries /compact (C1).
-        let short_session: String = session.chars().take(19).collect();
+        // 12 chars leaves room for the mode slot; the commands hint trails
+        // last so a narrow terminal clips hints, never state.
+        let short_session: String = session.chars().take(12).collect();
         let doctor = self
             .doctor_summary
             .as_deref()
             .map(|s| format!(" | doctor: {s}"))
             .unwrap_or_default();
         format!(
-            " {} | {} | {}{} | /model /status /doctor /compact /quit ",
-            self.model, self.wire, short_session, doctor
+            " {} | {} | {} | {}{} | /model /mode /status /doctor /compact /quit ",
+            self.model, self.mode, self.wire, short_session, doctor
         )
     }
 
@@ -69,6 +77,7 @@ impl Status {
     pub fn report(&self) -> String {
         let mut lines = vec![
             format!("model:   {}", self.model),
+            format!("mode:    {}", self.mode),
             format!("wire:    {}", self.wire),
             format!("session: {}", self.session_id.as_deref().unwrap_or("none")),
             format!(
@@ -77,6 +86,18 @@ impl Status {
                     "(none advertised)".to_string()
                 } else {
                     self.models
+                        .iter()
+                        .map(|(id, _)| id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            ),
+            format!(
+                "modes:   {}",
+                if self.modes.is_empty() {
+                    "(none advertised)".to_string()
+                } else {
+                    self.modes
                         .iter()
                         .map(|(id, _)| id.as_str())
                         .collect::<Vec<_>>()
@@ -99,13 +120,26 @@ mod tests {
     fn status_line_shows_model_and_wire() {
         let s = Status {
             model: "flux-auto".into(),
+            mode: "default".into(),
             wire: WireState::Ready,
             session_id: Some("wayland-nano-session-recorded".into()),
             ..Default::default()
         };
         let line = s.line();
         assert!(line.contains("flux-auto"));
+        assert!(line.contains("default"), "mode slot: {line}");
         assert!(line.contains("ready"));
+    }
+
+    #[test]
+    fn status_line_carries_the_mode_and_mode_hint() {
+        let s = Status {
+            mode: "full_auto".into(),
+            ..Default::default()
+        };
+        let line = s.line();
+        assert!(line.contains("full_auto"), "{line}");
+        assert!(line.contains("/mode"), "command hint: {line}");
     }
 
     #[test]

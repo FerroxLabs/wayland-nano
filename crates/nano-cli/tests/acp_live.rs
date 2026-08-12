@@ -304,6 +304,9 @@ impl Harness {
                 .build()
                 .expect("tokio runtime");
             runtime.block_on(async move {
+                // C2: default-mode recordings never consult the sandbox
+                // probe; inject a fixed answer.
+                let sandbox_probe = || true;
                 let config = acp_mode::ServeConfig {
                     sessions_dir: &sessions_dir,
                     default_model: &default_model,
@@ -312,6 +315,7 @@ impl Harness {
                     catalog: &[],
                     window_override: None,
                     limit_override: None,
+                    sandbox_probe: &sandbox_probe,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -325,7 +329,15 @@ impl Harness {
                     },
                     &config,
                     move || driver.clone(),
-                    move |_| tools.clone(),
+                    // C2: the executor travels with its exact fs policy (the
+                    // gate's advisory containment oracle shares provenance).
+                    move |_, _| {
+                        (
+                            tools.clone(),
+                            nano_core::permissions::PermissionProfile::workspace_write()
+                                .file_system_sandbox_policy(),
+                        )
+                    },
                 )
                 .await
             })

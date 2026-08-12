@@ -1,17 +1,22 @@
-//! Slash commands (composer prefix `/`): `/model`, `/status`, `/doctor`,
-//! `/compact`, `/quit` — the v1 set (design doc §4).
+//! Slash commands (composer prefix `/`): `/model`, `/mode`, `/status`,
+//! `/doctor`, `/compact`, `/quit` — the v1 set (design doc §4).
 //!
 //! `/status` and `/doctor` data path (normative, panel condition C1): both
 //! run `wayland-nano doctor` as a SHORT-LIVED SUBPROCESS and render the
 //! result; the TUI never links nano-cli and never reimplements doctor's
 //! probes. `/compact` (C1) sends `session/compact` over the ACP wire — the
-//! compaction itself runs engine-side in the acp-host.
+//! compaction itself runs engine-side in the acp-host. `/mode` (C2) opens a
+//! picker over the advertised `availableModes` and sends `session/set_mode`;
+//! the name matches the wire noun end-to-end (`/permissions` is reserved
+//! for a future granular policy editor).
 
 /// Parsed composer submission starting with `/`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
     /// Open the model picker (advertised catalog → session/set_model).
     Model,
+    /// Open the permission-mode picker (advertised modes → session/set_mode).
+    Mode,
     /// Model + wire state + doctor summary.
     Status,
     /// Full doctor output.
@@ -34,6 +39,7 @@ pub fn parse(text: &str) -> Option<SlashCommand> {
     let command = trimmed.split_whitespace().next().unwrap_or(trimmed);
     Some(match command {
         "/model" => SlashCommand::Model,
+        "/mode" => SlashCommand::Mode,
         "/status" => SlashCommand::Status,
         "/doctor" => SlashCommand::Doctor,
         "/compact" => SlashCommand::Compact,
@@ -49,6 +55,7 @@ mod tests {
     #[test]
     fn parses_the_v1_set() {
         assert_eq!(parse("/model"), Some(SlashCommand::Model));
+        assert_eq!(parse("/mode"), Some(SlashCommand::Mode));
         assert_eq!(parse("/status"), Some(SlashCommand::Status));
         assert_eq!(parse("/doctor"), Some(SlashCommand::Doctor));
         assert_eq!(parse("/compact"), Some(SlashCommand::Compact));
@@ -56,6 +63,11 @@ mod tests {
         assert_eq!(
             parse("/bogus"),
             Some(SlashCommand::Unknown("/bogus".into()))
+        );
+        // The reserved name stays UNKNOWN — it is not an alias for /mode.
+        assert_eq!(
+            parse("/permissions"),
+            Some(SlashCommand::Unknown("/permissions".into()))
         );
     }
 

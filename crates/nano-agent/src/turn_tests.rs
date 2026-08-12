@@ -332,4 +332,68 @@ mod tests {
             result.state
         );
     }
+
+    #[tokio::test]
+    async fn gate_denial_reason_reaches_the_model_context() {
+        use crate::turn::{ApprovalDecision, ApprovalGate};
+
+        /// C2: a gate that categorically denies (the read_only mode arm)
+        /// explains WHY, and the engine must put that reason in the denial
+        /// tool-result the model sees — otherwise it retries variants in a
+        /// loop.
+        #[derive(Debug)]
+        struct ModeDenyGate;
+        impl ApprovalGate for ModeDenyGate {
+            fn approve(&self, _call: &ToolCall) -> ApprovalDecision {
+                ApprovalDecision::Deny
+            }
+            fn denial_reason(&self) -> Option<&'static str> {
+                Some("session is in read_only mode")
+            }
+        }
+
+        let model = ScriptedModel::new(vec![
+            tool_response(ToolCall {
+                id: "c1".into(),
+                name: "fs_write".into(),
+                arguments: serde_json::json!({"path": "main.rs", "content": "x"}),
+            }),
+            text_response("cannot write in read_only mode"),
+        ]);
+        let tools = RecordingTools {
+            calls: Mutex::new(Vec::new()),
+            progress: ProgressSignals::default(),
+        };
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            model_name: "mock".into(),
+            tool_definitions: vec![],
+            approval: Some(&ModeDenyGate),
+            compaction: None,
+        };
+
+        let result = engine.run_turn("t5", "write the file").await;
+
+        assert_eq!(result.state, TurnState::Complete);
+        // The denied call never executed...
+        assert!(tools.calls.lock().unwrap().is_empty());
+        // ...and the NEXT model request carried the reasoned denial text.
+        let requests = model.requests.lock().unwrap();
+        let carried = requests[1].messages.iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(
+                    block,
+                    nano_model::types::ContentBlock::ToolResult { content, .. }
+                    if content.contains("denied by approval gate: session is in read_only mode")
+                )
+            })
+        });
+        assert!(
+            carried,
+            "denial must name the mode: {:?}",
+            requests[1].messages
+        );
+    }
 }

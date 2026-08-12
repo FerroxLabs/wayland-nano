@@ -183,6 +183,12 @@ fn catalog() -> Vec<AvailableModel> {
     ]
 }
 
+/// The standard agent fs posture (C2): the gate's advisory containment
+/// oracle and the executor must share this exact policy shape.
+fn workspace_policy() -> nano_core::permissions::FileSystemSandboxPolicy {
+    nano_core::permissions::PermissionProfile::workspace_write().file_system_sandbox_policy()
+}
+
 impl Recorder {
     fn spawn(script: Vec<ModelResponse>, sessions_dir: &std::path::Path) -> Self {
         let (in_tx, in_rx) = std::sync::mpsc::channel::<String>();
@@ -198,6 +204,9 @@ impl Recorder {
                 .build()
                 .expect("tokio runtime");
             runtime.block_on(async move {
+                // C2: the gate's sandbox probe is injectable; recordings pin
+                // the default-mode wire, where the probe is never consulted.
+                let sandbox_probe = || true;
                 let config = acp_mode::ServeConfig {
                     sessions_dir: &sessions_dir,
                     default_model: "flux-auto",
@@ -206,6 +215,7 @@ impl Recorder {
                     catalog: &[],
                     window_override: None,
                     limit_override: None,
+                    sandbox_probe: &sandbox_probe,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -219,7 +229,9 @@ impl Recorder {
                     },
                     &config,
                     move || driver.clone(),
-                    move |_| MockTools,
+                    // C2: make_tools returns the executor AND its exact fs
+                    // policy (the gate's advisory oracle shares provenance).
+                    move |_, _| (MockTools, workspace_policy()),
                 )
                 .await
             })
@@ -408,6 +420,20 @@ fn record_full_journey_fixture() {
         serde_json::json!({"sessionId": session_id, "modelId": "flux-fast"}),
     );
     assert_eq!(set_model["result"]["models"]["currentModelId"], "flux-fast");
+
+    // (d) session/set_mode (C2): default → full_auto → default. Each
+    // accepted change journals ModeSet first and acks the ACP empty object;
+    // the TUI's /mode drive (l2) replays exactly these exchanges.
+    let set_mode = rec.request(
+        "session/set_mode",
+        serde_json::json!({"sessionId": session_id, "modeId": "full_auto"}),
+    );
+    assert_eq!(set_mode["result"], serde_json::json!({}));
+    let set_mode = rec.request(
+        "session/set_mode",
+        serde_json::json!({"sessionId": session_id, "modeId": "default"}),
+    );
+    assert_eq!(set_mode["result"], serde_json::json!({}));
 
     // session/cancel shape pinned on the recording (between turns).
     rec.send(serde_json::json!({

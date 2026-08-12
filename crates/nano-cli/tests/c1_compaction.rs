@@ -225,6 +225,8 @@ impl Harness {
                     id: "mock".into(),
                     name: "mock".into(),
                 }];
+                // C2: default-mode tests never consult the sandbox probe.
+                let sandbox_probe = || true;
                 let config = acp_mode::ServeConfig {
                     sessions_dir: &sessions_dir,
                     default_model: "mock",
@@ -233,6 +235,7 @@ impl Harness {
                     catalog: &[],
                     window_override: Some(1_000),
                     limit_override: None,
+                    sandbox_probe: &sandbox_probe,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -246,7 +249,13 @@ impl Harness {
                     },
                     &config,
                     move || driver.clone(),
-                    move |_| MockTools::default(),
+                    move |_, _| {
+                        (
+                            MockTools::default(),
+                            nano_core::permissions::PermissionProfile::workspace_write()
+                                .file_system_sandbox_policy(),
+                        )
+                    },
                 )
                 .await
             })

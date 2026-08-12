@@ -323,3 +323,65 @@ impl ToolExecutor for RealToolExecutor {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// C2 (claude concern 3, prospective pin): the full_auto gate approves
+    /// `shell` on sandbox-backend availability ALONE, blind to arguments.
+    /// That is only sound while the shell tool's schema carries no
+    /// sandbox-relaxing argument surface (no escalation/unsandboxed-request
+    /// analogue). This test pins the schema: ANY change to shell's argument
+    /// surface must update this test AND re-audit the gate's
+    /// argument-blindness (design §4 invariant — a relaxing argument must
+    /// be inspected-and-rejected by the gate or ignored by the tool under
+    /// ALL modes).
+    #[test]
+    fn shell_schema_has_no_sandbox_relaxing_arguments() {
+        let defs = v1_tool_definitions();
+        let shell = defs
+            .iter()
+            .find(|d| d.name == "shell")
+            .expect("shell tool advertised");
+        let properties = shell.input_schema["properties"]
+            .as_object()
+            .expect("shell properties");
+        let mut names: Vec<&str> = properties.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            ["command"],
+            "shell gained an argument — re-audit the full_auto gate's argument-blindness"
+        );
+        assert_eq!(
+            shell.input_schema["required"],
+            serde_json::json!(["command"])
+        );
+    }
+
+    /// C2 (claude concern 2): the full_auto gate extracts `path` from
+    /// fs_write/fs_edit arguments for its containment check. If either tool
+    /// renames that argument, full_auto silently degrades to default (every
+    /// write prompts) — the per-mode matrix in nano-cli asserts a contained
+    /// fs_edit auto-approves, and THIS pin catches the rename at the source.
+    #[test]
+    fn fs_write_and_fs_edit_take_a_path_argument() {
+        let defs = v1_tool_definitions();
+        for name in ["fs_write", "fs_edit"] {
+            let def = defs.iter().find(|d| d.name == name).expect(name);
+            assert!(
+                def.input_schema["properties"].get("path").is_some(),
+                "{name} lost its `path` argument"
+            );
+            assert!(
+                def.input_schema["required"]
+                    .as_array()
+                    .expect("required")
+                    .iter()
+                    .any(|r| r == "path"),
+                "{name} no longer requires `path`"
+            );
+        }
+    }
+}

@@ -16,6 +16,8 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::permission_mode::PermissionMode;
+
 pub const ACP_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -142,6 +144,22 @@ pub fn session_models_value(
     })
 }
 
+/// The `modes` block shared by session/new and session/load responses
+/// (C2): every advertised mode comes from the single [`PermissionMode`]
+/// metadata, exactly the way `session_models_value` parameterizes models,
+/// so the wire can never drift from what the gate enforces. `currentModeId`
+/// is always the session's actual mode — sessions start (and resume) in
+/// `default`, never a resurrected one.
+pub fn session_modes_value(current: PermissionMode) -> serde_json::Value {
+    serde_json::json!({
+        "availableModes": PermissionMode::ALL
+            .iter()
+            .map(|mode| serde_json::json!({"id": mode.id(), "name": mode.label()}))
+            .collect::<Vec<_>>(),
+        "currentModeId": current.id(),
+    })
+}
+
 /// session/new response.
 pub fn session_new_result(
     session_id: &str,
@@ -150,10 +168,7 @@ pub fn session_new_result(
 ) -> serde_json::Value {
     serde_json::json!({
         "sessionId": session_id,
-        "modes": {
-            "availableModes": [{"id": "default", "name": "Default"}],
-            "currentModeId": "default"
-        },
+        "modes": session_modes_value(PermissionMode::default()),
         "models": session_models_value(current_model_id, available)
     })
 }
@@ -161,16 +176,15 @@ pub fn session_new_result(
 /// session/load response. Per the ACP shape Desktop expects
 /// (AcpConnection.ts `loadSession`: "session/load returns
 /// modes/models/configOptions but not sessionId"), the loaded session keeps
-/// the id the client sent, so no sessionId is returned here.
+/// the id the client sent, so no sessionId is returned here. C2: the mode
+/// is NOT restored on load — a resumed session starts in `default` and
+/// re-entering an elevated mode takes a fresh, explicit session/set_mode.
 pub fn session_load_result(
     current_model_id: &str,
     available: &[AvailableModel],
 ) -> serde_json::Value {
     serde_json::json!({
-        "modes": {
-            "availableModes": [{"id": "default", "name": "Default"}],
-            "currentModeId": "default"
-        },
+        "modes": session_modes_value(PermissionMode::default()),
         "models": session_models_value(current_model_id, available)
     })
 }
@@ -425,6 +439,28 @@ mod tests {
     fn prompt_result_stop_reason() {
         let result = prompt_result("end_turn");
         assert_eq!(result["stopReason"], "end_turn");
+    }
+
+    #[test]
+    fn modes_block_comes_from_the_permission_mode_metadata() {
+        let result = session_new_result("s1", "flux-auto", &[]);
+        let modes = &result["modes"];
+        assert_eq!(modes["currentModeId"], "default");
+        let advertised = modes["availableModes"].as_array().unwrap();
+        let ids: Vec<&str> = advertised
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        // The full C2 vocabulary, in privilege order, from PermissionMode::ALL.
+        assert_eq!(ids, ["read_only", "default", "full_auto"]);
+        for entry in advertised {
+            let mode = PermissionMode::parse(entry["id"].as_str().unwrap()).unwrap();
+            assert_eq!(entry["name"].as_str().unwrap(), mode.label());
+        }
+        // session/load advertises the same block and never resurrects a mode.
+        let loaded = session_load_result("flux-auto", &[]);
+        assert_eq!(loaded["modes"]["currentModeId"], "default");
+        assert_eq!(loaded["modes"]["availableModes"], modes["availableModes"]);
     }
 
     #[test]

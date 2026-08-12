@@ -127,6 +127,17 @@ pub enum Op {
         #[serde(default)]
         reason: CompactionCancelReason,
     },
+    /// An ACCEPTED permission-mode change (C2), journaled by the
+    /// session/set_mode handler under journal-first, accepted-only ordering:
+    /// the id validates first, this op lands durably, and only then does the
+    /// session's mode cell mutate. Audit history ONLY — replay treats it as
+    /// context-neutral and session/load NEVER restores the mode: every
+    /// session starts in `default` and elevated autonomy always requires a
+    /// fresh, explicit grant. Older builds read this as `Unknown` and skip.
+    ModeSet {
+        /// The PermissionMode wire id ("read_only" | "default" | "full_auto").
+        mode: String,
+    },
     /// Forward tolerance: any Op type this build does not know. Skipped on
     /// replay; the raw line stays in the journal for future readers.
     #[serde(other)]

@@ -94,6 +94,15 @@ pub struct TurnEngine<'a> {
 /// tests and headless flows use policy-driven implementations.
 pub trait ApprovalGate: Debug + Send + Sync {
     fn approve(&self, call: &ToolCall) -> ApprovalDecision;
+    /// Why the gate is currently denying, when a categorical rule (C2
+    /// permission modes) rather than a host decision produced the denial —
+    /// e.g. `"session is in read_only mode"`. The engine appends it to the
+    /// denial tool-result so the model learns WHY and stops retrying
+    /// variants instead of looping. Default: no reason (the plain
+    /// "denied by approval gate" text stands).
+    fn denial_reason(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -465,11 +474,13 @@ impl<'a> TurnEngine<'a> {
                 }
                 if let Some(gate) = self.approval {
                     if gate.approve(call) == ApprovalDecision::Deny {
-                        messages.push(Message::tool_result(
-                            &call.id,
-                            "denied by approval gate",
-                            true,
-                        ));
+                        // C2: a mode-categorical denial names the mode so the
+                        // model stops retrying variants of the forbidden call.
+                        let text = match gate.denial_reason() {
+                            Some(reason) => format!("denied by approval gate: {reason}"),
+                            None => "denied by approval gate".to_string(),
+                        };
+                        messages.push(Message::tool_result(&call.id, text, true));
                         continue;
                     }
                 }

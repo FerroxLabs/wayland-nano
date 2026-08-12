@@ -1,6 +1,7 @@
 //! Hand-rolled ACP (JSON-RPC over stdio) client subset (design doc §2):
 //! initialize, session/new, session/load, session/prompt, session/cancel,
-//! session/set_model, session/update, session/request_permission.
+//! session/set_model, session/set_mode (C2), session/update,
+//! session/request_permission.
 //!
 //! The `agent-client-protocol` SDK crate is explicitly rejected (a new
 //! external prod dep); this subset is small and the wire contract is the
@@ -285,8 +286,33 @@ pub fn parse_models(result: &Value) -> Option<(String, Vec<(String, String)>)> {
     Some((current, available))
 }
 
-// ── outbound frame builders ─────────────────────────────────────────────
+/// Parse the `modes` block carried by session/new and session/load
+/// responses (`{currentModeId, availableModes[]}`) — C2. Mode entries use
+/// the plain `id` field (unlike models' renamed `modelId`). Unknown/FUTURE
+/// mode ids are tolerated by construction: the picker renders whatever the
+/// agent advertises; only the host validates ids (an inbound set_mode with
+/// an unsupported id is the host's typed error, never a TUI crash).
+pub fn parse_modes(result: &Value) -> Option<(String, Vec<(String, String)>)> {
+    let modes = result.get("modes")?;
+    let current = modes.get("currentModeId")?.as_str()?.to_string();
+    let available = modes
+        .get("availableModes")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|m| {
+            Some((
+                m.get("id")?.as_str()?.to_string(),
+                m.get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            ))
+        })
+        .collect();
+    Some((current, available))
+}
 
+// ── outbound frame builders ─────────────────────────────────────────────
 /// Client request ids, allocated sequentially from 1.
 #[derive(Debug, Default)]
 pub struct RequestIds {
@@ -326,6 +352,12 @@ pub fn prompt_params(session_id: &str, text: &str) -> Value {
 
 pub fn set_model_params(session_id: &str, model_id: &str) -> Value {
     json!({"sessionId": session_id, "modelId": model_id})
+}
+
+/// session/set_mode (C2): switch the session's permission mode. The ack is
+/// an empty object; the TUI applies the mode it requested on success.
+pub fn set_mode_params(session_id: &str, mode_id: &str) -> Value {
+    json!({"sessionId": session_id, "modeId": mode_id})
 }
 
 /// session/compact (C1): manual engine-side compaction of the session
@@ -535,6 +567,9 @@ mod tests {
         let set = request(5, "session/set_model", set_model_params("s1", "flux-fast"));
         assert_eq!(set["params"]["modelId"], "flux-fast");
 
+        let mode = request(7, "session/set_mode", set_mode_params("s1", "full_auto"));
+        assert_eq!(mode["params"]["modeId"], "full_auto");
+
         let compact = request(6, "session/compact", compact_params("s1"));
         assert_eq!(compact["params"]["sessionId"], "s1");
 
@@ -687,5 +722,24 @@ mod tests {
         assert_eq!(current, "flux-auto");
         assert_eq!(available.len(), 2);
         assert!(parse_models(&json!({})).is_none());
+    }
+
+    #[test]
+    fn parse_modes_block_tolerates_future_ids() {
+        let result = json!({"modes":{
+            "currentModeId":"read_only",
+            "availableModes":[
+                {"id":"read_only","name":"Read Only"},
+                {"id":"default","name":"Default"},
+                {"id":"full_auto","name":"Full Auto"},
+                {"id":"quantum","name":"Quantum"}]}});
+        let (current, available) = parse_modes(&result).unwrap();
+        assert_eq!(current, "read_only");
+        let ids: Vec<&str> = available.iter().map(|(id, _)| id.as_str()).collect();
+        // A newer agent's unknown mode id parses through untouched — the
+        // picker renders it and the HOST decides whether set_mode accepts.
+        assert_eq!(ids, ["read_only", "default", "full_auto", "quantum"]);
+        assert!(parse_modes(&json!({})).is_none());
+        assert!(parse_modes(&json!({"modes": {"availableModes": []}})).is_none());
     }
 }
