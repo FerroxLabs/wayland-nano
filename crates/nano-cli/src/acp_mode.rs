@@ -257,6 +257,7 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         window_override,
         limit_override,
         sandbox_probe: &sandbox_probe,
+        cron_home: Some(nano_home),
     };
     serve(reader, writer, &config, make_driver, make_tools).await
 }
@@ -318,6 +319,10 @@ pub struct ServeConfig<'a> {
     /// PER TURN at gate construction (never per approval). Production wires
     /// the platform probe; tests inject both answers.
     pub sandbox_probe: &'a dyn Fn() -> bool,
+    /// C11: when Some, the session-alive-only cron runner ticks inside this
+    /// host (30s, wcore TICK_INTERVAL parity), firing due jobs through the
+    /// §5.4 transaction. `None` in tests and headless profiles.
+    pub cron_home: Option<&'a std::path::Path>,
 }
 
 /// `make_driver`/`make_tools` build a fresh pair per prompt (tools are
@@ -337,11 +342,12 @@ pub async fn serve<R, W, FD, FT, D, T>(
 where
     R: BufRead + Send + 'static,
     W: Write + Send,
-    FD: Fn() -> D,
-    FT: Fn(
-        &std::path::Path,
-        PermissionMode,
-    ) -> (T, nano_core::permissions::FileSystemSandboxPolicy),
+    // Send + Sync: the C11 cron tick shares the factories with the prompt
+    // path and runs its fires through the async (Send-bound) executor trait.
+    FD: Fn() -> D + Send + Sync,
+    FT: Fn(&std::path::Path, PermissionMode) -> (T, nano_core::permissions::FileSystemSandboxPolicy)
+        + Send
+        + Sync,
     D: ModelDriver,
     T: ToolExecutor,
 {
@@ -362,6 +368,13 @@ where
     let mut session: Option<Session> = None;
     let permission_ids = Arc::new(std::sync::atomic::AtomicU64::new(1));
     let mut stdin_open = true;
+    // C11: the session-alive-only cron runner ticks here (30s, wcore
+    // TICK_INTERVAL parity). A corrupt job store disables the scheduler for
+    // the process lifetime (fail-closed, Q6) — the session is unaffected.
+    let mut cron_interval = config
+        .cron_home
+        .map(|_| tokio::time::interval(std::time::Duration::from_secs(30)));
+    let mut cron_disabled = false;
     #[allow(clippy::type_complexity)]
     let mut turn: Option<
         std::pin::Pin<Box<dyn std::future::Future<Output = (String, String)> + '_>>,
@@ -828,6 +841,28 @@ where
                                     continue;
                                 }
                             };
+                            // C11 §3.1/§6: the SessionGuard is the ONE
+                            // exclusion mechanism — interactive turns hold it
+                            // for the turn's lifetime so a fork or cron fire
+                            // can never interleave on this session (the "turn
+                            // in progress" check above is its fast-path
+                            // reflection). Busy is a typed error.
+                            let turn_guard = match nano_agent::bootstrap::session_guard_registry()
+                                .try_acquire(&active.journal)
+                            {
+                                Ok(guard) => guard,
+                                Err(err) => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err(
+                                            id,
+                                            -32602,
+                                            format!("session busy: {err}"),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                            };
                             prompt_id = Some(id);
                             turn_session = active.id.clone();
                             let session_id = active.id.clone();
@@ -860,6 +895,9 @@ where
                             let make_driver = &make_driver;
                             let make_tools = &make_tools;
                             let turn_future = async move {
+                                // Held for the turn's lifetime (C11): forks
+                                // and cron fires see typed busy.
+                                let _guard = turn_guard;
                                 let driver = make_driver();
                                 // The executor AND its exact policy: the
                                 // gate's advisory containment check runs this
@@ -1090,6 +1128,169 @@ where
                                 )?,
                             }
                         }
+                        // ── C11 (Q1 RULED): ACP extension methods, thin
+                        // adapters over the nano-session/nano-agent library
+                        // APIs — no business logic in the ACP layer. ──
+                        "_wayland/session/fork" => {
+                            if turn.is_some() {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(id, -32602, "turn in progress"),
+                                )?;
+                                continue;
+                            }
+                            let params = params.unwrap_or_default();
+                            let fork_session = params
+                                .get("sessionId")
+                                .and_then(|s| s.as_str())
+                                .map(str::to_string)
+                                .or_else(|| session.as_ref().map(|s| s.id.clone()));
+                            let Some(fork_session) = fork_session else {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32602,
+                                        "_wayland/session/fork requires a sessionId",
+                                    ),
+                                )?;
+                                continue;
+                            };
+                            let at_turn = params
+                                .get("atTurn")
+                                .and_then(|t| t.as_str())
+                                .map(str::to_string);
+                            match crate::session_cmds::session_fork_core(
+                                config.sessions_dir,
+                                &fork_session,
+                                at_turn,
+                            ) {
+                                Ok(result) => {
+                                    write_out(&out, &JsonRpcResponse::ok(id, result))?
+                                }
+                                Err(err) => write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(id, -32603, format!("fork failed: {err}")),
+                                )?,
+                            }
+                        }
+                        "_wayland/goal/set" => {
+                            let params = params.unwrap_or_default();
+                            let Some(goal_session) = params
+                                .get("sessionId")
+                                .and_then(|s| s.as_str())
+                                .map(str::to_string)
+                                .or_else(|| session.as_ref().map(|s| s.id.clone()))
+                            else {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32602,
+                                        "_wayland/goal/set requires a sessionId",
+                                    ),
+                                )?;
+                                continue;
+                            };
+                            let objective = params
+                                .get("objective")
+                                .and_then(|o| o.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let budget_of = |key: &str| {
+                                params
+                                    .get("budgets")
+                                    .and_then(|b| b.get(key))
+                                    .and_then(|v| v.as_u64())
+                            };
+                            let budgets = nano_session::GoalBudgets {
+                                token_budget: budget_of("tokenBudget"),
+                                turn_budget: budget_of("turnBudget"),
+                                wall_clock_budget_ms: budget_of("wallClockBudgetMs"),
+                            };
+                            match crate::session_cmds::goal_set_core(
+                                config.sessions_dir,
+                                &goal_session,
+                                &objective,
+                                &budgets,
+                            ) {
+                                Ok(result) => {
+                                    write_out(&out, &JsonRpcResponse::ok(id, result))?
+                                }
+                                Err(err) => write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(id, -32603, err),
+                                )?,
+                            }
+                        }
+                        "_wayland/goal/status" => {
+                            let params = params.unwrap_or_default();
+                            let goal_session = params
+                                .get("sessionId")
+                                .and_then(|s| s.as_str())
+                                .map(str::to_string)
+                                .or_else(|| session.as_ref().map(|s| s.id.clone()));
+                            let Some(goal_session) = goal_session else {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32602,
+                                        "_wayland/goal/status requires a sessionId",
+                                    ),
+                                )?;
+                                continue;
+                            };
+                            match crate::session_cmds::goal_status_core(
+                                config.sessions_dir,
+                                &goal_session,
+                            ) {
+                                Ok(result) => {
+                                    write_out(&out, &JsonRpcResponse::ok(id, result))?
+                                }
+                                Err(err) => write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(id, -32603, err),
+                                )?,
+                            }
+                        }
+                        "_wayland/goal/pause" | "_wayland/goal/resume" | "_wayland/goal/cancel" => {
+                            let action = method
+                                .rsplit('/')
+                                .next()
+                                .unwrap_or_default()
+                                .to_string();
+                            let params = params.unwrap_or_default();
+                            let goal_session = params
+                                .get("sessionId")
+                                .and_then(|s| s.as_str())
+                                .map(str::to_string)
+                                .or_else(|| session.as_ref().map(|s| s.id.clone()));
+                            let Some(goal_session) = goal_session else {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32602,
+                                        format!("{method} requires a sessionId"),
+                                    ),
+                                )?;
+                                continue;
+                            };
+                            match crate::session_cmds::goal_transition_core(
+                                config.sessions_dir,
+                                &goal_session,
+                                &action,
+                            ) {
+                                Ok(result) => {
+                                    write_out(&out, &JsonRpcResponse::ok(id, result))?
+                                }
+                                Err(err) => write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(id, -32603, err),
+                                )?,
+                            }
+                        }
                         other => {
                             write_out(&out, &JsonRpcResponse::method_not_found(id, other))?;
                         }
@@ -1132,6 +1333,51 @@ where
                 }
                 if let Some(id) = prompt_id.take() {
                     write_out(&out, &JsonRpcResponse::ok(id, prompt_result(&stop_reason)))?;
+                }
+            }
+            // C11: the session-alive-only cron runner (Q3). One tick computes
+            // due jobs and dispatches them through the §5.4 journal-first
+            // fire transaction; the SessionGuard excludes interleaving with
+            // a running turn (typed Busy → deferred to the next tick, never
+            // stacked). A corrupt job store disables the scheduler for the
+            // process lifetime (Q6) — the session itself is unaffected.
+            _ = async {
+                match cron_interval.as_mut() {
+                    Some(interval) => interval.tick().await,
+                    None => std::future::pending::<tokio::time::Instant>().await,
+                }
+            }, if cron_interval.is_some() && !cron_disabled => {
+                let live_mode = |id: &str| -> Option<&'static str> {
+                    session
+                        .as_ref()
+                        .filter(|active| active.id == id)
+                        .map(|active| active.mode.lock().unwrap_or_else(|p| p.into_inner()).id())
+                };
+                let tick = crate::cron_fire::tick_once(
+                    config.cron_home.expect("ticker only when configured"),
+                    config.sessions_dir,
+                    config.default_model,
+                    &make_driver,
+                    &make_tools,
+                    (config.sandbox_probe)(),
+                    &live_mode,
+                )
+                .await;
+                match tick {
+                    Ok(outcomes) => {
+                        for outcome in outcomes {
+                            if !matches!(
+                                outcome,
+                                nano_agent::cron::JobTickOutcome::Idle { .. }
+                            ) {
+                                eprintln!("wayland-nano: cron tick: {outcome:?}");
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("wayland-nano: cron scheduler disabled: {err}");
+                        cron_disabled = true;
+                    }
                 }
             }
         }
@@ -1389,7 +1635,7 @@ impl<W: Write> AcpApproval<W> {
 /// (`fs_write`/`fs_edit`) or executes (`shell`) must ask — and so must every
 /// `mcp__*` call: MCP tools are mutating-unknown, so they never match the
 /// read-only prefixes and always go through the permission gate.
-fn is_read_only_tool(name: &str) -> bool {
+pub fn is_read_only_tool(name: &str) -> bool {
     name.starts_with("fs_read") || name.starts_with("search") || name.starts_with("glob")
 }
 

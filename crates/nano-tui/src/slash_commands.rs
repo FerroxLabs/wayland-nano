@@ -23,6 +23,10 @@ pub enum SlashCommand {
     Doctor,
     /// Compact the session context now (engine-side, journaled).
     Compact,
+    /// Goal lifecycle mirror (C11): `/goal [status|pause|resume|cancel]` —
+    /// sends the `_wayland/goal/*` ACP extension methods; the state machine
+    /// lives engine-side. The payload is the subcommand (default "status").
+    Goal(String),
     /// Shut down (cancel any turn, kill the host, restore the terminal).
     Quit,
     /// Unknown `/...` input — reported, never executed.
@@ -43,6 +47,13 @@ pub fn parse(text: &str) -> Option<SlashCommand> {
         "/status" => SlashCommand::Status,
         "/doctor" => SlashCommand::Doctor,
         "/compact" => SlashCommand::Compact,
+        "/goal" => SlashCommand::Goal(
+            trimmed
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("status")
+                .to_string(),
+        ),
         "/quit" => SlashCommand::Quit,
         other => SlashCommand::Unknown(other.to_string()),
     })
@@ -59,6 +70,14 @@ mod tests {
         assert_eq!(parse("/status"), Some(SlashCommand::Status));
         assert_eq!(parse("/doctor"), Some(SlashCommand::Doctor));
         assert_eq!(parse("/compact"), Some(SlashCommand::Compact));
+        assert_eq!(
+            parse("/goal"),
+            Some(SlashCommand::Goal("status".to_string()))
+        );
+        assert_eq!(
+            parse("/goal pause"),
+            Some(SlashCommand::Goal("pause".to_string()))
+        );
         assert_eq!(parse("/quit"), Some(SlashCommand::Quit));
         assert_eq!(
             parse("/bogus"),

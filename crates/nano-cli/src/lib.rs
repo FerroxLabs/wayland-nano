@@ -3,6 +3,14 @@
 //! doubles. The binaries (`wayland-nano`, `wayland-nano-acp-profile`) stay thin.
 
 pub mod acp_mode;
+pub mod cron_fire;
+pub mod exec_mode;
+pub mod exec_run;
 pub mod fetch_specs;
 pub mod flux_key;
 pub mod mcp_specs;
+pub mod session_cmds;
+
+#[cfg(test)]
+#[path = "exec_tests.rs"]
+mod exec_tests;

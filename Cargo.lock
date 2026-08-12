@@ -1202,6 +1202,7 @@ name = "nano-agent"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "futures-util",
  "nano-core",
  "nano-egress",
@@ -1211,6 +1212,7 @@ dependencies = [
  "nano-skills",
  "nano-tools",
  "pretty_assertions",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
@@ -1342,10 +1344,13 @@ dependencies = [
 name = "nano-session"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "pretty_assertions",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.20",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

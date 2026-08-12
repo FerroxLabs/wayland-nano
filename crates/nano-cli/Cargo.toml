@@ -14,6 +14,7 @@ name = "wayland-nano-acp-profile"
 path = "src/bin/acp_profile/main.rs"
 
 [dependencies]
+async-trait = "0.1"
 dirs-next = "2"
 nano-agent = { version = "0.1.0", path = "../nano-agent" }
 nano-core = { version = "0.1.0", path = "../nano-core" }

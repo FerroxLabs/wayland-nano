@@ -201,6 +201,7 @@ impl Harness {
                     window_override: None,
                     limit_override: None,
                     sandbox_probe: &sandbox_probe,
+                    cron_home: None,
                 };
                 acp_mode::serve(
                     ChannelReader {
