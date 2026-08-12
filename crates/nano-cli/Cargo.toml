@@ -13,6 +13,11 @@ path = "src/main.rs"
 name = "wayland-nano-acp-profile"
 path = "src/bin/acp_profile/main.rs"
 
+# C7: the one error-table generator (see nano-protocol/src/error_codes.rs).
+[[bin]]
+name = "gen_error_table"
+path = "src/bin/gen_error_table.rs"
+
 [dependencies]
 dirs-next = "2"
 nano-agent = { version = "0.1.0", path = "../nano-agent" }

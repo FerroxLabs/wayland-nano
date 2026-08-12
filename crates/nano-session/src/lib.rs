@@ -12,12 +12,15 @@
 //! - compaction is a set of replayable Ops, never a remote operation.
 
 pub mod compact;
+pub mod error_codes;
+pub mod error_kind;
 pub mod op;
 pub mod reader;
 pub mod redaction;
 pub mod replay;
 pub mod writer;
 
+pub use error_kind::NanoErrorKind;
 pub use op::{CompactionCancelReason, Op, OpEnvelope, SCHEMA_VERSION, TurnOutcome};
 pub use reader::{JournalReport, read_journal};
 pub use redaction::{RedactionError, SecretKind, scan_for_secrets};
