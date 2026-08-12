@@ -1,0 +1,268 @@
+//! Frame rendering (ratatui, alternate screen — design doc §3). No
+//! markdown in v1: model output renders as plain wrapped text
+//! (`Paragraph` + `Wrap`), already sanitized upstream.
+
+use ratatui::Frame;
+use ratatui::layout::Constraint;
+use ratatui::layout::Layout;
+use ratatui::layout::Rect;
+use ratatui::style::Color;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::widgets::Block;
+use ratatui::widgets::Borders;
+use ratatui::widgets::Clear;
+use ratatui::widgets::Paragraph;
+
+use crate::app::App;
+use crate::modal::ListSelectionView;
+use crate::transcript::Cell;
+
+const COMPOSER_MAX_HEIGHT: u16 = 10;
+
+pub fn render(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let composer_height = (app.composer.lines().len() as u16 + 2).clamp(3, COMPOSER_MAX_HEIGHT);
+    let [transcript_area, composer_area, status_area] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(composer_height),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+
+    render_transcript(frame, app, transcript_area);
+    render_composer(frame, app, composer_area);
+
+    let status = Paragraph::new(Line::from(Span::styled(
+        app.status.line(),
+        Style::default().bg(Color::DarkGray),
+    )));
+    frame.render_widget(status, status_area);
+
+    if let Some((kind, view, detail)) = app.modal_view() {
+        render_modal(frame, kind, view, detail, area);
+    }
+}
+
+fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for cell in app.transcript.cells() {
+        match cell {
+            Cell::User(text) => {
+                push_prefixed(&mut lines, "› ", text, Style::default().fg(Color::Cyan));
+            }
+            Cell::Assistant(text) => {
+                for line in text.lines() {
+                    lines.push(Line::from(line.to_string()));
+                }
+            }
+            Cell::Tool {
+                title,
+                status,
+                detail,
+                ..
+            } => {
+                lines.push(Line::from(vec![
+                    Span::styled("⚒ ", Style::default().fg(Color::Yellow)),
+                    Span::styled(title.clone(), Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled(format!(" [{status}]"), Style::default().fg(Color::Yellow)),
+                ]));
+                if !detail.is_empty() && detail != "null" {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {detail}"),
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+            }
+            Cell::ToolResult { status, .. } => {
+                lines.push(Line::from(Span::styled(
+                    format!("  ↳ {status}"),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+            Cell::Note(text) => {
+                push_prefixed(&mut lines, "· ", text, Style::default().fg(Color::DarkGray));
+            }
+        }
+    }
+    if let Some(active) = app.transcript.active_text() {
+        for line in active.lines() {
+            lines.push(Line::from(line.to_string()));
+        }
+        // Streaming cursor marker so a mid-stream cell reads as live.
+        lines.push(Line::from(Span::styled(
+            "▌",
+            Style::default().fg(Color::Green),
+        )));
+    }
+
+    // In-app transcript pager (alternate screen means no native scrollback,
+    // design §3). Lines are pre-wrapped to the area width so the scroll
+    // math is EXACT (Paragraph::scroll on Wrap counts word-wrapped rows,
+    // which cannot be computed without reimplementing reflow). Lines that
+    // fit keep their styling; longer lines flatten to plain wrapped chunks.
+    let width = area.width.max(1) as usize;
+    let mut physical: Vec<Line<'static>> = Vec::with_capacity(lines.len());
+    for line in lines {
+        if line.width() <= width {
+            physical.push(line);
+        } else {
+            let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let mut start = 0;
+            // Char-boundary chunks: exact for ASCII (the common case); wide
+            // chars may render past the last column and truncate visually —
+            // cosmetic only, v1.
+            let chars: Vec<char> = plain.chars().collect();
+            while start < chars.len() {
+                let end = (start + width).min(chars.len());
+                let chunk: String = chars[start..end].iter().collect();
+                physical.push(Line::from(chunk));
+                start = end;
+            }
+        }
+    }
+    let total = physical.len();
+    let visible = area.height as usize;
+    let max_scroll = total.saturating_sub(visible);
+    let scroll_up = app.transcript.scroll_up().min(max_scroll);
+    let offset = max_scroll.saturating_sub(scroll_up) as u16;
+
+    let paragraph = Paragraph::new(physical).scroll((offset, 0));
+    frame.render_widget(paragraph, area);
+}
+
+fn push_prefixed(lines: &mut Vec<Line<'static>>, prefix: &str, text: &str, style: Style) {
+    let mut first = true;
+    for line in text.lines() {
+        if first {
+            lines.push(Line::from(vec![
+                Span::styled(prefix.to_string(), style),
+                Span::raw(line.to_string()),
+            ]));
+            first = false;
+        } else {
+            lines.push(Line::from(format!("  {line}")));
+        }
+    }
+    if text.is_empty() {
+        lines.push(Line::from(Span::styled(prefix.to_string(), style)));
+    }
+}
+
+fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Span::styled(" › ", Style::default().fg(Color::Green)));
+    let inner = block.inner(area);
+    let text: Vec<Line> = app
+        .composer
+        .lines()
+        .iter()
+        .map(|l| Line::from(l.clone()))
+        .collect();
+    frame.render_widget(Paragraph::new(text).block(block), area);
+
+    // Terminal cursor tracks the composer unless a modal owns input.
+    if !app.modal_open() {
+        let (row, col) = app.composer.cursor();
+        let visible_rows = inner.height as usize;
+        if row < visible_rows {
+            frame.set_cursor_position(ratatui::layout::Position::new(
+                inner.x + col as u16,
+                inner.y + row as u16,
+            ));
+        }
+    }
+}
+
+/// The generic ListSelectionView surface: centered overlay, title bar,
+/// optional detail line, scrolling rows.
+fn render_modal(
+    frame: &mut Frame,
+    kind: &str,
+    view: &ListSelectionView,
+    detail: Option<&str>,
+    area: Rect,
+) {
+    let rows = view.items.len().max(1) as u16;
+    let detail_rows = u16::from(detail.is_some());
+    let height = (rows + 4 + detail_rows)
+        .min(area.height.saturating_sub(2))
+        .max(5);
+    let width = area.width.saturating_sub(8).clamp(30, area.width);
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(format!(" {} ", view.title));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let [detail_area, list_area, hint_area] = Layout::vertical([
+        Constraint::Length(detail_rows),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    if let Some(detail) = detail {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                detail.to_string(),
+                Style::default().fg(Color::DarkGray),
+            ))),
+            detail_area,
+        );
+    }
+
+    let visible = list_area.height as usize;
+    let selected = view.selected_index();
+    let start = selected.saturating_sub(visible.saturating_sub(1));
+    let mut lines = Vec::new();
+    for (index, item) in view.items.iter().enumerate().skip(start).take(visible) {
+        let marker = if index == selected { "› " } else { "  " };
+        let name_style = if index == selected {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        let mut spans = vec![
+            Span::styled(marker, Style::default().fg(Color::Green)),
+            Span::styled(item.name.clone(), name_style),
+        ];
+        if item.is_current {
+            spans.push(Span::styled(
+                " (current)",
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        lines.push(Line::from(spans));
+        if let Some(description) = &item.description {
+            lines.push(Line::from(Span::styled(
+                format!("    {description}"),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), list_area);
+
+    let hint = if kind == "approval" {
+        " Enter decides · Esc denies "
+    } else {
+        " Enter selects · Esc cancels "
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hint,
+            Style::default().fg(Color::DarkGray),
+        ))),
+        hint_area,
+    );
+}

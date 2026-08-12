@@ -1,0 +1,211 @@
+//! Transcript: committed history cells + one mutable active cell during
+//! streaming (design doc §4, `chatwidget.rs:1-17` pattern). Commit pacing is
+//! commit-on-arrival — a chunk joins the active cell; any other frame (tool
+//! card, turn end, note) commits it. No smooth/catch-up gears in v1.
+//!
+//! All text entering cells passes through the streaming-safe sanitizer
+//! (§5/D2): the active streaming cell owns one [`Sanitizer`] whose state
+//! carries across ACP chunk boundaries.
+
+use crate::sanitize::Sanitizer;
+
+/// One committed entry in the transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cell {
+    /// A user prompt (echoed at submit, or replayed on session/load).
+    User(String),
+    /// Finished assistant text.
+    Assistant(String),
+    /// A tool call card; `status` is the wire status (in_progress,
+    /// completed, failed). `detail` is the sanitized rawInput (one line).
+    Tool {
+        call_id: String,
+        title: String,
+        status: String,
+        detail: String,
+    },
+    /// A tool completion update (digest on replay, output live).
+    ToolResult { call_id: String, status: String },
+    /// A TUI-side note: /status, /doctor, errors, lifecycle messages.
+    Note(String),
+}
+
+/// The mutable streaming cell: chunks append through the carried sanitizer.
+#[derive(Debug, Default)]
+struct ActiveCell {
+    text: String,
+    sanitizer: Sanitizer,
+}
+
+#[derive(Debug, Default)]
+pub struct Transcript {
+    cells: Vec<Cell>,
+    active: Option<ActiveCell>,
+    /// Lines scrolled up from the bottom (in-app pager, PgUp/PgDn). 0 = tail.
+    scroll_up: usize,
+}
+
+impl Transcript {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cells(&self) -> &[Cell] {
+        &self.cells
+    }
+
+    /// The active cell's sanitized-so-far text (for rendering).
+    pub fn active_text(&self) -> Option<&str> {
+        self.active.as_ref().map(|a| a.text.as_str())
+    }
+
+    pub fn scroll_up(&self) -> usize {
+        self.scroll_up
+    }
+
+    pub fn scroll_by(&mut self, delta: isize) {
+        self.scroll_up = self.scroll_up.saturating_add_signed(delta);
+    }
+
+    /// Any new content returns the view to the tail (codex behavior).
+    pub fn follow_tail(&mut self) {
+        self.scroll_up = 0;
+    }
+
+    /// A streamed assistant chunk arrived. Commit-on-arrival: joins the
+    /// active cell (sanitized through the carried state).
+    pub fn push_agent_chunk(&mut self, chunk: &str) {
+        self.follow_tail();
+        let active = self.active.get_or_insert_with(ActiveCell::default);
+        let clean = active.sanitizer.push(chunk);
+        active.text.push_str(&clean);
+    }
+
+    /// Commit the active cell (turn end, or before a non-chunk frame).
+    /// End-of-stream: any unterminated escape pending in the sanitizer is
+    /// dropped, never forwarded.
+    pub fn commit_active(&mut self) {
+        if let Some(mut active) = self.active.take() {
+            active.sanitizer.finish();
+            if !active.text.is_empty() {
+                self.cells.push(Cell::Assistant(active.text));
+            }
+        }
+    }
+
+    pub fn push_user(&mut self, text: &str) {
+        self.commit_active();
+        self.follow_tail();
+        self.cells.push(Cell::User(crate::sanitize::sanitize(text)));
+    }
+
+    pub fn push_tool_call(&mut self, call_id: &str, title: &str, status: &str, raw_input: &str) {
+        self.commit_active();
+        self.follow_tail();
+        self.cells.push(Cell::Tool {
+            call_id: call_id.to_string(),
+            title: crate::sanitize::sanitize(title),
+            status: status.to_string(),
+            detail: crate::sanitize::sanitize(raw_input),
+        });
+    }
+
+    pub fn push_tool_result(&mut self, call_id: &str, status: &str, raw_output: &str) {
+        self.commit_active();
+        self.follow_tail();
+        // Update the matching card's status so it never hangs in_progress.
+        for cell in self.cells.iter_mut().rev() {
+            if let Cell::Tool {
+                call_id: id,
+                status: s,
+                ..
+            } = cell
+                && id == call_id
+            {
+                *s = status.to_string();
+                break;
+            }
+        }
+        let output = crate::sanitize::sanitize(raw_output);
+        if !output.is_empty() {
+            self.cells.push(Cell::ToolResult {
+                call_id: call_id.to_string(),
+                status: format!("{status}: {output}"),
+            });
+        }
+    }
+
+    pub fn push_note(&mut self, text: &str) {
+        self.commit_active();
+        self.follow_tail();
+        self.cells.push(Cell::Note(crate::sanitize::sanitize(text)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunks_join_active_then_commit() {
+        let mut t = Transcript::new();
+        t.push_agent_chunk("Hello, ");
+        t.push_agent_chunk("world");
+        assert_eq!(t.active_text(), Some("Hello, world"));
+        t.commit_active();
+        assert_eq!(t.active_text(), None);
+        assert_eq!(t.cells(), &[Cell::Assistant("Hello, world".to_string())]);
+    }
+
+    #[test]
+    fn non_chunk_frame_commits_active_first() {
+        let mut t = Transcript::new();
+        t.push_agent_chunk("partial answer");
+        t.push_tool_call("c1", "fs_write", "in_progress", "{}");
+        assert_eq!(t.active_text(), None);
+        assert!(matches!(t.cells()[0], Cell::Assistant(_)));
+        assert!(matches!(t.cells()[1], Cell::Tool { .. }));
+    }
+
+    #[test]
+    fn streaming_sanitizer_carries_state_across_chunks() {
+        let mut t = Transcript::new();
+        t.push_agent_chunk("safe \x1b[38;5");
+        t.push_agent_chunk(";9m more");
+        t.commit_active();
+        assert_eq!(t.cells(), &[Cell::Assistant("safe  more".to_string())]);
+    }
+
+    #[test]
+    fn tool_result_updates_card_status() {
+        let mut t = Transcript::new();
+        t.push_tool_call("c1", "shell", "in_progress", "{}");
+        t.push_tool_result("c1", "completed", "ok");
+        match &t.cells()[0] {
+            Cell::Tool { status, .. } => assert_eq!(status, "completed"),
+            other => panic!("expected tool cell, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn torn_replay_leaves_no_hanging_card_visible_text() {
+        // A tool_call whose completion never arrived (crash mid-call on the
+        // engine side) renders as-is without panic.
+        let mut t = Transcript::new();
+        t.push_user("do a thing");
+        t.push_tool_call("c9", "shell", "in_progress", "{\"command\":\"ls\"}");
+        t.commit_active();
+        assert_eq!(t.cells().len(), 2);
+    }
+
+    #[test]
+    fn scroll_is_bounded_below() {
+        let mut t = Transcript::new();
+        t.scroll_by(-10);
+        assert_eq!(t.scroll_up(), 0);
+        t.scroll_by(5);
+        assert_eq!(t.scroll_up(), 5);
+        t.push_note("x");
+        assert_eq!(t.scroll_up(), 0, "new content returns to tail");
+    }
+}

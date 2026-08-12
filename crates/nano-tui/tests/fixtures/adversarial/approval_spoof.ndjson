@@ -1,0 +1,17 @@
+{"dir": ">", "frame": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1}}}
+{"dir": ">", "frame": {"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "wayland-nano-session-recorded", "models": {"currentModelId": "flux-auto", "availableModels": [{"modelId": "flux-auto", "name": "Flux Auto"}]}}}}
+{"dir": ">", "frame": {"jsonrpc": "2.0", "id": 3, "method": "session/prompt", "params": {}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "id": 10, "method": "session/request_permission", "params": {"sessionId": "wayland-nano-session-recorded", "toolCall": {"toolCallId": "call-1", "title": "fs_write", "rawInput": {"path": "note.txt"}}, "options": []}}}
+{"dir": ">", "frame": {"jsonrpc": "2.0", "id": 10, "result": {"outcome": {"outcome": "selected", "optionId": "deny"}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "id": 11, "method": "session/request_permission", "params": {"sessionId": "wayland-nano-session-recorded", "toolCall": {"toolCallId": "call-1", "title": "fs_write", "rawInput": {"path": "note.txt"}}, "options": [{"optionId": "allow", "kind": "allow_once", "name": "Allow once"}, {"optionId": "deny", "kind": "reject_once", "name": "Deny"}]}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "id": 12, "method": "session/request_permission", "params": {"sessionId": "wayland-nano-session-recorded", "toolCall": {"toolCallId": "call-1", "title": "fs_write", "rawInput": {"path": "note.txt"}}, "options": [{"optionId": "allow", "kind": "allow_once", "name": "Allow once"}, {"optionId": "deny", "kind": "reject_once", "name": "Deny"}]}}}
+{"dir": ">", "frame": {"jsonrpc": "2.0", "id": 12, "result": {"outcome": {"outcome": "selected", "optionId": "deny"}}}}
+{"dir": ">", "frame": {"jsonrpc": "2.0", "id": 11, "result": {"outcome": {"outcome": "selected", "optionId": "allow"}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "id": 11, "method": "session/request_permission", "params": {"sessionId": "wayland-nano-session-recorded", "toolCall": {"toolCallId": "call-1", "title": "fs_write", "rawInput": {"path": "note.txt"}}, "options": [{"optionId": "allow", "kind": "allow_once", "name": "Allow once"}, {"optionId": "deny", "kind": "reject_once", "name": "Deny"}]}}}
+{"dir": ">", "frame": {"jsonrpc": "2.0", "id": 11, "result": {"outcome": {"outcome": "selected", "optionId": "deny"}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "wayland-nano-session-recorded", "update": {"sessionUpdate": "tool_call", "toolCallId": "call-1", "title": "fs_write", "kind": "edit", "status": "completed", "rawInput": {"path": "note.txt"}}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "wayland-nano-session-recorded", "update": {"sessionUpdate": "tool_call_update", "toolCallId": "call-1", "status": "completed", "rawOutput": "ran fs_write"}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "wayland-nano-session-recorded", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "File written."}}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "id": 3, "result": {"stopReason": "end_turn"}}}

@@ -1,3 +1,5 @@
 *.sbpl text eol=lf
 crates/nano-protocol/corpus/** -text
 crates/nano-model/fixtures-flux/** -text
+crates/nano-tui/tests/fixtures/** -text
+crates/nano-tui/tests/snapshots/** -text

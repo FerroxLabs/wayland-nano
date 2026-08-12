@@ -1,0 +1,16 @@
+---
+source: crates/nano-tui/tests/l1_snapshots.rs
+expression: "render_to_test_backend(&world.app, 60, 12)"
+---
+"· line 12                                                   "
+"· line 13                                                   "
+"· line 14                                                   "
+"· line 15                                                   "
+"· line 16                                                   "
+"· line 17                                                   "
+"· line 18                                                   "
+"· line 19                                                   "
+" › ─────────────────────────────────────────────────────────"
+"                                                            "
+"                                                            "
+" flux-auto | ready | wayland-nano-session-recorde | /model /"

@@ -1,0 +1,11 @@
+{"dir": ">", "frame": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1}}}
+{"dir": ">", "frame": {"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "wayland-nano-session-recorded", "models": {"currentModelId": "flux-auto", "availableModels": [{"modelId": "flux-auto", "name": "Flux Auto"}]}}}}
+{"dir": ">", "frame": {"jsonrpc": "2.0", "id": 3, "method": "session/prompt", "params": {}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "wayland-nano-session-recorded", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "answer: \u001b"}}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "wayland-nano-session-recorded", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "[38;5"}}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "wayland-nano-session-recorded", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": ";9m safe text"}}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "wayland-nano-session-recorded", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "\u001b]0;spoof title\u0007 done"}}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "wayland-nano-session-recorded", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "\u001bPq$unterminated dcs"}}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "id": 3, "result": {"stopReason": "end_turn"}}}

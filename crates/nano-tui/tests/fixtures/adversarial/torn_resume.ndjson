@@ -1,0 +1,9 @@
+{"dir": ">", "frame": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1}}}
+{"dir": ">", "frame": {"jsonrpc": "2.0", "id": 2, "method": "session/load", "params": {}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "wayland-nano-session-recorded", "update": {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "do the thing"}}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "wayland-nano-session-recorded", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "working on it\u001b[31m"}}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "wayland-nano-session-recorded", "update": {"sessionUpdate": "tool_call", "toolCallId": "call-1", "title": "fs_write", "kind": "edit", "status": "in_progress", "rawInput": {"path": "note.txt"}}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "wayland-nano-session-recorded", "update": {"sessionUpdate": "plan", "entries": [{"content": "step 1"}]}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "wayland-nano-session-recorded", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "partial answer"}}}}}
+{"dir": "<", "frame": {"jsonrpc": "2.0", "id": 2, "result": {"models": {"currentModelId": "flux-auto", "availableModels": [{"modelId": "flux-auto", "name": "Flux Auto"}]}}}}
