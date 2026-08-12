@@ -9,3 +9,6 @@
 # npm pack tarballs produced inside the package dir
 /packaging/npm/*.tgz
 .ijfw/
+
+# Parallel-build fleet worktrees (swarm integration; never commit gitlinks)
+.tmp-wt-*/
