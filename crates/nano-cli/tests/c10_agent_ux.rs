@@ -221,7 +221,10 @@ impl Harness {
                 ensure_test_flux_key();
                 // C5: memory store for this harness (writes off).
                 let memory_config = acp_mode::MemoryHostConfig {
-                    dir: sessions_dir_for_thread.parent().expect("root").join("memory"),
+                    dir: sessions_dir_for_thread
+                        .parent()
+                        .expect("root")
+                        .join("memory"),
                     write_enabled: false,
                     block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
                 };

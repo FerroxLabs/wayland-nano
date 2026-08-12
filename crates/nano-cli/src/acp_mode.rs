@@ -554,7 +554,10 @@ where
         let make_driver = make_driver.clone();
         move |model: &str| -> Arc<dyn Fn() -> Result<Arc<dyn ModelDriver>, String> + Send + Sync> {
             let env_reader = |name: &str| std::env::var(name).ok();
-            match config.router.resolve_binding(model, &env_reader, unix_now_secs()) {
+            match config
+                .router
+                .resolve_binding(model, &env_reader, unix_now_secs())
+            {
                 Ok(binding) => {
                     let make_driver = make_driver.clone();
                     Arc::new(move || Ok(Arc::new(make_driver(&binding)) as Arc<dyn ModelDriver>))

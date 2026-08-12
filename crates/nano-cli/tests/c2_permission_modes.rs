@@ -467,7 +467,10 @@ fn mid_park_de_escalation_tightens_the_running_turn() {
 
     let (prompt_response, mode_response) = park_then_flip(&mut host, &session_id, "read_only");
     assert_eq!(prompt_response["result"]["stopReason"], "end_turn");
-    assert_eq!(mode_response["result"], serde_json::json!({}));
+    assert_eq!(
+        mode_response["result"]["modes"]["currentModeId"], "read_only",
+        "the ack carries the modes block (C10 shape)"
+    );
     assert_eq!(
         host.permission_frames(),
         1,
@@ -531,7 +534,10 @@ fn mid_park_escalation_is_still_deferred() {
 
     let (prompt_response, mode_response) = park_then_flip(&mut host, &session_id, "full_auto");
     assert_eq!(prompt_response["result"]["stopReason"], "end_turn");
-    assert_eq!(mode_response["result"], serde_json::json!({}));
+    assert_eq!(
+        mode_response["result"]["modes"]["currentModeId"], "full_auto",
+        "the ack carries the modes block (C10 shape)"
+    );
     assert_eq!(
         host.permission_frames(),
         2,
