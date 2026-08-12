@@ -228,7 +228,7 @@ pub use cap::{
 };
 #[cfg(target_os = "windows")]
 pub use capture::{
-    CaptureResult, run_windows_sandbox_capture,
+    CaptureResult, run_windows_sandbox_capture, run_windows_sandbox_capture_for_task,
     run_windows_sandbox_capture_with_filesystem_overrides, run_windows_sandbox_legacy_preflight,
 };
 #[cfg(target_os = "windows")]

@@ -108,11 +108,52 @@ pub unsafe fn create_process_as_user(
     console_mode: ConsoleMode,
     use_private_desktop: bool,
 ) -> Result<CreatedProcess> {
+    unsafe {
+        create_process_as_user_with_job_policy(
+            h_token,
+            argv,
+            cwd,
+            env_map,
+            logs_base_dir,
+            stdio,
+            console_mode,
+            use_private_desktop,
+            /*allow_breakaway*/ true,
+        )
+    }
+}
+
+/// [`create_process_as_user`] with an explicit job breakaway policy. C6
+/// background tasks pass `allow_breakaway: false` (claude's mandatory
+/// amendment): with the default BREAKAWAY_OK job a grandchild spawned with
+/// CREATE_BREAKAWAY_FROM_JOB would escape `terminate()` and falsify the
+/// orphan-free teardown guarantee.
+/// # Safety
+/// Same contract as [`create_process_as_user`].
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn create_process_as_user_with_job_policy(
+    h_token: HANDLE,
+    argv: &[String],
+    cwd: &Path,
+    env_map: &HashMap<String, String>,
+    logs_base_dir: Option<&Path>,
+    stdio: Option<(HANDLE, HANDLE, HANDLE)>,
+    console_mode: ConsoleMode,
+    use_private_desktop: bool,
+    allow_breakaway: bool,
+) -> Result<CreatedProcess> {
     let cmdline_str = argv_to_command_line(argv);
     let mut cmdline: Vec<u16> = to_wide(&cmdline_str);
     let env_block = make_env_block(env_map);
     let desktop = LaunchDesktop::prepare(use_private_desktop, logs_base_dir)?;
-    let job = Arc::new(JobObject::create().context("create process job")?);
+    let job = Arc::new(
+        if allow_breakaway {
+            JobObject::create()
+        } else {
+            JobObject::create_without_breakaway()
+        }
+        .context("create process job")?,
+    );
     let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
     let cwd_wide = to_wide(cwd);
     let env_block_len = env_block.len();

@@ -289,6 +289,12 @@ pub struct RealToolExecutor {
     /// web_fetch (C4): None = no fetch hosts configured = the tool denies
     /// everything (deny-by-default for the second egress policy domain).
     web_fetch: Option<WebFetchTool>,
+    /// C6 kill domain: set ONLY on background-task child executors (via
+    /// [`Self::with_task_kill_registry`]). When present, shell calls route
+    /// through `ShellTool::run_task` so every command's teardown handle
+    /// lands in the task's registry — the construction boundary that makes
+    /// the registered spawn the ONLY launch path a child holds (codex r2).
+    task_kill: Option<std::sync::Arc<nano_tools::shell::KillRegistry>>,
     /// Dedup state for honest progress signals: re-reading identical content
     /// or re-running an identical command with identical output is NOT new
     /// information (the no-progress detector depends on this truth).
@@ -318,6 +324,7 @@ impl RealToolExecutor {
             shell,
             workspace: workspace.to_path_buf(),
             web_fetch: None,
+            task_kill: None,
             seen: std::sync::Mutex::new(std::collections::HashMap::new()),
             diff_hook: None,
         }
@@ -353,6 +360,16 @@ impl RealToolExecutor {
     /// built from configured fetch hosts.
     pub fn with_web_fetch(mut self, tool: WebFetchTool) -> Self {
         self.web_fetch = Some(tool);
+        self
+    }
+
+    /// C6: mark this executor as a background-task child's — every shell
+    /// command registers with the task's kill domain at spawn time.
+    pub fn with_task_kill_registry(
+        mut self,
+        registry: std::sync::Arc<nano_tools::shell::KillRegistry>,
+    ) -> Self {
+        self.task_kill = Some(registry);
         self
     }
 
@@ -619,11 +636,23 @@ impl ToolExecutor for RealToolExecutor {
                         progress: ProgressSignals::default(),
                     };
                 };
-                match self.shell.run(
-                    ShellKind::platform_default(),
-                    command,
-                    Some(std::time::Duration::from_secs(120)),
-                ) {
+                // C6: a child executor's commands register with the task's
+                // kill domain (no-breakaway jobs on Windows, process groups
+                // on unix); the parent's executor runs the plain path.
+                let shell_result = match &self.task_kill {
+                    Some(registry) => self.shell.run_task(
+                        ShellKind::platform_default(),
+                        command,
+                        Some(std::time::Duration::from_secs(120)),
+                        registry,
+                    ),
+                    None => self.shell.run(
+                        ShellKind::platform_default(),
+                        command,
+                        Some(std::time::Duration::from_secs(120)),
+                    ),
+                };
+                match shell_result {
                     Ok(out) => {
                         let digest = format!("{}|{}|{}", out.exit_code, out.stdout, out.stderr);
                         let novel = self.mark_and_check_novelty("shell", command, &digest);

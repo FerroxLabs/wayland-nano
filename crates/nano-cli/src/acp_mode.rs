@@ -140,6 +140,10 @@ struct Session {
     /// dropping it kills the stdio children, so nothing leaks across
     /// sessions. Shared with the running turn's MCP-merged executor.
     mcp: Arc<Mutex<McpRegistry>>,
+    /// C6: this session's background-task registry. Fresh per session; its
+    /// Drop tears every child down (bounded), and the reader thread holds a
+    /// handle so session/cancel cascades to children mid-poll.
+    tasks: Arc<nano_agent::tasks::TaskRegistry>,
 }
 
 /// ACP session ids are filesystem-safe (they name the journal file) and
@@ -500,14 +504,14 @@ pub async fn serve<R, W, FD, FT, D, T>(
 where
     R: BufRead + Send + 'static,
     W: Write + Send + 'static,
-    FD: Fn(&crate::provider_router::ProviderBinding) -> D,
+    FD: Fn(&crate::provider_router::ProviderBinding) -> D + Send + Sync + 'static,
     FT: Fn(
         &std::path::Path,
         PermissionMode,
         &std::path::Path,
         Option<DiffHook>,
     ) -> (T, nano_core::permissions::FileSystemSandboxPolicy),
-    D: ModelDriver,
+    D: ModelDriver + 'static,
     T: ToolExecutor,
 {
     let out = Arc::new(Mutex::new(writer));
@@ -528,12 +532,56 @@ where
     // fail-open audit gap); the main loop's validate → journal → mutate →
     // ack sequence still processes the queued request exactly once.
     let current_mode: CurrentMode = Arc::new(Mutex::new(None));
+    // C6: the active session's task registry, exposed to the reader thread
+    // so session/cancel CASCADES to children mid-poll (set every child flag
+    // + terminate registered kill handles — fast, no waits).
+    let current_tasks: Arc<Mutex<Option<Arc<nano_agent::tasks::TaskRegistry>>>> =
+        Arc::new(Mutex::new(None));
+    // The driver factory is Arc'd so the per-turn arm AND each session's
+    // task registry (C6: every child builds its own driver on its own
+    // thread, bound to the session's provider) share it.
+    let make_driver = Arc::new(make_driver);
+    // C6: builds a session's child-driver factory by resolving the session
+    // model's provider binding NOW (fail-closed: a resolution failure
+    // becomes a typed task_spawn error, never a silent fallback onto
+    // another provider).
+    let task_nano_home = config
+        .sessions_dir
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| config.sessions_dir.to_path_buf());
+    let make_task_driver_factory = {
+        let make_driver = make_driver.clone();
+        move |model: &str| -> Arc<dyn Fn() -> Result<Arc<dyn ModelDriver>, String> + Send + Sync> {
+            let env_reader = |name: &str| std::env::var(name).ok();
+            match config.router.resolve_binding(model, &env_reader, unix_now_secs()) {
+                Ok(binding) => {
+                    let make_driver = make_driver.clone();
+                    Arc::new(move || Ok(Arc::new(make_driver(&binding)) as Arc<dyn ModelDriver>))
+                }
+                Err(err) => {
+                    let message = format!("task driver unavailable: {err:?}");
+                    Arc::new(move || Err(message.clone()))
+                }
+            }
+        }
+    };
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Inbound>();
     std::thread::spawn({
         let pending = pending.clone();
         let current_cancel = current_cancel.clone();
         let current_mode = current_mode.clone();
-        move || reader_loop(reader, tx, pending, current_cancel, current_mode)
+        let current_tasks = current_tasks.clone();
+        move || {
+            reader_loop(
+                reader,
+                tx,
+                pending,
+                current_cancel,
+                current_mode,
+                current_tasks,
+            )
+        }
     });
 
     let mut session: Option<Session> = None;
@@ -548,6 +596,13 @@ where
 
     loop {
         if !stdin_open && turn.is_none() {
+            // C6: the host is exiting — tear the session's children down
+            // (bounded; a wedged child detaches and KILL_ON_JOB_CLOSE is
+            // the process-exit backstop). The registry Drop would do this
+            // too; doing it here keeps the ordering explicit.
+            if let Some(active) = session.take() {
+                active.tasks.teardown_all();
+            }
             return Ok(0); // stdin closed and no turn in flight: clean exit
         }
         // Biased: inbound frames (cancel, responses) are handled before the
@@ -575,9 +630,11 @@ where
                         if method == "session/cancel" {
                             // Step-boundary cancel: the engine checks the flag
                             // between steps and the approval gate polls it while
-                            // waiting on a permission response.
+                            // waiting on a permission response. C6: cascades to
+                            // children (their own flags + kill handles).
                             if let Some(active) = &session {
                                 active.cancel.store(true, Ordering::SeqCst);
+                                active.tasks.cancel_all();
                             }
                         }
                     }
@@ -667,6 +724,19 @@ where
                             // the bounded, UNTRUSTED-labeled AGENTS.md block
                             // (rendered fresh per rebuild), nothing else.
                             let context = session_context_prefix(&cwd, &todos, &plan);
+                            // C6: replacing a live session tears its children
+                            // down first (bounded, then detach).
+                            if let Some(old) = session.take() {
+                                old.tasks.teardown_all();
+                            }
+                            let tasks = Arc::new(nano_agent::tasks::TaskRegistry::new(
+                                &task_nano_home,
+                                &cwd,
+                                config.default_model.to_string(),
+                                make_task_driver_factory(config.default_model),
+                            ));
+                            *current_tasks.lock().unwrap_or_else(|p| p.into_inner()) =
+                                Some(tasks.clone());
                             session = Some(Session {
                                 id: session_id.clone(),
                                 workspace: cwd,
@@ -680,6 +750,7 @@ where
                                 todos,
                                 mode_changes: 0,
                                 mcp,
+                                tasks,
                             });
                             write_out(
                                 &out,
@@ -824,6 +895,19 @@ where
                             ));
                             let mut context = session_context_prefix(&cwd, &todos, &plan);
                             context.extend(context_messages);
+                            // C6: replacing a live session tears its children
+                            // down first (bounded, then detach).
+                            if let Some(old) = session.take() {
+                                old.tasks.teardown_all();
+                            }
+                            let tasks = Arc::new(nano_agent::tasks::TaskRegistry::new(
+                                &task_nano_home,
+                                &cwd,
+                                config.default_model.to_string(),
+                                make_task_driver_factory(config.default_model),
+                            ));
+                            *current_tasks.lock().unwrap_or_else(|p| p.into_inner()) =
+                                Some(tasks.clone());
                             session = Some(Session {
                                 id: session_id.to_string(),
                                 workspace: cwd,
@@ -846,6 +930,7 @@ where
                                 todos,
                                 mode_changes: 0,
                                 mcp,
+                                tasks,
                             });
                             write_out(
                                 &out,
@@ -1253,6 +1338,9 @@ where
                                 .plan_file()
                                 .to_path_buf();
                             let journal_path = active.journal.clone();
+                            // The session's task registry (C6): the turn's
+                            // executor routes task_* calls through it.
+                            let turn_tasks = active.tasks.clone();
                             // The turn future must own its handles: clone the
                             // loop-invariant Arcs before the `async move`.
                             let gate_out = out.clone();
@@ -1262,7 +1350,7 @@ where
                             let sandbox_probe = config.sandbox_probe;
                             let memory_dir = config.memory.dir.clone();
                             let memory_write = config.memory.write_enabled;
-                            let make_driver = &make_driver;
+                            let make_driver = make_driver.clone();
                             let make_tools = &make_tools;
                             let turn_future = async move {
                                 // The binding's bare model id goes on the
@@ -1357,6 +1445,16 @@ where
                                     journal_path,
                                     session_id.clone(),
                                 );
+                                // C6: the task family routes through the
+                                // session's registry
+                                // (spawn/poll/cancel/apply) — outermost, so
+                                // task_* calls never reach the inner layers.
+                                let executor = nano_agent::tasks::TaskToolExecutor::new(
+                                    turn_tasks,
+                                    &executor,
+                                );
+                                tool_definitions
+                                    .extend(nano_agent::tasks::task_tool_definitions());
                                 let engine = TurnEngine {
                                     model: &driver,
                                     tools: &executor,
@@ -1673,6 +1771,7 @@ fn reader_loop<R: BufRead>(
     pending: PendingMap,
     current_cancel: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>>,
     current_mode: CurrentMode,
+    current_tasks: Arc<Mutex<Option<Arc<nano_agent::tasks::TaskRegistry>>>>,
 ) {
     let mut line = String::new();
     loop {
@@ -1743,12 +1842,21 @@ fn reader_loop<R: BufRead>(
                 if method == "session/cancel" {
                     // Fire the flag right here: the main loop may be mid-poll
                     // inside the turn and unable to relay it for whole steps.
+                    // C6: cascade to children too — every child flag set and
+                    // every registered kill handle terminated (fast, no waits).
                     if let Some(flag) = current_cancel
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .as_ref()
                     {
                         flag.store(true, Ordering::SeqCst);
+                    }
+                    if let Some(tasks) = current_tasks
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .as_ref()
+                    {
+                        tasks.cancel_all();
                     }
                 }
                 Inbound::Notification { method }
@@ -2048,13 +2156,18 @@ impl<W: Write> AcpApproval<W> {
 /// read-only prefixes and always go through the permission gate. C5:
 /// `memory_list`/`memory_read` are read-only; `memory_save`/`memory_delete`
 /// mutate the user-managed store and always ask (under read_only they are
-/// categorically denied, like every other mutation).
+/// categorically denied, like every other mutation). C6: task polls
+/// (`task_status`/`task_result`/`task_list`) are read-only; task_spawn,
+/// task_cancel, and task_apply change live state and always ask.
 fn is_read_only_tool(name: &str) -> bool {
     name.starts_with("fs_read")
         || name.starts_with("search")
         || name.starts_with("glob")
         || name.starts_with("memory_list")
         || name.starts_with("memory_read")
+        || name.starts_with("task_status")
+        || name.starts_with("task_result")
+        || name.starts_with("task_list")
 }
 
 /// Interprets a `session/request_permission` response. Approves only an
@@ -3156,12 +3269,15 @@ mod tests {
         let current_cancel: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>> =
             Arc::new(Mutex::new(None));
         let current_mode: CurrentMode = Arc::new(Mutex::new(cell.map(|m| Arc::new(Mutex::new(m)))));
+        let current_tasks: Arc<Mutex<Option<Arc<nano_agent::tasks::TaskRegistry>>>> =
+            Arc::new(Mutex::new(None));
         reader_loop(
             std::io::Cursor::new(script.as_bytes().to_vec()),
             tx,
             pending,
             current_cancel,
             current_mode.clone(),
+            current_tasks,
         );
         // reader_loop returns at EOF; everything it sent is queued on rx.
         let mut forwarded = Vec::new();

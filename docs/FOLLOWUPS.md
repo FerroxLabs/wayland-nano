@@ -33,3 +33,15 @@ promotes/closes entries; builders append only.
 - **Close means:** a Desktop-side renderer for the ACP diff content block,
   driven against a live acp-host write, asserting the card shows the
   before/after. Desktop work, explicitly out of C10's scope.
+=======
+## F-2: Task-dir GC is manual (C6)
+
+- **Filed:** 2026-08-12, with the C6 background-tasks build (design §10:
+  task dirs are RETAINED for debugging; auto-deleting audit artifacts is
+  the wrong default).
+- **Gap:** `<nano_home>/tasks/<task_id>/` (journal.jsonl, workspace copy,
+  report.md) accumulates across sessions. Manual GC: delete
+  `<nano_home>/tasks/` (or individual task dirs) when done; nothing
+  references them after the owning session ends.
+- **Close means:** a `nano tasks gc`-style command with an explicit
+  retention policy (age/completion-state), never silent auto-reaping.
