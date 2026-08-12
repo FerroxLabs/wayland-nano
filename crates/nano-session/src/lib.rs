@@ -11,6 +11,7 @@
 //!   on restore — no duplicate side effects after a crash;
 //! - compaction is a set of replayable Ops, never a remote operation.
 
+pub mod attachment_store;
 pub mod compact;
 pub mod error_codes;
 pub mod error_kind;
@@ -22,9 +23,13 @@ pub mod redaction;
 pub mod replay;
 pub mod writer;
 
+pub use attachment_store::{
+    AttachmentStore, AttachmentStoreError, BlobReadError, GC_GRACE_SECS, MAX_BLOB_READ_BYTES,
+    SweepReport, WriteLease, attachment_unavailable_placeholder, is_valid_digest,
+};
 pub use error_kind::NanoErrorKind;
 pub use fork::{ForkError, ForkOutcome, ForkPoint, fork_journal};
-pub use lock::{FileLock, LockError};
+pub use lock::{FileLock, LockError, LockMode};
 pub use op::{
     CompactionCancelReason, ESTIMATION_METHOD_VERSION, GoalBudgets, GoalOutcome, GoalReason,
     GoalStatusKind, MAX_GOAL_OBJECTIVE_LEN, MAX_GOAL_SUMMARY_LEN, Op, OpEnvelope, SCHEMA_VERSION,
