@@ -20,3 +20,23 @@ promotes/closes entries; builders append only.
   seam (and the ACP emission seam), fail-closed with a typed truncation
   marker, plus an adversarial test proving an oversized MCP/tool result
   cannot flood the context or corrupt an ACP frame.
+
+## F-2: Desktop legacy ACP stack drops error code/data (AcpConnection.ts)
+
+- **Filed:** 2026-08-12 by C7 (ERROR-UX), per the design's Q4 conditional
+  resolution (shared/reviews/panel-tui/C7-error-ux-design.md §5.5, §10.4).
+- **Finding:** the legacy Desktop stack (`desktop/src/process/agent/acp/
+  AcpConnection.ts:647-649`) rejects with `new Error(message)`, dropping
+  the JSON-RPC code and `data` — including C7's typed `data.nanoError`.
+  Reachability check (2026-08-12, grep-level): the ONLY instantiator of the
+  legacy `AcpConnection` is the legacy `AcpAgent`
+  (`desktop/src/process/agent/acp/index.ts:203`), and no code path
+  instantiates `AcpAgent` — `workerTaskManagerSingleton` builds
+  `AcpAgentManager`, whose agent is `AcpAgentV2` (which delegates to the NEW
+  `AcpSession`). The legacy stack is dead code for nano (and for every other
+  backend reachable today). The `model_not_found` message grep at
+  `agent/acp/index.ts:384-387` is likewise unreachable for nano.
+- **Close means:** a two-line pass-through (reject with an error preserving
+  `code`/`data`) IF a future Desktop change re-arms the legacy stack, plus
+  one CDP session proving whether any nano path can reach it. Until then,
+  fixing dead code buys nothing.

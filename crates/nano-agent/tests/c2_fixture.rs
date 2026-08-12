@@ -175,7 +175,7 @@ async fn c2_cancellation_stops_turn_at_boundary() {
         .await;
 
     assert!(
-        matches!(result.state, TurnState::Stopped(ref reason) if reason.contains("cancelled")),
+        matches!(result.state, TurnState::Stopped(ref reason) if reason.detail.contains("cancelled")),
         "expected cancelled stop, got {:?}",
         result.state
     );

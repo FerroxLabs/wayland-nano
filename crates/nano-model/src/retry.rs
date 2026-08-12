@@ -32,6 +32,16 @@ pub fn is_retryable(err: &ModelError) -> Option<Option<u64>> {
         ModelError::RateLimited { retry_after_ms } => Some(*retry_after_ms),
         ModelError::Server { status, .. } if *status >= 500 => Some(None),
         ModelError::Transport(_) => Some(None),
+        // C7: the egress-wrapped forms of the SAME transient classes retry
+        // identically — the error-code table (nano-protocol error_codes)
+        // pins agreement for every variant, so the wrapper cannot silently
+        // downgrade a transient to terminal.
+        ModelError::Egress(nano_egress::client::EgressError::Transport(_)) => Some(None),
+        ModelError::Egress(nano_egress::client::EgressError::HttpStatus { status, .. })
+            if *status >= 500 =>
+        {
+            Some(None)
+        }
         _ => None,
     }
 }

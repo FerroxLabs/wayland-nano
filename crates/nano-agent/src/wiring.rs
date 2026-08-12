@@ -209,10 +209,26 @@ impl RealToolExecutor {
     }
 
     fn arg_error(message: impl Into<String>) -> ToolOutcome {
+        Self::fail(message, nano_session::NanoErrorKind::MissingArgs)
+    }
+
+    /// A failed outcome carrying its typed classification (C7): the kind is
+    /// assigned HERE, where the error variant is still in scope.
+    fn fail(message: impl Into<String>, kind: nano_session::NanoErrorKind) -> ToolOutcome {
         ToolOutcome {
             ok: false,
             output: message.into(),
             progress: ProgressSignals::default(),
+            error_kind: Some(kind),
+        }
+    }
+
+    fn ok(output: impl Into<String>, progress: ProgressSignals) -> ToolOutcome {
+        ToolOutcome {
+            ok: true,
+            output: output.into(),
+            progress,
+            error_kind: None,
         }
     }
 }
@@ -298,7 +314,12 @@ impl ToolExecutor for RealToolExecutor {
                                     "stale_file_token: file changed since the token was issued; re-read from line_offset=0",
                                 );
                             }
-                            Err(err) => return Self::arg_error(err.to_string()),
+                            Err(err) => {
+                                return Self::fail(
+                                    err.to_string(),
+                                    crate::error_map::kind_of_tool(&err),
+                                );
+                            }
                         }
                     }
                 }
@@ -311,26 +332,22 @@ impl ToolExecutor for RealToolExecutor {
                 match self.fs.read_file(&resolved, &bounds) {
                     Ok(page) => {
                         let novel = self.mark_and_check_novelty("read", path, &page.content);
-                        ToolOutcome {
-                            ok: true,
-                            output: render_read_output(line_offset.unwrap_or(0), max_lines, &page),
-                            progress: ProgressSignals {
+                        Self::ok(
+                            render_read_output(line_offset.unwrap_or(0), max_lines, &page),
+                            ProgressSignals {
                                 new_information: novel,
                                 ..Default::default()
                             },
-                        }
+                        )
                     }
-                    Err(err) => ToolOutcome {
-                        ok: false,
-                        output: err.to_string(),
-                        progress: ProgressSignals::default(),
-                    },
+                    Err(err) => Self::fail(err.to_string(), crate::error_map::kind_of_tool(&err)),
                 }
             }
             "web_fetch" => {
                 let Some(tool) = &self.web_fetch else {
-                    return Self::arg_error(
+                    return Self::fail(
                         "web_fetch denied: no fetch hosts configured (the fetch egress policy is a separate domain; set NANO_WEB_FETCH_HOSTS)",
+                        nano_session::NanoErrorKind::EgressDenied,
                     );
                 };
                 let args = match FetchArgs::parse(&call.arguments) {
@@ -341,46 +358,34 @@ impl ToolExecutor for RealToolExecutor {
                     Ok(outcome) => {
                         let body_text = String::from_utf8_lossy(&outcome.body);
                         let novel = self.mark_and_check_novelty("fetch", &args.url, &body_text);
-                        ToolOutcome {
-                            ok: true,
-                            output: render_fetch_output(&outcome),
-                            progress: ProgressSignals {
+                        Self::ok(
+                            render_fetch_output(&outcome),
+                            ProgressSignals {
                                 new_information: novel,
                                 ..Default::default()
                             },
-                        }
+                        )
                     }
-                    Err(err) => ToolOutcome {
-                        ok: false,
-                        output: err.to_string(),
-                        progress: ProgressSignals::default(),
-                    },
+                    Err(err) => {
+                        Self::fail(err.to_string(), crate::error_map::kind_of_web_fetch(&err))
+                    }
                 }
             }
             "fs_write" => {
                 let (Some(path), Some(content)) =
                     (Self::arg_str(call, "path"), Self::arg_str(call, "content"))
                 else {
-                    return ToolOutcome {
-                        ok: false,
-                        output: "missing path or content".into(),
-                        progress: ProgressSignals::default(),
-                    };
+                    return Self::arg_error("missing path or content");
                 };
                 match self.fs.write_file(&self.resolve(path), content) {
-                    Ok(()) => ToolOutcome {
-                        ok: true,
-                        output: "written".into(),
-                        progress: ProgressSignals {
+                    Ok(()) => Self::ok(
+                        "written",
+                        ProgressSignals {
                             files_changed: true,
                             ..Default::default()
                         },
-                    },
-                    Err(err) => ToolOutcome {
-                        ok: false,
-                        output: err.to_string(),
-                        progress: ProgressSignals::default(),
-                    },
+                    ),
+                    Err(err) => Self::fail(err.to_string(), crate::error_map::kind_of_tool(&err)),
                 }
             }
             "fs_edit" => {
@@ -389,11 +394,7 @@ impl ToolExecutor for RealToolExecutor {
                     Self::arg_str(call, "old_string"),
                     Self::arg_str(call, "new_string"),
                 ) else {
-                    return ToolOutcome {
-                        ok: false,
-                        output: "missing path/old_string/new_string".into(),
-                        progress: ProgressSignals::default(),
-                    };
+                    return Self::arg_error("missing path/old_string/new_string");
                 };
                 let replace_all = call
                     .arguments
@@ -404,28 +405,19 @@ impl ToolExecutor for RealToolExecutor {
                     .fs
                     .edit_file(&self.resolve(path), old, new, replace_all)
                 {
-                    Ok(n) => ToolOutcome {
-                        ok: true,
-                        output: format!("{n} replacement(s)"),
-                        progress: ProgressSignals {
+                    Ok(n) => Self::ok(
+                        format!("{n} replacement(s)"),
+                        ProgressSignals {
                             files_changed: true,
                             ..Default::default()
                         },
-                    },
-                    Err(err) => ToolOutcome {
-                        ok: false,
-                        output: err.to_string(),
-                        progress: ProgressSignals::default(),
-                    },
+                    ),
+                    Err(err) => Self::fail(err.to_string(), crate::error_map::kind_of_tool(&err)),
                 }
             }
             "shell" => {
                 let Some(command) = Self::arg_str(call, "command") else {
-                    return ToolOutcome {
-                        ok: false,
-                        output: "missing command".into(),
-                        progress: ProgressSignals::default(),
-                    };
+                    return Self::arg_error("missing command");
                 };
                 match self.shell.run(
                     ShellKind::platform_default(),
@@ -436,6 +428,8 @@ impl ToolExecutor for RealToolExecutor {
                         let digest = format!("{}|{}|{}", out.exit_code, out.stdout, out.stderr);
                         let novel = self.mark_and_check_novelty("shell", command, &digest);
                         ToolOutcome {
+                            // A non-zero exit is a normal command outcome,
+                            // not an engine error: no typed kind.
                             ok: out.exit_code == 0,
                             output: format!(
                                 "exit={}\nstdout:\n{}\nstderr:\n{}",
@@ -446,20 +440,16 @@ impl ToolExecutor for RealToolExecutor {
                                 new_information: novel,
                                 ..Default::default()
                             },
+                            error_kind: None,
                         }
                     }
-                    Err(err) => ToolOutcome {
-                        ok: false,
-                        output: err.to_string(),
-                        progress: ProgressSignals::default(),
-                    },
+                    Err(err) => Self::fail(err.to_string(), crate::error_map::kind_of_shell(&err)),
                 }
             }
-            other => ToolOutcome {
-                ok: false,
-                output: format!("unknown tool: {other}"),
-                progress: ProgressSignals::default(),
-            },
+            other => Self::fail(
+                format!("unknown tool: {other}"),
+                nano_session::NanoErrorKind::UnknownTool,
+            ),
         }
     }
 }

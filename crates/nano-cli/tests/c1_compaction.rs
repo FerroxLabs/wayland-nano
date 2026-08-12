@@ -137,6 +137,7 @@ impl ToolExecutor for MockTools {
             ok: true,
             output: format!("ran {}", call.name),
             progress: ProgressSignals::default(),
+            error_kind: None,
         }
     }
 }
@@ -237,6 +238,7 @@ impl Harness {
                     window_override: Some(1_000),
                     limit_override: None,
                     sandbox_probe: &sandbox_probe,
+                    journal_append_failer: None,
                 };
                 acp_mode::serve(
                     ChannelReader {
