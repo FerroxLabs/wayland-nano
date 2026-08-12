@@ -184,3 +184,65 @@ promotes/closes entries; builders append only.
 - **Close means:** Desktop hardens its session-handle lifecycle
   against a prompt arriving while a question card is open (queue,
   reject with a typed error, or disable the input mid-question).
+
+## F-14: Provider error bodies read unbounded (C7 proof, F-C7-1, severity low)
+
+- **Filed:** 2026-08-12, from the C7 adversarial proof (1 MiB body leg).
+- **Gap:** `read_error_body` (`flux_common.rs:40-42`) reads the error
+  response body UNBOUNDED (`response.text()`), and `classify_status`
+  carries the provider's `error.message` whole into
+  `ModelError::Server.message` → logs-side `TypedError.detail`. The
+  design's "bounded logs-side" expectation has no size cap on this
+  path (the 8 MiB SSE caps bound streaming bodies, not error bodies).
+- **Exposure:** transient in-process memory only — the detail never
+  reaches the wire, journal, or UI (all statically bounded,
+  canary-proven). Flux-only endpoint via egress policy.
+- **Close means:** cap the error-body read (e.g. 64 KiB) and truncate
+  the carried message with an explicit marker.
+
+## F-15: Desktop lane — C7 typed-error presentation polish (C7 proof leg 8)
+
+- **Filed:** 2026-08-12, all Desktop-side, non-blocking; typed data
+  on the wire is proven correct.
+- **Items:** (1) failed execute-kind cards don't display the typed
+  presentation text ("Denied by user" IS on the wire in `content` +
+  `_meta.nanoError`; the card shows only "failed"); (2) typed
+  set_model re-apply failures other than `model_not_found` (e.g.
+  `provider_key_missing`) surface console-only — `AcpAgentManager`'s
+  error emission matches only `model_not_found`; (3) the turn-fatal
+  banner folds raw `{"nanoError":…}` JSON into the text and rendered
+  twice in the drive; (4) the header pill mislabels typed failures as
+  "Connection error"; (5) the compaction-tip renderer threw 4×
+  "Error handling notification Object" during the compaction-notice
+  turn (cosmetic; notices also journaled).
+- **Close means:** Desktop renders the typed presentation on failed
+  cards, surfaces ALL typed set_model failures in the UI, strips the
+  raw JSON fold from banner text, labels typed failures distinctly
+  from transport errors, and fixes the notification renderer's throw.
+
+## F-16: Untyped tool failures render as bare "failed" on cards (C5+C6 proof observation)
+
+- **Filed:** 2026-08-12, from the C5+C6 both-UIs drive.
+- **Gap:** untyped tool failures (task fan-out refusal, memory
+  refusals) reach clients as failed `tool_call_update` frames whose
+  only payload is the `len:N` digest in `rawOutput` — the
+  human-readable refusal text goes to the MODEL but not the wire
+  frame (frames are built from the digest-only journal ops,
+  `acp_mode.rs:3096-3105`). Typed (C7) failures carry the static
+  presentation; untyped ones render as a bare "failed".
+- **Close means:** either give the task/memory families typed kinds
+  (preferred — one table) or surface the refusal text on the card.
+
+## F-17: Wire-contract note — session/cancel with a JSON-RPC id never fires (C6 proof leg 14)
+
+- **Filed:** 2026-08-12, fidelity observation, spec-conformant
+  behavior.
+- **Note:** ACP defines `session/cancel` as a notification. A cancel
+  sent WITH an id (non-spec) is queued as a request and never fires
+  the cancel flag. Spec-conformant clients (Desktop sends a
+  notification) are unaffected. Also observed: a mid-stream cancel
+  answers after the in-flight streaming response completes (flag
+  checked at step boundaries; 46.8s worst case in the drive).
+- **Close means:** document both behaviors in the ACP extension notes
+  for third-party client authors; optionally detect + warn on an
+  id-carrying cancel.
