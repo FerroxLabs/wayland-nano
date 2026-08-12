@@ -68,6 +68,50 @@ impl RateLimitView {
     }
 }
 
+/// The session meter's status payload (P1 §5), rendered with the
+/// cost-truth honesty rule: NEVER `$0.000` for an unpriced provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BudgetView {
+    pub session_tokens: u64,
+    pub microcents: u64,
+    pub priced: bool,
+    /// (limit, observed) when a session cap is configured.
+    pub cap: Option<(u64, u64)>,
+}
+
+impl BudgetView {
+    /// `Σ 12.3k tok | $0.041 est` when priced, `Σ 12.3k tok | unpriced`
+    /// when not; the cap position appends as `(90/100)` when configured.
+    pub fn summary(&self) -> String {
+        let cost = if self.priced {
+            // Integer microcents → dollars (1 microcent = 1e-8 USD); the
+            // "est." label keeps the static-table honesty posture (D10).
+            format!("${:.3} est", self.microcents as f64 / 100_000_000.0)
+        } else {
+            "unpriced".to_string()
+        };
+        let cap = self
+            .cap
+            .map(|(limit, observed)| format!(" ({observed}/{limit})"))
+            .unwrap_or_default();
+        format!(
+            "Σ {} tok | {cost}{cap}",
+            humanize_tokens(self.session_tokens)
+        )
+    }
+}
+
+/// Compact token counts for the status line: 12.3k / 1.2M style.
+fn humanize_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Status {
     pub session_id: Option<String>,
@@ -92,6 +136,9 @@ pub struct Status {
     pub reconnect: Option<(u64, u64, u64)>,
     /// C9 §5: the latest coalesced rate-limit snapshot, if any.
     pub rate_limit: Option<RateLimitView>,
+    /// P1 §5: the session meter's budget/cost view (same optional-slot
+    /// pattern as `rate_limit`).
+    pub budget: Option<BudgetView>,
 }
 
 impl Default for Status {
@@ -108,6 +155,7 @@ impl Default for Status {
             pending_steers: 0,
             reconnect: None,
             rate_limit: None,
+            budget: None,
         }
     }
 }
@@ -149,8 +197,13 @@ impl Status {
             .as_ref()
             .map(|r| format!(" | rl: {}", r.summary()))
             .unwrap_or_default();
+        let budget = self
+            .budget
+            .as_ref()
+            .map(|b| format!(" | {}", b.summary()))
+            .unwrap_or_default();
         format!(
-            " {} | {} | {} | {}{}{}{}{}{} | /model /mode /plan /todo /status /doctor /compact /quit ",
+            " {} | {} | {} | {}{}{}{}{}{}{} | /model /mode /plan /todo /status /doctor /compact /budget /quit ",
             self.model,
             self.mode,
             self.wire,
@@ -159,7 +212,8 @@ impl Status {
             todo,
             reconnect,
             steers,
-            rate_limit
+            rate_limit,
+            budget
         )
     }
 
@@ -204,6 +258,14 @@ impl Status {
             self.rate_limit
                 .as_ref()
                 .map(RateLimitView::summary)
+                .unwrap_or_else(|| "unknown".to_string())
+        ));
+        // P1 §5: same honesty rule as the status line — never a fake $0.
+        lines.push(format!(
+            "budget:   {}",
+            self.budget
+                .as_ref()
+                .map(BudgetView::summary)
                 .unwrap_or_else(|| "unknown".to_string())
         ));
         lines.join("\n")
@@ -291,5 +353,74 @@ mod c9_tests {
             "{line}"
         );
         assert!(line.contains("2 steer(s) queued"), "{line}");
+    }
+}
+
+#[cfg(test)]
+mod p1_budget_tests {
+    use super::*;
+
+    /// P1 §5 honesty rule (test-asserted per design §8): `priced: false`
+    /// renders the literal `unpriced`, NEVER `$0.000`.
+    #[test]
+    fn unpriced_renders_the_literal_never_zero_dollars() {
+        let view = BudgetView {
+            session_tokens: 12_300,
+            microcents: 0,
+            priced: false,
+            cap: None,
+        };
+        let summary = view.summary();
+        assert!(summary.contains("unpriced"), "{summary}");
+        assert!(!summary.contains("$0.000"), "{summary}");
+        assert!(summary.contains("Σ 12.3k tok"), "{summary}");
+    }
+
+    /// Priced sessions render dollars with the "est." honesty label.
+    #[test]
+    fn priced_renders_dollars_with_the_est_label() {
+        let view = BudgetView {
+            session_tokens: 999,
+            microcents: 4_100_000, // $0.041
+            priced: true,
+            cap: None,
+        };
+        let summary = view.summary();
+        assert!(summary.contains("$0.041 est"), "{summary}");
+        assert!(summary.contains("Σ 999 tok"), "{summary}");
+        // Known-free ($0 real, priced) is distinct from unpriced.
+        let free = BudgetView {
+            session_tokens: 1,
+            microcents: 0,
+            priced: true,
+            cap: None,
+        };
+        assert!(free.summary().contains("$0.000 est"), "{}", free.summary());
+        assert!(!free.summary().contains("unpriced"));
+    }
+
+    /// The cap position renders (observed/limit); the status line and the
+    /// /status report carry the budget slot.
+    #[test]
+    fn cap_position_and_status_slots_render() {
+        let mut status = Status::default();
+        assert!(status.report().contains("budget:   unknown"));
+        assert!(!status.line().contains("Σ"));
+        status.budget = Some(BudgetView {
+            session_tokens: 1_500_000,
+            microcents: 0,
+            priced: false,
+            cap: Some((100, 90)),
+        });
+        let line = status.line();
+        assert!(line.contains("Σ 1.5M tok | unpriced (90/100)"), "{line}");
+        assert!(line.contains("/budget"), "command hint: {line}");
+        assert!(
+            status
+                .report()
+                .contains("budget:   Σ 1.5M tok | unpriced (90/100)"),
+            "{}",
+            status.report()
+        );
     }
 }

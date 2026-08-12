@@ -242,6 +242,8 @@ impl Harness {
                     cron_home: None,
                     search: None,
                     search_meter: None,
+                    pricing: None,
+                    budget_cap: None,
                     sandbox_probe: &sandbox_probe,
                     journal_append_failer: None,
                     router: &router,
@@ -259,7 +261,7 @@ impl Harness {
                     },
                     &config,
                     move |_| driver.clone(),
-                    move |_, _, _, _| {
+                    move |_, _, _, _, _| {
                         (
                             MockTools,
                             nano_core::permissions::PermissionProfile::workspace_write()

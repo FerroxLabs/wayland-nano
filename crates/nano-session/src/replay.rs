@@ -120,6 +120,20 @@ pub struct SessionState {
     /// session did not begin). Reader-visible proof that suppression
     /// happened; never a mutation channel.
     pub suppressed_control_ops: Vec<OpEnvelope>,
+    /// P1 §3.3/§3.4: the session's reconstructed usage totals — the sum of
+    /// every `TurnEnd.usage` plus every `ChildUsageRollup.usage`, exactly
+    /// once each (envelope-id dedup). The meter re-seeds from this on
+    /// session/load so kill-resume restores the exact budget position.
+    pub session_usage: crate::op::TurnUsage,
+    /// Task ids whose child usage already landed via `ChildUsageRollup` —
+    /// the op-presence marker the orphan-child fold (P1 §3.3 crash
+    /// recovery) dedups against, so an orphan fold never double-counts.
+    pub rollup_task_ids: BTreeSet<String>,
+    /// P1 §4.3: accepted `/budget continue` grants, summed for replay
+    /// reconstruction of the effective limit.
+    pub budget_granted_tokens: u64,
+    /// The effective limit after the latest journaled grant (latest-wins).
+    pub budget_after_limit: Option<u64>,
     /// Set when the fold hit a structural failure (see [`ReplayError`]);
     /// `fold` records it, `fold_strict` returns it.
     pub integrity_error: Option<ReplayError>,
@@ -234,9 +248,14 @@ impl SessionState {
                 self.open_tool_calls.retain(|call| &call.call_id != call_id);
                 self.changed_files.extend(changed_files.iter().cloned());
             }
-            Op::TurnEnd { outcome, .. } => {
+            Op::TurnEnd { outcome, usage, .. } => {
                 self.open_turn = None;
                 self.turn_interrupted = matches!(outcome, TurnOutcome::Interrupted);
+                // P1 §3.4: the journaled turn sum feeds the reconstructed
+                // session totals (envelope-id dedup above = exactly-once).
+                if let Some(usage) = usage {
+                    self.session_usage.add_sum(usage);
+                }
             }
             Op::CompactionBegin { compaction_id } => {
                 self.compaction = Some(CompactionPhase::Running {
@@ -340,6 +359,22 @@ impl SessionState {
                         *entry = scheduled.to_string();
                     }
                 }
+            }
+            // P1 §4.3: an accepted budget grant folds into budget state —
+            // replay-deterministic across kill-resume, never session-volatile.
+            Op::BudgetGrant {
+                tokens,
+                after_limit,
+                ..
+            } => {
+                self.budget_granted_tokens = self.budget_granted_tokens.saturating_add(*tokens);
+                self.budget_after_limit = Some(*after_limit);
+            }
+            // P1 §3.3: a child's usage rolls into the session totals keyed by
+            // task_id; the id set is the orphan-fold dedup marker.
+            Op::ChildUsageRollup { task_id, usage, .. } => {
+                self.rollup_task_ids.insert(task_id.clone());
+                self.session_usage.add_sum(usage);
             }
             Op::Unknown => {}
         }

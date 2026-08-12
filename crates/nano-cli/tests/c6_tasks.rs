@@ -265,6 +265,8 @@ impl Harness {
                     cron_home: None,
                     search: None,
                     search_meter: None,
+                    pricing: None,
+                    budget_cap: None,
                     journal_append_failer: None,
                 };
                 acp_mode::serve(
@@ -279,7 +281,7 @@ impl Harness {
                     },
                     &config,
                     move |_binding| driver.clone(),
-                    move |_, _, _, _| {
+                    move |_, _, _, _, _| {
                         (
                             MockTools,
                             nano_core::permissions::PermissionProfile::workspace_write()

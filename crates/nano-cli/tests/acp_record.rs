@@ -235,6 +235,8 @@ impl Recorder {
                     cron_home: None,
                     search: None,
                     search_meter: None,
+                    pricing: None,
+                    budget_cap: None,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -250,7 +252,7 @@ impl Recorder {
                     move |_| driver.clone(),
                     // C2: make_tools returns the executor AND its exact fs
                     // policy (the gate's advisory oracle shares provenance).
-                    move |_, _, _, _| (MockTools, workspace_policy()),
+                    move |_, _, _, _, _| (MockTools, workspace_policy()),
                 )
                 .await
             })

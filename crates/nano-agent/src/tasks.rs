@@ -35,13 +35,23 @@ use crate::turn::{
 };
 use crate::wiring::{RealToolExecutor, v1_tool_definitions};
 use nano_model::types::{ToolCall, ToolDefinition};
-use nano_session::op::{Op, OpEnvelope};
+use nano_session::op::{Op, OpEnvelope, TurnOutcome, TurnUsage};
 use nano_session::writer::JournalWriter;
 use nano_tools::fs::FsTools;
 use nano_tools::shell::{KillRegistry, ShellTool};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// P1 §3.3: the durable rollup appender — writes `Op::ChildUsageRollup`
+/// into the PARENT journal and returns whether it landed durably. Wired by
+/// the host, which owns the session journal.
+pub type RollupSink = Arc<dyn Fn(&OpEnvelope) -> bool + Send + Sync>;
+
+/// The spawn-time session marker file in each task dir: scopes the
+/// crash-recovery orphan fold (§3.3) to THIS session's children, so a
+/// foreign session's task dirs are never folded.
+const SESSION_MARKER_FILE: &str = "session";
 
 /// Max concurrent `running` children per session; spawn beyond the cap is a
 /// typed error (a silent queue is an unbounded-latency lie).
@@ -112,6 +122,9 @@ struct ChildOutcome {
     report: String,
     changed_files: Vec<String>,
     failure: Option<String>,
+    /// P1 §3.3: the child's turn-scoped usage sum (journaled into the
+    /// parent journal as `Op::ChildUsageRollup` at this terminal state).
+    usage: Option<TurnUsage>,
 }
 
 #[derive(Debug)]
@@ -124,6 +137,9 @@ struct TaskRecord {
     done_rx: std::sync::mpsc::Receiver<ChildOutcome>,
     join: Option<std::thread::JoinHandle<()>>,
     outcome: Option<ChildOutcome>,
+    /// P1 §3.3: a terminal outcome HELD until its usage rollup lands
+    /// durably in the parent journal (journal-first, fail-closed).
+    pending_rollup: Option<ChildOutcome>,
     /// `<nano_home>/tasks/<task_id>/` — retained after completion (manual
     /// GC only; auto-deleting audit artifacts is the wrong default).
     dir: PathBuf,
@@ -155,6 +171,15 @@ pub struct TaskRegistry {
     /// registry constructed at MAX depth refuses to spawn regardless).
     spawn_depth: u32,
     counter: AtomicU64,
+    /// P1 §3.3: the session cost meter, cloned into every child context
+    /// beside the steps counter (live enforcement authority — every child
+    /// response usage lands in the ONE session meter).
+    meter: Option<crate::cost::CostMeter>,
+    /// P1 §3.3: the parent-journal rollup appender (durable path) and the
+    /// owning session id (spawn marker for the orphan fold). Both are set
+    /// exactly when `meter` is (one builder, one invariant).
+    rollup_sink: Option<RollupSink>,
+    session_id: Option<String>,
 }
 
 impl std::fmt::Debug for TaskRegistry {
@@ -186,6 +211,9 @@ impl TaskRegistry {
             usage_sink: None,
             spawn_depth: 0,
             counter: AtomicU64::new(1),
+            meter: None,
+            rollup_sink: None,
+            session_id: None,
         }
     }
 
@@ -199,6 +227,22 @@ impl TaskRegistry {
     ) -> Self {
         self.web_search = Some(tool);
         self.usage_sink = Some(meter);
+        self
+    }
+
+    /// P1 §3.3: attach the session meter + the parent-journal rollup sink.
+    /// One builder for one invariant — a metered registry ALWAYS has its
+    /// durable rollup path (unmetered search of the cap is impossible; a
+    /// journaled rollup without a meter is meaningless).
+    pub fn with_meter(
+        mut self,
+        meter: crate::cost::CostMeter,
+        rollup_sink: RollupSink,
+        session_id: impl Into<String>,
+    ) -> Self {
+        self.meter = Some(meter);
+        self.rollup_sink = Some(rollup_sink);
+        self.session_id = Some(session_id.into());
         self
     }
 
@@ -216,30 +260,74 @@ impl TaskRegistry {
 
     /// Pull completed outcomes out of the completion channels (non-blocking).
     fn reap_finished(&self, tasks: &mut std::collections::HashMap<String, TaskRecord>) {
-        for record in tasks.values_mut() {
+        for (task_id, record) in tasks.iter_mut() {
             if record.state != TaskState::Running || record.outcome.is_some() {
                 continue;
             }
-            match record.done_rx.try_recv() {
-                Ok(outcome) => {
-                    record.state = outcome.state;
-                    record.outcome = Some(outcome);
-                    if let Some(join) = record.join.take() {
-                        let _ = join.join();
+            // Pull a freshly-reported terminal outcome (once), then HOLD it
+            // until its usage rollup is durably journaled (P1 §3.3).
+            if record.pending_rollup.is_none() {
+                match record.done_rx.try_recv() {
+                    Ok(outcome) => record.pending_rollup = Some(outcome),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => continue,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        // A child that died without reporting carries no
+                        // usage — nothing to roll up.
+                        record.state = TaskState::Failed;
+                        record.outcome = Some(ChildOutcome {
+                            state: TaskState::Failed,
+                            report: String::new(),
+                            changed_files: Vec::new(),
+                            failure: Some("child thread died without reporting".into()),
+                            usage: None,
+                        });
+                        continue;
                     }
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    record.state = TaskState::Failed;
-                    record.outcome = Some(ChildOutcome {
-                        state: TaskState::Failed,
-                        report: String::new(),
-                        changed_files: Vec::new(),
-                        failure: Some("child thread died without reporting".into()),
-                    });
-                }
+            }
+            // P1 §3.3 journal-first at the reconciliation boundary: the
+            // rollup op lands DURABLY in the parent journal BEFORE the
+            // child's terminal result becomes visible to the parent session
+            // (task_result/task_apply). Append failure fails CLOSED: the
+            // completion is held and retried at the next reap, never
+            // reported while its usage is unjournaled.
+            let outcome = record.pending_rollup.take().expect("held outcome present");
+            if !self.journal_rollup(task_id, &outcome) {
+                record.pending_rollup = Some(outcome);
+                continue;
+            }
+            record.state = outcome.state;
+            record.outcome = Some(outcome);
+            if let Some(join) = record.join.take() {
+                let _ = join.join();
             }
         }
+    }
+
+    /// P1 §3.3: append `Op::ChildUsageRollup` to the parent journal with
+    /// stable ids (envelope id `{task_id}-rollup-1`, so a retried append is
+    /// idempotent under envelope-id dedup). Returns true when there is
+    /// nothing to roll up (unmetered posture, or a child that consumed
+    /// nothing) or the append landed durably.
+    fn journal_rollup(&self, task_id: &str, outcome: &ChildOutcome) -> bool {
+        let (Some(sink), Some(usage)) = (&self.rollup_sink, &outcome.usage) else {
+            return true;
+        };
+        let turn_outcome = match outcome.state {
+            TaskState::Done => TurnOutcome::Completed,
+            TaskState::Cancelled => TurnOutcome::Cancelled,
+            _ => TurnOutcome::Failed,
+        };
+        sink(&OpEnvelope::new(
+            format!("{task_id}-rollup-1"),
+            "now",
+            Op::ChildUsageRollup {
+                task_id: task_id.to_string(),
+                child_turn_id: format!("{task_id}-turn-1"),
+                outcome: turn_outcome,
+                usage: usage.clone(),
+            },
+        ))
     }
 
     /// task_spawn: copy the workspace, open the child journal, spawn the
@@ -304,6 +392,14 @@ impl TaskRegistry {
                 return Err(TaskError::DriverUnavailable(err));
             }
         };
+        // P1 §3.3: the spawn-time session marker scopes the crash-recovery
+        // orphan fold to THIS session's children. Best-effort: a missing
+        // marker means the fold skips the dir (fail-closed, never folded
+        // into a foreign session), and a journaled rollup remains the
+        // primary durable path.
+        if let Some(session_id) = &self.session_id {
+            let _ = std::fs::write(dir.join(SESSION_MARKER_FILE), session_id);
+        }
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let kills = Arc::new(KillRegistry::new());
         let steps = Arc::new(AtomicU32::new(0));
@@ -322,6 +418,10 @@ impl TaskRegistry {
             driver,
             web_search: self.web_search.clone(),
             usage_sink: self.usage_sink.clone(),
+            // P1 §3.3 live path: the session meter is cloned into the child
+            // context beside the steps counter — every child response usage
+            // lands in the ONE session meter.
+            meter: self.meter.clone(),
             done_tx,
         };
         let join = std::thread::Builder::new()
@@ -339,6 +439,7 @@ impl TaskRegistry {
                 done_rx,
                 join: Some(join),
                 outcome: None,
+                pending_rollup: None,
                 dir,
                 workspace_copy,
             },
@@ -436,6 +537,18 @@ impl TaskRegistry {
             return Err(TaskError::NotFound(task_id.to_string()));
         };
         teardown_record(task_id, &mut record);
+        // P1 §3.3: a cancelled child's usage rolls up exactly like a
+        // completed one. If the append fails here (session teardown is
+        // underway), the crash-recovery orphan fold at the next resume is
+        // the designed backstop — exactly-once holds: no journaled rollup,
+        // no marker, one orphan fold.
+        if let Some(outcome) = record.outcome.as_ref()
+            && !self.journal_rollup(task_id, outcome)
+        {
+            eprintln!(
+                "wayland-nano: task {task_id} rollup append failed at cancel; usage will fold via the orphan fold at next resume"
+            );
+        }
         let state = record.state;
         self.tasks
             .lock()
@@ -666,6 +779,8 @@ struct ChildContext {
     /// cloned from the registry (Arc-cheap); None = unbacked.
     web_search: Option<nano_tools::web_search::WebSearchTool>,
     usage_sink: Option<Arc<dyn nano_model::metering::UsageSink>>,
+    /// P1 §3.3: the session meter clone (live path).
+    meter: Option<crate::cost::CostMeter>,
     done_tx: std::sync::mpsc::Sender<ChildOutcome>,
 }
 
@@ -680,6 +795,7 @@ fn run_child(ctx: ChildContext) {
             report: String::new(),
             changed_files: Vec::new(),
             failure: Some(format!("child runtime: {err}")),
+            usage: None,
         },
     };
     // The retained task dir carries the full report regardless of state.
@@ -706,6 +822,7 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
                 report: String::new(),
                 changed_files: Vec::new(),
                 failure: Some(format!("child journal: {err}")),
+                usage: None,
             };
         }
     };
@@ -721,8 +838,23 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
         .with_task_kill_registry(ctx.kills.clone());
     // P1 (D12): children get the session's resolved search chain AND its
     // meter handle — child searches are metered by construction (design
-    // §2.3/§3.3), so exposure cannot bypass the cap.
-    let executor = match (&ctx.web_search, &ctx.usage_sink) {
+    // §2.3/§3.3), so exposure cannot bypass the cap. With a session meter
+    // the sink is the r3 codex-F1 dual feed: one grounding record charges
+    // the ONE session meter AND lands in the child turn's accumulator, so
+    // the journaled ChildUsageRollup.usage includes searches.
+    let extra_usage = ctx
+        .meter
+        .as_ref()
+        .map(|_| Arc::new(Mutex::new(TurnUsage::default())));
+    let search_sink: Option<Arc<dyn nano_model::metering::UsageSink>> =
+        match (&ctx.meter, &extra_usage) {
+            (Some(meter), Some(cell)) => Some(Arc::new(crate::cost::MeteringTurnSink::new(
+                meter.clone(),
+                cell.clone(),
+            ))),
+            _ => ctx.usage_sink.clone(),
+        };
+    let executor = match (&ctx.web_search, &search_sink) {
         (Some(tool), Some(meter)) => executor.with_web_search(tool.clone(), meter.clone()),
         _ => executor,
     };
@@ -745,8 +877,15 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
         compaction: None,
         // Children run the pre-C9 engine posture: no steer queue, no
         // observer channel, no sticky params — a background task takes its
-        // instructions at spawn and reports at completion.
-        robustness: crate::turn::TurnRobustness::default(),
+        // instructions at spawn and reports at completion. The P1 meter
+        // handle rides along (Arc-shared): child usage lands in the ONE
+        // session meter and the child's requests take the same atomic
+        // reservation/clamp as the parent's (§4.2).
+        robustness: crate::turn::TurnRobustness {
+            meter: ctx.meter.clone(),
+            extra_usage: extra_usage.clone(),
+            ..Default::default()
+        },
     };
     let steps = ctx.steps.clone();
     let mut sink = move |envelope: &OpEnvelope| -> bool {
@@ -770,12 +909,16 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
     // engine's last flag check) still reports cancelled — the same posture
     // as the parent's cancel_fired override in acp_mode.
     let cancel_fired = ctx.cancel.load(Ordering::SeqCst);
+    // P1 §3.3: the child's turn-scoped usage sum rides the outcome so the
+    // parent-side reconciliation can journal the durable rollup op.
+    let usage = result.turn_usage.clone();
     match result.state {
         TurnState::Complete if !cancel_fired => ChildOutcome {
             state: TaskState::Done,
             report: result.final_text,
             changed_files,
             failure: None,
+            usage,
         },
         TurnState::Complete | TurnState::Stopped(_) => ChildOutcome {
             state: TaskState::Cancelled,
@@ -786,14 +929,79 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
                 TurnState::Stopped(reason) => Some(format!("{:?}: {}", reason.kind, reason.detail)),
                 _ => Some("cancelled".into()),
             },
+            usage,
         },
         other => ChildOutcome {
             state: TaskState::Failed,
             report: result.final_text,
             changed_files,
             failure: Some(format!("{other:?}")),
+            usage,
         },
     }
+}
+
+/// P1 §3.3 crash-recovery fold: if the process died AFTER a child's
+/// terminal `TurnEnd` was durable in the child journal but BEFORE the
+/// rollup op landed in the parent journal, resume folds EXACTLY ONCE any
+/// child journal whose `task_id` has NO matching `ChildUsageRollup` in the
+/// parent journal. The op's presence (`rolled_up`, from the replay fold) is
+/// the dedup marker — an orphan fold never double-counts, and a journaled
+/// rollup never re-folds.
+///
+/// Scoping and fail-closed rules:
+/// - only task dirs carrying THIS session's spawn-time marker are eligible
+///   (a foreign session's or pre-P1 dir is never folded);
+/// - a child journal without terminal `TurnEnd` usage contributes nothing
+///   (the turn never journaled usage);
+/// - an unreadable/malformed child journal is logged and skipped (its
+///   retained task dir remains the audit artifact), never guessed.
+pub fn fold_orphan_child_usage(
+    nano_home: &Path,
+    session_id: &str,
+    rolled_up: &std::collections::BTreeSet<String>,
+) -> TurnUsage {
+    let mut sum = TurnUsage::default();
+    let Ok(entries) = std::fs::read_dir(nano_home.join("tasks")) else {
+        return sum;
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let Some(task_id) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        // The op-presence marker: a journaled rollup never re-folds.
+        if rolled_up.contains(&task_id) {
+            continue;
+        }
+        // Session scoping: the spawn-time marker; absent/foreign marker =
+        // skip (fail-closed — never fold another session's usage).
+        match std::fs::read_to_string(dir.join(SESSION_MARKER_FILE)) {
+            Ok(id) if id.trim() == session_id => {}
+            _ => continue,
+        }
+        match nano_session::read_journal(&dir.join("journal.jsonl")) {
+            Ok(report) => {
+                for envelope in &report.envelopes {
+                    if let Op::TurnEnd {
+                        usage: Some(usage), ..
+                    } = &envelope.op
+                    {
+                        sum.add_sum(usage);
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "wayland-nano: orphan fold skipped unreadable child journal for {task_id}: {err}"
+                );
+            }
+        }
+    }
+    sum
 }
 
 /// The child's changed_files inventory: fs_write/fs_edit calls with an ok
@@ -1841,3 +2049,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "p1_rollup_tests.rs"]
+mod p1_rollup_tests;

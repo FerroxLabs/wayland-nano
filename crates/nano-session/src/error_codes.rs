@@ -205,6 +205,12 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
             "Turn stopped: budget exhausted",
             "Start a new session or narrow the task",
         ),
+        NanoErrorKind::BudgetExceeded => response(
+            -32603,
+            false,
+            "Session token budget exceeded",
+            "/budget continue <tokens> grants more, or start a new session",
+        ),
         NanoErrorKind::NoProgress => response(
             -32603,
             false,
@@ -300,6 +306,7 @@ pub const ALL_KINDS: &[NanoErrorKind] = &[
     NanoErrorKind::MissingArgs,
     NanoErrorKind::ApprovalDenied,
     NanoErrorKind::BudgetExhausted,
+    NanoErrorKind::BudgetExceeded,
     NanoErrorKind::NoProgress,
     NanoErrorKind::RepeatForceStop,
     NanoErrorKind::UserCancelled,
@@ -428,7 +435,7 @@ mod tests {
     /// adding one without a spec fails to compile (exhaustive match above).
     #[test]
     fn all_kinds_count_is_pinned() {
-        assert_eq!(ALL_KINDS.len(), 40);
+        assert_eq!(ALL_KINDS.len(), 41);
     }
 
     /// The drift alarm: the committed JSON artifact must be byte-identical

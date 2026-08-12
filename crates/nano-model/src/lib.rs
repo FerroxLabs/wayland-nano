@@ -19,6 +19,7 @@ pub mod flux_models;
 pub mod flux_responses;
 pub mod metering;
 pub mod params;
+pub mod pricing;
 pub mod provider_catalog;
 pub mod rate_limits;
 pub mod retry;

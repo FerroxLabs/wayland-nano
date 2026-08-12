@@ -320,6 +320,8 @@ impl Harness {
                     cron_home: None,
                     search: None,
                     search_meter: None,
+                    pricing: None,
+                    budget_cap: None,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -333,7 +335,7 @@ impl Harness {
                     },
                     &config,
                     move |_| driver.clone(),
-                    move |workspace, mode, plan_file, diff_hook| {
+                    move |workspace, mode, plan_file, diff_hook, _search_meter| {
                         if real_fs {
                             let (exec, policy) =
                                 build_real_tools(workspace, mode, plan_file, diff_hook, &home);

@@ -246,6 +246,8 @@ impl Harness {
                     cron_home: None,
                     search: None,
                     search_meter: None,
+                    pricing: None,
+                    budget_cap: None,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -259,7 +261,7 @@ impl Harness {
                     },
                     &config,
                     move |_| driver.clone(),
-                    move |_, _, _, _| {
+                    move |_, _, _, _, _| {
                         (
                             tools.clone(),
                             nano_core::permissions::PermissionProfile::workspace_write()

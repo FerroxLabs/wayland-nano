@@ -16,8 +16,53 @@ use nano_model::types::{
     ToolCall,
 };
 use nano_session::NanoErrorKind;
-use nano_session::op::{Op, OpEnvelope};
+use nano_session::op::{Op, OpEnvelope, TurnUsage};
 use std::fmt::Debug;
+
+/// The default output cap on a model request (P1 §4.2: the reservation
+/// clamp replaces this hardcoded value at the single build site below when
+/// the session meter is wired).
+const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4096;
+
+/// P1 §3.4 / r3 codex-F1: drain externally-attributed usage (the search
+/// lane's grounding round trips feed the OWNING turn's accumulator through
+/// this cell BEFORE terminal journaling) into the turn-scoped sum, so live
+/// meter == journaled sum == replay reconstruction, searches included.
+fn drain_extra_usage(
+    extra: &Option<std::sync::Arc<std::sync::Mutex<TurnUsage>>>,
+    turn_usage: &mut TurnUsage,
+    recorded: &mut bool,
+) {
+    let Some(cell) = extra else { return };
+    let drained = std::mem::take(&mut *cell.lock().unwrap_or_else(|p| p.into_inner()));
+    if !drained.is_zero() {
+        turn_usage.add_sum(&drained);
+        *recorded = true;
+    }
+}
+
+/// P1 §3.4: build the `TurnEnd` op carrying the turn-scoped usage SUM
+/// across every `record_usage` call in the turn (explicitly NOT the last
+/// response's usage) — partial usage for EVERY terminal outcome, omitted
+/// when nothing was recorded so new journals stay byte-minimal.
+fn turn_end_op(
+    turn_id: &str,
+    outcome: nano_session::op::TurnOutcome,
+    turn_usage: &mut TurnUsage,
+    recorded: &mut bool,
+    extra: &Option<std::sync::Arc<std::sync::Mutex<TurnUsage>>>,
+) -> Op {
+    drain_extra_usage(extra, turn_usage, recorded);
+    Op::TurnEnd {
+        turn_id: turn_id.into(),
+        outcome,
+        usage: if *recorded {
+            Some(turn_usage.clone())
+        } else {
+            None
+        },
+    }
+}
 
 /// The model boundary the engine drives. FluxCompletionsClient implements
 /// this in production; tests script a mock.
@@ -166,6 +211,11 @@ pub struct TurnResult {
     /// feeds the goal-level token accumulator and exec's turn_completed
     /// event). Zero when no model call succeeded.
     pub usage: nano_model::types::Usage,
+    /// P1 §3.4: the turn-scoped usage SUM across EVERY `record_usage` call
+    /// in the turn (explicitly NOT `usage` above, which is last-response
+    /// only) — the payload journaled on `TurnEnd` and rolled up by C6
+    /// parents. `None` when nothing was recorded.
+    pub turn_usage: Option<TurnUsage>,
 }
 
 pub struct TurnEngine<'a> {
@@ -205,6 +255,19 @@ pub struct TurnRobustness<'a> {
     pub reasoning_effort: Option<nano_model::types::ReasoningEffort>,
     pub verbosity: Option<nano_model::types::Verbosity>,
     pub output_schema: Option<serde_json::Value>,
+    /// P1 §3.2/§4.2: the session cost meter handle (Arc-shared, the same
+    /// ownership pattern as the steer queue). When present, the meter
+    /// records EVERY response's usage and the engine takes an ATOMIC output
+    /// reservation before every request (the clamp at the single
+    /// `ModelRequest` build site); `None` = the pre-P1 posture (no metering,
+    /// no reservation, no clamp) — tests and C6's pre-C9 posture keep
+    /// compiling unchanged.
+    pub meter: Option<crate::cost::CostMeter>,
+    /// P1 r3 codex-F1: externally-attributed usage (the search lane's Flux
+    /// grounding round trips) routed into THIS turn's accumulator before
+    /// terminal journaling, so live meter == journaled sum == replay.
+    /// `None` = no external attribution.
+    pub extra_usage: Option<std::sync::Arc<std::sync::Mutex<TurnUsage>>>,
 }
 
 /// Decides whether a tool call may execute. Production prompts via the host;
@@ -433,6 +496,12 @@ impl<'a> TurnEngine<'a> {
         messages.push(Message::user(input));
         let mut final_text = String::new();
         let mut last_usage = nano_model::types::Usage::default();
+        // P1 §3.4: the turn-scoped usage accumulator — sums EVERY response's
+        // record beside `last_usage`; the sum (not the last response) is
+        // what `TurnEnd.usage` serializes, so replay reconstruction equals
+        // live accumulation for multi-step turns.
+        let mut turn_usage = TurnUsage::default();
+        let mut usage_recorded = false;
         // C1 context management: server-anchored token accounting, the
         // consecutive-ineffective-compaction guard, and the one-shot reactive
         // overflow retry.
@@ -474,10 +543,13 @@ impl<'a> TurnEngine<'a> {
                 ));
                 emit(
                     &mut ops,
-                    Op::TurnEnd {
-                        turn_id: turn_id.into(),
-                        outcome: nano_session::op::TurnOutcome::Cancelled,
-                    },
+                    turn_end_op(
+                        turn_id,
+                        nano_session::op::TurnOutcome::Cancelled,
+                        &mut turn_usage,
+                        &mut usage_recorded,
+                        &self.robustness.extra_usage,
+                    ),
                 );
                 break;
             }
@@ -523,10 +595,13 @@ impl<'a> TurnEngine<'a> {
                         ));
                         emit(
                             &mut ops,
-                            Op::TurnEnd {
-                                turn_id: turn_id.into(),
-                                outcome: nano_session::op::TurnOutcome::Failed,
-                            },
+                            turn_end_op(
+                                turn_id,
+                                nano_session::op::TurnOutcome::Failed,
+                                &mut turn_usage,
+                                &mut usage_recorded,
+                                &self.robustness.extra_usage,
+                            ),
                         );
                         break;
                     }
@@ -542,10 +617,13 @@ impl<'a> TurnEngine<'a> {
                         ));
                         emit(
                             &mut ops,
-                            Op::TurnEnd {
-                                turn_id: turn_id.into(),
-                                outcome: nano_session::op::TurnOutcome::Failed,
-                            },
+                            turn_end_op(
+                                turn_id,
+                                nano_session::op::TurnOutcome::Failed,
+                                &mut turn_usage,
+                                &mut usage_recorded,
+                                &self.robustness.extra_usage,
+                            ),
                         );
                         break;
                     }
@@ -578,10 +656,13 @@ impl<'a> TurnEngine<'a> {
                         ));
                         emit(
                             &mut ops,
-                            Op::TurnEnd {
-                                turn_id: turn_id.into(),
-                                outcome: nano_session::op::TurnOutcome::Failed,
-                            },
+                            turn_end_op(
+                                turn_id,
+                                nano_session::op::TurnOutcome::Failed,
+                                &mut turn_usage,
+                                &mut usage_recorded,
+                                &self.robustness.extra_usage,
+                            ),
                         );
                         break 'turn;
                     }
@@ -596,11 +677,60 @@ impl<'a> TurnEngine<'a> {
             // Coalesced rate-limit snapshot (latest-wins per iteration).
             flush_rate_limit(&rate_limit_dirty, &latest_rate_limit);
 
+            // ── P1 §4.2: ATOMIC output reservation + clamp — the ONE clamp
+            // site (this single ModelRequest build serves parent AND child
+            // engines). The reservation, not a bare allowance read, is what
+            // makes the cap sound under C6 fan-out concurrency. A zero grant
+            // is the §4.1 hard stop — typed, never a zero-token request.
+            let mut reservation = match &self.robustness.meter {
+                Some(meter) => {
+                    let reservation = meter.reserve_output(u64::from(DEFAULT_MAX_OUTPUT_TOKENS));
+                    if reservation.granted() == 0 {
+                        let (limit, observed) = meter
+                            .budget_state()
+                            .map(|s| (s.limit, s.observed))
+                            .unwrap_or((0, 0));
+                        state = TurnState::Stopped(StopInfo::new(
+                            NanoErrorKind::BudgetExceeded,
+                            format!(
+                                "budget_exceeded: limit={limit} observed={observed} reason=session token cap reached"
+                            ),
+                        ));
+                        emit(
+                            &mut ops,
+                            turn_end_op(
+                                turn_id,
+                                nano_session::op::TurnOutcome::Failed,
+                                &mut turn_usage,
+                                &mut usage_recorded,
+                                &self.robustness.extra_usage,
+                            ),
+                        );
+                        break;
+                    }
+                    if reservation.granted() < reservation.requested() {
+                        // The clamp is logged (typed notice), never silent.
+                        if let Some(host) = self.robustness.observer {
+                            host(ModelObservation::BudgetClamp {
+                                requested: reservation.requested(),
+                                granted: reservation.granted(),
+                            });
+                        }
+                    }
+                    Some(reservation)
+                }
+                None => None,
+            };
             let request = ModelRequest {
                 model: self.model_name.clone(),
                 messages: messages.clone(),
                 tools: self.tool_definitions.clone(),
-                max_tokens: Some(4096),
+                max_tokens: Some(
+                    reservation
+                        .as_ref()
+                        .map(|r| r.granted().min(u64::from(u32::MAX)) as u32)
+                        .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
+                ),
                 stream: false,
                 reasoning_effort: self.robustness.reasoning_effort,
                 verbosity: self.robustness.verbosity,
@@ -661,6 +791,15 @@ impl<'a> TurnEngine<'a> {
                     if request.output_schema.is_some() && !reask_used =>
                 {
                     reask_used = true;
+                    // P1 §3.5: the failed sampling step's reservation
+                    // settles conservatively before the re-ask reserves
+                    // anew at the next loop iteration.
+                    if let Some(reservation) = reservation.as_mut() {
+                        let delta = reservation
+                            .settle_conservative(&self.model_name, tokens.estimate(&messages));
+                        turn_usage.add_sum(&delta);
+                        usage_recorded = true;
+                    }
                     if !emit(
                         &mut ops,
                         Op::SchemaReask {
@@ -674,10 +813,13 @@ impl<'a> TurnEngine<'a> {
                         ));
                         emit(
                             &mut ops,
-                            Op::TurnEnd {
-                                turn_id: turn_id.into(),
-                                outcome: nano_session::op::TurnOutcome::Failed,
-                            },
+                            turn_end_op(
+                                turn_id,
+                                nano_session::op::TurnOutcome::Failed,
+                                &mut turn_usage,
+                                &mut usage_recorded,
+                                &self.robustness.extra_usage,
+                            ),
                         );
                         break;
                     }
@@ -693,6 +835,14 @@ impl<'a> TurnEngine<'a> {
                     if self.compaction.is_some() && !reactive_compaction_used =>
                 {
                     reactive_compaction_used = true;
+                    // P1 §3.5: the rejected request settles conservatively;
+                    // the post-compaction retry reserves anew.
+                    if let Some(reservation) = reservation.as_mut() {
+                        let delta = reservation
+                            .settle_conservative(&self.model_name, tokens.estimate(&messages));
+                        turn_usage.add_sum(&delta);
+                        usage_recorded = true;
+                    }
                     compaction_counter += 1;
                     let compaction_id = format!("{turn_id}-compact-{compaction_counter}");
                     let covers_op_ids = ops.iter().map(|e| e.id.clone()).collect();
@@ -715,10 +865,13 @@ impl<'a> TurnEngine<'a> {
                         ));
                         emit(
                             &mut ops,
-                            Op::TurnEnd {
-                                turn_id: turn_id.into(),
-                                outcome: nano_session::op::TurnOutcome::Failed,
-                            },
+                            turn_end_op(
+                                turn_id,
+                                nano_session::op::TurnOutcome::Failed,
+                                &mut turn_usage,
+                                &mut usage_recorded,
+                                &self.robustness.extra_usage,
+                            ),
                         );
                         break;
                     }
@@ -726,6 +879,14 @@ impl<'a> TurnEngine<'a> {
                     continue; // retry the model call once, post-compaction
                 }
                 Err(err) => {
+                    // P1 §3.5: a failed/cancelled request with no usage
+                    // evidence settles conservatively (no refund).
+                    if let Some(reservation) = reservation.as_mut() {
+                        let delta = reservation
+                            .settle_conservative(&self.model_name, tokens.estimate(&messages));
+                        turn_usage.add_sum(&delta);
+                        usage_recorded = true;
+                    }
                     state = TurnState::Failed(crate::error_map::typed_error_of_model(&err));
                     break;
                 }
@@ -734,6 +895,62 @@ impl<'a> TurnEngine<'a> {
             // input_tokens, covering the messages as they stood at the call.
             tokens.record_usage(&response.usage, messages.len());
             last_usage = response.usage.clone();
+            // ── P1 §3.2/§3.4/§3.5: settle the reservation and feed the
+            // turn-scoped accumulator with EXACTLY what the meter charged —
+            // per response, per step (never the turn's last response only).
+            let missing_usage = response.usage.input_tokens == 0
+                && response.usage.output_tokens == 0
+                && response.usage.cached_input_tokens.is_none()
+                && response.usage.reasoning_tokens.is_none();
+            match (&self.robustness.meter, reservation.as_mut()) {
+                (Some(_), Some(reservation)) if missing_usage => {
+                    // §3.5 (Q4): the wire reported nothing — the
+                    // conservative charge with journaled provenance.
+                    let delta = reservation
+                        .settle_conservative(&self.model_name, tokens.estimate(&messages));
+                    turn_usage.add_sum(&delta);
+                    usage_recorded = true;
+                }
+                (Some(meter), Some(reservation)) => {
+                    let delta = reservation.settle_success(&self.model_name, &response.usage);
+                    turn_usage.add_sum(&delta);
+                    usage_recorded = true;
+                    // §4.1: surface the 80% crossing (typed notice,
+                    // latest-wins, once per crossing).
+                    if let Some(warn) = meter.take_pending_warn()
+                        && let Some(host) = self.robustness.observer
+                    {
+                        host(ModelObservation::BudgetWarn {
+                            limit: warn.limit,
+                            observed: warn.observed,
+                            pct_used: warn.pct_used,
+                        });
+                    }
+                }
+                (Some(meter), None) => {
+                    // Defensive: a meter without a reservation cannot occur
+                    // (they are created together above); record directly.
+                    let delta = meter.record_usage(&self.model_name, &response.usage);
+                    turn_usage.add_sum(&delta);
+                    usage_recorded = true;
+                }
+                (None, _) => {
+                    if !missing_usage {
+                        // Pre-P1 posture (no meter): the journaled sum still
+                        // records tokens; microcents stay 0 and unpriced —
+                        // without a catalog there is no pricing authority.
+                        turn_usage.add_provider_reported(
+                            response.usage.input_tokens,
+                            response.usage.output_tokens,
+                            response.usage.cached_input_tokens.unwrap_or(0),
+                            response.usage.reasoning_tokens.unwrap_or(0),
+                            0,
+                            false,
+                        );
+                        usage_recorded = true;
+                    }
+                }
+            }
 
             if matches!(state, TurnState::Understand | TurnState::Replan) {
                 transition(&mut state, &mut history, TurnState::Plan);
@@ -805,10 +1022,13 @@ impl<'a> TurnEngine<'a> {
                 transition(&mut state, &mut history, TurnState::Verify);
                 emit(
                     &mut ops,
-                    Op::TurnEnd {
-                        turn_id: turn_id.into(),
-                        outcome: nano_session::op::TurnOutcome::Completed,
-                    },
+                    turn_end_op(
+                        turn_id,
+                        nano_session::op::TurnOutcome::Completed,
+                        &mut turn_usage,
+                        &mut usage_recorded,
+                        &self.robustness.extra_usage,
+                    ),
                 );
                 transition(&mut state, &mut history, TurnState::Complete);
                 break;
@@ -946,10 +1166,13 @@ impl<'a> TurnEngine<'a> {
             if matches!(state, TurnState::Stopped(_) | TurnState::Failed(_)) {
                 emit(
                     &mut ops,
-                    Op::TurnEnd {
-                        turn_id: turn_id.into(),
-                        outcome: nano_session::op::TurnOutcome::Failed,
-                    },
+                    turn_end_op(
+                        turn_id,
+                        nano_session::op::TurnOutcome::Failed,
+                        &mut turn_usage,
+                        &mut usage_recorded,
+                        &self.robustness.extra_usage,
+                    ),
                 );
                 break;
             }
@@ -972,10 +1195,13 @@ impl<'a> TurnEngine<'a> {
                     ));
                     emit(
                         &mut ops,
-                        Op::TurnEnd {
-                            turn_id: turn_id.into(),
-                            outcome: nano_session::op::TurnOutcome::Failed,
-                        },
+                        turn_end_op(
+                            turn_id,
+                            nano_session::op::TurnOutcome::Failed,
+                            &mut turn_usage,
+                            &mut usage_recorded,
+                            &self.robustness.extra_usage,
+                        ),
                     );
                     break;
                 }
@@ -991,6 +1217,13 @@ impl<'a> TurnEngine<'a> {
             handle.close();
         }
         flush_rate_limit(&rate_limit_dirty, &latest_rate_limit);
+        // P1: drain any late externally-attributed usage (the grounding
+        // seam) into the sum the result reports.
+        drain_extra_usage(
+            &self.robustness.extra_usage,
+            &mut turn_usage,
+            &mut usage_recorded,
+        );
 
         TurnResult {
             state,
@@ -1000,6 +1233,11 @@ impl<'a> TurnEngine<'a> {
             final_text,
             ops,
             usage: last_usage,
+            turn_usage: if usage_recorded {
+                Some(turn_usage)
+            } else {
+                None
+            },
         }
     }
 }

@@ -49,6 +49,7 @@ fn make_session(sessions: &std::path::Path, id: &str) {
             Op::TurnEnd {
                 turn_id: format!("{id}-turn-1"),
                 outcome: nano_session::TurnOutcome::Completed,
+                usage: None,
             },
         ))
         .unwrap();

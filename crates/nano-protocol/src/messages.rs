@@ -150,6 +150,22 @@ pub struct UsageFrame {
     pub cache_write_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    // ── P1 §5 economy (OPTIONAL fields only — older hosts parse unchanged,
+    // no new event type) ────────────────────────────────────────────────
+    /// Session totals from the meter (the budget authority), attached to
+    /// `StreamEnd`'s frame; absent on hosts that predate P1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_total_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_total_output_tokens: Option<u64>,
+    /// Meter-computed cost in integer microcents (distinct from the
+    /// observability-only `cost_usd`). Honest: absent when unpriced, NEVER
+    /// a fake $0 for a dynamic-price router.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_microcents: Option<u64>,
+    /// Cost-truth flag: false = unpriceable (render `unpriced`, not $0.000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priced: Option<bool>,
 }
 
 /// Honest Nano capability advertisement in the corpus capabilities shape.
@@ -224,6 +240,38 @@ mod tests {
         assert_eq!(json["tool"]["name"], corpus["tool"]["name"]);
         assert_eq!(json["tool"]["args"], corpus["tool"]["args"]);
         assert_eq!(json["tool"]["category"], corpus["tool"]["category"]);
+    }
+
+    /// P1 §5: the UsageFrame optional cost fields parse on an OLDER host
+    /// (absent — serde-defaulted) and a NEW host (present), and stay
+    /// byte-minimal when unset (skip_serializing_if).
+    #[test]
+    fn usage_frame_optional_cost_fields_are_forward_and_backward_compatible() {
+        let old_host: UsageFrame =
+            serde_json::from_str(r#"{"input_tokens": 10, "output_tokens": 5, "cost_usd": 0.001}"#)
+                .unwrap();
+        assert_eq!(old_host.session_total_input_tokens, None);
+        assert_eq!(old_host.cost_microcents, None);
+        assert_eq!(old_host.priced, None);
+        // Unset fields are omitted — a new frame reads on an old host.
+        let wire = serde_json::to_string(&old_host).unwrap();
+        assert!(!wire.contains("session_total_input_tokens"));
+        assert!(!wire.contains("cost_microcents"));
+
+        let new_host: UsageFrame = serde_json::from_str(
+            r#"{"input_tokens": 10, "output_tokens": 5,
+                "session_total_input_tokens": 100, "session_total_output_tokens": 40,
+                "cost_microcents": 4100000, "priced": false}"#,
+        )
+        .unwrap();
+        assert_eq!(new_host.session_total_input_tokens, Some(100));
+        assert_eq!(new_host.session_total_output_tokens, Some(40));
+        assert_eq!(new_host.cost_microcents, Some(4_100_000));
+        assert_eq!(new_host.priced, Some(false));
+        assert_eq!(
+            serde_json::from_str::<UsageFrame>(&serde_json::to_string(&new_host).unwrap()).unwrap(),
+            new_host
+        );
     }
 
     #[test]

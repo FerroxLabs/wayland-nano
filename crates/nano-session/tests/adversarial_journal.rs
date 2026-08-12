@@ -67,6 +67,7 @@ fn base_ops() -> Vec<OpEnvelope> {
             Op::TurnEnd {
                 turn_id: "t1".into(),
                 outcome: TurnOutcome::Completed,
+                usage: None,
             },
         ),
         env(
@@ -378,6 +379,7 @@ fn out_of_order_ops_fold_without_panic_into_safe_states() {
             Op::TurnEnd {
                 turn_id: "t9".into(),
                 outcome: TurnOutcome::Completed,
+                usage: None,
             },
         ),
         env(

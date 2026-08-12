@@ -313,6 +313,17 @@ pub enum ModelObservation {
     /// events on the Responses surface). Observability only — Retry-After
     /// remains the sole timing authority.
     RateLimit(crate::rate_limits::RateLimitSnapshot),
+    /// P1 §4.1: the session meter crossed 80% of its effective token limit
+    /// — a typed `BudgetWarn` notice `{limit, observed, pct_used}`.
+    /// Latest-wins observability, fires once per crossing.
+    BudgetWarn {
+        limit: u64,
+        observed: u64,
+        pct_used: u64,
+    },
+    /// P1 §4.2: a request's `max_tokens` was clamped to the reserved output
+    /// allowance — the clamp is logged (typed), never silent.
+    BudgetClamp { requested: u64, granted: u64 },
 }
 
 /// Per-call hooks threaded from the turn engine into the model client (C9):

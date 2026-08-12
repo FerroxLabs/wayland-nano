@@ -7,6 +7,7 @@
 pub mod bootstrap;
 pub mod clock;
 pub mod compact;
+pub mod cost;
 pub mod cron;
 pub mod error_map;
 pub mod goal;
@@ -22,6 +23,10 @@ pub mod wiring;
 #[cfg(test)]
 #[path = "turn_tests.rs"]
 mod turn_tests;
+
+#[cfg(test)]
+#[path = "p1_economy_tests.rs"]
+mod p1_economy_tests;
 
 #[cfg(test)]
 #[path = "c9_tests.rs"]

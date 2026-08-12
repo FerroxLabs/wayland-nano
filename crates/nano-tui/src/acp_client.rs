@@ -123,6 +123,28 @@ pub enum SessionUpdate {
         tokens_remaining: Option<u64>,
         tokens_limit: Option<u64>,
     },
+    /// P1 §5: the session meter's status payload (drives the status-line
+    /// budget slot). `priced: false` renders `unpriced`, never $0.000.
+    Budget {
+        session_tokens: u64,
+        microcents: u64,
+        priced: bool,
+        limit: Option<u64>,
+        observed: Option<u64>,
+    },
+    /// P1 §4.1: the typed 80% BudgetWarn notice `{limit, observed,
+    /// pct_used}`.
+    BudgetWarn {
+        limit: u64,
+        observed: u64,
+        pct_used: u64,
+    },
+    /// P1 §4.2: the typed clamp notice (a request's max_tokens was clamped
+    /// to the reserved allowance).
+    BudgetClamp {
+        requested: u64,
+        granted: u64,
+    },
     /// Forward-additive: kinds v1 doesn't render. Tolerated, never panics
     /// (torn/unknown replay frames must not kill the TUI, design §8).
     Unknown(String),
@@ -346,6 +368,31 @@ fn parse_session_update(update: &Value) -> SessionUpdate {
                 tokens_limit: field("tokens_limit"),
             }
         }
+        "budget" => SessionUpdate::Budget {
+            session_tokens: update
+                .get("session_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            microcents: update
+                .get("microcents")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            priced: update
+                .get("priced")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            limit: update.get("limit").and_then(Value::as_u64),
+            observed: update.get("observed").and_then(Value::as_u64),
+        },
+        "budget_warn" => SessionUpdate::BudgetWarn {
+            limit: update.get("limit").and_then(Value::as_u64).unwrap_or(0),
+            observed: update.get("observed").and_then(Value::as_u64).unwrap_or(0),
+            pct_used: update.get("pct_used").and_then(Value::as_u64).unwrap_or(0),
+        },
+        "budget_clamp" => SessionUpdate::BudgetClamp {
+            requested: update.get("requested").and_then(Value::as_u64).unwrap_or(0),
+            granted: update.get("granted").and_then(Value::as_u64).unwrap_or(0),
+        },
         other => SessionUpdate::Unknown(other.to_string()),
     }
 }
@@ -529,6 +576,11 @@ pub fn set_mode_params(session_id: &str, mode_id: &str) -> Value {
 
 /// session/compact (C1): manual engine-side compaction of the session
 /// context, journaled identically to the auto path.
+/// P1 §4.1: `/budget continue <tokens>` → session/budget.
+pub fn budget_params(session_id: &str, tokens: u64) -> Value {
+    serde_json::json!({ "sessionId": session_id, "tokens": tokens })
+}
+
 pub fn compact_params(session_id: &str) -> Value {
     json!({"sessionId": session_id})
 }
@@ -773,6 +825,11 @@ mod tests {
         let compact = request(6, "session/compact", compact_params("s1"));
         assert_eq!(compact["params"]["sessionId"], "s1");
 
+        // P1 §4.1: /budget continue rides session/budget.
+        let budget = request(8, "session/budget", budget_params("s1", 200));
+        assert_eq!(budget["params"]["sessionId"], "s1");
+        assert_eq!(budget["params"]["tokens"], 200);
+
         let cancel = cancel_notification("s1");
         assert_eq!(cancel["method"], "session/cancel");
         assert!(cancel.get("id").is_none());
@@ -792,6 +849,64 @@ mod tests {
         let mut ids = RequestIds::default();
         assert_eq!(ids.alloc(), 1);
         assert_eq!(ids.alloc(), 2);
+    }
+
+    /// P1 §5: the budget session/update notices parse into typed updates.
+    #[test]
+    fn classify_budget_update_variants() {
+        let budget = json!({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":"s","update":{"sessionUpdate":"budget",
+            "session_tokens":12300,"microcents":0,"priced":false,
+            "limit":100,"observed":90}}});
+        assert_eq!(
+            classify(&budget),
+            Inbound::Update(SessionUpdate::Budget {
+                session_tokens: 12300,
+                microcents: 0,
+                priced: false,
+                limit: Some(100),
+                observed: Some(90),
+            })
+        );
+
+        let warn = json!({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":"s","update":{"sessionUpdate":"budget_warn",
+            "limit":100,"observed":90,"pct_used":90}}});
+        assert_eq!(
+            classify(&warn),
+            Inbound::Update(SessionUpdate::BudgetWarn {
+                limit: 100,
+                observed: 90,
+                pct_used: 90,
+            })
+        );
+
+        let clamp = json!({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":"s","update":{"sessionUpdate":"budget_clamp",
+            "requested":4096,"granted":10}}});
+        assert_eq!(
+            classify(&clamp),
+            Inbound::Update(SessionUpdate::BudgetClamp {
+                requested: 4096,
+                granted: 10,
+            })
+        );
+
+        // Uncapped sessions carry null cap fields.
+        let uncapped = json!({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":"s","update":{"sessionUpdate":"budget",
+            "session_tokens":5,"microcents":0,"priced":true,
+            "limit":null,"observed":null}}});
+        assert_eq!(
+            classify(&uncapped),
+            Inbound::Update(SessionUpdate::Budget {
+                session_tokens: 5,
+                microcents: 0,
+                priced: true,
+                limit: None,
+                observed: None,
+            })
+        );
     }
 
     #[test]

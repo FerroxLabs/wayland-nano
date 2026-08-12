@@ -278,6 +278,8 @@ impl Harness {
                     cron_home: None,
                     search: None,
                     search_meter: None,
+                    pricing: None,
+                    budget_cap: None,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -291,7 +293,7 @@ impl Harness {
                     },
                     &config,
                     move |_| driver.clone(),
-                    move |_, _, _, _| {
+                    move |_, _, _, _, _| {
                         (
                             MockTools::default(),
                             nano_core::permissions::PermissionProfile::workspace_write()
@@ -703,6 +705,7 @@ fn crash_after_begin_replays_uncompacted() {
             Op::TurnEnd {
                 turn_id: "t1".into(),
                 outcome: nano_session::TurnOutcome::Completed,
+                usage: None,
             },
         ),
         OpEnvelope::new(
@@ -756,6 +759,7 @@ fn crash_after_complete_replays_compacted() {
             Op::TurnEnd {
                 turn_id: "t1".into(),
                 outcome: nano_session::TurnOutcome::Completed,
+                usage: None,
             },
         ),
         OpEnvelope::new(
@@ -811,6 +815,7 @@ fn forged_compaction_ops_are_replay_tolerant() {
             Op::TurnEnd {
                 turn_id: "t1".into(),
                 outcome: nano_session::TurnOutcome::Completed,
+                usage: None,
             },
         ),
     ];
