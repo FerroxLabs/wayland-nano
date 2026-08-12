@@ -537,8 +537,16 @@ fn read_only_denies_writes_at_the_gate_without_prompting() {
 #[test]
 fn full_auto_contained_write_skips_the_prompt_uncontained_prompts_once() {
     let dirs = TestDirs::new();
-    let outside = dirs.root.join("outside");
-    std::fs::create_dir_all(&outside).unwrap();
+    // The uncontained target anchors at the FILESYSTEM ROOT: the
+    // workspace_write policy includes the tmp roots (SlashTmp/Tmpdir), so a
+    // tempdir sibling would be CONTAINED on unix. MockTools never writes,
+    // so this path is only ever fed to the gate's containment check.
+    let outside = dirs
+        .root
+        .ancestors()
+        .last()
+        .expect("filesystem root")
+        .join("nano-c2-wire-outside");
     let mut host = Harness::spawn(
         vec![
             tool_response(ToolCall {

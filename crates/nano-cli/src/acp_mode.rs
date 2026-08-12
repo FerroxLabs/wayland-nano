@@ -1626,6 +1626,18 @@ mod tests {
         }
     }
 
+    /// A directory outside EVERY writable root on any platform, anchored at
+    /// the filesystem root: the workspace_write policy grants write on the
+    /// workspace plus the tmp roots only, so a root-anchored path is always
+    /// denied. (Never created — denial happens before any fs write.)
+    fn outside_root() -> std::path::PathBuf {
+        std::env::temp_dir()
+            .ancestors()
+            .last()
+            .expect("filesystem root")
+            .join("nano-c2-definitely-outside")
+    }
+
     /// A gate plus its scripted host: when `answer` is Some, a responder
     /// thread answers every permission request with that optionId; when
     /// None, any prompt would block forever — tests that expect NO prompt
@@ -1816,7 +1828,6 @@ mod tests {
     #[test]
     fn full_auto_matrix() {
         let ws = workspace();
-        let outside = workspace();
         let rig = TestGate::new(PermissionMode::FullAuto, &ws.0, true, Some("allow"));
 
         // Contained writes auto-approve — absolute AND relative spellings,
@@ -1845,15 +1856,21 @@ mod tests {
         assert_eq!(rig.prompt_count(), 0);
 
         // Uncontained, unparseable, and protected paths fall through to the
-        // host prompt — never silent approve, never silent deny.
+        // host prompt — never silent approve, never silent deny. NOTE: the
+        // uncontained fixtures anchor at the FILESYSTEM ROOT, not a tempdir
+        // sibling — the workspace_write policy includes the tmp roots
+        // (SlashTmp/Tmpdir entries), so a tempdir sibling is CONTAINED on
+        // unix and this matrix would be testing nothing there.
         for (name, args) in [
             (
                 "fs_write",
-                serde_json::json!({"path": outside.0.join("escape.txt"), "content": "x"}),
+                serde_json::json!({"path": outside_root().join("escape.txt"), "content": "x"}),
             ),
             (
                 "fs_write",
-                serde_json::json!({"path": "../escape.txt", "content": "x"}),
+                // Enough `..` to saturate at the filesystem root from any
+                // workspace depth (root-clamped on both platforms).
+                serde_json::json!({"path": "../../../../../../../../nano-c2-escape.txt", "content": "x"}),
             ),
             (
                 "fs_write",
@@ -2018,7 +2035,6 @@ mod tests {
         use nano_tools::fs::FsTools;
 
         let ws = workspace();
-        let outside = workspace();
         let policy = PermissionProfile::workspace_write().file_system_sandbox_policy();
         let tools = FsTools::new(policy.clone(), &ws.0);
         let rig = TestGate::new(PermissionMode::FullAuto, &ws.0, false, Some("allow"));
@@ -2030,15 +2046,23 @@ mod tests {
         let alias = ws.0.join("alias-name.txt");
         std::fs::hard_link(&alias_target, &alias).expect("hard link on this fs");
 
-        // A pre-planted link escape: ws/link -> outside.
+        // A pre-planted link escape into a POLICY-DENIED existing dir. The
+        // target is the workspace's `.git` (read-only by the protected-
+        // metadata rule on every platform) — NOT a tempdir sibling, which
+        // the tmp-root write entries would make writable on unix.
+        let git_dir = ws.0.join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
         let link = ws.0.join("dir-link");
-        let link_planted = make_dir_link(&link, &outside.0);
+        let link_planted = make_dir_link(&link, &git_dir);
 
         let mut cases: Vec<(&str, std::path::PathBuf)> = vec![
             ("contained absolute", ws.0.join("inside.txt")),
             ("contained relative", "relative-inside.txt".into()),
-            ("uncontained absolute", outside.0.join("escape.txt")),
-            ("uncontained relative", "../escape.txt".into()),
+            ("uncontained absolute", outside_root().join("escape.txt")),
+            (
+                "uncontained relative",
+                "../../../../../../../../nano-c2-escape.txt".into(),
+            ),
             ("protected .git subpath", ws.0.join(".git/config")),
             ("hard-link alias", alias.clone()),
         ];
@@ -2099,10 +2123,15 @@ mod tests {
         use nano_tools::fs::{FsTools, ToolError};
 
         let ws = workspace();
-        let outside = workspace();
         let policy = PermissionProfile::workspace_write().file_system_sandbox_policy();
         let rig = TestGate::new(PermissionMode::FullAuto, &ws.0, false, None);
         let target = ws.0.join("planted").join("escape.txt");
+        // The escape target: the workspace's `.git`, read-only by the
+        // protected-metadata rule on every platform. (A tempdir sibling is
+        // NOT a denied target on unix — the workspace_write policy includes
+        // the tmp roots, so the canonicalized path would be writable there.)
+        let git_dir = ws.0.join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
 
         // 1. Stable snapshot: `planted` does not exist yet — the write is
         //    contained, so the full_auto gate approves without prompting.
@@ -2117,7 +2146,7 @@ mod tests {
         assert_eq!(rig.prompt_count(), 0);
 
         // 2. Mutation: plant the junction AFTER approval.
-        if !make_dir_link(&ws.0.join("planted"), &outside.0) {
+        if !make_dir_link(&ws.0.join("planted"), &git_dir) {
             panic!("directory link creation refused on this host");
         }
 
@@ -2132,7 +2161,7 @@ mod tests {
             "denied with the wrong variant: {err:?}"
         );
         assert!(
-            !outside.0.join("escape.txt").exists(),
+            !git_dir.join("escape.txt").exists(),
             "SECURITY HOLE: the write escaped through the planted junction"
         );
     }
