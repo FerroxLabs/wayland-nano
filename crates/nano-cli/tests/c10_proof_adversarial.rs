@@ -127,6 +127,7 @@ impl ModelDriver for MockDriver {
 /// stack (FsTools + ShellTool + policy + diff hook), mirroring the
 /// production factory in acp_mode.rs line for line.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // test scaffold: Mock stays small, Real is the production executor
 enum TestExec {
     Mock(MockTools),
     Real(nano_agent::wiring::RealToolExecutor),
