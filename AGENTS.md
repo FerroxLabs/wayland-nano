@@ -23,9 +23,14 @@ route around it.
 - The Flux test key lives at `../.secrets/flux-test-key`
   (`waylandnano/.secrets/flux-test-key`). Reference the **path** only; never
   read, echo, copy, or embed the value.
-- Credential resolution (`crates/nano-cli/src/flux_key.rs`): `FLUX_API_KEY`,
-  then `FLUX_TEST_KEY`, then the file named by `FLUX_API_KEY_FILE`. Use this
-  pattern; do not invent new credential channels or hardcode keys.
+- Credential resolution: Flux keeps `crates/nano-cli/src/flux_key.rs`
+  (`FLUX_API_KEY`, then `FLUX_TEST_KEY`, then the file named by
+  `FLUX_API_KEY_FILE`); every other catalog provider resolves via
+  `crates/nano-cli/src/provider_key.rs` (injected bearer → canonical env var
+  → `<VAR>_FILE`, per the vendored catalog in
+  `crates/nano-model/data/providerCatalog.vendored.json` — the sole endpoint
+  authority). Key files must be owner-only (0600) on unix. Use these
+  patterns; do not invent new credential channels or hardcode keys.
 - The vertical slice canary asserts no key appears in any frame. Keep it true.
 
 ## Fail-closed security

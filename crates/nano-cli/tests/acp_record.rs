@@ -208,6 +208,8 @@ impl Recorder {
                 // C2: the gate's sandbox probe is injectable; recordings pin
                 // the default-mode wire, where the probe is never consulted.
                 let sandbox_probe = || true;
+                let router = nano_cli::provider_router::ProviderRouter::default();
+                ensure_test_flux_key();
                 let config = acp_mode::ServeConfig {
                     sessions_dir: &sessions_dir,
                     default_model: "flux-auto",
@@ -217,6 +219,7 @@ impl Recorder {
                     window_override: None,
                     limit_override: None,
                     sandbox_probe: &sandbox_probe,
+                    router: &router,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -229,7 +232,7 @@ impl Recorder {
                         buf: Vec::new(),
                     },
                     &config,
-                    move || driver.clone(),
+                    move |_| driver.clone(),
                     // C2: make_tools returns the executor AND its exact fs
                     // policy (the gate's advisory oracle shares provenance).
                     move |_, _| (MockTools, workspace_policy()),
@@ -500,4 +503,17 @@ fn record_full_journey_fixture() {
     write_or_verify("full_journey.ndjson", &full);
     write_or_verify("pty_journey.ndjson", &pty_journey);
     let _ = std::fs::remove_dir_all(&sessions_dir);
+}
+
+/// C8: prompt and set_model RE-RESOLVE the session credential per turn.
+/// The scripted driver never reaches the network, but the resolution needs
+/// SOME flux credential in the process env (set once, never removed; every
+/// harness in this file shares it).
+fn ensure_test_flux_key() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if std::env::var("FLUX_API_KEY").is_err() {
+            unsafe { std::env::set_var("FLUX_API_KEY", "sk-test-harness-never-networked") };
+        }
+    });
 }

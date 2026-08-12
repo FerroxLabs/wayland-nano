@@ -308,6 +308,8 @@ impl Harness {
                 // C2: default-mode recordings never consult the sandbox
                 // probe; inject a fixed answer.
                 let sandbox_probe = || true;
+                let router = nano_cli::provider_router::ProviderRouter::default();
+                ensure_test_flux_key();
                 let config = acp_mode::ServeConfig {
                     sessions_dir: &sessions_dir,
                     default_model: &default_model,
@@ -317,6 +319,7 @@ impl Harness {
                     window_override: None,
                     limit_override: None,
                     sandbox_probe: &sandbox_probe,
+                    router: &router,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -329,7 +332,7 @@ impl Harness {
                         buf: Vec::new(),
                     },
                     &config,
-                    move || driver.clone(),
+                    move |_| driver.clone(),
                     // C2: the executor travels with its exact fs policy (the
                     // gate's advisory containment oracle shares provenance).
                     move |_, _| {
@@ -1594,4 +1597,17 @@ fn env_mcp_servers_merge_into_sessions_without_param_servers() {
         "operator-supplied (env) servers must merge into the session: {:?}",
         tool_names(&requests[0])
     );
+}
+
+/// C8: prompt and set_model RE-RESOLVE the session credential per turn.
+/// The scripted driver never reaches the network, but the resolution needs
+/// SOME flux credential in the process env (set once, never removed; every
+/// harness in this file shares it).
+fn ensure_test_flux_key() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if std::env::var("FLUX_API_KEY").is_err() {
+            unsafe { std::env::set_var("FLUX_API_KEY", "sk-test-harness-never-networked") };
+        }
+    });
 }
