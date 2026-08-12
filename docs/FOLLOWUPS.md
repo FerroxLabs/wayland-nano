@@ -118,3 +118,69 @@ promotes/closes entries; builders append only.
 - **Close means:** one hardening pass against the journal-first
   discipline; each site either journals fail-closed or documents why
   the degradation is the intended semantics.
+
+## F-9: AGENTS.md mid-session edits picked up one turn late in acp_mode (C10 proof, F-C10-1)
+
+- **Filed:** 2026-08-12, from the C10 adversarial proof (pinned by
+  `agents_md_edit_between_turns_is_one_turn_late_in_acp_mode`).
+- **Gap:** design §4 says a mid-session AGENTS.md edit takes effect
+  "next turn"; in acp_mode the prefix rebuild is POST-turn
+  (`acp_mode.rs:2256-2271`) while the prompt path clones the cached
+  context (`:1423`), so the edit lands one turn later than designed
+  (turn N+1 stale, turn N+2 fresh). host_mode re-reads per turn and
+  meets the rule (`host_mode.rs:174`).
+- **Close means:** rebuild (or invalidate) the context prefix at
+  prompt time in acp_mode, or amend design §4 to state the one-turn
+  lag explicitly. Prompt-tier data only — no policy impact.
+
+## F-10: TUI question modal clips the 4th option (C10 proof, F-C10-2)
+
+- **Filed:** 2026-08-12, from the C10 adversarial proof (pinned by
+  `c10_tui_question_dismiss_viewport_pin`).
+- **Gap:** the ask_user modal's scroll window is item-indexed
+  (`render.rs:303-307`) while each option renders as TWO rows
+  (name + kind); with 4 options (3 minted + Dismiss) the Dismiss row
+  is clipped out of the 5-row viewport and never becomes visible,
+  even when selected. Still operable blind (Down×3+Enter sends
+  `reject`); Esc maps to the reject id. 2-option flows (all standard
+  permission cards) unaffected.
+- **Close means:** make the viewport row-aware (scroll by rendered
+  rows, not item index) so the selected row is always visible.
+
+## F-11: Doc deviation — failed read-before-overwrite emits an add-style diff (C10 proof, F-C10-3)
+
+- **Filed:** 2026-08-12, from the C10 adversarial proof (code review).
+- **Gap:** design §6 says a failed read-before-overwrite "omits the
+  diff"; the implementation emits an add-style diff (`old_text: None`
+  covers both new-file and unreadable-prior, `fs.rs:400-413`) —
+  deliberate and code-commented; the add-style diff discloses nothing
+  the write itself doesn't.
+- **Close means:** amend design §6 wording to match the implemented
+  (intended) behavior. Documentation-only.
+
+## F-12: No currentMode push on tool-driven plan transitions (C10 proof, F-C10-4)
+
+- **Filed:** 2026-08-12, from the C10 adversarial proof (demonstrated
+  live: Desktop chip held "Plan Mode" after an approved exit).
+- **Gap:** tool-driven plan entry/exit (`enter_plan_mode` /
+  `exit_plan_mode`) emits NO currentMode notification — v1 has no
+  such wire affordance (`session_modes_value` is only written in the
+  set_mode handler) — so a client's mode display (TUI status slot,
+  Desktop chip) reads stale until its next set_mode. set_mode acks
+  themselves are consistent.
+- **Close means:** design decision — either add a currentMode push on
+  tool-driven posture transitions (wire change, needs Desktop
+  coordination) or document that clients must re-query on turn end.
+
+## F-13: Desktop lane — createSession null deref under polluted multi-prompt state (C10 proof observation)
+
+- **Filed:** 2026-08-12, observed once during the C10 Desktop CDP
+  drive (`c10-desktop-probe.png`): a second prompt sent while an
+  ask_user question card was still open produced
+  `Cannot read properties of null (reading 'createSession')` in the
+  Desktop task panel. Did NOT recur in any clean single-flow drive.
+  Desktop-side robustness, not Nano code — reported for the Desktop
+  lane; no Nano action.
+- **Close means:** Desktop hardens its session-handle lifecycle
+  against a prompt arriving while a question card is open (queue,
+  reject with a typed error, or disable the input mid-question).
