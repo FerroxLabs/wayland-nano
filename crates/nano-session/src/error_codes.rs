@@ -110,7 +110,7 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
             -32603,
             false,
             "Authentication failed",
-            "Check FLUX_API_KEY, then retry",
+            "Check the provider's API key, then retry",
         ),
         NanoErrorKind::ModelRateLimited => response(
             -32603,

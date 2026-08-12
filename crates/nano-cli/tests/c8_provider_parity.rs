@@ -42,6 +42,7 @@ const TOUCHED_VARS: &[&str] = &[
     "OPENAI_API_KEY",
     "XAI_API_KEY",
     "ANTHROPIC_API_KEY",
+    "OPENROUTER_API_KEY",
     "WAYLAND_NANO_OAUTH_BEARER_XAI",
     "WAYLAND_NANO_OAUTH_BEARER_XAI_EXPIRES_AT_UNIX_SECS",
     "WAYLAND_NANO_PROVIDERS",
@@ -201,12 +202,16 @@ fn parity_router() -> ProviderRouter {
         r#"[
             {"provider":"openai","models":["gpt-5.6-terra"],"hasKey":false},
             {"provider":"xai","models":["grok-9"],"hasKey":true},
-            {"provider":"anthropic","models":["claude-opus-4-8"],"hasKey":true}
+            {"provider":"anthropic","models":["claude-opus-4-8"],"hasKey":true},
+            {"provider":"openrouter","models":["or-model-1"],"hasKey":true}
         ]"#,
     ))
     .expect("valid payload");
     // TEST SEAM: the proof lane flips these in the vendored catalog after
     // the live compat proof; the matrix exercises the success arm now.
+    // 2026-08-12: the live provider proofs flipped 9 providers (incl.
+    // anthropic) in the real catalog; `openrouter` stays unproven (no
+    // working key) and is now the unproven-gate arm.
     router.mark_proven_for_tests(&["openai", "xai"]);
     router
 }
@@ -279,9 +284,9 @@ fn set_model_routing_matrix() {
 
     // Unproven provider (no test-seam mark) WITH a credential → the typed
     // provider_unproven gate, never a silent fallback.
-    unsafe { std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-matrix") };
+    unsafe { std::env::set_var("OPENROUTER_API_KEY", "sk-or-matrix") };
     let err = router
-        .resolve_binding("anthropic:claude-opus-4-8", &env_reader, now)
+        .resolve_binding("openrouter:or-model-1", &env_reader, now)
         .expect_err("unproven arm");
     assert_eq!(err.kind, KIND_PROVIDER_UNPROVEN);
     assert!(!err.retryable);
@@ -803,7 +808,7 @@ fn acp_error_frames_never_carry_credentials() {
     // Unproven arm — provider_unproven.
     let unproven = host.request(
         "session/set_model",
-        serde_json::json!({"sessionId": session_id, "modelId": "anthropic:claude-opus-4-8"}),
+        serde_json::json!({"sessionId": session_id, "modelId": "openrouter:or-model-1"}),
     );
     assert_eq!(unproven["error"]["data"]["kind"], "provider_unproven");
     // Malformed ids — model_not_found.

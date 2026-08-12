@@ -19,7 +19,7 @@
       "wire": "anthropic-messages",
       "api_path": "/v1/messages",
       "env_var": "ANTHROPIC_API_KEY",
-      "proven": false
+      "proven": true
     },
     {
       "id": "openai",
@@ -28,7 +28,7 @@
       "wire": "openai-completions",
       "api_path": "/chat/completions",
       "env_var": "OPENAI_API_KEY",
-      "proven": false
+      "proven": true
     },
     {
       "id": "openrouter",
@@ -46,7 +46,7 @@
       "wire": "openai-completions",
       "api_path": "/chat/completions",
       "env_var": "GROQ_API_KEY",
-      "proven": false
+      "proven": true
     },
     {
       "id": "mistral",
@@ -64,7 +64,7 @@
       "wire": "openai-completions",
       "api_path": "/v1/chat/completions",
       "env_var": "DEEPSEEK_API_KEY",
-      "proven": false
+      "proven": true
     },
     {
       "id": "together",
@@ -73,7 +73,7 @@
       "wire": "openai-completions",
       "api_path": "/chat/completions",
       "env_var": "TOGETHER_API_KEY",
-      "proven": false
+      "proven": true
     },
     {
       "id": "fireworks",
@@ -82,7 +82,7 @@
       "wire": "openai-completions",
       "api_path": "/chat/completions",
       "env_var": "FIREWORKS_API_KEY",
-      "proven": false
+      "proven": true
     },
     {
       "id": "perplexity",
@@ -109,7 +109,7 @@
       "wire": "openai-completions",
       "api_path": "/chat/completions",
       "env_var": "CEREBRAS_API_KEY",
-      "proven": false
+      "proven": true
     },
     {
       "id": "xai",
@@ -127,7 +127,7 @@
       "wire": "openai-completions",
       "api_path": "/chat/completions",
       "env_var": "MOONSHOT_API_KEY",
-      "proven": false
+      "proven": true
     },
     {
       "id": "nvidia",
@@ -154,7 +154,7 @@
       "wire": "openai-completions",
       "api_path": "/chat/completions",
       "env_var": "GEMINI_API_KEY",
-      "proven": false
+      "proven": true
     }
   ]
 }

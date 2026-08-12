@@ -246,3 +246,40 @@ promotes/closes entries; builders append only.
 - **Close means:** document both behaviors in the ACP extension notes
   for third-party client authors; optionally detect + warn on an
   id-carrying cancel.
+
+## F-18: Provider-side 404 (retired model) surfaces as model_server_4xx, not model_not_found (provider live proofs)
+
+- **Filed:** 2026-08-12, from the live provider-proof matrix (cerebras,
+  fireworks: retired model ids returned provider 404s).
+- **Gap:** Nano's typed `model_not_found` is only the advertisement-gate
+  error (unknown namespaced id). A provider that 404s a retired model
+  mid-turn surfaces as `model_server_4xx{status:404}`. Callers keying
+  fallback/model-retirement logic off the KIND will miss it.
+- **Close means:** either map provider 404-with-model-not-found bodies
+  to `model_not_found` at classify time, or document that fallback
+  logic must check `status == 404` on `model_server_4xx`.
+
+## F-19: A ':' inside a WAYLAND_NANO_PROVIDERS model entry bricks the whole payload (provider live proofs)
+
+- **Filed:** 2026-08-12, from the live provider-proof matrix
+  (OpenRouter's live /models list carries ids like
+  `openai/gpt-5-mini:batch` / `:free`).
+- **Gap:** the payload parser expects bare model ids; one entry
+  containing ':' fails validation and the WHOLE payload is discarded
+  fail-closed (Flux-only fallback; with no Flux key the host exits at
+  startup). Naive passthrough of OpenRouter's /models list into the
+  payload bricks routing.
+- **Close means:** host-side normalization — strip `:suffix` tags (or
+  reject only the offending entry, keeping the rest of the payload).
+  Fail-closed on the whole payload is too blunt for a single bad id.
+
+## F-20: Provider model-id freshness — live lists churn (provider live proofs)
+
+- **Filed:** 2026-08-12. Several 2024/2025-era ids are retired as of
+  2026-08 (deepseek-chat, cerebras llama3.1/3.3, fireworks llama-v3p*).
+  Nano carries no hardcoded model lists (models arrive via the
+  payload), so this is guidance for payload producers (Desktop):
+  refresh advertised models from the provider's live /models list
+  rather than pinning static lists.
+- **Close means:** Desktop payload builder refreshes from live
+  /models (with a short cache) or accepts a user-typed model id.

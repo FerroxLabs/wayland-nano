@@ -20,7 +20,7 @@ pub static PROVIDERS: &[ProviderSpec] = &[
         env_var: "ANTHROPIC_API_KEY",
         bearer_env: "WAYLAND_NANO_OAUTH_BEARER_ANTHROPIC",
         bearer_expires_env: "WAYLAND_NANO_OAUTH_BEARER_ANTHROPIC_EXPIRES_AT_UNIX_SECS",
-        proven: false,
+        proven: true,
     },
     ProviderSpec {
         id: "openai",
@@ -31,7 +31,7 @@ pub static PROVIDERS: &[ProviderSpec] = &[
         env_var: "OPENAI_API_KEY",
         bearer_env: "WAYLAND_NANO_OAUTH_BEARER_OPENAI",
         bearer_expires_env: "WAYLAND_NANO_OAUTH_BEARER_OPENAI_EXPIRES_AT_UNIX_SECS",
-        proven: false,
+        proven: true,
     },
     ProviderSpec {
         id: "openrouter",
@@ -53,7 +53,7 @@ pub static PROVIDERS: &[ProviderSpec] = &[
         env_var: "GROQ_API_KEY",
         bearer_env: "WAYLAND_NANO_OAUTH_BEARER_GROQ",
         bearer_expires_env: "WAYLAND_NANO_OAUTH_BEARER_GROQ_EXPIRES_AT_UNIX_SECS",
-        proven: false,
+        proven: true,
     },
     ProviderSpec {
         id: "mistral",
@@ -75,7 +75,7 @@ pub static PROVIDERS: &[ProviderSpec] = &[
         env_var: "DEEPSEEK_API_KEY",
         bearer_env: "WAYLAND_NANO_OAUTH_BEARER_DEEPSEEK",
         bearer_expires_env: "WAYLAND_NANO_OAUTH_BEARER_DEEPSEEK_EXPIRES_AT_UNIX_SECS",
-        proven: false,
+        proven: true,
     },
     ProviderSpec {
         id: "together",
@@ -86,7 +86,7 @@ pub static PROVIDERS: &[ProviderSpec] = &[
         env_var: "TOGETHER_API_KEY",
         bearer_env: "WAYLAND_NANO_OAUTH_BEARER_TOGETHER",
         bearer_expires_env: "WAYLAND_NANO_OAUTH_BEARER_TOGETHER_EXPIRES_AT_UNIX_SECS",
-        proven: false,
+        proven: true,
     },
     ProviderSpec {
         id: "fireworks",
@@ -97,7 +97,7 @@ pub static PROVIDERS: &[ProviderSpec] = &[
         env_var: "FIREWORKS_API_KEY",
         bearer_env: "WAYLAND_NANO_OAUTH_BEARER_FIREWORKS",
         bearer_expires_env: "WAYLAND_NANO_OAUTH_BEARER_FIREWORKS_EXPIRES_AT_UNIX_SECS",
-        proven: false,
+        proven: true,
     },
     ProviderSpec {
         id: "perplexity",
@@ -130,7 +130,7 @@ pub static PROVIDERS: &[ProviderSpec] = &[
         env_var: "CEREBRAS_API_KEY",
         bearer_env: "WAYLAND_NANO_OAUTH_BEARER_CEREBRAS",
         bearer_expires_env: "WAYLAND_NANO_OAUTH_BEARER_CEREBRAS_EXPIRES_AT_UNIX_SECS",
-        proven: false,
+        proven: true,
     },
     ProviderSpec {
         id: "xai",
@@ -152,7 +152,7 @@ pub static PROVIDERS: &[ProviderSpec] = &[
         env_var: "MOONSHOT_API_KEY",
         bearer_env: "WAYLAND_NANO_OAUTH_BEARER_MOONSHOT",
         bearer_expires_env: "WAYLAND_NANO_OAUTH_BEARER_MOONSHOT_EXPIRES_AT_UNIX_SECS",
-        proven: false,
+        proven: true,
     },
     ProviderSpec {
         id: "nvidia",
@@ -185,6 +185,6 @@ pub static PROVIDERS: &[ProviderSpec] = &[
         env_var: "GEMINI_API_KEY",
         bearer_env: "WAYLAND_NANO_OAUTH_BEARER_GOOGLE_GEMINI",
         bearer_expires_env: "WAYLAND_NANO_OAUTH_BEARER_GOOGLE_GEMINI_EXPIRES_AT_UNIX_SECS",
-        proven: false,
+        proven: true,
     },
 ];

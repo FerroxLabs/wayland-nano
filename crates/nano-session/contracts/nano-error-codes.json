@@ -1,7 +1,7 @@
 {
   "errors": [
     {
-      "hint": "Check FLUX_API_KEY, then retry",
+      "hint": "Check the provider's API key, then retry",
       "kind": "model_auth",
       "retryable": false,
       "surface": "error_response",

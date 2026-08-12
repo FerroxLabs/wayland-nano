@@ -88,11 +88,36 @@ mod tests {
     }
 
     #[test]
-    fn unproven_arms_are_explicit() {
-        // Q3: every non-Flux provider ships gated on its live proof (the
-        // proof lane flips these; a missing flag is a build-time error, not
-        // a silent default).
-        for id in ["anthropic", "openai", "google-gemini"] {
+    fn proven_state_is_explicit_per_provider() {
+        // Q3: providers ship gated until a live end-to-end proof flips them.
+        // 2026-08-12: the live provider-proof matrix (shared/reviews/RC/
+        // evidence/provider-live-proofs/) proved these 9 end-to-end with real
+        // keys — both wire surfaces, incl. the anthropic-native arm.
+        for id in [
+            "openai",
+            "anthropic",
+            "google-gemini",
+            "deepseek",
+            "groq",
+            "cerebras",
+            "together",
+            "fireworks",
+            "moonshot",
+        ] {
+            let spec = provider_by_id(id).expect("catalog carries the v1 set");
+            assert!(spec.proven, "{id} was live-proven on 2026-08-12");
+        }
+        // Still gated: no working key has proven these end-to-end. A missing
+        // flag is a build-time error, not a silent default.
+        for id in [
+            "openrouter",
+            "mistral",
+            "perplexity",
+            "cohere",
+            "nvidia",
+            "minimax",
+            "xai",
+        ] {
             let spec = provider_by_id(id).expect("catalog carries the v1 set");
             assert!(!spec.proven, "{id} awaits its live proof");
         }
