@@ -4,25 +4,11 @@
 //! `FLUX_API_KEY_FILE`. The file fallback exists so host-spawners (Desktop's
 //! ACP launcher, scripts) can pass a *path* instead of the secret itself —
 //! the key then lives in exactly one file, never in config blobs, command
-//! lines, or process env dumps.
+//! lines, or process env dumps. C8: the file read goes through the shared
+//! perms-gated `read_key_file` (0600 on unix; Desktop writes it that way).
 
 pub fn flux_api_key() -> Option<String> {
-    for var in ["FLUX_API_KEY", "FLUX_TEST_KEY"] {
-        if let Ok(key) = std::env::var(var) {
-            let key = key.trim();
-            if !key.is_empty() {
-                return Some(key.to_string());
-            }
-        }
-    }
-    let path = std::env::var("FLUX_API_KEY_FILE").ok()?;
-    let contents = std::fs::read_to_string(path.trim()).ok()?;
-    let key = contents.trim();
-    if key.is_empty() {
-        None
-    } else {
-        Some(key.to_string())
-    }
+    crate::provider_key::resolve_flux(&|name| std::env::var(name).ok())
 }
 
 #[cfg(test)]
@@ -43,12 +29,18 @@ mod tests {
         }
         assert_eq!(flux_api_key(), None);
 
-        // File fallback works and trims whitespace/newlines.
+        // File fallback works and trims whitespace/newlines. C8: key files
+        // must be owner-only on unix (the perms gate) — chmod before use.
         let mut path = std::env::temp_dir();
         path.push(format!("nano-flux-key-test-{}.txt", std::process::id()));
         {
             let mut f = std::fs::File::create(&path).unwrap();
             writeln!(f, "  sk-from-file  ").unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
         unsafe { std::env::set_var("FLUX_API_KEY_FILE", &path) };
         assert_eq!(flux_api_key().as_deref(), Some("sk-from-file"));
