@@ -1,0 +1,13 @@
+{"dir":">","frame":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"wayland-nano","version":"0.1.0"}}}}
+{"dir":">","frame":{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","id":2,"result":{"sessionId":"wayland-nano-session-recorded","models":{"currentModelId":"flux-auto","availableModels":[{"modelId":"flux-auto","name":"Flux Auto"}]}}}}
+{"dir":">","frame":{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","id":10,"method":"session/request_permission","params":{"sessionId":"wayland-nano-session-recorded","toolCall":{"rawInput":{"url":"https://example.com/"},"title":"web_fetch","toolCallId":"call-1"},"options":[{"kind":"allow_once","name":"Allow once","optionId":"allow"},{"kind":"reject_once","name":"Deny","optionId":"deny"}]}}}
+{"dir":">","frame":{"jsonrpc":"2.0","id":10,"result":{"outcome":{"outcome":"selected","optionId":"allow"}}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"kind":"fetch","rawInput":{"url":"https://example.com/"},"sessionUpdate":"tool_call","status":"in_progress","title":"web_fetch","toolCallId":"call-1"}}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"rawOutput":"len:512","sessionUpdate":"tool_call_update","status":"completed","toolCallId":"call-1"}}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","id":11,"method":"session/request_permission","params":{"sessionId":"wayland-nano-session-recorded","toolCall":{"rawInput":{"url":"https://tracker.invalid/pixel"},"title":"web_fetch","toolCallId":"call-2"},"options":[{"kind":"allow_once","name":"Allow once","optionId":"allow"},{"kind":"reject_once","name":"Deny","optionId":"deny"}]}}}
+{"dir":">","frame":{"jsonrpc":"2.0","id":11,"result":{"outcome":{"outcome":"selected","optionId":"deny"}}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Fetched example.com; the second fetch was denied."}}}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}}

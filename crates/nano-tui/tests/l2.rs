@@ -19,6 +19,8 @@ const APPROVAL_SPOOF: &str = include_str!("fixtures/adversarial/approval_spoof.n
 const TORN_RESUME: &str = include_str!("fixtures/adversarial/torn_resume.ndjson");
 const CANCEL_MID_TURN: &str = include_str!("fixtures/adversarial/cancel_mid_turn.ndjson");
 const COMPACT: &str = include_str!("fixtures/adversarial/compact.ndjson");
+const PAGED_READ: &str = include_str!("fixtures/adversarial/paged_read.ndjson");
+const WEB_FETCH: &str = include_str!("fixtures/adversarial/web_fetch.ndjson");
 
 /// The recorded full journey is two lifetimes in one file: phase 1 ends at
 /// the second `initialize` expectation (the relaunch). Split there.
@@ -465,5 +467,90 @@ fn l2_compact_command_sends_request_and_renders_notices() {
     // survived the sanitizer into the terminal grid.
     assert!(screen.contains("forged"), "sanitized text kept: {screen}");
     assert!(!screen.contains('\u{1b}'), "no raw ESC on screen");
+    world.finish();
+}
+
+/// C3 coverage (routed from the C3+C4 proof): a paged-read continuation
+/// renders as a second fs_read tool card whose detail line carries the
+/// paging cursor (line_offset + file_token) — the continuation must be
+/// visible as its own card, not silently merged into the first page.
+#[test]
+fn l2_paged_read_continuation() {
+    lint_fixture(PAGED_READ, &[FULL_JOURNEY, PTY_JOURNEY], &[][..])
+        .unwrap_or_else(|e| panic!("paged_read fixture failed the lint: {e}"));
+    let mut world = World::new(PAGED_READ, 80, 24, None);
+    world.type_and_submit("read big.txt");
+    let screen = world.screen();
+    assert!(
+        screen.contains("fs_read [completed]"),
+        "first page card: {screen}"
+    );
+    assert!(
+        screen.contains("\"line_offset\":1000"),
+        "continuation cursor visible: {screen}"
+    );
+    assert!(
+        screen.contains("file_token"),
+        "freshness token visible: {screen}"
+    );
+    assert!(screen.contains("Read both pages of big.txt."), "{screen}");
+    world.finish();
+}
+
+/// C4 coverage (routed from the C3+C4 proof): web_fetch allow/deny through
+/// the permission modal — the allowed fetch renders a completed fetch card;
+/// the denied fetch renders NO card (a gate denial never emits tool frames)
+/// and the decision note names the denial.
+#[test]
+fn l2_web_fetch_allow_and_deny() {
+    lint_fixture(WEB_FETCH, &[FULL_JOURNEY, PTY_JOURNEY], &[][..])
+        .unwrap_or_else(|e| panic!("web_fetch fixture failed the lint: {e}"));
+    let mut world = World::new(WEB_FETCH, 80, 24, None);
+    world.type_and_submit("fetch two urls");
+    let screen = world.screen();
+    assert!(screen.contains("Approve? web_fetch"), "modal: {screen}");
+    // Allow the first fetch.
+    world.key(KeyCode::Enter);
+    let screen = world.screen();
+    assert!(
+        screen.contains("approval decision: allow"),
+        "decision note: {screen}"
+    );
+    assert!(
+        screen.contains("web_fetch [completed]"),
+        "allowed fetch card: {screen}"
+    );
+    assert!(
+        screen.contains("https://example.com/"),
+        "fetch url detail: {screen}"
+    );
+    // The second fetch parks at its own modal; deny it (Down → Deny).
+    assert!(
+        screen.contains("Approve? web_fetch"),
+        "second modal: {screen}"
+    );
+    world.key(KeyCode::Down);
+    world.key(KeyCode::Enter);
+    let screen = world.screen();
+    assert!(
+        screen.contains("approval decision: deny"),
+        "denial note: {screen}"
+    );
+    assert!(
+        !screen.contains("tracker.invalid"),
+        "a denied call emits no tool frames — no card, no url: {screen}"
+    );
+    assert!(
+        screen.contains("Fetched example.com; the second fetch was denied."),
+        "final answer: {screen}"
+    );
+    let options: Vec<&str> = world
+        .conn
+        .host
+        .decisions
+        .iter()
+        .map(|d| d.option_id.as_str())
+        .collect();
+    assert_eq!(options, ["allow", "deny"]);
     world.finish();
 }
