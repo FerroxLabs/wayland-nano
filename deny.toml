@@ -12,6 +12,8 @@ allow = [
     # webpki-roots (Mozilla root store data, pulled in by reqwest/rustls)
     "CDLA-Permissive-2.0",
     "CC0-1.0",
+    # foldhash (via hashbrown 0.16, via ratatui) — OSI-approved permissive
+    "Zlib",
 ]
 
 [bans]
