@@ -339,3 +339,30 @@
 1. **OWNER: C2 promotion decision** (claim posted) + **elevated provisioning** (dry-run review first: `cargo run -p nano-sandbox --bin nanok3-provision-dry-run`).
 2. C1.2 full proof → C1 claim to `shared/reviews/C1/`.
 3. C2: shell tool (via sandbox SpawnSpec), agent loop (turn state machine + loop protection), journal integration.
+
+## Capability-goal pipeline checkpoint (2026-08-12, ~09:10 local)
+
+Active goal: close codex-parity gaps C1–C7 (research → design → codex+claude
+panel audit → build → adversarial proof, per phase). All design artifacts and
+verdicts: `shared/reviews/panel-tui/` (evidence hub, not this repo).
+
+- **C1 context management**: design CERTIFIED both lenses (claude r2 +
+  codex r3 MEETS-THE-BAR). Build in flight (background agent).
+  Proof plan staged: `shared/reviews/panel-tui/C1-proof-plan.md`.
+- **C2 permission modes**: claude MEETS-THE-BAR; codex r1 NEEDS-CHANGES →
+  doc revised (journal-first ModeSet, sound oracle tests, asymmetric
+  de-escalation); codex r2 audit in flight.
+- **C3+C4 big-file/web-fetch**: both lenses r1 NEEDS-CHANGES → doc revised
+  (manual redirect hop loop, complete private-IP denylist, 0-based cursor,
+  fetch_bounded in nano-egress, advisory freshness token, exact-host v1);
+  both r2 audits in flight.
+- **C5+C6 memory/tasks**: claude MEETS-THE-BAR (1 mandatory amendment:
+  create_without_breakaway); codex r1 NEEDS-CHANGES → revision in flight
+  (registry-of-job-handles kill domain, mpsc bounded teardown, redaction
+  guarantee downgraded to best-effort + writes default-OFF).
+- **C7 error-UX**: design doc drafting in flight (recon:
+  `C7-error-ux-recon.md`).
+- Parent-verified seam notes: `shared/reviews/panel-tui/ROUND1-SEAM-VERIFICATIONS.md`.
+
+Build order: C1 → C2 → C3+C4 → C5 (needs C1 redaction module) → C6 → C7.
+Gates per phase: `cargo test --workspace`, clippy `-D warnings`, fmt, CI 6/6.
