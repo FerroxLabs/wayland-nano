@@ -92,6 +92,14 @@ pub enum Op {
         /// secret payloads by default.
         output_digest: String,
         changed_files: Vec<String>,
+        /// Typed error classification (C7): the KIND only, never raw error
+        /// text — the digest-only journal invariant holds, and the
+        /// presentation string is re-derivable from the error-code table on
+        /// replay. Serde-defaulted: journals written before the field
+        /// existed replay unchanged; omitted from serialization when absent
+        /// so new journals stay byte-minimal.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_kind: Option<crate::error_kind::NanoErrorKind>,
     },
     /// Assistant-visible reply text for a model step. Unlike tool output this
     /// is content the agent itself produced for the user (it is streamed to

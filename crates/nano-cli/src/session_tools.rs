@@ -293,6 +293,9 @@ impl<'a> SessionTools<'a> {
             ok: false,
             output: message.into(),
             progress: ProgressSignals::default(),
+            // C7 field; per-kind typing for session-tool errors is a
+            // tracked integration follow-up.
+            error_kind: None,
         }
     }
 
@@ -301,6 +304,7 @@ impl<'a> SessionTools<'a> {
             ok: true,
             output: output.into(),
             progress: ProgressSignals::default(),
+            error_kind: None,
         }
     }
 

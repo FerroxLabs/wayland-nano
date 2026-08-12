@@ -24,7 +24,42 @@ use serde_json::Value;
 use serde_json::json;
 use tokio::sync::mpsc;
 
+use nano_session::NanoErrorKind;
+
 pub const ACP_PROTOCOL_VERSION: u32 = 1;
+
+/// The typed payload inside `error.data.nanoError` / `_meta.nanoError`
+/// (C7). An unrecognized (future) kind deserializes to
+/// [`NanoErrorKind::Unknown`], which both UIs classify TERMINAL — an older
+/// UI must never auto-retry a newer engine's error (design §2/D2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NanoErrorPayload {
+    pub kind: NanoErrorKind,
+    pub retryable: bool,
+}
+
+/// Parse a `nanoError` payload object (`{"kind": ..., "retryable": ...}`).
+/// Missing/malformed fields fail closed: no payload, or retryable false.
+pub fn parse_nano_error(value: &Value) -> Option<NanoErrorPayload> {
+    let kind = value
+        .get("kind")
+        .cloned()
+        .and_then(|k| serde_json::from_value::<NanoErrorKind>(k).ok())?;
+    let retryable = value
+        .get("retryable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Some(NanoErrorPayload { kind, retryable })
+}
+
+/// A JSON-RPC error with its code and optional typed payload preserved
+/// (C7 — the pre-C7 client kept only the message string).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireError {
+    pub code: i64,
+    pub message: String,
+    pub nano: Option<NanoErrorPayload>,
+}
 
 /// A selectable option on a session/request_permission request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +87,9 @@ pub enum SessionUpdate {
         /// A structured before/after diff content block (C10 §6), when the
         /// host emitted one for this call.
         diff: Option<DiffBlock>,
+        /// C7: the typed failure payload (`_meta.nanoError`) on failed
+        /// cards — drives the honest title+hint result line.
+        nano_error: Option<NanoErrorPayload>,
     },
     /// Context-compaction lifecycle notice (C1 §7): begin/complete/cancel,
     /// rendered as a system note in the transcript.
@@ -89,7 +127,7 @@ pub enum Inbound {
     Response {
         id: u64,
         result: Option<Value>,
-        error: Option<String>,
+        error: Option<WireError>,
     },
     Update(SessionUpdate),
     Permission(PermissionRequest),
@@ -143,10 +181,19 @@ pub fn classify(frame: &Value) -> Inbound {
                     .get("message")
                     .and_then(Value::as_str)
                     .unwrap_or("unknown error");
+                let code = error.get("code").and_then(Value::as_i64).unwrap_or(0);
+                let nano = error
+                    .get("data")
+                    .and_then(|d| d.get("nanoError"))
+                    .and_then(parse_nano_error);
                 Inbound::Response {
                     id,
                     result: None,
-                    error: Some(message.to_string()),
+                    error: Some(WireError {
+                        code,
+                        message: message.to_string(),
+                        nano,
+                    }),
                 }
             } else {
                 Inbound::Response {
@@ -210,6 +257,10 @@ fn parse_session_update(update: &Value) -> SessionUpdate {
                 .unwrap_or("")
                 .to_string(),
             diff: parse_diff_block(update),
+            nano_error: update
+                .get("_meta")
+                .and_then(|m| m.get("nanoError"))
+                .and_then(parse_nano_error),
         },
         "compaction" => SessionUpdate::Compaction {
             status: update
@@ -672,6 +723,7 @@ mod tests {
                     old_text: Some("old".into()),
                     new_text: "new".into(),
                 }),
+                nano_error: None,
             })
         );
         // A done frame without content parses with no diff.
@@ -685,6 +737,7 @@ mod tests {
                 status: "completed".into(),
                 raw_output: "ok".into(),
                 diff: None,
+                nano_error: None,
             })
         );
 
@@ -771,7 +824,11 @@ mod tests {
             Inbound::Response {
                 id: 3,
                 result: None,
-                error: Some("bad".into()),
+                error: Some(WireError {
+                    code: -32602,
+                    message: "bad".into(),
+                    nano: None,
+                }),
             }
         );
         let unknown_req = json!({"jsonrpc":"2.0","id":9,"method":"fs/read_text_file","params":{}});
@@ -812,5 +869,68 @@ mod tests {
         assert_eq!(ids, ["read_only", "default", "full_auto", "quantum"]);
         assert!(parse_modes(&json!({})).is_none());
         assert!(parse_modes(&json!({"modes": {"availableModes": []}})).is_none());
+    }
+
+    /// C7: the numeric code AND the typed data payload survive parsing.
+    #[test]
+    fn classify_error_response_keeps_code_and_nano_payload() {
+        let err = json!({"jsonrpc":"2.0","id":5,"error":{
+            "code":-32603,"message":"Rate limited",
+            "data":{"nanoError":{"kind":"model_rate_limited","retryable":true,"retry_after_ms":500}}}});
+        assert_eq!(
+            classify(&err),
+            Inbound::Response {
+                id: 5,
+                result: None,
+                error: Some(WireError {
+                    code: -32603,
+                    message: "Rate limited".into(),
+                    nano: Some(NanoErrorPayload {
+                        kind: NanoErrorKind::ModelRateLimited,
+                        retryable: true,
+                    }),
+                }),
+            }
+        );
+    }
+
+    /// C7 (design §2/D2): a kind from the FUTURE parses as Unknown, and a
+    /// forged `retryable:true` on an unknown kind still classifies terminal
+    /// downstream (Unknown's spec is terminal; app renders the wire flag
+    /// only for KNOWN kinds — see app.rs::error_cell).
+    #[test]
+    fn future_kind_parses_as_unknown() {
+        let err = json!({"jsonrpc":"2.0","id":6,"error":{
+            "code":-32603,"message":"mystery",
+            "data":{"nanoError":{"kind":"kind_from_the_future","retryable":true}}}});
+        let Inbound::Response {
+            error: Some(err), ..
+        } = classify(&err)
+        else {
+            panic!("expected error response");
+        };
+        assert_eq!(err.nano.map(|n| n.kind), Some(NanoErrorKind::Unknown));
+    }
+
+    /// C7: `_meta.nanoError` on a failed tool_call_update parses through.
+    #[test]
+    fn tool_call_update_parses_nano_error_meta() {
+        let frame = json!({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"c1",
+            "status":"failed","rawOutput":"len:21",
+            "_meta":{"nanoError":{"kind":"approval_denied","retryable":false}}}}});
+        assert_eq!(
+            classify(&frame),
+            Inbound::Update(SessionUpdate::ToolCallUpdate {
+                call_id: "c1".into(),
+                status: "failed".into(),
+                raw_output: "len:21".into(),
+                nano_error: Some(NanoErrorPayload {
+                    kind: NanoErrorKind::ApprovalDenied,
+                    retryable: false,
+                }),
+                diff: None,
+            })
+        );
     }
 }

@@ -16,6 +16,10 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+use nano_session::NanoErrorKind;
+
+pub use crate::error_codes::error_presentation;
+use crate::error_codes::spec;
 use crate::permission_mode::PermissionMode;
 
 pub const ACP_PROTOCOL_VERSION: u32 = 1;
@@ -83,15 +87,70 @@ impl JsonRpcResponse {
         }
     }
 
+    /// A TYPED error response (C7): the numeric code comes from the error
+    /// table (standard JSON-RPC codes only) and the typing rides in
+    /// `data.nanoError` — closed typed fields only (kind enum, retryable
+    /// bool, bounded numeric codes, egress-redacted host), never free-form
+    /// detail strings (design §2/D2, §7).
+    pub fn err_typed(
+        id: serde_json::Value,
+        kind: NanoErrorKind,
+        message: impl Into<String>,
+        extras: NanoErrorExtras,
+    ) -> Self {
+        let spec = spec(kind);
+        Self {
+            jsonrpc: "2.0".into(),
+            id,
+            result: None,
+            error: Some(JsonRpcErrorBody {
+                code: spec.wire_code,
+                message: message.into(),
+                data: Some(nano_error_data(kind, &extras)),
+            }),
+        }
+    }
+
     pub fn method_not_found(id: serde_json::Value, method: &str) -> Self {
         Self::err(id, -32601, format!("method not found: {method}"))
     }
+}
+
+/// The closed set of optional typed detail fields a `nanoError` payload may
+/// carry (design §2/D2: booleans, bounded numeric codes, the egress-redacted
+/// host — NO free-form strings, ever).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NanoErrorExtras {
+    pub status: Option<u16>,
+    pub retry_after_ms: Option<u64>,
+    pub host: Option<String>,
+}
+
+/// `error.data` / `_meta` payload: `{ "nanoError": { "kind", "retryable",
+/// ...closed extras } }`.
+pub fn nano_error_data(kind: NanoErrorKind, extras: &NanoErrorExtras) -> serde_json::Value {
+    let mut nano = serde_json::json!({
+        "kind": kind,
+        "retryable": spec(kind).retryable,
+    });
+    if let Some(status) = extras.status {
+        nano["status"] = serde_json::json!(status);
+    }
+    if let Some(retry_after_ms) = extras.retry_after_ms {
+        nano["retry_after_ms"] = serde_json::json!(retry_after_ms);
+    }
+    if let Some(host) = &extras.host {
+        nano["host"] = serde_json::json!(host);
+    }
+    serde_json::json!({ "nanoError": nano })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct JsonRpcErrorBody {
     pub code: i64,
     pub message: String,
+    /// C7: typed error payload (`{"nanoError": {...}}`) — absent on
+    /// pre-C7-style generic errors.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
 }
@@ -287,49 +346,77 @@ pub fn tool_call_update(
 
 /// A replayed tool call (session/load history restore): the same `tool_call`
 /// card shape as a live call, but already carrying its final status, since
-/// the work happened in a previous process lifetime.
+/// the work happened in a previous process lifetime. A failed call with a
+/// journaled `error_kind` carries the typed presentation + `_meta.nanoError`
+/// exactly like the live path (D3/D5 — one typed op, identical frames).
 pub fn tool_call_replay(
     session_id: &str,
     call_id: &str,
     name: &str,
     args: &serde_json::Value,
     ok: bool,
+    error_kind: Option<NanoErrorKind>,
 ) -> JsonRpcNotification {
+    let mut update = serde_json::json!({
+        "sessionUpdate": "tool_call",
+        "toolCallId": call_id,
+        "title": name,
+        "kind": tool_kind(name),
+        "status": if ok { "completed" } else { "failed" },
+        "rawInput": args
+    });
+    if let Some(kind) = error_kind {
+        attach_typed_failure(&mut update, kind);
+    }
     JsonRpcNotification::new(
         "session/update",
         serde_json::json!({
             "sessionId": session_id,
-            "update": {
-                "sessionUpdate": "tool_call",
-                "toolCallId": call_id,
-                "title": name,
-                "kind": tool_kind(name),
-                "status": if ok { "completed" } else { "failed" },
-                "rawInput": args
-            }
+            "update": update
         }),
     )
 }
 
-/// A tool call completing.
+/// A tool call completing. On a typed failure (`error_kind`), the frame
+/// gains (design §2/D3):
+/// - `content`: the static table presentation — the exact shape Desktop's
+///   normalizer stringifies today, so failed cards show an honest message
+///   with ZERO Desktop change;
+/// - `_meta.nanoError`: the closed typed payload for typed consumers.
+///   `rawOutput` keeps the digest for back-compat.
 pub fn tool_call_done(
     session_id: &str,
     call_id: &str,
     ok: bool,
     output: &str,
+    error_kind: Option<NanoErrorKind>,
 ) -> JsonRpcNotification {
+    let mut update = serde_json::json!({
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": call_id,
+        "status": if ok { "completed" } else { "failed" },
+        "rawOutput": output
+    });
+    if let Some(kind) = error_kind {
+        attach_typed_failure(&mut update, kind);
+    }
     JsonRpcNotification::new(
         "session/update",
         serde_json::json!({
             "sessionId": session_id,
-            "update": {
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": call_id,
-                "status": if ok { "completed" } else { "failed" },
-                "rawOutput": output
-            }
+            "update": update
         }),
     )
+}
+
+/// D3 fields on a failed tool card: ACP-spec `content` (Desktop's
+/// normalizer reads it verbatim) + `_meta.nanoError` (typed consumers).
+fn attach_typed_failure(update: &mut serde_json::Value, kind: NanoErrorKind) {
+    update["content"] = serde_json::json!([{
+        "type": "content",
+        "content": { "type": "text", "text": error_presentation(kind) }
+    }]);
+    update["_meta"] = nano_error_data(kind, &NanoErrorExtras::default());
 }
 
 fn tool_kind(name: &str) -> &'static str {
@@ -536,7 +623,7 @@ mod tests {
         let page = "line content\n".repeat(8 * 1024); // ~106 KB, C3 page-sized
         let body = "x".repeat(64 * 1024); // C4 body cap
         for output in [&page, &body] {
-            let frame = tool_call_done("s1", "c1", true, output);
+            let frame = tool_call_done("s1", "c1", true, output, None);
             let line = serde_json::to_string(&frame).unwrap();
             let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
             assert_eq!(
@@ -691,5 +778,78 @@ mod tests {
             json["params"]["update"]["content"][0]["oldText"],
             serde_json::Value::Null
         );
+    }
+
+    /// C7/D3: a typed tool failure carries the ACP-spec `content`
+    /// presentation (Desktop's normalizer stringifies it today — zero
+    /// Desktop change), the `_meta.nanoError` typed payload, and keeps the
+    /// digest in rawOutput for back-compat.
+    #[test]
+    fn failed_tool_card_carries_content_and_meta() {
+        let frame = tool_call_done(
+            "s1",
+            "c1",
+            false,
+            "len:42",
+            Some(NanoErrorKind::ApprovalDenied),
+        );
+        let json = serde_json::to_value(&frame).unwrap();
+        let update = &json["params"]["update"];
+        assert_eq!(update["status"], "failed");
+        assert_eq!(update["rawOutput"], "len:42");
+        assert_eq!(update["content"][0]["content"]["text"], "Denied by user");
+        let nano = &update["_meta"]["nanoError"];
+        assert_eq!(nano["kind"], "approval_denied");
+        assert_eq!(nano["retryable"], false);
+
+        // The replayed card carries the same typing.
+        let replay = tool_call_replay(
+            "s1",
+            "c1",
+            "fs_write",
+            &serde_json::json!({"path": "a"}),
+            false,
+            Some(NanoErrorKind::FsWriteDenied),
+        );
+        let json = serde_json::to_value(&replay).unwrap();
+        let update = &json["params"]["update"];
+        assert_eq!(update["status"], "failed");
+        assert_eq!(update["_meta"]["nanoError"]["kind"], "fs_write_denied");
+        assert_eq!(
+            update["content"][0]["content"]["text"],
+            "Denied by policy — Path is outside the allowed set; ask the user"
+        );
+
+        // Untyped completions are byte-compatible with the pre-C7 shape.
+        let plain = tool_call_done("s1", "c1", true, "len:1", None);
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json["params"]["update"].get("_meta").is_none());
+        assert!(json["params"]["update"].get("content").is_none());
+    }
+
+    /// C7/D2: typed error responses carry standard codes + closed data.
+    #[test]
+    fn typed_error_response_shape() {
+        let resp = JsonRpcResponse::err_typed(
+            serde_json::json!(3),
+            NanoErrorKind::ModelRateLimited,
+            "Rate limited — Retrying automatically; wait a moment",
+            crate::acp::NanoErrorExtras {
+                retry_after_ms: Some(1500),
+                ..Default::default()
+            },
+        );
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["error"]["code"], -32603);
+        let nano = &json["error"]["data"]["nanoError"];
+        assert_eq!(nano["kind"], "model_rate_limited");
+        assert_eq!(nano["retryable"], true);
+        assert_eq!(nano["retry_after_ms"], 1500);
+        assert!(nano.get("host").is_none());
+
+        // Untyped errors never grow a data field.
+        let plain = JsonRpcResponse::err(serde_json::json!(1), -32700, "parse error");
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json["error"].get("data").is_none());
     }
 }

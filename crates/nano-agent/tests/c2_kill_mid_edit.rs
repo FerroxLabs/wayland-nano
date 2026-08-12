@@ -366,7 +366,7 @@ async fn c2_kill_mid_edit_journal_disk_equivalence_and_resume_no_double_apply() 
     eprintln!("STATE: {:?}", result.state);
 
     assert!(
-        matches!(result.state, TurnState::Stopped(ref r) if r.contains("cancelled")),
+        matches!(result.state, TurnState::Stopped(ref r) if r.detail.contains("cancelled")),
         "kill boundary must stop the turn typed, got {:?}",
         result.state
     );

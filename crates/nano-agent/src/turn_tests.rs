@@ -79,6 +79,7 @@ mod tests {
                 ok: true,
                 output: format!("ran {}", call.name),
                 progress: self.progress.clone(),
+                error_kind: None,
             }
         }
     }
@@ -328,7 +329,7 @@ mod tests {
             result.state
         );
         assert!(
-            matches!(result.state, TurnState::Stopped(ref r) if r.contains("no observable progress")),
+            matches!(result.state, TurnState::Stopped(ref r) if r.detail.contains("no observable progress")),
             "{:?}",
             result.state
         );

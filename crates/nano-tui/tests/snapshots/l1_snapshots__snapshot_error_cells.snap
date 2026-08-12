@@ -1,0 +1,29 @@
+---
+source: crates/nano-tui/tests/l1_snapshots.rs
+assertion_line: 136
+expression: "render_to_test_backend(&world.app, 80, 24)"
+---
+"· nano-tui — connecting to wayland-nano acp-host                                "
+"· session ready: wayland-nano-session-recorded                                  "
+"↻ Rate limited  [-32603]                                                        "
+"  Retrying automatically; wait a moment                                         "
+"⛔ Denied by user  [-32603]                                                     " Hidden by multi-width symbols: [(1, " ")]
+"✖ Request failed  [-32603]                                                      "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" › ─────────────────────────────────────────────────────────────────────────────"
+"                                                                                "
+"                                                                                "
+" flux-auto | default | ready | wayland-nano | /model /mode /plan /todo /status /"

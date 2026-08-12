@@ -1301,7 +1301,9 @@ name = "nano-protocol"
 version = "0.1.0"
 dependencies = [
  "nano-agent",
+ "nano-egress",
  "nano-model",
+ "nano-session",
  "pretty_assertions",
  "serde",
  "serde_json",
@@ -1384,6 +1386,7 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "insta",
+ "nano-session",
  "portable-pty",
  "ratatui",
  "serde",

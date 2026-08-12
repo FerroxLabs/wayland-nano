@@ -10,6 +10,7 @@ use crate::loop_protection::{
     ToolCallKey, TurnBudget,
 };
 use nano_model::types::{Message, ModelError, ModelEvent, ModelRequest, ModelResponse, ToolCall};
+use nano_session::NanoErrorKind;
 use nano_session::op::{Op, OpEnvelope};
 use std::fmt::Debug;
 
@@ -34,6 +35,58 @@ pub struct ToolOutcome {
     pub ok: bool,
     pub output: String,
     pub progress: ProgressSignals,
+    /// C7: the typed error classification, set at the same site that
+    /// stringifies the error (the variant is still in scope there — no
+    /// information is lost before the handoff). `None` on success and for
+    /// executors that predate typing.
+    pub error_kind: Option<NanoErrorKind>,
+}
+
+/// A turn-fatal failure with its typed classification (C7 design §2/D6).
+/// `detail` is logs/model-side ONLY — it may carry provider text and never
+/// reaches a UI-bound frame (design §7). The wire carries `kind` plus the
+/// closed typed extras.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedError {
+    pub kind: NanoErrorKind,
+    pub detail: String,
+    /// Provider HTTP status (bounded code) when the failure carries one.
+    pub status: Option<u16>,
+    pub retry_after_ms: Option<u64>,
+    /// Egress-redacted host (redacted by construction in nano-egress).
+    pub host: Option<String>,
+}
+
+impl TypedError {
+    pub fn new(kind: NanoErrorKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
+            status: None,
+            retry_after_ms: None,
+            host: None,
+        }
+    }
+}
+
+/// An engine stop with its typed classification (C7 design §2/D6): kinds
+/// `user_cancelled` / `budget_exhausted` / `no_progress` /
+/// `repeat_force_stop`, assigned at the construction site instead of
+/// parsing a payload string downstream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StopInfo {
+    pub kind: NanoErrorKind,
+    /// Logs/model-side only (same rule as [`TypedError::detail`]).
+    pub detail: String,
+}
+
+impl StopInfo {
+    pub fn new(kind: NanoErrorKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,8 +99,8 @@ pub enum TurnState {
     Replan,
     Verify,
     Complete,
-    Failed(String),
-    Stopped(String),
+    Failed(TypedError),
+    Stopped(StopInfo),
 }
 
 impl TurnState {
@@ -329,7 +382,10 @@ impl<'a> TurnEngine<'a> {
         transition(&mut state, &mut history, TurnState::Understand);
         loop {
             if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst)) {
-                state = TurnState::Stopped("cancelled by caller".into());
+                state = TurnState::Stopped(StopInfo::new(
+                    NanoErrorKind::UserCancelled,
+                    "cancelled by caller",
+                ));
                 emit(
                     &mut ops,
                     Op::TurnEnd {
@@ -340,7 +396,10 @@ impl<'a> TurnEngine<'a> {
                 break;
             }
             if let Err(exhausted) = budget_tracker.check(&self.budget) {
-                state = TurnState::Stopped(format!("budget exhausted: {exhausted:?}"));
+                state = TurnState::Stopped(StopInfo::new(
+                    NanoErrorKind::BudgetExhausted,
+                    format!("budget exhausted: {exhausted:?}"),
+                ));
                 break;
             }
             budget_tracker.record_step();
@@ -372,7 +431,10 @@ impl<'a> TurnEngine<'a> {
                     )
                     .await;
                     if let Err(err) = outcome {
-                        state = TurnState::Failed(format!("auto-compaction failed: {err}"));
+                        state = TurnState::Failed(TypedError::new(
+                            NanoErrorKind::CompactionFailed,
+                            format!("auto-compaction failed: {err}"),
+                        ));
                         emit(
                             &mut ops,
                             Op::TurnEnd {
@@ -388,10 +450,10 @@ impl<'a> TurnEngine<'a> {
                     if tokens.estimate(&messages) >= config.auto_compact_limit
                         && compact_guard.record_ineffective()
                     {
-                        state = TurnState::Failed(
-                            "auto-compaction loop guard: two consecutive compactions failed to bring the context under the limit"
-                                .into(),
-                        );
+                        state = TurnState::Failed(TypedError::new(
+                            NanoErrorKind::CompactionFailed,
+                            "auto-compaction loop guard: two consecutive compactions failed to bring the context under the limit",
+                        ));
                         emit(
                             &mut ops,
                             Op::TurnEnd {
@@ -439,7 +501,10 @@ impl<'a> TurnEngine<'a> {
                     )
                     .await;
                     if let Err(err) = outcome {
-                        state = TurnState::Failed(format!("reactive compaction failed: {err}"));
+                        state = TurnState::Failed(TypedError::new(
+                            NanoErrorKind::CompactionFailed,
+                            format!("reactive compaction failed: {err}"),
+                        ));
                         emit(
                             &mut ops,
                             Op::TurnEnd {
@@ -453,7 +518,7 @@ impl<'a> TurnEngine<'a> {
                     continue; // retry the model call once, post-compaction
                 }
                 Err(err) => {
-                    state = TurnState::Failed(format!("model call failed: {err}"));
+                    state = TurnState::Failed(crate::error_map::typed_error_of_model(&err));
                     break;
                 }
             };
@@ -559,9 +624,34 @@ impl<'a> TurnEngine<'a> {
                                 true,
                             ));
                         }
-                        state = TurnState::Stopped(reason);
+                        state = TurnState::Stopped(StopInfo::new(
+                            NanoErrorKind::RepeatForceStop,
+                            reason,
+                        ));
                         break;
                     }
+                }
+                // C7/D4: the ToolCall op is journaled BEFORE the approval
+                // gate runs, so a denial is an honest journaled + framed
+                // beat instead of an invisible one. Journal-first is
+                // fail-closed: a failed append fails the turn with
+                // journal_unavailable rather than letting an unjournaled
+                // live frame out (the sink skips the frame on append
+                // failure).
+                if !emit(
+                    &mut ops,
+                    Op::ToolCall {
+                        turn_id: turn_id.into(),
+                        call_id: call.id.clone(),
+                        name: call.name.clone(),
+                        args: call.arguments.clone(),
+                    },
+                ) {
+                    state = TurnState::Failed(TypedError::new(
+                        NanoErrorKind::JournalUnavailable,
+                        "journal append failed for tool call",
+                    ));
+                    break;
                 }
                 if let Some(gate) = self.approval {
                     if gate.approve(call) == ApprovalDecision::Deny {
@@ -571,24 +661,38 @@ impl<'a> TurnEngine<'a> {
                             Some(reason) => format!("denied by approval gate: {reason}"),
                             None => "denied by approval gate".to_string(),
                         };
+                        // D4: the denial is a journaled, framed failed
+                        // ToolResult (kind approval_denied) — and a denial
+                        // whose journal append fails is a turn-fatal journal
+                        // error, never a silently-dropped call.
+                        if !emit(
+                            &mut ops,
+                            Op::ToolResult {
+                                call_id: call.id.clone(),
+                                ok: false,
+                                output_digest: format!("len:{}", text.len()),
+                                changed_files: vec![],
+                                error_kind: Some(NanoErrorKind::ApprovalDenied),
+                            },
+                        ) {
+                            state = TurnState::Failed(TypedError::new(
+                                NanoErrorKind::JournalUnavailable,
+                                "journal append failed for denial result",
+                            ));
+                            break;
+                        }
                         messages.push(Message::tool_result(&call.id, text, true));
                         continue;
                     }
                 }
-                emit(
-                    &mut ops,
-                    Op::ToolCall {
-                        turn_id: turn_id.into(),
-                        call_id: call.id.clone(),
-                        name: call.name.clone(),
-                        args: call.arguments.clone(),
-                    },
-                );
                 let outcome = self.tools.execute(call).await;
                 step_progress.files_changed |= outcome.progress.files_changed;
                 step_progress.process_outcome_changed |= outcome.progress.process_outcome_changed;
                 step_progress.new_information |= outcome.progress.new_information;
-                emit(
+                // The journaled record carries the KIND and never the raw
+                // error text (D5 — the digest-only invariant holds; the
+                // presentation is re-derivable from the table on replay).
+                if !emit(
                     &mut ops,
                     Op::ToolResult {
                         call_id: call.id.clone(),
@@ -599,8 +703,15 @@ impl<'a> TurnEngine<'a> {
                         } else {
                             vec![]
                         },
+                        error_kind: outcome.error_kind,
                     },
-                );
+                ) {
+                    state = TurnState::Failed(TypedError::new(
+                        NanoErrorKind::JournalUnavailable,
+                        "journal append failed for tool result",
+                    ));
+                    break;
+                }
                 messages.push(Message {
                     role: nano_model::types::Role::Tool,
                     content: vec![nano_model::types::ContentBlock::ToolResult {
@@ -610,7 +721,7 @@ impl<'a> TurnEngine<'a> {
                     }],
                 });
             }
-            if matches!(state, TurnState::Stopped(_)) {
+            if matches!(state, TurnState::Stopped(_) | TurnState::Failed(_)) {
                 emit(
                     &mut ops,
                     Op::TurnEnd {
@@ -633,8 +744,10 @@ impl<'a> TurnEngine<'a> {
                     ));
                 }
                 ProgressAction::Stop => {
-                    state =
-                        TurnState::Stopped("no observable progress for 6 consecutive steps".into());
+                    state = TurnState::Stopped(StopInfo::new(
+                        NanoErrorKind::NoProgress,
+                        "no observable progress for 6 consecutive steps",
+                    ));
                     emit(
                         &mut ops,
                         Op::TurnEnd {

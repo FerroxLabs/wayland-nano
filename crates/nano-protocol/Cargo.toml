@@ -8,6 +8,9 @@ rust-version.workspace = true
 [dependencies]
 nano-agent = { version = "0.1.0", path = "../nano-agent" }
 nano-model = { version = "0.1.0", path = "../nano-model" }
+# C7: NanoErrorKind (the journaled error vocabulary) — serde-only crate,
+# no cycle (nano-session depends on nothing in this workspace).
+nano-session = { version = "0.1.0", path = "../nano-session" }
 tokio = { version = "1", features = ["macros", "rt"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -15,3 +18,4 @@ thiserror = "2"
 
 [dev-dependencies]
 pretty_assertions = "1"
+nano-egress = { version = "0.1.0", path = "../nano-egress" }

@@ -22,6 +22,19 @@ use crate::transcript::Cell;
 
 const COMPOSER_MAX_HEIGHT: u16 = 10;
 
+/// C7: kinds that render with the policy-denial glyph.
+fn is_policy_denial(kind: nano_session::NanoErrorKind) -> bool {
+    use nano_session::NanoErrorKind;
+    matches!(
+        kind,
+        NanoErrorKind::FsReadDenied
+            | NanoErrorKind::FsWriteDenied
+            | NanoErrorKind::FsSensitiveDenied
+            | NanoErrorKind::ApprovalDenied
+            | NanoErrorKind::EgressDenied
+    )
+}
+
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let composer_height = (app.composer.lines().len() as u16 + 2).clamp(3, COMPOSER_MAX_HEIGHT);
@@ -81,6 +94,46 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
                     format!("  ↳ {status}"),
                     Style::default().fg(Color::DarkGray),
                 )));
+            }
+            Cell::Error {
+                title,
+                hint,
+                code_label,
+                kind,
+                retryable,
+            } => {
+                // C7: one icon per class — ⛔ policy-denial / ↻ retryable /
+                // ✖ terminal. All text is static table/TUI presentation,
+                // sanitized upstream.
+                let icon = if kind.is_some_and(is_policy_denial) {
+                    "⛔"
+                } else if *retryable {
+                    "↻"
+                } else {
+                    "✖"
+                };
+                let color = if *retryable {
+                    Color::Yellow
+                } else {
+                    Color::Red
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{icon} "), Style::default().fg(color)),
+                    Span::styled(
+                        title.clone(),
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("  [{code_label}]"),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+                if !hint.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {hint}"),
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
             }
             Cell::Note(text) => {
                 push_prefixed(&mut lines, "· ", text, Style::default().fg(Color::DarkGray));

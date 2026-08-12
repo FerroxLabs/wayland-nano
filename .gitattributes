@@ -3,3 +3,7 @@ crates/nano-protocol/corpus/** -text
 crates/nano-model/fixtures-flux/** -text
 crates/nano-tui/tests/fixtures/** -text
 crates/nano-tui/tests/snapshots/** -text
+# Byte-pinned generated/vendored artifacts: never CRLF-convert (drift pins hash them)
+crates/nano-session/contracts/*.json text eol=lf
+crates/nano-model/data/*.json text eol=lf
+crates/nano-model/tests/golden/** -text

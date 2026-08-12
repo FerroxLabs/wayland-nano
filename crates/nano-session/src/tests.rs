@@ -50,6 +50,7 @@ fn session_ops() -> Vec<OpEnvelope> {
                 ok: true,
                 output_digest: "d1".into(),
                 changed_files: vec!["main.rs".into()],
+                error_kind: None,
             },
         ),
         env(
@@ -123,6 +124,7 @@ fn duplicate_ids_never_double_apply() {
             ok: true,
             output_digest: "d1".into(),
             changed_files: vec!["other.rs".into()],
+            error_kind: None,
         },
     );
     ops.insert(4, dup);

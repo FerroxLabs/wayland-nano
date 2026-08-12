@@ -145,6 +145,7 @@ impl ToolExecutor for McpToolExecutor<'_> {
                 ok: false,
                 output: format!("unknown MCP tool: {}", call.name),
                 progress: ProgressSignals::default(),
+                error_kind: Some(nano_session::NanoErrorKind::UnknownTool),
             };
         };
         let tool = call
@@ -165,11 +166,19 @@ impl ToolExecutor for McpToolExecutor<'_> {
                     process_outcome_changed: true,
                     ..Default::default()
                 },
+                // An isError payload is the server reporting a tool-level
+                // failure — typed as mcp_server (design §3).
+                error_kind: result
+                    .get("isError")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                    .then_some(nano_session::NanoErrorKind::McpServer),
             },
             Err(err) => ToolOutcome {
                 ok: false,
                 output: err.to_string(),
                 progress: ProgressSignals::default(),
+                error_kind: Some(crate::error_map::kind_of_mcp(&err)),
             },
         }
     }
@@ -273,6 +282,7 @@ done
                     ok: false,
                     output: "should not route here".into(),
                     progress: ProgressSignals::default(),
+                    error_kind: None,
                 }
             }
         }

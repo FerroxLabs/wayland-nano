@@ -25,7 +25,7 @@ use ratatui::backend::Backend;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::acp_client::{self, ConnEvent, Connection, Inbound, SessionUpdate};
+use crate::acp_client::{self, ConnEvent, Connection, Inbound, SessionUpdate, WireError};
 use crate::composer::{Composer, ComposerAction};
 use crate::doctor;
 use crate::event::{AppEvent, AppEventSender};
@@ -574,9 +574,13 @@ impl App {
                 Inbound::MalformedPermission { id, reason } => {
                     // Fail-closed mirror of the engine's gate (design §4):
                     // malformed/absent response = deny.
-                    self.transcript.push_note(&format!(
-                        "malformed permission request auto-denied ({reason})"
-                    ));
+                    self.transcript.push_error(
+                        "Malformed permission request — auto-denied",
+                        &reason,
+                        "permission",
+                        None,
+                        false,
+                    );
                     if let Some(id) = id {
                         self.seen_permission_ids.insert(id);
                         self.send_frame(conn, &acp_client::permission_response(id, "deny"));
@@ -587,22 +591,30 @@ impl App {
                 }
                 Inbound::UnknownNotification { .. } => {}
                 Inbound::MalformedFrame(reason) => {
-                    self.transcript
-                        .push_note(&format!("malformed wire frame: {reason}"));
+                    self.transcript.push_error(
+                        "Malformed wire frame",
+                        &reason,
+                        "frame",
+                        None,
+                        false,
+                    );
                 }
             },
             ConnEvent::ParseError(err) => {
                 self.transcript
-                    .push_note(&format!("wire parse error: {err}"));
+                    .push_error("Malformed wire frame", &err, "frame", None, false);
             }
             ConnEvent::Closed(stderr_tail) => {
                 self.status.wire = WireState::Disconnected;
-                let mut note = "acp-host exited".to_string();
-                let tail = stderr_tail.trim();
-                if !tail.is_empty() {
-                    note.push_str(&format!(":\n{tail}"));
-                }
-                self.transcript.push_note(&note);
+                // C7: the host-exit note becomes a host_exited error cell;
+                // the stderr tail stays truncated to its existing 4 KiB.
+                self.transcript.push_error(
+                    "acp-host exited",
+                    stderr_tail.trim(),
+                    "host_exited",
+                    None,
+                    false,
+                );
             }
         }
     }
@@ -612,7 +624,7 @@ impl App {
         conn: &mut C,
         id: u64,
         result: Option<Value>,
-        error: Option<String>,
+        error: Option<WireError>,
     ) {
         let Some(pending) = self.pending.remove(&id) else {
             // A response to nothing we asked — spoof surface; note and drop.
@@ -621,12 +633,15 @@ impl App {
             return;
         };
         if let Some(error) = error {
-            self.transcript.push_note(&format!("wire error: {error}"));
+            self.push_wire_error(&error);
             match pending {
                 Pending::Initialize | Pending::SessionNew | Pending::SessionLoad => {
                     self.status.wire = WireState::Disconnected;
                 }
                 Pending::Prompt => {
+                    // C7/D1 mid-stream semantics: the already-committed
+                    // partial assistant cell STAYS; the error cell is
+                    // appended after it (push order + commit-on-arrival).
                     self.transcript.commit_active();
                     self.turn_active = false;
                     self.status.wire = WireState::Ready;
@@ -717,8 +732,15 @@ impl App {
                     .get("stopReason")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                if !stop.is_empty() && stop != "end_turn" {
-                    self.transcript.push_note(&format!("turn ended: {stop}"));
+                // C7: stopReason is only ever end_turn or a genuine cancel
+                // now — turn-fatal failures arrive as typed error
+                // responses. Anything else (an older/third-party host)
+                // renders as a generic terminal cell, never a raw string.
+                if stop == "cancelled" {
+                    self.transcript.push_note("turn ended: cancelled");
+                } else if !stop.is_empty() && stop != "end_turn" {
+                    self.transcript
+                        .push_error("Turn failed", "", stop, None, false);
                 }
                 // C10 §7: turn complete (agent idle, the user-away case) —
                 // one of the two allowlisted notifications.
@@ -779,6 +801,33 @@ impl App {
         }
     }
 
+    /// C7: a wire error becomes a typed error cell. Known kinds render the
+    /// table's title/hint with the wire's retryable flag; unknown or
+    /// kindless errors render the generic TERMINAL cell with a static
+    /// title — NEVER the raw wire message (design §4, §7).
+    fn push_wire_error(&mut self, error: &WireError) {
+        let code_label = error.code.to_string();
+        match error.nano {
+            Some(payload) if payload.kind != nano_session::NanoErrorKind::Unknown => {
+                let spec = nano_session::error_codes::spec(payload.kind);
+                // The wire flag is honored only where the table agrees —
+                // a known kind's retryability can never widen past the
+                // table, and unknown kinds took the generic arm above.
+                self.transcript.push_error(
+                    spec.title,
+                    spec.hint,
+                    &code_label,
+                    Some(payload.kind),
+                    payload.retryable && spec.retryable,
+                );
+            }
+            _ => {
+                self.transcript
+                    .push_error("Request failed", "", &code_label, None, false);
+            }
+        }
+    }
+
     fn handle_update(&mut self, update: SessionUpdate) {
         match update {
             SessionUpdate::AgentChunk(text) => self.transcript.push_agent_chunk(&text),
@@ -820,9 +869,10 @@ impl App {
                 status,
                 raw_output,
                 diff,
+                nano_error,
             } => {
                 self.transcript
-                    .push_tool_result(&call_id, &status, &raw_output);
+                    .push_tool_result(&call_id, &status, &raw_output, nano_error);
                 // C10 §6: the human-facing diff block (the TUI is the v1
                 // renderer).
                 if let Some(diff) = diff {

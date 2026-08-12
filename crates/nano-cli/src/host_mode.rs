@@ -199,7 +199,8 @@ pub async fn run(
             }
             let stop_reason = match result.state {
                 TurnState::Complete => "stop".to_string(),
-                TurnState::Stopped(reason) | TurnState::Failed(reason) => reason,
+                TurnState::Stopped(info) => info.detail,
+                TurnState::Failed(err) => err.detail,
                 _ => "interrupted".to_string(),
             };
             (events, Option::<Usage>::None, stop_reason)

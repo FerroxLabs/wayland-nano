@@ -5,6 +5,7 @@
 //! detection, failure streaks, budgets.
 
 pub mod compact;
+pub mod error_map;
 pub mod loop_protection;
 pub mod mcp;
 pub mod skills;

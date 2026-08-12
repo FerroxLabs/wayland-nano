@@ -45,7 +45,7 @@
 use nano_agent::loop_protection::TurnBudget;
 use nano_agent::mcp::{McpRegistry, McpServerSpec, McpToolExecutor};
 use nano_agent::turn::{
-    ApprovalDecision, ApprovalGate, ModelDriver, ToolExecutor, TurnEngine, TurnState,
+    ApprovalDecision, ApprovalGate, ModelDriver, ToolExecutor, TurnEngine, TurnState, TypedError,
 };
 use nano_agent::wiring::{ProviderDriver, RealToolExecutor, v1_tool_definitions};
 use nano_egress::client::EgressClient;
@@ -54,13 +54,14 @@ use nano_model::flux_completions::FluxCompletionsClient;
 use nano_model::provider_catalog::WireKind;
 use nano_model::types::{ContentBlock, Message, Role, ToolCall};
 use nano_protocol::acp::{
-    AvailableModel, JsonRpcNotification, JsonRpcResponse, PLAN_MODE_ID, agent_capabilities,
-    agent_message_chunk, compaction_notice, prompt_result, request_permission_request,
-    request_question_request, session_load_result, session_modes_value, session_new_result,
-    set_model_result, tool_call_diff, tool_call_done, tool_call_replay, tool_call_update,
-    user_message_chunk,
+    AvailableModel, JsonRpcNotification, JsonRpcResponse, NanoErrorExtras, PLAN_MODE_ID,
+    agent_capabilities, agent_message_chunk, compaction_notice, error_presentation, prompt_result,
+    request_permission_request, request_question_request, session_load_result, session_modes_value,
+    session_new_result, set_model_result, tool_call_diff, tool_call_done, tool_call_replay,
+    tool_call_update, user_message_chunk,
 };
 use nano_protocol::permission_mode::PermissionMode;
+use nano_session::NanoErrorKind;
 use nano_session::SessionState;
 use nano_session::op::{Op, OpEnvelope, TodoItem};
 use nano_session::reader::read_journal;
@@ -357,6 +358,7 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         limit_override,
         sandbox_probe: &sandbox_probe,
         router: &router,
+        journal_append_failer: None,
     };
     serve(reader, writer, &config, make_driver, make_tools).await
 }
@@ -421,6 +423,20 @@ pub struct ServeConfig<'a> {
     /// C8: the validated provider routing table (payload + catalog). Backs
     /// set_model's typed errors and the per-turn binding re-resolution.
     pub router: &'a crate::provider_router::ProviderRouter,
+    /// TEST SEAM (C7): when set, the turn sink consults it before every
+    /// journal append; `true` simulates a durable-append failure so the
+    /// fail-closed `journal_unavailable` path is wire-testable. Production
+    /// wires None.
+    #[doc(hidden)]
+    pub journal_append_failer: Option<&'a dyn Fn() -> bool>,
+}
+
+/// How a finished prompt answers the client (C7/D1): a normal `stopReason`
+/// result for `end_turn`/genuine cancels, or a TYPED JSON-RPC error
+/// response for turn-fatal failures and non-cancel engine stops.
+enum TurnAnswer {
+    Stop(&'static str),
+    Typed(TypedError),
 }
 
 /// The live-wire diff sink (C10 §6): called with (tool call id, diff) when
@@ -478,7 +494,7 @@ where
     let mut stdin_open = true;
     #[allow(clippy::type_complexity)]
     let mut turn: Option<
-        std::pin::Pin<Box<dyn std::future::Future<Output = (String, String)> + '_>>,
+        std::pin::Pin<Box<dyn std::future::Future<Output = (String, TurnAnswer)> + '_>>,
     > = None;
     let mut prompt_id: Option<serde_json::Value> = None;
     let mut turn_session = String::new();
@@ -536,7 +552,12 @@ where
                             if turn.is_some() {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(id, -32602, "turn in progress"),
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::TurnInProgress,
+                                        "turn in progress",
+                                        NanoErrorExtras::default(),
+                                    ),
                                 )?;
                                 continue;
                             }
@@ -563,10 +584,11 @@ where
                             if let Err(err) = journaled {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(
+                                    &JsonRpcResponse::err_typed(
                                         id,
-                                        -32603,
+                                        NanoErrorKind::JournalUnavailable,
                                         format!("cannot open session journal: {err}"),
+                                        NanoErrorExtras::default(),
                                     ),
                                 )?;
                                 continue;
@@ -631,7 +653,12 @@ where
                             if turn.is_some() {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(id, -32602, "turn in progress"),
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::TurnInProgress,
+                                        "turn in progress",
+                                        NanoErrorExtras::default(),
+                                    ),
                                 )?;
                                 continue;
                             }
@@ -641,10 +668,11 @@ where
                             else {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(
+                                    &JsonRpcResponse::err_typed(
                                         id,
-                                        -32602,
+                                        NanoErrorKind::InvalidParams,
                                         "session/load requires a sessionId",
+                                        NanoErrorExtras::default(),
                                     ),
                                 )?;
                                 continue;
@@ -652,7 +680,12 @@ where
                             if !is_fs_safe_session_id(session_id) {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(id, -32602, "invalid session id"),
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::InvalidParams,
+                                        "invalid session id",
+                                        NanoErrorExtras::default(),
+                                    ),
                                 )?;
                                 continue;
                             }
@@ -668,10 +701,11 @@ where
                             if !journal.exists() {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(
+                                    &JsonRpcResponse::err_typed(
                                         id,
-                                        -32602,
+                                        NanoErrorKind::SessionNotFound,
                                         format!("session not found: {session_id}"),
+                                        NanoErrorExtras::default(),
                                     ),
                                 )?;
                                 continue;
@@ -683,10 +717,11 @@ where
                                 Err(err) => {
                                     write_out(
                                         &out,
-                                        &JsonRpcResponse::err(
+                                        &JsonRpcResponse::err_typed(
                                             id,
-                                            -32603,
+                                            NanoErrorKind::JournalUnavailable,
                                             format!("session journal unreadable: {err}"),
+                                            NanoErrorExtras::default(),
                                         ),
                                     )?;
                                     continue;
@@ -794,10 +829,11 @@ where
                             let Some(active) = session.as_mut() else {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(
+                                    &JsonRpcResponse::err_typed(
                                         id,
-                                        -32602,
+                                        NanoErrorKind::NoSession,
                                         "no session: call session/new first",
+                                        NanoErrorExtras::default(),
                                     ),
                                 )?;
                                 continue;
@@ -810,10 +846,11 @@ where
                             if model_id.is_empty() {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(
+                                    &JsonRpcResponse::err_typed(
                                         id,
-                                        -32602,
+                                        NanoErrorKind::InvalidParams,
                                         "session/set_model requires a modelId",
+                                        NanoErrorExtras::default(),
                                     ),
                                 )?;
                                 continue;
@@ -826,12 +863,13 @@ where
                             if !config.available_models.iter().any(|m| m.id == model_id) {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(
+                                    &JsonRpcResponse::err_typed(
                                         id,
-                                        -32602,
+                                        NanoErrorKind::ModelNotFound,
                                         format!(
                                             "model_not_found: {model_id} is not in the advertised catalog"
                                         ),
+                                        NanoErrorExtras::default(),
                                     ),
                                 )?;
                                 continue;
@@ -880,10 +918,11 @@ where
                             let Some(active) = session.as_mut() else {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(
+                                    &JsonRpcResponse::err_typed(
                                         id,
-                                        -32602,
+                                        NanoErrorKind::NoSession,
                                         "no session: call session/new first",
+                                        NanoErrorExtras::default(),
                                     ),
                                 )?;
                                 continue;
@@ -945,10 +984,11 @@ where
                             let Some(mode) = PermissionMode::parse(mode_id) else {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(
+                                    &JsonRpcResponse::err_typed(
                                         id,
-                                        -32602,
+                                        NanoErrorKind::InvalidParams,
                                         format!("unknown mode: {mode_id}"),
+                                        NanoErrorExtras::default(),
                                     ),
                                 )?;
                                 continue;
@@ -977,10 +1017,11 @@ where
                             if let Err(err) = journaled {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(
+                                    &JsonRpcResponse::err_typed(
                                         id,
-                                        -32603,
+                                        NanoErrorKind::JournalUnavailable,
                                         format!("cannot journal mode change: {err}"),
+                                        NanoErrorExtras::default(),
                                     ),
                                 )?;
                                 continue;
@@ -1033,14 +1074,24 @@ where
                             if turn.is_some() {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(id, -32602, "a turn is already running"),
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::TurnInProgress,
+                                        "a turn is already running",
+                                        NanoErrorExtras::default(),
+                                    ),
                                 )?;
                                 continue;
                             }
                             let Some(active) = session.as_mut() else {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(id, -32602, "no session: call session/new first"),
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::NoSession,
+                                        "no session: call session/new first",
+                                        NanoErrorExtras::default(),
+                                    ),
                                 )?;
                                 continue;
                             };
@@ -1080,10 +1131,11 @@ where
                                 Err(err) => {
                                     write_out(
                                         &out,
-                                        &JsonRpcResponse::err(
+                                        &JsonRpcResponse::err_typed(
                                             id,
-                                            -32602,
+                                            NanoErrorKind::InvalidParams,
                                             format!("compaction config: {err}"),
+                                            NanoErrorExtras::default(),
                                         ),
                                     )?;
                                     continue;
@@ -1096,10 +1148,11 @@ where
                                 Err(err) => {
                                     write_out(
                                         &out,
-                                        &JsonRpcResponse::err(
+                                        &JsonRpcResponse::err_typed(
                                             id,
-                                            -32603,
+                                            NanoErrorKind::JournalUnavailable,
                                             format!("cannot open session journal: {err}"),
+                                            NanoErrorExtras::default(),
                                         ),
                                     )?;
                                     continue;
@@ -1261,26 +1314,45 @@ where
                                 };
                                 let sink_session = session_id.clone();
                                 let mut journal_writer = journal_writer;
+                                let journal_failer = config.journal_append_failer;
                                 let mut sink = move |envelope: &OpEnvelope| -> bool {
                                     // Journal first: the durable record leads
                                     // the live frame, never the other way. The
                                     // compaction commit protocol reads this
                                     // return value — its in-memory swap only
                                     // happens behind a durable Complete.
-                                    let journaled = match journal_writer.append(envelope) {
-                                        Ok(_) => true,
-                                        Err(err) => {
-                                            eprintln!(
-                                                "wayland-nano: session journal append failed: {err}"
-                                            );
-                                            false
+                                    let journaled = if journal_failer
+                                        .is_some_and(|failer| failer())
+                                    {
+                                        // C7 test seam: injected failure.
+                                        eprintln!(
+                                            "wayland-nano: session journal append failed (injected)"
+                                        );
+                                        false
+                                    } else {
+                                        match journal_writer.append(envelope) {
+                                            Ok(_) => true,
+                                            Err(err) => {
+                                                eprintln!(
+                                                    "wayland-nano: session journal append failed: {err}"
+                                                );
+                                                false
+                                            }
                                         }
                                     };
+                                    // C7/D4 fail-closed: an op that could not
+                                    // be journaled NEVER becomes a live frame
+                                    // — the engine turns a ToolCall/ToolResult
+                                    // append failure into a turn-fatal
+                                    // journal_unavailable on this `false`.
+                                    if !journaled {
+                                        return false;
+                                    }
                                     let mut guard =
                                         sink_out.lock().unwrap_or_else(|p| p.into_inner());
                                     let _ =
                                         write_op_frame(&mut *guard, &sink_session, envelope);
-                                    journaled
+                                    true
                                 };
                                 let result = engine
                                     .run_turn_streaming_with_context(
@@ -1291,12 +1363,28 @@ where
                                         &mut sink,
                                     )
                                     .await;
-                                let stop_reason = match result.state {
-                                    TurnState::Complete => "end_turn",
-                                    TurnState::Stopped(_) => "cancelled",
-                                    _ => "error",
+                                // C7/D1+D6: turn-fatal failures and non-cancel
+                                // engine stops answer with a TYPED error
+                                // response; stopReason survives only for
+                                // end_turn and genuine cancels. The mislabeled
+                                // "cancelled" for engine stops is gone.
+                                let answer = match result.state {
+                                    TurnState::Complete => TurnAnswer::Stop("end_turn"),
+                                    TurnState::Stopped(ref info)
+                                        if info.kind == NanoErrorKind::UserCancelled =>
+                                    {
+                                        TurnAnswer::Stop("cancelled")
+                                    }
+                                    TurnState::Stopped(info) => {
+                                        TurnAnswer::Typed(TypedError::new(info.kind, info.detail))
+                                    }
+                                    TurnState::Failed(err) => TurnAnswer::Typed(err),
+                                    _ => TurnAnswer::Typed(TypedError::new(
+                                        NanoErrorKind::Unknown,
+                                        "turn ended in an unexpected state",
+                                    )),
                                 };
-                                (result.final_text, stop_reason.to_string())
+                                (result.final_text, answer)
                             };
                             turn = Some(Box::pin(turn_future));
                         }
@@ -1314,17 +1402,23 @@ where
                             if turn.is_some() {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(id, -32602, "turn in progress"),
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::TurnInProgress,
+                                        "turn in progress",
+                                        NanoErrorExtras::default(),
+                                    ),
                                 )?;
                                 continue;
                             }
                             let Some(active) = session.as_mut() else {
                                 write_out(
                                     &out,
-                                    &JsonRpcResponse::err(
+                                    &JsonRpcResponse::err_typed(
                                         id,
-                                        -32602,
+                                        NanoErrorKind::NoSession,
                                         "no session: call session/new first",
+                                        NanoErrorExtras::default(),
                                     ),
                                 )?;
                                 continue;
@@ -1336,10 +1430,11 @@ where
                                 Err(err) => {
                                     write_out(
                                         &out,
-                                        &JsonRpcResponse::err(
+                                        &JsonRpcResponse::err_typed(
                                             id,
-                                            -32603,
+                                            NanoErrorKind::JournalUnavailable,
                                             format!("cannot open session journal: {err}"),
+                                            NanoErrorExtras::default(),
                                         ),
                                     )?;
                                     continue;
@@ -1350,10 +1445,11 @@ where
                                 Err(err) => {
                                     write_out(
                                         &out,
-                                        &JsonRpcResponse::err(
+                                        &JsonRpcResponse::err_typed(
                                             id,
-                                            -32603,
+                                            NanoErrorKind::JournalUnavailable,
                                             format!("session journal unreadable: {err}"),
+                                            NanoErrorExtras::default(),
                                         ),
                                     )?;
                                     continue;
@@ -1454,10 +1550,11 @@ where
                                 )?,
                                 Err(err) => write_out(
                                     &out,
-                                    &JsonRpcResponse::err(
+                                    &JsonRpcResponse::err_typed(
                                         id,
-                                        -32603,
+                                        NanoErrorKind::CompactionFailed,
                                         format!("compaction failed: {err}"),
+                                        NanoErrorExtras::default(),
                                     ),
                                 )?,
                             }
@@ -1473,11 +1570,11 @@ where
             outcome = async {
                 match turn.as_mut() {
                     Some(active) => active.await,
-                    None => std::future::pending::<(String, String)>().await,
+                    None => std::future::pending::<(String, TurnAnswer)>().await,
                 }
             }, if turn.is_some() => {
                 turn = None;
-                let (final_text, stop_reason) = outcome;
+                let (final_text, answer) = outcome;
                 // Fold the just-finished turn into the session's context so
                 // the NEXT prompt continues the conversation (same rebuild
                 // path session/load uses — one honest code path).
@@ -1511,12 +1608,42 @@ where
                 let cancel_fired = session
                     .as_ref()
                     .is_some_and(|s| s.cancel.load(Ordering::SeqCst));
-                let stop_reason = if cancel_fired { "cancelled".to_string() } else { stop_reason };
+                // D1 mid-stream semantics: already-produced assistant text is
+                // committed BEFORE any error answer — the partial content
+                // stays, the error banner follows it (no rollback).
                 if !final_text.is_empty() {
                     write_out(&out, &agent_message_chunk(&turn_session, &final_text))?;
                 }
                 if let Some(id) = prompt_id.take() {
-                    write_out(&out, &JsonRpcResponse::ok(id, prompt_result(&stop_reason)))?;
+                    if cancel_fired {
+                        write_out(&out, &JsonRpcResponse::ok(id, prompt_result("cancelled")))?;
+                    } else {
+                        match answer {
+                            TurnAnswer::Stop(stop_reason) => {
+                                write_out(&out, &JsonRpcResponse::ok(id, prompt_result(stop_reason)))?;
+                            }
+                            TurnAnswer::Typed(err) => {
+                                // The wire message is the STATIC table
+                                // presentation — never the logs-side detail
+                                // (design §7: no provider free-text in
+                                // UI-bound frames); typed extras ride in
+                                // data.nanoError as closed fields.
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        err.kind,
+                                        error_presentation(err.kind),
+                                        NanoErrorExtras {
+                                            status: err.status,
+                                            retry_after_ms: err.retry_after_ms,
+                                            host: err.host,
+                                        },
+                                    ),
+                                )?;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1980,15 +2107,16 @@ fn session_context_prefix(
 /// journaled (crash mid-call) is replayed as failed so no card hangs
 /// `in_progress` forever.
 fn replay_frames(session_id: &str, envelopes: &[OpEnvelope]) -> Vec<JsonRpcNotification> {
-    let results: std::collections::HashMap<&str, (bool, &str)> = envelopes
+    let results: std::collections::HashMap<&str, (bool, &str, Option<NanoErrorKind>)> = envelopes
         .iter()
         .filter_map(|envelope| match &envelope.op {
             Op::ToolResult {
                 call_id,
                 ok,
                 output_digest,
+                error_kind,
                 ..
-            } => Some((call_id.as_str(), (*ok, output_digest.as_str()))),
+            } => Some((call_id.as_str(), (*ok, output_digest.as_str(), *error_kind))),
             _ => None,
         })
         .collect();
@@ -2007,12 +2135,29 @@ fn replay_frames(session_id: &str, envelopes: &[OpEnvelope]) -> Vec<JsonRpcNotif
                 args,
                 ..
             } => match results.get(call_id.as_str()) {
-                Some((ok, digest)) => {
-                    frames.push(tool_call_replay(session_id, call_id, name, args, *ok));
-                    frames.push(tool_call_done(session_id, call_id, *ok, digest));
+                Some((ok, digest, error_kind)) => {
+                    // Live and replayed frames are identical by construction:
+                    // both consume the same typed op (C7 §2.1 handoff 3).
+                    frames.push(tool_call_replay(
+                        session_id,
+                        call_id,
+                        name,
+                        args,
+                        *ok,
+                        *error_kind,
+                    ));
+                    frames.push(tool_call_done(
+                        session_id,
+                        call_id,
+                        *ok,
+                        digest,
+                        *error_kind,
+                    ));
                 }
                 None => {
-                    frames.push(tool_call_replay(session_id, call_id, name, args, false));
+                    frames.push(tool_call_replay(
+                        session_id, call_id, name, args, false, None,
+                    ));
                 }
             },
             // Historical compaction events surface as the same system notices
@@ -2082,16 +2227,24 @@ pub fn messages_from_envelopes(envelopes: &[OpEnvelope]) -> Vec<Message> {
                 call_id,
                 ok,
                 output_digest,
+                error_kind,
                 ..
             } => {
                 flush_assistant(&mut messages, &mut assistant);
                 // [R1] The ONE synthesized-result encoding, shared with the
                 // compaction repair pass and repeat-protection skips.
-                messages.push(Message::tool_result(
-                    call_id,
-                    format!("[tool output elided from journal: ok={ok}, digest={output_digest}]"),
-                    !ok,
-                ));
+                // C7/D5: a typed failure resumes as `<presentation> [output
+                // elided]` so the model still sees WHY the call failed; the
+                // kind is journaled, the text re-derives from the table.
+                let content = match (ok, error_kind) {
+                    (false, Some(kind)) => {
+                        format!("{} [output elided]", error_presentation(*kind))
+                    }
+                    _ => format!(
+                        "[tool output elided from journal: ok={ok}, digest={output_digest}]"
+                    ),
+                };
+                messages.push(Message::tool_result(call_id, content, !ok));
             }
             Op::TurnEnd { .. } => flush_assistant(&mut messages, &mut assistant),
             // [R1/R2] The canonical replay arm: fold the SAME
@@ -2134,10 +2287,11 @@ fn write_op_frame<W: Write>(
             call_id,
             ok,
             output_digest,
+            error_kind,
             ..
         } => write_json(
             writer,
-            &tool_call_done(session_id, call_id, *ok, output_digest),
+            &tool_call_done(session_id, call_id, *ok, output_digest, *error_kind),
         ),
         // C1 §7: compaction lifecycle events surface as session/update
         // notices so both UIs can render the event in the transcript.
@@ -2911,6 +3065,7 @@ mod tests {
                 ok: true,
                 output: format!("ran {}", call.name),
                 progress: nano_agent::loop_protection::ProgressSignals::default(),
+                error_kind: None,
             }
         }
     }

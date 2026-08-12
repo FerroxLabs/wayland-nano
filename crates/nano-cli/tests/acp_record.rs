@@ -128,6 +128,7 @@ impl ToolExecutor for MockTools {
             ok: true,
             output: format!("ran {}", call.name),
             progress: ProgressSignals::default(),
+            error_kind: None,
         }
     }
 }
@@ -220,6 +221,7 @@ impl Recorder {
                     limit_override: None,
                     sandbox_probe: &sandbox_probe,
                     router: &router,
+                    journal_append_failer: None,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -316,7 +318,12 @@ fn normalize(
         out.push_str(
             &line
                 .replace(session_id, RECORDED_SESSION_ID)
-                .replace(&dir_escaped, "<sessions>"),
+                .replace(&dir_escaped, "<sessions>")
+                // The placeholder eats the dir but not the separator that
+                // followed it: a Windows recording leaves `<sessions>\\…`
+                // where unix leaves `<sessions>/…`. Normalize so the checked
+                // -in fixture replays byte-identically on every CI leg.
+                .replace("<sessions>\\\\", "<sessions>/"),
         );
         out.push('\n');
     }

@@ -21,6 +21,10 @@ gate-test:
 gate-deny:
     cargo deny check
 
+# C7: generated error-table artifacts must be byte-fresh (drift tripwire)
+gate-gen-check:
+    cargo run -p nano-cli --bin gen_error_table -- --check
+
 # Live tests (Flux + MCP + slices) — requires the key in env, never in CI logs
 gate-live:
     cargo test -p nano-model -- --ignored
@@ -29,7 +33,7 @@ gate-live:
     cargo test -p nano-cli --test vertical_slice
 
 # The full local gate
-gate-all: gate-fmt gate-lint gate-test
+gate-all: gate-fmt gate-lint gate-test gate-gen-check
 
 # Release binaries for packaging/metrics
 gate-release:

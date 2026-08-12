@@ -111,6 +111,7 @@ impl ToolExecutor for OkTools {
                 files_changed: true,
                 ..Default::default()
             },
+            error_kind: None,
         }
     }
 }
@@ -795,7 +796,7 @@ async fn overflow_again_after_reactive_compaction_fails_typed() {
     let TurnState::Failed(reason) = &result.state else {
         panic!("must fail typed, got {:?}", result.state)
     };
-    assert!(reason.contains("context overflow"), "{reason}");
+    assert!(reason.detail.contains("context overflow"), "{reason:?}");
     // Exactly ONE compaction happened between the two overflows.
     assert_eq!(
         op_kinds(&result)
@@ -833,7 +834,7 @@ async fn loop_guard_trips_on_repeated_ineffective_compactions() {
     let TurnState::Failed(reason) = &result.state else {
         panic!("guard must fail the turn, got {:?}", result.state)
     };
-    assert!(reason.contains("loop guard"), "{reason}");
+    assert!(reason.detail.contains("loop guard"), "{reason:?}");
     assert_eq!(
         op_kinds(&result)
             .iter()
