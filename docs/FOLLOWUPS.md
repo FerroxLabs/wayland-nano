@@ -52,8 +52,7 @@ promotes/closes entries; builders append only.
   `code`/`data`) IF a future Desktop change re-arms the legacy stack, plus
   one CDP session proving whether any nano path can reach it. Until then,
   fixing dead code buys nothing.
-=======
-## F-2: Task-dir GC is manual (C6)
+## F-4: Task-dir GC is manual (C6)
 
 - **Filed:** 2026-08-12, with the C6 background-tasks build (design §10:
   task dirs are RETAINED for debugging; auto-deleting audit artifacts is
@@ -64,3 +63,18 @@ promotes/closes entries; builders append only.
   references them after the owning session ends.
 - **Close means:** a `nano tasks gc`-style command with an explicit
   retention policy (age/completion-state), never silent auto-reaping.
+
+## F-5: Desktop adapter lacks C9 surfaces (steer / reconnect / rate-limit / new error kinds)
+
+- **Filed:** 2026-08-12, from the C9 adversarial proof (leg 7): the Desktop
+  ACP adapter has no `session/steer` affordance and no rendering for the
+  C9 observation notices (reconnect banner, rate-limit snapshot, inert-param
+  notice) or the C9/C11 error kinds (model_output_schema,
+  model_unsupported_param, session_fork_failed, goal_op_failed).
+- **Gap:** TUI carries all of these; Desktop degrades safely (unknown
+  update kinds normalize to no-ops — proven by vitest, 10/10), so a
+  Desktop user simply never sees steer/reconnect UX and gets generic
+  error text for the new kinds.
+- **Close means:** Desktop PR adding the steer input path + notice
+  renderers + the regenerated error-table mappings (the 40-kind TS module
+  already ships on PR #953), plus one CDP drive per surface.
