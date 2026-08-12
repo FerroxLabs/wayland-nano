@@ -18,14 +18,30 @@ pub fn web_fetch_tool_from_env() -> Option<WebFetchTool> {
 
 /// Parse the hosts list into the second-domain policy. `http://host` marks
 /// the per-host http opt-in; bare hosts are https-only.
+///
+/// Host matching lowercases the URL side (`policy.rs` `decide`), so an
+/// uppercase ENTRY would never match — a fail-closed footgun the C3+C4
+/// proof documented. Entries are therefore lowercase-normalized here at
+/// config load, with a stderr warning when an entry actually changed (DNS
+/// hostnames are case-insensitive; normalizing cannot widen the set).
 fn policy_from_hosts_str(raw: &str) -> Option<EgressPolicy> {
     let mut policy = EgressPolicy::new();
     let mut any = false;
     for entry in raw.split(',').map(str::trim).filter(|e| !e.is_empty()) {
-        policy = if let Some(host) = entry.strip_prefix("http://") {
-            policy.allow_host_with_http(host)
+        let (http_opt_in, host) = match entry.strip_prefix("http://") {
+            Some(host) => (true, host),
+            None => (false, entry),
+        };
+        let lowered = host.to_ascii_lowercase();
+        if lowered != host {
+            eprintln!(
+                "wayland-nano: NANO_WEB_FETCH_HOSTS entry {entry:?} lowercased (host matching is case-insensitive; the un-normalized entry would never match)"
+            );
+        }
+        policy = if http_opt_in {
+            policy.allow_host_with_http(lowered)
         } else {
-            policy.allow_host(entry)
+            policy.allow_host(lowered)
         };
         any = true;
     }
@@ -59,5 +75,20 @@ mod tests {
         // the second domain never widens to unlisted hosts
         assert!(!policy.allows("https://api.fluxrouter.ai/"));
         assert!(!policy.allows("https://other.example/"));
+    }
+
+    /// Uppercase entries are normalized at load (the URL side of `decide`
+    /// is lowercased, so an un-normalized uppercase entry could never match
+    /// — fail-closed, but a silent config footgun).
+    #[test]
+    fn uppercase_entries_are_normalized_to_match() {
+        let policy =
+            policy_from_hosts_str("EXAMPLE.com, http://LOCALHOST").expect("hosts configured");
+        assert!(policy.allows("https://example.com/"));
+        assert!(
+            !policy.allows("http://example.com/"),
+            "normalization never widens the scheme rule"
+        );
+        assert!(policy.allows("http://localhost:8080/"));
     }
 }
