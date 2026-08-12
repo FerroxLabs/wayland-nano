@@ -36,17 +36,20 @@
 
 use nano_agent::loop_protection::TurnBudget;
 use nano_agent::mcp::{McpRegistry, McpServerSpec, McpToolExecutor};
+use nano_agent::steer::{EnqueueAck, SteerHandle};
 use nano_agent::turn::{
-    ApprovalDecision, ApprovalGate, ModelDriver, ToolExecutor, TurnEngine, TurnState,
+    ApprovalDecision, ApprovalGate, ModelDriver, ToolExecutor, TurnEngine, TurnRobustness,
+    TurnState,
 };
 use nano_agent::wiring::{FluxDriver, RealToolExecutor, v1_tool_definitions};
 use nano_egress::client::EgressClient;
 use nano_model::flux_completions::FluxCompletionsClient;
-use nano_model::types::{ContentBlock, Message, Role, ToolCall};
+use nano_model::types::{ContentBlock, Message, ModelObservation, Role, ToolCall};
 use nano_protocol::acp::{
     AvailableModel, JsonRpcNotification, JsonRpcResponse, agent_capabilities, agent_message_chunk,
-    compaction_notice, prompt_result, request_permission_request, session_load_result,
-    session_new_result, set_model_result, tool_call_done, tool_call_replay, tool_call_update,
+    compaction_notice, param_inert_notice, prompt_result, rate_limit_notice, reconnect_notice,
+    request_permission_request, session_load_result, session_new_result, set_model_result,
+    steer_dropped_notice, steer_queued_result, tool_call_done, tool_call_replay, tool_call_update,
     user_message_chunk,
 };
 use nano_protocol::permission_mode::PermissionMode;
@@ -199,6 +202,22 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
+    // C9 §4: sticky model params from the env config channel. Invalid
+    // values are typed config errors naming the setting, never clamps.
+    let reasoning_effort = match parse_env_effort() {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("wayland-nano: {err}");
+            return Ok(2);
+        }
+    };
+    let verbosity = match parse_env_verbosity() {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("wayland-nano: {err}");
+            return Ok(2);
+        }
+    };
     // NOTE(wiring.rs): FluxDriver carries no model — the model id is a
     // per-turn TurnEngine input (model_name → ModelRequest.model), so model
     // switching needs no driver change. If a future driver needs per-model
@@ -256,6 +275,8 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         catalog: &catalog_models,
         window_override,
         limit_override,
+        reasoning_effort,
+        verbosity,
         sandbox_probe: &sandbox_probe,
     };
     serve(reader, writer, &config, make_driver, make_tools).await
@@ -291,6 +312,17 @@ fn parse_env_u64(name: &str) -> Result<Option<u64>, String> {
     }
 }
 
+/// NANO_REASONING_EFFORT (C9 §4): low|medium|high, sticky per session. An
+/// out-of-vocabulary value is a typed config error naming the setting.
+fn parse_env_effort() -> Result<Option<nano_model::types::ReasoningEffort>, String> {
+    crate::model_params::effort_from_env()
+}
+
+/// NANO_VERBOSITY (C9 §4): low|medium|high, sticky per session.
+fn parse_env_verbosity() -> Result<Option<nano_model::types::Verbosity>, String> {
+    crate::model_params::verbosity_from_env()
+}
+
 /// The ACP host loop, generic over the byte streams and the model/tool
 /// factories so integration tests can drive it in-process with scripted
 /// Configuration bundle for `serve` — keeps the signature under the clippy
@@ -314,6 +346,11 @@ pub struct ServeConfig<'a> {
     pub window_override: Option<u64>,
     /// NANO_AUTO_COMPACT_TOKENS — downward-only override.
     pub limit_override: Option<u64>,
+    /// C9 §4: the session's sticky reasoning effort / verbosity, applied to
+    /// every turn's model request through the Q3 capability ladder. `None`
+    /// = the params never leave the config channel.
+    pub reasoning_effort: Option<nano_model::types::ReasoningEffort>,
+    pub verbosity: Option<nano_model::types::Verbosity>,
     /// C2: sandbox-availability probe for the full_auto shell arm, run ONCE
     /// PER TURN at gate construction (never per approval). Production wires
     /// the platform probe; tests inject both answers.
@@ -336,7 +373,7 @@ pub async fn serve<R, W, FD, FT, D, T>(
 ) -> std::io::Result<i32>
 where
     R: BufRead + Send + 'static,
-    W: Write + Send,
+    W: Write + Send + 'static,
     FD: Fn() -> D,
     FT: Fn(
         &std::path::Path,
@@ -352,6 +389,10 @@ where
     // the turn future is mid-poll (tool execution runs synchronously).
     let current_cancel: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>> =
         Arc::new(Mutex::new(None));
+    // C9 §3.3: the running turn's steer queue. Replaced per prompt, cleared
+    // at turn end; the session/steer handler enqueues through it and
+    // resolves IMMEDIATELY with the ack.
+    let current_steer: Arc<Mutex<Option<SteerHandle>>> = Arc::new(Mutex::new(None));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Inbound>();
     std::thread::spawn({
         let pending = pending.clone();
@@ -364,7 +405,7 @@ where
     let mut stdin_open = true;
     #[allow(clippy::type_complexity)]
     let mut turn: Option<
-        std::pin::Pin<Box<dyn std::future::Future<Output = (String, String)> + '_>>,
+        std::pin::Pin<Box<dyn std::future::Future<Output = (String, String, Option<String>)> + '_>>,
     > = None;
     let mut prompt_id: Option<serde_json::Value> = None;
     let mut turn_session = String::new();
@@ -752,6 +793,95 @@ where
                             // 4. Ack (ACP shape: empty result).
                             write_out(&out, &JsonRpcResponse::ok(id, serde_json::json!({})))?;
                         }
+                        // C9 Q1 RULED shape (b): mid-turn steer rides this
+                        // extension method; mid-turn session/prompt keeps
+                        // its byte-identical -32602 rejection below. The
+                        // ack resolves IMMEDIATELY — it is NOT the turn
+                        // result. Clients discover the method from the
+                        // advertised nanoExtensions capability, never by
+                        // probing; older hosts fall back to -32601.
+                        "session/steer" => {
+                            let Some(active) = session.as_ref() else {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32602,
+                                        "no session: call session/new first",
+                                    ),
+                                )?;
+                                continue;
+                            };
+                            let params = params.unwrap_or_default();
+                            let text = params
+                                .get("text")
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            if text.is_empty() {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(
+                                        id,
+                                        -32602,
+                                        "session/steer requires a non-empty text",
+                                    ),
+                                )?;
+                                continue;
+                            }
+                            let handle = current_steer
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .clone();
+                            // The submitter identity is the wire request id:
+                            // a later drop-on-cancel notice addresses it.
+                            let submitter = id.to_string();
+                            let _ = active; // session presence validated above
+                            match handle {
+                                Some(handle) => match handle.enqueue(submitter, text) {
+                                    EnqueueAck::Queued { position } => {
+                                        write_out(
+                                            &out,
+                                            &JsonRpcResponse::ok(
+                                                id,
+                                                steer_queued_result(position),
+                                            ),
+                                        )?;
+                                    }
+                                    EnqueueAck::RejectedClosed => {
+                                        write_out(
+                                            &out,
+                                            &JsonRpcResponse::err(
+                                                id,
+                                                -32602,
+                                                "steer queue closed",
+                                            ),
+                                        )?;
+                                    }
+                                    EnqueueAck::RejectedFull => {
+                                        write_out(
+                                            &out,
+                                            &JsonRpcResponse::err(
+                                                id,
+                                                -32602,
+                                                "steer queue full",
+                                            ),
+                                        )?;
+                                    }
+                                },
+                                // No turn in flight: the queue is closed.
+                                None => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err(
+                                            id,
+                                            -32602,
+                                            "steer queue closed",
+                                        ),
+                                    )?;
+                                }
+                            }
+                        }
                         "session/prompt" => {
                             if turn.is_some() {
                                 write_out(
@@ -850,12 +980,40 @@ where
                             // escalation waits for the next prompt.
                             let turn_mode = *active.mode.lock().unwrap_or_else(|p| p.into_inner());
                             let mode_cell = active.mode.clone();
+                            // C9 §3.2/§3.3: the turn's steer queue, bound to
+                            // THIS turn id. The drop closure translates each
+                            // still-queued steer at close into exactly one
+                            // later session/update notice per submitter
+                            // (request id + text digest, never the text).
+                            let drop_out = out.clone();
+                            let drop_session = active.id.clone();
+                            let steer_handle = SteerHandle::new(
+                                &turn_id,
+                                nano_agent::steer::DEFAULT_CAPACITY,
+                                Arc::new(move |item| {
+                                    let notice = steer_dropped_notice(
+                                        &drop_session,
+                                        &item.submitter,
+                                        &format!("len:{}", item.text.len()),
+                                    );
+                                    let mut guard =
+                                        drop_out.lock().unwrap_or_else(|p| p.into_inner());
+                                    let _ = write_json(&mut *guard, &notice);
+                                }),
+                            );
+                            *current_steer.lock().unwrap_or_else(|p| p.into_inner()) =
+                                Some(steer_handle.clone());
+                            // C9 §4: the session's sticky params, captured
+                            // per turn like the model pick.
+                            let turn_effort = config.reasoning_effort;
+                            let turn_verbosity = config.verbosity;
                             // The turn future must own its handles: clone the
                             // loop-invariant Arcs before the `async move`.
                             let gate_out = out.clone();
                             let gate_pending = pending.clone();
                             let gate_ids = permission_ids.clone();
                             let sink_out = out.clone();
+                            let observer_out = out.clone();
                             let sandbox_probe = config.sandbox_probe;
                             let make_driver = &make_driver;
                             let make_tools = &make_tools;
@@ -894,6 +1052,48 @@ where
                                     // stays the fail-closed authority.
                                     sandbox_available: sandbox_probe(),
                                 };
+                                // C9 §5/§2.2: the typed observation channel
+                                // → session/update notices. Reconnect and
+                                // inert-param notices arrive live; the
+                                // rate-limit snapshot arrives coalesced
+                                // (latest-wins per turn iteration) from the
+                                // engine.
+                                let obs_out = observer_out;
+                                let obs_session = session_id.clone();
+                                let observer = move |observation: ModelObservation| {
+                                    let notice = match observation {
+                                        ModelObservation::Reconnecting {
+                                            attempt,
+                                            next_delay_ms,
+                                            deadline_remaining_ms,
+                                        } => reconnect_notice(
+                                            &obs_session,
+                                            attempt,
+                                            next_delay_ms,
+                                            deadline_remaining_ms,
+                                        ),
+                                        ModelObservation::ParamInert {
+                                            param,
+                                            surface,
+                                            detail,
+                                        } => param_inert_notice(
+                                            &obs_session,
+                                            &param,
+                                            &surface,
+                                            &detail,
+                                        ),
+                                        ModelObservation::RateLimit(snapshot) => {
+                                            rate_limit_notice(
+                                                &obs_session,
+                                                serde_json::to_value(&snapshot)
+                                                    .unwrap_or(serde_json::Value::Null),
+                                            )
+                                        }
+                                    };
+                                    let mut guard =
+                                        obs_out.lock().unwrap_or_else(|p| p.into_inner());
+                                    let _ = write_json(&mut *guard, &notice);
+                                };
                                 let engine = TurnEngine {
                                     model: &driver,
                                     tools: &executor,
@@ -902,6 +1102,14 @@ where
                                     tool_definitions,
                                     approval: Some(&gate),
                                     compaction: Some(compaction),
+                                    robustness: TurnRobustness {
+                                        steer: Some(steer_handle),
+                                        auth_refresh: None, // static Flux key: 401 → zero retries (Q5)
+                                        observer: Some(&observer),
+                                        reasoning_effort: turn_effort,
+                                        verbosity: turn_verbosity,
+                                        output_schema: None,
+                                    },
                                 };
                                 let sink_session = session_id.clone();
                                 let mut journal_writer = journal_writer;
@@ -940,7 +1148,16 @@ where
                                     TurnState::Stopped(_) => "cancelled",
                                     _ => "error",
                                 };
-                                (result.final_text, stop_reason.to_string())
+                                // C9: a failed turn's TYPED reason surfaces
+                                // as a final agent chunk, so an actionable
+                                // error (e.g. sticky effort on a
+                                // non-reasoning model) reaches the user
+                                // instead of dying as an opaque "error".
+                                let failure = match &result.state {
+                                    TurnState::Failed(reason) => Some(reason.clone()),
+                                    _ => None,
+                                };
+                                (result.final_text, stop_reason.to_string(), failure)
                             };
                             turn = Some(Box::pin(turn_future));
                         }
@@ -1101,11 +1318,15 @@ where
             outcome = async {
                 match turn.as_mut() {
                     Some(active) => active.await,
-                    None => std::future::pending::<(String, String)>().await,
+                    None => std::future::pending::<(String, String, Option<String>)>().await,
                 }
             }, if turn.is_some() => {
                 turn = None;
-                let (final_text, stop_reason) = outcome;
+                // C9: the finished turn's queue is closed (the engine did
+                // it, with drop notices); a fresh prompt installs a fresh
+                // queue, and a steer between turns rejects closed.
+                *current_steer.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                let (final_text, stop_reason, failure) = outcome;
                 // Fold the just-finished turn into the session's context so
                 // the NEXT prompt continues the conversation (same rebuild
                 // path session/load uses — one honest code path).
@@ -1129,6 +1350,12 @@ where
                 let stop_reason = if cancel_fired { "cancelled".to_string() } else { stop_reason };
                 if !final_text.is_empty() {
                     write_out(&out, &agent_message_chunk(&turn_session, &final_text))?;
+                }
+                // C9: the typed failure reason (actionable config errors,
+                // exhausted retries) renders as a trailing chunk — never an
+                // opaque stopReason alone.
+                if let Some(reason) = failure {
+                    write_out(&out, &agent_message_chunk(&turn_session, &reason))?;
                 }
                 if let Some(id) = prompt_id.take() {
                     write_out(&out, &JsonRpcResponse::ok(id, prompt_result(&stop_reason)))?;
@@ -1436,6 +1663,15 @@ fn replay_frames(session_id: &str, envelopes: &[OpEnvelope]) -> Vec<JsonRpcNotif
             Op::TurnBegin { input, .. } => {
                 frames.push(user_message_chunk(session_id, input));
             }
+            // C9: drained steers and schema re-asks replay as the user
+            // messages they were (undrained steers are never journaled, so
+            // replay can never resurrect input the model never saw).
+            Op::SteerInput { text, .. } => {
+                frames.push(user_message_chunk(session_id, text));
+            }
+            Op::SchemaReask { feedback, .. } => {
+                frames.push(user_message_chunk(session_id, feedback));
+            }
             Op::AssistantText { text, .. } => {
                 frames.push(agent_message_chunk(session_id, text));
             }
@@ -1500,6 +1736,18 @@ pub fn messages_from_envelopes(envelopes: &[OpEnvelope]) -> Vec<Message> {
             Op::TurnBegin { input, .. } => {
                 flush_assistant(&mut messages, &mut assistant);
                 messages.push(Message::user(input.clone()));
+            }
+            // C9 kill-resume fidelity: drained steers and the schema re-ask
+            // fold EXACTLY like the TurnBegin input fold, so a resumed
+            // context is byte-identical to the live one. Undrained steers
+            // are never journaled and never resurrect here.
+            Op::SteerInput { text, .. } => {
+                flush_assistant(&mut messages, &mut assistant);
+                messages.push(Message::user(text.clone()));
+            }
+            Op::SchemaReask { feedback, .. } => {
+                flush_assistant(&mut messages, &mut assistant);
+                messages.push(Message::user(feedback.clone()));
             }
             Op::AssistantText { text, .. } => {
                 assistant.push(ContentBlock::Text { text: text.clone() });
@@ -1584,6 +1832,12 @@ fn write_op_frame<W: Write>(
             write_json(writer, &compaction_notice(session_id, "complete"))
         }
         Op::CompactionCancel { .. } => write_json(writer, &compaction_notice(session_id, "cancel")),
+        // C9: a drained steer / re-ask enters history as a user message;
+        // render it as one, live, at the point it entered.
+        Op::SteerInput { text, .. } => write_json(writer, &user_message_chunk(session_id, text)),
+        Op::SchemaReask { feedback, .. } => {
+            write_json(writer, &user_message_chunk(session_id, feedback))
+        }
         _ => Ok(()),
     }
 }

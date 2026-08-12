@@ -8,9 +8,14 @@ pub mod compact;
 pub mod loop_protection;
 pub mod mcp;
 pub mod skills;
+pub mod steer;
 pub mod turn;
 pub mod wiring;
 
 #[cfg(test)]
 #[path = "turn_tests.rs"]
 mod turn_tests;
+
+#[cfg(test)]
+#[path = "c9_tests.rs"]
+mod c9_tests;

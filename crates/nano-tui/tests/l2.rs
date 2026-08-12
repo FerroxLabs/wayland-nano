@@ -19,6 +19,7 @@ const APPROVAL_SPOOF: &str = include_str!("fixtures/adversarial/approval_spoof.n
 const TORN_RESUME: &str = include_str!("fixtures/adversarial/torn_resume.ndjson");
 const CANCEL_MID_TURN: &str = include_str!("fixtures/adversarial/cancel_mid_turn.ndjson");
 const COMPACT: &str = include_str!("fixtures/adversarial/compact.ndjson");
+const STEER_MID_TURN: &str = include_str!("fixtures/adversarial/steer_mid_turn.ndjson");
 
 /// The recorded full journey is two lifetimes in one file: phase 1 ends at
 /// the second `initialize` expectation (the relaunch). Split there.
@@ -441,5 +442,67 @@ fn l2_compact_command_sends_request_and_renders_notices() {
     // survived the sanitizer into the terminal grid.
     assert!(screen.contains("forged"), "sanitized text kept: {screen}");
     assert!(!screen.contains('\u{1b}'), "no raw ESC on screen");
+    world.finish();
+}
+
+/// C9 §3.4/§2.2/§5 (TUI scripted drive): a mid-turn submit rides
+/// session/steer when the host advertises it; the reconnect banner shows
+/// in the status line; the drained steer renders as a user cell; the
+/// rate-limit snapshot renders; a cancel drops the queued steer with
+/// exactly one typed note.
+#[test]
+fn l2_steer_mid_turn_reconnect_banner_and_drop_note() {
+    lint_fixture(
+        STEER_MID_TURN,
+        &[FULL_JOURNEY, PTY_JOURNEY],
+        &["reconnecting", "rate_limit", "steer_dropped"][..],
+    )
+    .unwrap_or_else(|e| panic!("steer fixture failed the lint: {e}"));
+    // 120 columns: the C9 status slots (banner, steers, rl) must not clip.
+    let mut world = World::new(STEER_MID_TURN, 120, 24, None);
+    assert!(world.screen().contains("session ready"));
+
+    // Prompt sent; the host is in a reconnect sleep — the banner shows.
+    world.type_and_submit("Start the work.");
+    let screen = world.screen();
+    assert!(
+        screen.contains("reconnecting (attempt 1, next 5s)"),
+        "reconnect banner: {screen}"
+    );
+
+    // Mid-turn submit: rides session/steer, acks with the position, drains
+    // as a user cell; the rate-limit snapshot renders in the status line.
+    world.type_and_submit("also check the tests");
+    let screen = world.screen();
+    assert!(
+        screen.contains("steer queued (position 1)"),
+        "ack: {screen}"
+    );
+    assert!(
+        screen.contains("also check the tests"),
+        "drained steer renders as a user cell: {screen}"
+    );
+    assert!(
+        screen.contains("rl: req 90/100"),
+        "rate-limit snapshot in the status line: {screen}"
+    );
+
+    // A second steer, then Esc: cancel wins and the queued steer drops with
+    // exactly one typed note.
+    world.type_and_submit("drop me");
+    assert!(world.screen().contains("steer queued (position 1)"));
+    world.key(KeyCode::Esc);
+    let screen = world.screen();
+    assert!(screen.contains("cancel requested"), "cancel note: {screen}");
+    assert!(
+        screen.contains("steer dropped (request 5"),
+        "per-submitter drop note: {screen}"
+    );
+    assert!(screen.contains("turn ended: cancelled"), "{screen}");
+    // The banner cleared with the turn.
+    assert!(
+        !screen.contains("reconnecting (attempt"),
+        "banner cleared at turn end: {screen}"
+    );
     world.finish();
 }

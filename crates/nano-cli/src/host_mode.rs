@@ -73,6 +73,25 @@ pub async fn run(
         tool_definitions,
         approval: Some(&approve_all),
         compaction: None,
+        robustness: {
+            // C9 §4: the env config channel, same typed-error discipline as
+            // the acp host. An invalid value fails the host LOUDLY at
+            // startup, never a silent clamp.
+            match (
+                nano_cli::model_params::effort_from_env(),
+                nano_cli::model_params::verbosity_from_env(),
+            ) {
+                (Ok(reasoning_effort), Ok(verbosity)) => nano_agent::turn::TurnRobustness {
+                    reasoning_effort,
+                    verbosity,
+                    ..Default::default()
+                },
+                (Err(err), _) | (_, Err(err)) => {
+                    eprintln!("wayland-nano: {err}");
+                    return Ok(HostExit::Fatal(format!("config: {err}")));
+                }
+            }
+        },
     };
     let skill_context = std::sync::Arc::new(skill_context);
 

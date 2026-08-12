@@ -317,6 +317,8 @@ impl Harness {
                     window_override: None,
                     limit_override: None,
                     sandbox_probe: &sandbox_probe,
+                    reasoning_effort: None,
+                    verbosity: None,
                 };
                 acp_mode::serve(
                     ChannelReader {

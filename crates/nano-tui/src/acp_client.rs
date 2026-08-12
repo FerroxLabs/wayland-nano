@@ -55,6 +55,33 @@ pub enum SessionUpdate {
     Compaction {
         status: String,
     },
+    /// C9 §3.3: a queued steer was dropped on cancel/close — one notice per
+    /// dropped steer, carrying OUR request id and the text digest.
+    SteerDropped {
+        request_id: String,
+        text_digest: String,
+    },
+    /// C9 §2.2: the host is in a reconnect sleep (typed fields; render,
+    /// never parse).
+    Reconnecting {
+        attempt: u64,
+        next_delay_ms: u64,
+        deadline_remaining_ms: u64,
+    },
+    /// C9 §4 (Q3): a requested param was omitted/inert on the surface.
+    ParamInert {
+        param: String,
+        surface: String,
+        detail: String,
+    },
+    /// C9 §5 (Q4): the latest coalesced rate-limit snapshot. Every field is
+    /// optional — render "unknown" for absent fields, never a guess.
+    RateLimit {
+        requests_remaining: Option<u64>,
+        requests_limit: Option<u64>,
+        tokens_remaining: Option<u64>,
+        tokens_limit: Option<u64>,
+    },
     /// Forward-additive: kinds v1 doesn't render. Tolerated, never panics
     /// (torn/unknown replay frames must not kill the TUI, design §8).
     Unknown(String),
@@ -204,6 +231,56 @@ fn parse_session_update(update: &Value) -> SessionUpdate {
                 .unwrap_or("")
                 .to_string(),
         },
+        "steer_dropped" => SessionUpdate::SteerDropped {
+            request_id: update
+                .get("requestId")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            text_digest: update
+                .get("textDigest")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        },
+        "reconnecting" => SessionUpdate::Reconnecting {
+            attempt: update.get("attempt").and_then(Value::as_u64).unwrap_or(0),
+            next_delay_ms: update
+                .get("nextDelayMs")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            deadline_remaining_ms: update
+                .get("deadlineRemainingMs")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        },
+        "param_inert" => SessionUpdate::ParamInert {
+            param: update
+                .get("param")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            surface: update
+                .get("surface")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            detail: update
+                .get("detail")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        },
+        "rate_limit" => {
+            let snapshot = update.get("snapshot").cloned().unwrap_or(Value::Null);
+            let field = |name: &str| snapshot.get(name).and_then(Value::as_u64);
+            SessionUpdate::RateLimit {
+                requests_remaining: field("requests_remaining"),
+                requests_limit: field("requests_limit"),
+                tokens_remaining: field("tokens_remaining"),
+                tokens_limit: field("tokens_limit"),
+            }
+        }
         other => SessionUpdate::Unknown(other.to_string()),
     }
 }
@@ -364,6 +441,26 @@ pub fn set_mode_params(session_id: &str, mode_id: &str) -> Value {
 /// context, journaled identically to the auto path.
 pub fn compact_params(session_id: &str) -> Value {
     json!({"sessionId": session_id})
+}
+
+/// session/steer (C9): mid-turn input queued for the running turn's next
+/// loop-top drain. The ack resolves immediately; it is NOT the turn result.
+pub fn steer_params(session_id: &str, text: &str) -> Value {
+    json!({"sessionId": session_id, "text": text})
+}
+
+/// session/steer support, discovered from the initialize response's
+/// `agentCapabilities.nanoExtensions` block — never by probing (an
+/// unadvertised method would earn the standard -32601 fallback). (The key
+/// contains a literal slash, so JSON-pointer escaping would be needed —
+/// plain navigation is clearer.)
+pub fn parse_steer_capability(result: &Value) -> bool {
+    result
+        .get("agentCapabilities")
+        .and_then(|c| c.get("nanoExtensions"))
+        .and_then(|e| e.get("session/steer"))
+        .and_then(|s| s.get("version"))
+        .is_some()
 }
 
 pub fn cancel_notification(session_id: &str) -> Value {

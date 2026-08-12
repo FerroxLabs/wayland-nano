@@ -6,3 +6,4 @@ pub mod acp_mode;
 pub mod fetch_specs;
 pub mod flux_key;
 pub mod mcp_specs;
+pub mod model_params;

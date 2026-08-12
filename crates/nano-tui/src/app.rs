@@ -45,6 +45,8 @@ enum Pending {
     SetModel,
     SetMode,
     Compact,
+    /// C9: a mid-turn session/steer enqueue; the ack carries the position.
+    Steer,
 }
 
 /// The open modal, if any.
@@ -77,6 +79,10 @@ pub struct App {
     cwd: String,
     nano_home: std::path::PathBuf,
     turn_active: bool,
+    /// C9: the host advertised session/steer in its nanoExtensions block.
+    /// Discovered, never probed; without it a mid-turn submit keeps the old
+    /// "a turn is already running" behavior.
+    steer_supported: bool,
     ready: bool,
     should_quit: bool,
     sender: AppEventSender,
@@ -104,6 +110,7 @@ impl App {
             cwd,
             nano_home,
             turn_active: false,
+            steer_supported: false,
             ready: false,
             should_quit: false,
             sender,
@@ -425,8 +432,28 @@ impl App {
             return;
         }
         if self.turn_active {
-            self.transcript
-                .push_note("a turn is already running (Esc cancels)");
+            // C9 §3.4: a mid-turn submit rides session/steer when the host
+            // advertised it; the ack arrives as a normal response. Without
+            // the capability the old behavior stands.
+            if !self.steer_supported {
+                self.transcript
+                    .push_note("a turn is already running (Esc cancels)");
+                return;
+            }
+            let Some(session_id) = self.session_id.clone() else {
+                self.transcript.push_note("no session");
+                return;
+            };
+            // No echo at submit: the pending indicator + ack note narrate
+            // the queue, and the DRAIN renders the user cell at the point
+            // the steer enters history (never a doubled render).
+            self.status.pending_steers += 1;
+            self.send_request(
+                conn,
+                "session/steer",
+                acp_client::steer_params(&session_id, text),
+                Pending::Steer,
+            );
             return;
         }
         let Some(session_id) = self.session_id.clone() else {
@@ -582,6 +609,11 @@ impl App {
                     self.turn_active = false;
                     self.status.wire = WireState::Ready;
                 }
+                Pending::Steer => {
+                    // The steer never queued: the user text stays in the
+                    // transcript (they wrote it) and the count settles.
+                    self.status.pending_steers = self.status.pending_steers.saturating_sub(1);
+                }
                 Pending::SetModel => {}
                 Pending::SetMode => {
                     // The mode visibly did not change.
@@ -594,6 +626,9 @@ impl App {
         let result = result.unwrap_or(Value::Null);
         match pending {
             Pending::Initialize => {
+                // C9: steer support is DISCOVERED from the advertised
+                // nanoExtensions block, never probed.
+                self.steer_supported = acp_client::parse_steer_capability(&result);
                 let cwd = self.cwd.clone();
                 if let Some(resume) = self.resume_session.clone() {
                     // session/load: journal-backed resume (design §2). Replay
@@ -664,12 +699,29 @@ impl App {
                 self.transcript.commit_active();
                 self.turn_active = false;
                 self.status.wire = WireState::Ready;
+                // The turn ended: any reconnect banner clears, and every
+                // still-pending steer was either drained (rendered as a
+                // user chunk) or dropped (a steer_dropped notice).
+                self.status.reconnect = None;
+                self.status.pending_steers = 0;
                 let stop = result
                     .get("stopReason")
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 if !stop.is_empty() && stop != "end_turn" {
                     self.transcript.push_note(&format!("turn ended: {stop}"));
+                }
+            }
+            Pending::Steer => {
+                if result.get("queued").and_then(Value::as_bool) == Some(true) {
+                    // Queued: stays counted until it drains (user chunk) or
+                    // drops (steer_dropped notice).
+                    let position = result.get("position").and_then(Value::as_u64).unwrap_or(0);
+                    self.transcript
+                        .push_note(&format!("steer queued (position {position})"));
+                } else {
+                    self.status.pending_steers = self.status.pending_steers.saturating_sub(1);
+                    self.transcript.push_note("steer rejected by the host");
                 }
             }
             Pending::SetModel => {
@@ -715,7 +767,50 @@ impl App {
     fn handle_update(&mut self, update: SessionUpdate) {
         match update {
             SessionUpdate::AgentChunk(text) => self.transcript.push_agent_chunk(&text),
-            SessionUpdate::UserChunk(text) => self.transcript.push_user(&text),
+            SessionUpdate::UserChunk(text) => {
+                // A live user chunk is a drained steer (C9): the host emits
+                // user chunks live only from the steer/re-ask drain path.
+                self.status.pending_steers = self.status.pending_steers.saturating_sub(1);
+                self.transcript.push_user(&text);
+            }
+            SessionUpdate::SteerDropped {
+                request_id,
+                text_digest,
+            } => {
+                // Exactly one typed note per dropped steer (C9 §3.3).
+                self.status.pending_steers = self.status.pending_steers.saturating_sub(1);
+                self.transcript.push_note(&format!(
+                    "steer dropped (request {request_id}, {text_digest})"
+                ));
+            }
+            SessionUpdate::Reconnecting {
+                attempt,
+                next_delay_ms,
+                deadline_remaining_ms,
+            } => {
+                self.status.reconnect = Some((attempt, next_delay_ms, deadline_remaining_ms));
+            }
+            SessionUpdate::ParamInert {
+                param,
+                surface,
+                detail,
+            } => {
+                self.transcript
+                    .push_note(&format!("param inert: {param} on {surface} — {detail}"));
+            }
+            SessionUpdate::RateLimit {
+                requests_remaining,
+                requests_limit,
+                tokens_remaining,
+                tokens_limit,
+            } => {
+                self.status.rate_limit = Some(crate::status::RateLimitView {
+                    requests_remaining,
+                    requests_limit,
+                    tokens_remaining,
+                    tokens_limit,
+                });
+            }
             SessionUpdate::ToolCall {
                 call_id,
                 title,
