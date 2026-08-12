@@ -25,14 +25,21 @@ pub async fn read_error_body(response: reqwest::Response) -> String {
 }
 
 /// Classify an HTTP error status + body into a typed ModelError.
+///
+/// C8 §8 (B4): the provider-controlled body text passes through the ONE
+/// credential-aware sanitization boundary before it can reach a Display —
+/// a provider echoing the presented Authorization/x-api-key credential in
+/// its error body must not leak it into logs, stderr, or ACP error frames.
 pub fn classify_status(status: u16, body: String) -> ModelError {
     let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
     let error = parsed.as_ref().and_then(|v| v.get("error"));
-    let message = error
-        .and_then(|e| e.get("message"))
-        .and_then(|m| m.as_str())
-        .unwrap_or("")
-        .to_string();
+    let message = nano_egress::redact::sanitize_text(
+        error
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or(""),
+    )
+    .to_string();
     let error_type = error.and_then(|e| e.get("type")).and_then(|t| t.as_str());
     match status {
         401 | 403 => ModelError::Auth(message),

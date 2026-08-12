@@ -1,0 +1,160 @@
+{
+  "version": 1,
+  "source": "desktop/src/process/providers/catalog/data/providerCatalog.generated.json + wcore bundled providers.toml (endpoints cross-checked 2026-08-12)",
+  "refresh": "copy + update the recorded SHA-256 in tests/provider_catalog.rs + review the endpoint diff; lands as its own PR",
+  "providers": [
+    {
+      "id": "flux-router",
+      "display_name": "Flux Router",
+      "base_url": "https://api.fluxrouter.ai",
+      "wire": "openai-completions",
+      "api_path": "/v1/chat/completions",
+      "env_var": "FLUX_API_KEY",
+      "proven": true
+    },
+    {
+      "id": "anthropic",
+      "display_name": "Anthropic",
+      "base_url": "https://api.anthropic.com",
+      "wire": "anthropic-messages",
+      "api_path": "/v1/messages",
+      "env_var": "ANTHROPIC_API_KEY",
+      "proven": false
+    },
+    {
+      "id": "openai",
+      "display_name": "OpenAI",
+      "base_url": "https://api.openai.com/v1",
+      "wire": "openai-completions",
+      "api_path": "/chat/completions",
+      "env_var": "OPENAI_API_KEY",
+      "proven": false
+    },
+    {
+      "id": "openrouter",
+      "display_name": "OpenRouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "wire": "openai-completions",
+      "api_path": "/chat/completions",
+      "env_var": "OPENROUTER_API_KEY",
+      "proven": false
+    },
+    {
+      "id": "groq",
+      "display_name": "Groq",
+      "base_url": "https://api.groq.com/openai/v1",
+      "wire": "openai-completions",
+      "api_path": "/chat/completions",
+      "env_var": "GROQ_API_KEY",
+      "proven": false
+    },
+    {
+      "id": "mistral",
+      "display_name": "Mistral",
+      "base_url": "https://api.mistral.ai/v1",
+      "wire": "openai-completions",
+      "api_path": "/chat/completions",
+      "env_var": "MISTRAL_API_KEY",
+      "proven": false
+    },
+    {
+      "id": "deepseek",
+      "display_name": "DeepSeek",
+      "base_url": "https://api.deepseek.com",
+      "wire": "openai-completions",
+      "api_path": "/v1/chat/completions",
+      "env_var": "DEEPSEEK_API_KEY",
+      "proven": false
+    },
+    {
+      "id": "together",
+      "display_name": "Together",
+      "base_url": "https://api.together.xyz/v1",
+      "wire": "openai-completions",
+      "api_path": "/chat/completions",
+      "env_var": "TOGETHER_API_KEY",
+      "proven": false
+    },
+    {
+      "id": "fireworks",
+      "display_name": "Fireworks",
+      "base_url": "https://api.fireworks.ai/inference/v1",
+      "wire": "openai-completions",
+      "api_path": "/chat/completions",
+      "env_var": "FIREWORKS_API_KEY",
+      "proven": false
+    },
+    {
+      "id": "perplexity",
+      "display_name": "Perplexity",
+      "base_url": "https://api.perplexity.ai/v1",
+      "wire": "openai-completions",
+      "api_path": "/chat/completions",
+      "env_var": "PERPLEXITY_API_KEY",
+      "proven": false
+    },
+    {
+      "id": "cohere",
+      "display_name": "Cohere",
+      "base_url": "https://api.cohere.com/compatibility/v1",
+      "wire": "openai-completions",
+      "api_path": "/chat/completions",
+      "env_var": "COHERE_API_KEY",
+      "proven": false
+    },
+    {
+      "id": "cerebras",
+      "display_name": "Cerebras",
+      "base_url": "https://api.cerebras.ai/v1",
+      "wire": "openai-completions",
+      "api_path": "/chat/completions",
+      "env_var": "CEREBRAS_API_KEY",
+      "proven": false
+    },
+    {
+      "id": "xai",
+      "display_name": "xAI",
+      "base_url": "https://api.x.ai/v1",
+      "wire": "openai-completions",
+      "api_path": "/chat/completions",
+      "env_var": "XAI_API_KEY",
+      "proven": false
+    },
+    {
+      "id": "moonshot",
+      "display_name": "Moonshot",
+      "base_url": "https://api.moonshot.ai/v1",
+      "wire": "openai-completions",
+      "api_path": "/chat/completions",
+      "env_var": "MOONSHOT_API_KEY",
+      "proven": false
+    },
+    {
+      "id": "nvidia",
+      "display_name": "NVIDIA",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "wire": "openai-completions",
+      "api_path": "/chat/completions",
+      "env_var": "NVIDIA_API_KEY",
+      "proven": false
+    },
+    {
+      "id": "minimax",
+      "display_name": "MiniMax",
+      "base_url": "https://api.minimax.io/v1",
+      "wire": "openai-completions",
+      "api_path": "/chat/completions",
+      "env_var": "MINIMAX_API_KEY",
+      "proven": false
+    },
+    {
+      "id": "google-gemini",
+      "display_name": "Google Gemini",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "wire": "openai-completions",
+      "api_path": "/chat/completions",
+      "env_var": "GEMINI_API_KEY",
+      "proven": false
+    }
+  ]
+}

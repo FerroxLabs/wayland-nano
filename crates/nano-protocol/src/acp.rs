@@ -57,6 +57,28 @@ impl JsonRpcResponse {
             error: Some(JsonRpcErrorBody {
                 code,
                 message: message.into(),
+                data: None,
+            }),
+        }
+    }
+
+    /// Error carrying a structured `data` payload (C7 D2 / C8: typed error
+    /// kinds ride in `error.data` — no new numeric codes). Callers must keep
+    /// `data` secret-free (ids, kinds, hints only).
+    pub fn err_with_data(
+        id: serde_json::Value,
+        code: i64,
+        message: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
+        Self {
+            jsonrpc: "2.0".into(),
+            id,
+            result: None,
+            error: Some(JsonRpcErrorBody {
+                code,
+                message: message.into(),
+                data: Some(data),
             }),
         }
     }
@@ -70,6 +92,8 @@ impl JsonRpcResponse {
 pub struct JsonRpcErrorBody {
     pub code: i64,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

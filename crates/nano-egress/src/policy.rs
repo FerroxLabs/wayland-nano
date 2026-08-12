@@ -49,6 +49,20 @@ impl EgressPolicy {
         Self::new().allow_host("api.fluxrouter.ai")
     }
 
+    /// Allow the host of an absolute https URL (C8: the multi-provider
+    /// policy is built from the vendored catalog's `base_url` fields, the
+    /// sole endpoint authority). A non-https or hostless URL adds NOTHING —
+    /// fail-closed by construction.
+    pub fn allow_url(self, url: &str) -> Self {
+        match url.split_once("://") {
+            Some((scheme, _)) if scheme.eq_ignore_ascii_case("https") => match host_of(url) {
+                Some(host) if !host.is_empty() => self.allow_host(host),
+                _ => self,
+            },
+            _ => self,
+        }
+    }
+
     pub fn decide(&self, url: &str) -> EgressDecision {
         let Some((scheme, _)) = url.split_once("://") else {
             return EgressDecision::Deny;
@@ -156,6 +170,20 @@ mod tests {
         let policy = EgressPolicy::flux_only();
         assert!(policy.allows("https://api.fluxrouter.ai:8443/v1/models"));
         assert!(!policy.allows("https://evil.com@api.fluxrouter.ai.evil.com/x"));
+    }
+
+    #[test]
+    fn allow_url_adds_https_hosts_only() {
+        let policy = EgressPolicy::new()
+            .allow_url("https://api.openai.com/v1")
+            .allow_url("https://openrouter.ai/api/v1")
+            .allow_url("http://insecure.example.com/v1") // http base: ignored
+            .allow_url("not-a-url"); // garbage: ignored
+        assert!(policy.allows("https://api.openai.com/v1/chat/completions"));
+        assert!(policy.allows("https://openrouter.ai/api/v1/chat/completions"));
+        assert!(!policy.allows("http://insecure.example.com/v1/chat/completions"));
+        assert!(!policy.allows("https://insecure.example.com/v1"));
+        assert!(!policy.allows("https://api.anthropic.com/v1/messages"));
     }
 
     #[test]

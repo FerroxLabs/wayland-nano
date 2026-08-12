@@ -23,18 +23,29 @@ pub use crate::flux_common::{FLUX_BASE, classify_status};
 
 pub const COMPLETIONS_PATH: &str = "/v1/chat/completions";
 
+/// OpenAI chat-completions client — the provider-neutral implementation
+/// (C8 §4). Flux is the `base_url = FLUX_BASE` special case; every other
+/// OpenAI-compatible catalog provider differs only in base_url/api_path
+/// (both from the vendored table, the sole endpoint authority) and the
+/// bearer presented per call.
 #[derive(Debug)]
-pub struct FluxCompletionsClient {
+pub struct OpenAiCompletionsClient {
     egress: EgressClient,
     base_url: String,
+    api_path: String,
     retry: RetryPolicy,
 }
 
-impl FluxCompletionsClient {
+/// Back-compat alias (codex NB / claude NB: no rename churn). Existing call
+/// sites and tests keep the Flux name; it IS the OpenAI-compat client.
+pub type FluxCompletionsClient = OpenAiCompletionsClient;
+
+impl OpenAiCompletionsClient {
     pub fn new(egress: EgressClient) -> Self {
         Self {
             egress,
             base_url: FLUX_BASE.to_string(),
+            api_path: COMPLETIONS_PATH.to_string(),
             retry: RetryPolicy::default(),
         }
     }
@@ -44,12 +55,15 @@ impl FluxCompletionsClient {
         self
     }
 
+    /// Override the completions path (vendored-catalog `api_path`; e.g.
+    /// `/chat/completions` when the base already carries a version segment).
+    pub fn with_api_path(mut self, api_path: impl Into<String>) -> Self {
+        self.api_path = api_path.into();
+        self
+    }
+
     fn endpoint(&self) -> String {
-        format!(
-            "{}{}",
-            self.base_url.trim_end_matches('/'),
-            COMPLETIONS_PATH
-        )
+        format!("{}{}", self.base_url.trim_end_matches('/'), self.api_path)
     }
 
     pub async fn complete(
