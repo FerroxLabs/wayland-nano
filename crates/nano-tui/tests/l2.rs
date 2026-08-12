@@ -252,10 +252,10 @@ fn l2_approval_spoofing() {
     let mut world = World::new(APPROVAL_SPOOF, 80, 24, None);
     world.type_and_submit("write it");
     // Malformed (empty options) auto-denied; valid request opened the modal;
-    // duplicate auto-denied.
+    // duplicate auto-denied. (C7: the denial surfaces as a typed error cell.)
     let screen = world.screen();
     assert!(
-        screen.contains("malformed permission request auto-denied"),
+        screen.contains("Malformed permission request — auto-denied"),
         "{screen}"
     );
     assert!(screen.contains("Approve? fs_write"), "modal open: {screen}");

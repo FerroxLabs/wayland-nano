@@ -2,11 +2,14 @@
 //! shared/reviews/panel-tui/DESIGN-DRAFT.md, panel-CERTIFIED).
 //!
 //! An ACP subprocess client: spawns `wayland-nano acp-host` and speaks the
-//! hand-rolled JSON-RPC subset (acp_client.rs). Links NO nano engine
-//! crates — the wire contract is the tested boundary and the TUI only ever
-//! handles subprocess frames. Fail-closed everywhere: default-deny
-//! approvals with explicit decisions only, streaming-safe terminal-sequence
-//! sanitization on all rendered text, no TUI-side credential handling.
+//! hand-rolled JSON-RPC subset (acp_client.rs). It links no ENGINE crates;
+//! the only nano link is the C7 error vocabulary + presentation table
+//! (nano-session's serde-only `NanoErrorKind` / `error_codes`, sanctioned
+//! by the C7 design §2.1) so typed errors render as table presentations,
+//! never raw wire strings.
+//! Fail-closed everywhere: default-deny approvals with explicit decisions
+//! only, streaming-safe terminal-sequence sanitization on all rendered
+//! text, no TUI-side credential handling.
 
 pub mod acp_client;
 pub mod app;

@@ -26,6 +26,17 @@ pub enum Cell {
     },
     /// A tool completion update (digest on replay, output live).
     ToolResult { call_id: String, status: String },
+    /// A typed error cell (C7): table title + actionable hint, icon class
+    /// from `kind`/`retryable` at render time (✖ terminal / ↻ retryable /
+    /// ⛔ policy-denial). Text is ALWAYS static table presentation or
+    /// TUI-side static text — never raw wire strings.
+    Error {
+        title: String,
+        hint: String,
+        code_label: String,
+        kind: Option<nano_session::NanoErrorKind>,
+        retryable: bool,
+    },
     /// A TUI-side note: /status, /doctor, errors, lifecycle messages.
     Note(String),
 }
@@ -110,7 +121,13 @@ impl Transcript {
         });
     }
 
-    pub fn push_tool_result(&mut self, call_id: &str, status: &str, raw_output: &str) {
+    pub fn push_tool_result(
+        &mut self,
+        call_id: &str,
+        status: &str,
+        raw_output: &str,
+        nano_error: Option<crate::acp_client::NanoErrorPayload>,
+    ) {
         self.commit_active();
         self.follow_tail();
         // Update the matching card's status so it never hangs in_progress.
@@ -126,6 +143,16 @@ impl Transcript {
                 break;
             }
         }
+        // C7: a typed failure renders the table presentation (title — hint)
+        // instead of the meaningless `failed: len:N` digest.
+        if let Some(payload) = nano_error {
+            let presentation = nano_session::error_codes::error_presentation(payload.kind);
+            self.cells.push(Cell::ToolResult {
+                call_id: call_id.to_string(),
+                status: format!("{status}: {}", crate::sanitize::sanitize(&presentation)),
+            });
+            return;
+        }
         let output = crate::sanitize::sanitize(raw_output);
         if !output.is_empty() {
             self.cells.push(Cell::ToolResult {
@@ -133,6 +160,27 @@ impl Transcript {
                 status: format!("{status}: {output}"),
             });
         }
+    }
+
+    /// A typed error cell (C7). All text passes the fail-closed sanitizer —
+    /// even though callers only pass static table/TUI strings.
+    pub fn push_error(
+        &mut self,
+        title: &str,
+        hint: &str,
+        code_label: &str,
+        kind: Option<nano_session::NanoErrorKind>,
+        retryable: bool,
+    ) {
+        self.commit_active();
+        self.follow_tail();
+        self.cells.push(Cell::Error {
+            title: crate::sanitize::sanitize(title),
+            hint: crate::sanitize::sanitize(hint),
+            code_label: crate::sanitize::sanitize(code_label),
+            kind,
+            retryable,
+        });
     }
 
     pub fn push_note(&mut self, text: &str) {
@@ -180,10 +228,59 @@ mod tests {
     fn tool_result_updates_card_status() {
         let mut t = Transcript::new();
         t.push_tool_call("c1", "shell", "in_progress", "{}");
-        t.push_tool_result("c1", "completed", "ok");
+        t.push_tool_result("c1", "completed", "ok", None);
         match &t.cells()[0] {
             Cell::Tool { status, .. } => assert_eq!(status, "completed"),
             other => panic!("expected tool cell, got {other:?}"),
+        }
+    }
+
+    /// C7: a typed failure shows the table presentation, not the digest.
+    #[test]
+    fn typed_tool_failure_renders_presentation_not_digest() {
+        let mut t = Transcript::new();
+        t.push_tool_call("c1", "fs_write", "in_progress", "{}");
+        t.push_tool_result(
+            "c1",
+            "failed",
+            "len:21",
+            Some(crate::acp_client::NanoErrorPayload {
+                kind: nano_session::NanoErrorKind::ApprovalDenied,
+                retryable: false,
+            }),
+        );
+        match &t.cells()[1] {
+            Cell::ToolResult { status, .. } => assert_eq!(status, "failed: Denied by user"),
+            other => panic!("expected tool result cell, got {other:?}"),
+        }
+    }
+
+    /// C7: error cells sanitize their text (defense in depth — the inputs
+    /// are static strings, but the sanitizer contract holds for every cell).
+    #[test]
+    fn error_cell_text_is_sanitized() {
+        let mut t = Transcript::new();
+        t.push_error(
+            "Bogus \x1b[31mtitle",
+            "hint \x1b]0;x\x07",
+            "-32603",
+            None,
+            false,
+        );
+        match &t.cells()[0] {
+            Cell::Error {
+                title,
+                hint,
+                code_label,
+                retryable,
+                ..
+            } => {
+                assert_eq!(title, "Bogus title");
+                assert_eq!(hint, "hint ");
+                assert_eq!(code_label, "-32603");
+                assert!(!retryable);
+            }
+            other => panic!("expected error cell, got {other:?}"),
         }
     }
 

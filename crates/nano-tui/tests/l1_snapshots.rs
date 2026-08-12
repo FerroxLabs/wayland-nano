@@ -38,7 +38,7 @@ fn snapshot_transcript_cells() {
     world
         .app
         .transcript
-        .push_tool_result("call-1", "completed", "# Wayland Nano");
+        .push_tool_result("call-1", "completed", "# Wayland Nano", None);
     world.app.transcript.push_note("doctor: 0 fail, 1 warn");
     insta::assert_snapshot!(render_to_test_backend(&world.app, 80, 24));
     world.finish();
@@ -106,5 +106,33 @@ fn unknown_slash_command_is_a_note() {
     world.type_and_submit("/bogus");
     let screen = render_to_test_backend(&world.app, 80, 24);
     assert!(screen.contains("unknown command: /bogus"), "{screen}");
+    world.finish();
+}
+
+/// C7: typed error cells — one icon per class (✖ terminal / ↻ retryable /
+/// ⛔ policy-denial), table title + hint, code label.
+#[test]
+fn snapshot_error_cells() {
+    let mut world = World::new(LIFECYCLE, 80, 24, None);
+    world.app.transcript.push_error(
+        "Rate limited",
+        "Retrying automatically; wait a moment",
+        "-32603",
+        Some(nano_session::NanoErrorKind::ModelRateLimited),
+        true,
+    );
+    world.app.transcript.push_error(
+        "Denied by user",
+        "",
+        "-32603",
+        Some(nano_session::NanoErrorKind::ApprovalDenied),
+        false,
+    );
+    // Unknown/future kind: generic terminal cell, static title (design §4).
+    world
+        .app
+        .transcript
+        .push_error("Request failed", "", "-32603", None, false);
+    insta::assert_snapshot!(render_to_test_backend(&world.app, 80, 24));
     world.finish();
 }

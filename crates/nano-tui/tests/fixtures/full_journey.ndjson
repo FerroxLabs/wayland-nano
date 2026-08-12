@@ -6,9 +6,9 @@
 {"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"content":{"text":"Hello from Wayland Nano.","type":"text"},"sessionUpdate":"agent_message_chunk"}}}}
 {"dir":"<","frame":{"id":3,"jsonrpc":"2.0","result":{"stopReason":"end_turn"}}}
 {"dir":">","frame":{"id":4,"jsonrpc":"2.0","method":"session/prompt","params":{"prompt":[{"text":"Write note.txt.","type":"text"}],"sessionId":"wayland-nano-session-recorded"}}}
+{"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"kind":"edit","rawInput":{"content":"hello\n","path":"note.txt"},"sessionUpdate":"tool_call","status":"in_progress","title":"fs_write","toolCallId":"call-1"}}}}
 {"dir":"<","frame":{"id":1,"jsonrpc":"2.0","method":"session/request_permission","params":{"options":[{"kind":"allow_once","name":"Allow once","optionId":"allow"},{"kind":"reject_once","name":"Deny","optionId":"deny"}],"sessionId":"wayland-nano-session-recorded","toolCall":{"rawInput":{"content":"hello\n","path":"note.txt"},"title":"fs_write","toolCallId":"call-1"}}}}
 {"dir":">","frame":{"id":1,"jsonrpc":"2.0","result":{"outcome":{"optionId":"allow","outcome":"selected"}}}}
-{"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"kind":"edit","rawInput":{"content":"hello\n","path":"note.txt"},"sessionUpdate":"tool_call","status":"in_progress","title":"fs_write","toolCallId":"call-1"}}}}
 {"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"rawOutput":"len:12","sessionUpdate":"tool_call_update","status":"completed","toolCallId":"call-1"}}}}
 {"dir":"<","frame":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wayland-nano-session-recorded","update":{"content":{"text":"File written.","type":"text"},"sessionUpdate":"agent_message_chunk"}}}}
 {"dir":"<","frame":{"id":4,"jsonrpc":"2.0","result":{"stopReason":"end_turn"}}}
