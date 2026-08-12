@@ -1,5 +1,6 @@
-//! Slash commands (composer prefix `/`): `/model`, `/mode`, `/status`,
-//! `/doctor`, `/compact`, `/quit` — the v1 set (design doc §4).
+//! Slash commands (composer prefix `/`): `/model`, `/mode`, `/plan`,
+//! `/todo`, `/status`, `/doctor`, `/compact`, `/quit` — the v1 set (design
+//! doc §4 + C10).
 //!
 //! `/status` and `/doctor` data path (normative, panel condition C1): both
 //! run `wayland-nano doctor` as a SHORT-LIVED SUBPROCESS and render the
@@ -17,6 +18,14 @@ pub enum SlashCommand {
     Model,
     /// Open the permission-mode picker (advertised modes → session/set_mode).
     Mode,
+    /// Enter plan mode (C10): sends session/set_mode {modeId:"plan"} over
+    /// the wire — the TUI is an ACP client, so this is NOT a local-only
+    /// operation (the /model → session/set_model precedent). The host's ack
+    /// carries the plan file path, printed for discoverability (Q5).
+    Plan,
+    /// Print the session todo list (C10), tracked from `todo` tool_call
+    /// frames (no new wire affordance in v1).
+    Todo,
     /// Model + wire state + doctor summary.
     Status,
     /// Full doctor output.
@@ -40,6 +49,8 @@ pub fn parse(text: &str) -> Option<SlashCommand> {
     Some(match command {
         "/model" => SlashCommand::Model,
         "/mode" => SlashCommand::Mode,
+        "/plan" => SlashCommand::Plan,
+        "/todo" => SlashCommand::Todo,
         "/status" => SlashCommand::Status,
         "/doctor" => SlashCommand::Doctor,
         "/compact" => SlashCommand::Compact,
@@ -56,6 +67,8 @@ mod tests {
     fn parses_the_v1_set() {
         assert_eq!(parse("/model"), Some(SlashCommand::Model));
         assert_eq!(parse("/mode"), Some(SlashCommand::Mode));
+        assert_eq!(parse("/plan"), Some(SlashCommand::Plan));
+        assert_eq!(parse("/todo"), Some(SlashCommand::Todo));
         assert_eq!(parse("/status"), Some(SlashCommand::Status));
         assert_eq!(parse("/doctor"), Some(SlashCommand::Doctor));
         assert_eq!(parse("/compact"), Some(SlashCommand::Compact));

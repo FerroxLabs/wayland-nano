@@ -8,3 +8,4 @@ pub mod flux_key;
 pub mod mcp_specs;
 pub mod provider_key;
 pub mod provider_router;
+pub mod session_tools;

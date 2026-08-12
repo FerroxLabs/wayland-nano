@@ -127,6 +127,27 @@ pub enum Op {
         #[serde(default)]
         reason: CompactionCancelReason,
     },
+    /// An ACCEPTED todo-list replacement (C10 §2), journaled by the `todo`
+    /// tool under journal-first, accepted-only ordering: the item set
+    /// validates first, this op lands durably, and only then does the
+    /// session's todo cell mutate. CONTENT, not posture: replay folds it
+    /// into session state (last-write-wins) so a resumed session restores
+    /// the list. Payload policy is the AssistantText class — model-authored,
+    /// user-visible, journaled verbatim (a model that writes a secret into a
+    /// todo item persists it in plaintext, the same risk class as an
+    /// assistant message; documented, user-visible, not a new channel).
+    TodoSet {
+        items: Vec<TodoItem>,
+    },
+    /// An ACCEPTED plan-posture transition (C10 §3), journaled by the single
+    /// `set_plan_posture` transition every entry/exit path converges on.
+    /// Audit history ONLY — the pack-wide rule is "content replays, postures
+    /// don't" (C2 Q5 precedent): replay IGNORES this op for activation and
+    /// session/load NEVER restores the posture; a resumed session starts
+    /// with plan mode off. Older builds read this as `Unknown` and skip.
+    PlanSet {
+        active: bool,
+    },
     /// An ACCEPTED permission-mode change (C2), journaled by the
     /// session/set_mode handler under journal-first, accepted-only ordering:
     /// the id validates first, this op lands durably, and only then does the
@@ -142,4 +163,56 @@ pub enum Op {
     /// replay; the raw line stays in the journal for future readers.
     #[serde(other)]
     Unknown,
+}
+
+/// One todo-list entry (C10 §2). The status vocabulary adopts the
+/// wcore/codex set (`pending`/`in_progress`/`completed`/`cancelled`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoItem {
+    pub id: String,
+    pub content: String,
+    pub status: TodoStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Cancelled,
+    /// A status written by a newer build this one does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+impl TodoStatus {
+    /// The wire/model-facing id.
+    pub fn id(self) -> &'static str {
+        match self {
+            TodoStatus::Pending => "pending",
+            TodoStatus::InProgress => "in_progress",
+            TodoStatus::Completed => "completed",
+            TodoStatus::Cancelled => "cancelled",
+            TodoStatus::Unknown => "unknown",
+        }
+    }
+
+    /// Parse a model-supplied status string. Unknown strings are `None` —
+    /// the todo tool turns that into a typed validation error (fail-closed),
+    /// never a silent coercion.
+    pub fn parse(id: &str) -> Option<TodoStatus> {
+        match id {
+            "pending" => Some(TodoStatus::Pending),
+            "in_progress" => Some(TodoStatus::InProgress),
+            "completed" => Some(TodoStatus::Completed),
+            "cancelled" => Some(TodoStatus::Cancelled),
+            _ => None,
+        }
+    }
+
+    /// Counts toward the open work the status line reports.
+    pub fn is_open(self) -> bool {
+        matches!(self, TodoStatus::Pending | TodoStatus::InProgress)
+    }
 }

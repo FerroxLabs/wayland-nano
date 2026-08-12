@@ -38,6 +38,9 @@ pub struct Status {
     pub wire: WireState,
     /// Last doctor run's summary line (`summary: N fail, M warn`), if any.
     pub doctor_summary: Option<String>,
+    /// Open todo items (C10 §2 status-line count), tracked from `todo`
+    /// tool_call frames. None = no list seen this session.
+    pub todo_open: Option<usize>,
 }
 
 impl Default for Status {
@@ -50,6 +53,7 @@ impl Default for Status {
             modes: Vec::new(),
             wire: WireState::Connecting,
             doctor_summary: None,
+            todo_open: None,
         }
     }
 }
@@ -67,9 +71,13 @@ impl Status {
             .as_deref()
             .map(|s| format!(" | doctor: {s}"))
             .unwrap_or_default();
+        let todo = self
+            .todo_open
+            .map(|n| format!(" | todo: {n} open"))
+            .unwrap_or_default();
         format!(
-            " {} | {} | {} | {}{} | /model /mode /status /doctor /compact /quit ",
-            self.model, self.mode, self.wire, short_session, doctor
+            " {} | {} | {} | {}{}{} | /model /mode /plan /todo /status /doctor /compact /quit ",
+            self.model, self.mode, self.wire, short_session, doctor, todo
         )
     }
 

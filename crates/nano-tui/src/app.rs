@@ -31,6 +31,7 @@ use crate::doctor;
 use crate::event::{AppEvent, AppEventSender};
 use crate::frame_requester;
 use crate::modal::{ApprovalRequest, ListItem, ListSelectionView, ModalOutcome};
+use crate::notify::{Notifier, NotifyKind};
 use crate::slash_commands::{self, SlashCommand};
 use crate::status::{Status, WireState};
 use crate::transcript::Transcript;
@@ -71,9 +72,17 @@ pub struct App {
     seen_permission_ids: HashSet<u64>,
     session_id: Option<String>,
     resume_session: Option<String>,
-    /// The mode id a session/set_mode request is carrying (C2): the ack is
-    /// an empty object, so the requested id is applied on success.
+    /// The mode id a session/set_mode request is carrying (C2): applied on
+    /// a successful ack. C10: the ack also carries the modes block (and,
+    /// for plan entry, the plan file path) — preferred when present.
     requested_mode: Option<String>,
+    /// OSC 9 desktop notifications (C10 §7): two-entry allowlist, config
+    /// off-switch, fire-and-forget.
+    notifier: Notifier,
+    /// The latest todo list seen on the wire (C10 §2): tracked from `todo`
+    /// tool_call frames (no new wire affordance in v1) for /todo and the
+    /// status-line count.
+    todos: Vec<(String, String, String)>,
     cwd: String,
     nano_home: std::path::PathBuf,
     turn_active: bool,
@@ -101,6 +110,8 @@ impl App {
             session_id: None,
             resume_session,
             requested_mode: None,
+            notifier: Notifier::from_env(),
+            todos: Vec::new(),
             cwd,
             nano_home,
             turn_active: false,
@@ -371,6 +382,8 @@ impl App {
             None => self.submit_prompt(conn, &text),
             Some(SlashCommand::Model) => self.open_model_picker(),
             Some(SlashCommand::Mode) => self.open_mode_picker(),
+            Some(SlashCommand::Plan) => self.submit_plan(conn),
+            Some(SlashCommand::Todo) => self.show_todos(),
             Some(SlashCommand::Compact) => self.submit_compact(conn),
             Some(SlashCommand::Status) => {
                 self.transcript.push_note(&self.status.report());
@@ -385,10 +398,46 @@ impl App {
             Some(SlashCommand::Quit) => self.begin_quit(conn),
             Some(SlashCommand::Unknown(command)) => {
                 self.transcript.push_note(&format!(
-                    "unknown command: {command} (have: /model /mode /status /doctor /compact /quit)"
+                    "unknown command: {command} (have: /model /mode /plan /todo /status /doctor /compact /quit)"
                 ));
             }
         }
+    }
+
+    /// `/plan` (C10 §3): the TUI is an ACP CLIENT, so this sends
+    /// session/set_mode {modeId:"plan"} over the wire — exactly as /model
+    /// sends session/set_model. No parallel local channel. The host's ack
+    /// carries the plan file path, printed for discoverability (Q5).
+    fn submit_plan<C: Connection>(&mut self, conn: &mut C) {
+        if !self.ready {
+            self.transcript
+                .push_note("not connected yet — wait for the session");
+            return;
+        }
+        let Some(session_id) = self.session_id.clone() else {
+            return;
+        };
+        self.requested_mode = Some("plan".to_string());
+        self.send_request(
+            conn,
+            "session/set_mode",
+            acp_client::set_mode_params(&session_id, "plan"),
+            Pending::SetMode,
+        );
+    }
+
+    /// `/todo` (C10 §2): print the latest list tracked from the wire.
+    fn show_todos(&mut self) {
+        if self.todos.is_empty() {
+            self.transcript
+                .push_note("no todo list seen this session (the model sets it via the todo tool)");
+            return;
+        }
+        let mut lines = vec![format!("todo list ({} item(s)):", self.todos.len())];
+        for (id, content, status) in &self.todos {
+            lines.push(format!("- [{status}] {id}: {content}"));
+        }
+        self.transcript.push_note(&lines.join("\n"));
     }
 
     /// `/compact` (C1 §7): engine-side manual compaction via session/compact.
@@ -671,6 +720,10 @@ impl App {
                 if !stop.is_empty() && stop != "end_turn" {
                     self.transcript.push_note(&format!("turn ended: {stop}"));
                 }
+                // C10 §7: turn complete (agent idle, the user-away case) —
+                // one of the two allowlisted notifications.
+                self.notifier
+                    .notify_terminal(NotifyKind::TurnComplete, "the agent is idle");
             }
             Pending::SetModel => {
                 // The engine echoes the models state; it is the source of
@@ -686,19 +739,33 @@ impl App {
                 }
             }
             Pending::SetMode => {
-                // The ACP ack is an empty object: apply the mode this
-                // request asked for (the host validated it — a rejected id
-                // arrived as an error and never reaches this arm).
-                match self.requested_mode.take() {
-                    Some(mode) => {
-                        self.status.mode = mode.clone();
-                        self.transcript
-                            .push_note(&format!("mode switched to {mode}"));
+                // C10: the ack carries the modes block (currentModeId is
+                // the source of truth — "plan" while the posture is
+                // active) and, on plan entry, the plan file path (Q5
+                // discoverability). Fall back to the requested id when an
+                // older host acks with an empty object.
+                if let Some((current, modes)) = acp_client::parse_modes(&result) {
+                    self.status.mode = current.clone();
+                    self.status.modes = modes;
+                    self.transcript
+                        .push_note(&format!("mode switched to {current}"));
+                } else {
+                    match self.requested_mode.take() {
+                        Some(mode) => {
+                            self.status.mode = mode.clone();
+                            self.transcript
+                                .push_note(&format!("mode switched to {mode}"));
+                        }
+                        None => {
+                            self.transcript
+                                .push_note("set_mode acked with no requested mode");
+                        }
                     }
-                    None => {
-                        self.transcript
-                            .push_note("set_mode acked with no requested mode");
-                    }
+                }
+                self.requested_mode = None;
+                if let Some(plan_file) = result.get("planFile").and_then(Value::as_str) {
+                    self.transcript
+                        .push_note(&format!("plan file: {plan_file}"));
                 }
             }
             Pending::Compact => {
@@ -722,6 +789,28 @@ impl App {
                 status,
                 raw_input,
             } => {
+                // C10 §2: track the todo list from `todo` write frames for
+                // /todo and the status-line count (no new wire affordance).
+                if title == "todo"
+                    && let Some(items) = raw_input.get("todos").and_then(Value::as_array)
+                {
+                    self.todos = items
+                        .iter()
+                        .filter_map(|item| {
+                            Some((
+                                item.get("id")?.as_str()?.to_string(),
+                                item.get("content")?.as_str()?.to_string(),
+                                item.get("status")?.as_str()?.to_string(),
+                            ))
+                        })
+                        .collect();
+                    self.status.todo_open = Some(
+                        self.todos
+                            .iter()
+                            .filter(|(_, _, status)| status == "pending" || status == "in_progress")
+                            .count(),
+                    );
+                }
                 let detail = one_line(&raw_input);
                 self.transcript
                     .push_tool_call(&call_id, &title, &status, &detail);
@@ -730,9 +819,19 @@ impl App {
                 call_id,
                 status,
                 raw_output,
+                diff,
             } => {
                 self.transcript
                     .push_tool_result(&call_id, &status, &raw_output);
+                // C10 §6: the human-facing diff block (the TUI is the v1
+                // renderer).
+                if let Some(diff) = diff {
+                    self.transcript.push_tool_diff(
+                        &diff.path,
+                        diff.old_text.as_deref(),
+                        &diff.new_text,
+                    );
+                }
             }
             SessionUpdate::Unknown(_) => {}
             SessionUpdate::Compaction { status } => {
@@ -764,6 +863,9 @@ impl App {
         self.seen_permission_ids.insert(request.id);
         self.open_permission = Some(request.id);
         self.status.wire = WireState::AwaitingApproval;
+        // C10 §7: a permission/question prompt is waiting on the user.
+        self.notifier
+            .notify_terminal(NotifyKind::PermissionPending, &request.title);
         let detail = one_line(&request.raw_input);
         let approval = ApprovalRequest {
             request_id: request.id,

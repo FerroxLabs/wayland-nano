@@ -20,3 +20,16 @@ promotes/closes entries; builders append only.
   seam (and the ACP emission seam), fail-closed with a typed truncation
   marker, plus an adversarial test proving an oversized MCP/tool result
   cannot flood the context or corrupt an ACP frame.
+
+## F-2: Desktop-side rendering of ACP diff content blocks
+
+- **Filed:** 2026-08-12, C10 (agent-UX pack), design §6/§10.
+- **Gap:** nano emits the ACP-standard `{"type":"diff", path, oldText,
+  newText}` content block on `tool_call_update` for fs_write/fs_edit;
+  Desktop's ACP adapter preserves `toolCallUpdate.content` in its card
+  model (AcpAdapter.ts:245, :267-285) but has NO renderer for ACP diff
+  blocks (grep for oldText/newText under desktop `acp/` is clean). The
+  nano-TUI is the v1 renderer (changed region with -/+ coloring).
+- **Close means:** a Desktop-side renderer for the ACP diff content block,
+  driven against a live acp-host write, asserting the card shows the
+  before/after. Desktop work, explicitly out of C10's scope.

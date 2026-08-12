@@ -54,14 +54,15 @@ use nano_model::flux_completions::FluxCompletionsClient;
 use nano_model::provider_catalog::WireKind;
 use nano_model::types::{ContentBlock, Message, Role, ToolCall};
 use nano_protocol::acp::{
-    AvailableModel, JsonRpcNotification, JsonRpcResponse, agent_capabilities, agent_message_chunk,
-    compaction_notice, prompt_result, request_permission_request, session_load_result,
-    session_new_result, set_model_result, tool_call_done, tool_call_replay, tool_call_update,
+    AvailableModel, JsonRpcNotification, JsonRpcResponse, PLAN_MODE_ID, agent_capabilities,
+    agent_message_chunk, compaction_notice, prompt_result, request_permission_request,
+    request_question_request, session_load_result, session_modes_value, session_new_result,
+    set_model_result, tool_call_diff, tool_call_done, tool_call_replay, tool_call_update,
     user_message_chunk,
 };
 use nano_protocol::permission_mode::PermissionMode;
 use nano_session::SessionState;
-use nano_session::op::{Op, OpEnvelope};
+use nano_session::op::{Op, OpEnvelope, TodoItem};
 use nano_session::reader::read_journal;
 use nano_session::writer::JournalWriter;
 use nano_tools::fs::FsTools;
@@ -113,8 +114,18 @@ struct Session {
     /// persisted: every session starts in `default`; ModeSet journal ops
     /// are audit history only and are never restored on session/load.
     mode: Arc<Mutex<PermissionMode>>,
-    /// Monotonic per-lifetime counter for ModeSet op ids (the id also
-    /// carries nanoseconds, so resumes never collide).
+    /// The session's plan posture (C10 §3) — a SHARED cell like the mode
+    /// cell, so a tool-driven mid-turn entry is observed by the running
+    /// turn's very next approval check. Orthogonal to the privilege mode:
+    /// entering/exiting plan never alters it. Journaled for audit
+    /// (Op::PlanSet), never restored on session/load — content replays,
+    /// postures don't.
+    plan: Arc<Mutex<crate::session_tools::PlanPosture>>,
+    /// The session's todo list (C10 §2): journaled content (Op::TodoSet),
+    /// restored from the journal on session/load.
+    todos: Arc<Mutex<Vec<TodoItem>>>,
+    /// Monotonic per-lifetime counter for ModeSet/PlanSet op ids (the id
+    /// also carries nanoseconds, so resumes never collide).
     mode_changes: u64,
     /// This session's MCP servers (registered at session/new or session/load
     /// from the mcpServers param + NANO_MCP_SERVERS). Fresh per session;
@@ -281,7 +292,9 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         }
     };
     let make_tools = move |workspace: &std::path::Path,
-                           mode: PermissionMode|
+                           mode: PermissionMode,
+                           plan_file: &std::path::Path,
+                           diff_hook: Option<DiffHook>|
           -> (
         RealToolExecutor,
         nano_core::permissions::FileSystemSandboxPolicy,
@@ -297,7 +310,20 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
                 nano_core::permissions::PermissionProfile::workspace_write()
             }
         };
-        let policy = profile.file_system_sandbox_policy();
+        let mut policy = profile.file_system_sandbox_policy();
+        // C10 §3: the session's plan file is writable at the TOOL layer in
+        // every mode (grok's rule: plan-file edits are auto-approved in
+        // every permission mode) — the gate's posture check stays the
+        // semantic authority over WHEN. The root is ONE fixed file under
+        // nano_home, never a workspace widening.
+        if let Ok(abs) = nano_core::abs::AbsolutePathBuf::from_absolute_path(plan_file) {
+            policy
+                .entries
+                .push(nano_core::permissions::FileSystemSandboxEntry::new(
+                    nano_core::permissions::FileSystemPath::Path { path: abs },
+                    nano_core::permissions::FileSystemAccessMode::Write,
+                ));
+        }
         let fs = FsTools::new(policy.clone(), workspace);
         let shell = ShellTool::new(&home, workspace);
         let mut executor = RealToolExecutor::new(fs, shell, workspace);
@@ -305,6 +331,10 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         // configures the second egress policy domain.
         if let Some(fetch) = crate::fetch_specs::web_fetch_tool_from_env() {
             executor = executor.with_web_fetch(fetch);
+        }
+        // C10 §6: live-wire diffs (never journaled).
+        if let Some(hook) = diff_hook {
+            executor = executor.with_diff_hook(hook);
         }
         (executor, policy)
     };
@@ -393,15 +423,22 @@ pub struct ServeConfig<'a> {
     pub router: &'a crate::provider_router::ProviderRouter,
 }
 
+/// The live-wire diff sink (C10 §6): called with (tool call id, diff) when
+/// a fs_write/fs_edit succeeds; serve() forwards it as an ACP diff content
+/// block. Live-wire-only, never journaled.
+pub type DiffHook = Arc<dyn Fn(&str, &nano_agent::turn::FileDiff) + Send + Sync>;
+
 /// `make_driver`/`make_tools` build a fresh pair per prompt (tools are
 /// anchored to the session workspace). `make_driver` takes the turn's
 /// freshly-resolved PROVIDER BINDING (C8: catalog endpoint + credential,
 /// re-resolved at every prompt so credential/expiry changes are observed).
 /// `make_tools` takes the turn's CAPTURED permission mode (C2: read_only
-/// builds the tightened profile) and returns the executor together with the
-/// EXACT filesystem policy the executor was built from — the approval
-/// gate's advisory containment check must run the same policy value, never
-/// a separately reconstructed nominally-equivalent one.
+/// builds the tightened profile), the session's plan file (C10: writable at
+/// the tool layer in every mode — the gate's posture check is the semantic
+/// authority), and the turn's live-wire diff hook; it returns the executor
+/// together with the EXACT filesystem policy the executor was built from —
+/// the approval gate's advisory containment check must run the same policy
+/// value, never a separately reconstructed nominally-equivalent one.
 pub async fn serve<R, W, FD, FT, D, T>(
     reader: R,
     writer: W,
@@ -411,11 +448,13 @@ pub async fn serve<R, W, FD, FT, D, T>(
 ) -> std::io::Result<i32>
 where
     R: BufRead + Send + 'static,
-    W: Write + Send,
+    W: Write + Send + 'static,
     FD: Fn(&crate::provider_router::ProviderBinding) -> D,
     FT: Fn(
         &std::path::Path,
         PermissionMode,
+        &std::path::Path,
+        Option<DiffHook>,
     ) -> (T, nano_core::permissions::FileSystemSandboxPolicy),
     D: ModelDriver,
     T: ToolExecutor,
@@ -536,15 +575,43 @@ where
                             *current_cancel.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(cancel.clone());
                             let mcp = session_mcp_registry(&params, config.env_mcp_specs);
+                            // C10 §3: the plan posture cell. Fail-closed
+                            // construction — a sessions dir that cannot be
+                            // canonicalized gets no session (the plan-file
+                            // containment check depends on it).
+                            let plan = match crate::session_tools::PlanPosture::new(
+                                config.sessions_dir,
+                                &session_id,
+                            ) {
+                                Ok(posture) => Arc::new(Mutex::new(posture)),
+                                Err(err) => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err(
+                                            id,
+                                            -32603,
+                                            format!("cannot initialize session plan posture: {err}"),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                            };
+                            let todos = Arc::new(Mutex::new(Vec::new()));
+                            // C10 §4: a fresh session's context starts with
+                            // the bounded, UNTRUSTED-labeled AGENTS.md block
+                            // (rendered fresh per rebuild), nothing else.
+                            let context = session_context_prefix(&cwd, &todos, &plan);
                             session = Some(Session {
                                 id: session_id.clone(),
                                 workspace: cwd,
                                 cancel,
                                 journal,
                                 turn_counter: 0,
-                                context: Vec::new(),
+                                context,
                                 model: config.default_model.to_string(),
                                 mode: Arc::new(Mutex::new(PermissionMode::default())),
+                                plan,
+                                todos,
                                 mode_changes: 0,
                                 mcp,
                             });
@@ -654,11 +721,40 @@ where
                                     },
                                 ));
                             }
-                            let context = messages_from_envelopes(&report.envelopes);
+                            let context_messages = messages_from_envelopes(&report.envelopes);
                             let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                             *current_cancel.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(cancel.clone());
                             let mcp = session_mcp_registry(&params, config.env_mcp_specs);
+                            // C10 §3: same fail-closed posture construction
+                            // as session/new. The posture itself is NEVER
+                            // restored (content replays, postures don't) —
+                            // PlanPosture::new starts inactive.
+                            let plan = match crate::session_tools::PlanPosture::new(
+                                config.sessions_dir,
+                                session_id,
+                            ) {
+                                Ok(posture) => Arc::new(Mutex::new(posture)),
+                                Err(err) => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err(
+                                            id,
+                                            -32603,
+                                            format!("cannot initialize session plan posture: {err}"),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                            };
+                            // C10 §2 (Q2 RULED): the todo list IS content —
+                            // folded from the journal last-write-wins and
+                            // re-injected as a bounded block on rebuild.
+                            let todos = Arc::new(Mutex::new(
+                                SessionState::fold(&report.envelopes).todos,
+                            ));
+                            let mut context = session_context_prefix(&cwd, &todos, &plan);
+                            context.extend(context_messages);
                             session = Some(Session {
                                 id: session_id.to_string(),
                                 workspace: cwd,
@@ -677,6 +773,8 @@ where
                                 // are audit history only and elevated
                                 // autonomy always takes a fresh set_mode.
                                 mode: Arc::new(Mutex::new(PermissionMode::default())),
+                                plan,
+                                todos,
                                 mode_changes: 0,
                                 mcp,
                             });
@@ -795,6 +893,52 @@ where
                                 .get("modeId")
                                 .and_then(|m| m.as_str())
                                 .unwrap_or("");
+                            // C10 §3 (Q1 RULED): "plan" is a PROJECTION of
+                            //    the orthogonal posture, not a privilege
+                            //    mode. Setting it flips the posture ON
+                            //    through the ONE journal-first transition
+                            //    and leaves the C2 privilege mode untouched;
+                            //    the ack advertises currentModeId "plan" and
+                            //    (Q5 discoverability) the plan file path.
+                            if mode_id == PLAN_MODE_ID {
+                                active.mode_changes += 1;
+                                let nanos = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_nanos())
+                                    .unwrap_or(0);
+                                let op_id =
+                                    format!("{}-plan-{nanos}-{}", active.id, active.mode_changes);
+                                if let Err(err) = crate::session_tools::set_plan_posture(
+                                    &active.plan,
+                                    &active.journal,
+                                    op_id,
+                                    true,
+                                ) {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err(id, -32603, err),
+                                    )?;
+                                    continue;
+                                }
+                                let plan_file = active
+                                    .plan
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .plan_file()
+                                    .display()
+                                    .to_string();
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::ok(
+                                        id,
+                                        serde_json::json!({
+                                            "modes": session_modes_value(PLAN_MODE_ID),
+                                            "planFile": plan_file
+                                        }),
+                                    ),
+                                )?;
+                                continue;
+                            }
                             // 1. Validate against the PermissionMode
                             //    vocabulary. Unknown ids — including ids a
                             //    NEWER build would know — are a typed error.
@@ -812,7 +956,10 @@ where
                             // 2. Journal the accepted change FIRST; the
                             //    append must be durable before the mutation.
                             //    Nanos + the per-lifetime counter keep the op
-                            //    id unique across resumes.
+                            //    id unique across resumes. Setting any
+                            //    privilege mode also CLEARS the plan posture
+                            //    (exit-by-mode-switch): both ops land durably
+                            //    before either cell mutates.
                             active.mode_changes += 1;
                             let nanos = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -838,13 +985,49 @@ where
                                 )?;
                                 continue;
                             }
+                            let plan_was_active = active
+                                .plan
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .active;
+                            if plan_was_active
+                                && let Err(err) = crate::session_tools::set_plan_posture(
+                                    &active.plan,
+                                    &active.journal,
+                                    format!(
+                                        "{}-plan-{nanos}-{}-off",
+                                        active.id, active.mode_changes
+                                    ),
+                                    false,
+                                )
+                            {
+                                // The ModeSet op is journaled but NEITHER
+                                // cell has mutated yet: report the failure
+                                // with both cells visibly unchanged (the
+                                // stranded audit op is context-neutral on
+                                // replay, so the journal stays honest).
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err(id, -32603, err),
+                                )?;
+                                continue;
+                            }
                             // 3. Mutate the shared cell (brief lock — AFTER
                             //    persistence, never around it). A running
                             //    turn's gate observes a de-escalation on its
                             //    very next approval check.
                             *active.mode.lock().unwrap_or_else(|p| p.into_inner()) = mode;
-                            // 4. Ack (ACP shape: empty result).
-                            write_out(&out, &JsonRpcResponse::ok(id, serde_json::json!({})))?;
+                            // 4. Ack with the re-advertised privilege mode
+                            //    (C10: currentModeId reports the underlying
+                            //    mode again on plan exit, so a client never
+                            //    reads plan→default as a privilege change).
+                            write_out(
+                                &out,
+                                &JsonRpcResponse::ok(
+                                    id,
+                                    serde_json::json!({ "modes": session_modes_value(mode.id()) }),
+                                ),
+                            )?;
                         }
                         "session/prompt" => {
                             if turn.is_some() {
@@ -965,6 +1148,19 @@ where
                             // escalation waits for the next prompt.
                             let turn_mode = *active.mode.lock().unwrap_or_else(|p| p.into_inner());
                             let mode_cell = active.mode.clone();
+                            // C10: the session's plan posture / todo cells
+                            // and plan file — shared with the gate (posture
+                            // enforcement) and the session-tool wrapper
+                            // (todo/plan/question execution).
+                            let plan_cell = active.plan.clone();
+                            let todos_cell = active.todos.clone();
+                            let plan_file = active
+                                .plan
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .plan_file()
+                                .to_path_buf();
+                            let journal_path = active.journal.clone();
                             // The turn future must own its handles: clone the
                             // loop-invariant Arcs before the `async move`.
                             let gate_out = out.clone();
@@ -980,19 +1176,45 @@ where
                                 // concern, never sent to the provider).
                                 let turn_model = binding.model.clone();
                                 let driver = make_driver(&binding);
+                                // C10 §6: the live-wire diff hook — a
+                                // successful fs_write/fs_edit forwards its
+                                // structured before/after pair as an ACP
+                                // diff content block on the same tool call.
+                                let diff_out = sink_out.clone();
+                                let diff_session = session_id.clone();
+                                let diff_hook: DiffHook =
+                                    Arc::new(move |call_id: &str, diff: &nano_agent::turn::FileDiff| {
+                                        let mut guard =
+                                            diff_out.lock().unwrap_or_else(|p| p.into_inner());
+                                        let _ = write_json(
+                                            &mut *guard,
+                                            &tool_call_diff(
+                                                &diff_session,
+                                                call_id,
+                                                &diff.path,
+                                                diff.old_text.as_deref(),
+                                                &diff.new_text,
+                                            ),
+                                        );
+                                    });
                                 // The executor AND its exact policy: the
                                 // gate's advisory containment check runs this
                                 // same policy value (shared provenance), and
                                 // read_only builds the executor itself on the
                                 // tightened profile (defense in depth).
-                                let (tools, turn_policy) = make_tools(&workspace, turn_mode);
+                                let (tools, turn_policy) = make_tools(
+                                    &workspace,
+                                    turn_mode,
+                                    &plan_file,
+                                    Some(diff_hook),
+                                );
                                 // MCP-merged executor: mcp__ names route to the
                                 // session registry, everything else to the core
                                 // tools; the model sees both tool sets.
-                                let executor = McpToolExecutor::from_shared(turn_mcp, &tools);
+                                let mcp_executor = McpToolExecutor::from_shared(turn_mcp, &tools);
                                 let mut tool_definitions = v1_tool_definitions();
                                 tool_definitions
-                                    .extend(executor.tool_definitions_from_registry());
+                                    .extend(mcp_executor.tool_definitions_from_registry());
                                 let gate = AcpApproval {
                                     session_id: session_id.clone(),
                                     out: gate_out,
@@ -1012,7 +1234,22 @@ where
                                     // construction; the spawn-time transform
                                     // stays the fail-closed authority.
                                     sandbox_available: sandbox_probe(),
+                                    // C10 §3: the shared posture cell —
+                                    // enforcement at the gate, live mid-turn.
+                                    plan: plan_cell.clone(),
                                 };
+                                // C10: the session-owned tools (todo / plan /
+                                // ask_user) wrap the MCP-merged executor and
+                                // route questions through the gate's ONE ask
+                                // channel.
+                                let executor = crate::session_tools::SessionTools::new(
+                                    &mcp_executor,
+                                    &gate,
+                                    todos_cell,
+                                    plan_cell,
+                                    journal_path,
+                                    session_id.clone(),
+                                );
                                 let engine = TurnEngine {
                                     model: &driver,
                                     tools: &executor,
@@ -1249,7 +1486,20 @@ where
                 {
                     match read_journal(&active.journal) {
                         Ok(report) => {
-                            active.context = messages_from_envelopes(&report.envelopes);
+                            // C10: refresh the todo cell from the journal
+                            // fold (TodoSet ops land via the session tools
+                            // mid-turn) and rebuild with the bounded prefix
+                            // blocks (AGENTS.md re-read FRESH here, so an
+                            // edit between turns is picked up).
+                            *active.todos.lock().unwrap_or_else(|p| p.into_inner()) =
+                                SessionState::fold(&report.envelopes).todos;
+                            let mut context = session_context_prefix(
+                                &active.workspace,
+                                &active.todos,
+                                &active.plan,
+                            );
+                            context.extend(messages_from_envelopes(&report.envelopes));
+                            active.context = context;
                         }
                         Err(err) => {
                             eprintln!("wayland-nano: session journal re-read failed: {err}");
@@ -1403,6 +1653,11 @@ struct AcpApproval<W: Write> {
     cwd: std::path::PathBuf,
     /// Sandbox-backend availability, probed once per turn at construction.
     sandbox_available: bool,
+    /// The session's shared plan-posture cell (C10 §3): while active,
+    /// fs_write/fs_edit deny for everything but the session's plan file —
+    /// in EVERY C2 mode, including full_auto. Live: a tool-driven mid-turn
+    /// entry tightens the very next approval check.
+    plan: Arc<Mutex<crate::session_tools::PlanPosture>>,
 }
 
 impl<W: Write> AcpApproval<W> {
@@ -1429,6 +1684,26 @@ impl<W: Write + Send> ApprovalGate for AcpApproval<W> {
         // 1. Read-only fast-path: unchanged in every mode.
         if is_read_only_tool(&call.name) {
             return ApprovalDecision::Approve;
+        }
+        // 1b. C10 session tools are auto-allowed in every C2 mode: todo's
+        //     write path mutates only journaled session state; enter/exit
+        //     plan carry their own posture semantics (the exit's prompt is
+        //     the ask channel, not this gate); ask_user IS a prompt — a
+        //     permission prompt for the question prompt would be theatre.
+        if nano_agent::wiring::SESSION_TOOL_NAMES.contains(&call.name.as_str()) {
+            return ApprovalDecision::Approve;
+        }
+        // 2. C10 §3 plan posture — enforcement AT THE GATE, before the mode
+        //    arms, in every C2 mode including full_auto: fs_write/fs_edit
+        //    pass ONLY for the session's plan file (a creation-safe
+        //    nano_home-containment check, never a workspace exception).
+        //    Shell and everything else stay governed by the mode below.
+        if let Some(allowed) = crate::session_tools::posture_allows(&self.plan, call, &self.cwd) {
+            return if allowed {
+                ApprovalDecision::Approve
+            } else {
+                ApprovalDecision::Deny
+            };
         }
         match self.effective_mode() {
             // 2. read_only: categorical denial, no prompt (panel ruling Q3).
@@ -1474,8 +1749,100 @@ impl<W: Write + Send> ApprovalGate for AcpApproval<W> {
     }
 
     fn denial_reason(&self) -> Option<&'static str> {
+        // The plan posture reason takes precedence: it is the more specific
+        // (and more actionable) explanation when both apply.
+        if self.plan.lock().unwrap_or_else(|p| p.into_inner()).active {
+            return Some("plan mode is active: writes are restricted to the session's plan file");
+        }
         (self.effective_mode() == PermissionMode::ReadOnly)
             .then_some("session is in read_only mode")
+    }
+
+    /// C10 §5: the structured question channel. Mints `opt_{i}` wire ids
+    /// from the tool's option labels, emits the question over the same
+    /// session/request_permission method, and resolves the response back to
+    /// the LABEL through the id→label map captured at send time. Never
+    /// blocks forever: cancel (100ms poll), the bounded timeout, malformed
+    /// responses, and disconnect all fail closed to a typed denial; the
+    /// pending-map entry is removed on EVERY exit (a late answer then lands
+    /// in the reader's unknown-id arm and is dropped+logged).
+    fn ask(&self, call: &ToolCall) -> nano_agent::turn::AskOutcome {
+        use nano_agent::turn::AskOutcome;
+        if let Err(err) = crate::session_tools::validate_question_args(&call.arguments) {
+            return AskOutcome::Denied(format!("malformed question: {err}"));
+        }
+        let labels = crate::session_tools::question_labels(&call.arguments);
+        // Q3 RULED: 5-minute default; `0` means "no timeout, interactive-
+        // only" — but ACP is capability-blind (no negotiated client
+        // capability exists today), so 0 is NORMALIZED to the default here.
+        let timeout_secs = match call
+            .arguments
+            .get("timeout_seconds")
+            .and_then(|v| v.as_u64())
+        {
+            Some(0) | None => 300,
+            Some(secs) => secs,
+        };
+        let title = call
+            .arguments
+            .get("header")
+            .and_then(|h| h.as_str())
+            .filter(|h| !h.trim().is_empty())
+            .unwrap_or("question")
+            .to_string();
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, tx);
+        let request = request_question_request(
+            id,
+            &self.session_id,
+            &call.id,
+            &title,
+            &call.arguments,
+            &labels,
+        );
+        if write_out(&self.out, &request).is_err() {
+            self.pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&id);
+            return AskOutcome::Denied("host unreachable: cannot emit the question".into());
+        }
+        // The id→label map captured at send time: the wire carries only the
+        // minted id; the label never needs to round-trip.
+        let id_to_label: std::collections::HashMap<String, String> = labels
+            .iter()
+            .enumerate()
+            .map(|(i, label)| (format!("opt_{i}"), label.clone()))
+            .collect();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        let outcome = loop {
+            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(response) => break answer_from_response(&response, &id_to_label),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if self.cancel.load(Ordering::SeqCst) {
+                        break AskOutcome::Denied("cancelled".into());
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        break AskOutcome::Denied(format!(
+                            "question timed out after {timeout_secs}s"
+                        ));
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    break AskOutcome::Denied("host disconnected".into());
+                }
+            }
+        };
+        // Removal on EVERY exit (answer, timeout, cancel, disconnect).
+        self.pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
+        outcome
     }
 }
 
@@ -1544,6 +1911,66 @@ fn decision_from_response(value: &serde_json::Value) -> ApprovalDecision {
         Some(option) if option.starts_with("allow") => ApprovalDecision::Approve,
         _ => ApprovalDecision::Deny,
     }
+}
+
+/// Interprets a QUESTION response (C10 §5): the answer-channel counterpart
+/// of [`decision_from_response`]. A `selected` outcome naming a known
+/// `opt_{i}` resolves the LABEL through the id→label map captured at send
+/// time; a `rejected` outcome (Desktop's Dismiss mapping), a selected
+/// `reject` id (the TUI's Esc path), an unknown id, or any malformed shape
+/// is a typed denial — fail-closed everywhere.
+fn answer_from_response(
+    value: &serde_json::Value,
+    id_to_label: &std::collections::HashMap<String, String>,
+) -> nano_agent::turn::AskOutcome {
+    use nano_agent::turn::AskOutcome;
+    let Some(outcome) = value.get("result").and_then(|r| r.get("outcome")) else {
+        return AskOutcome::Denied("malformed response: no outcome".into());
+    };
+    let option_id = outcome.get("optionId").and_then(|o| o.as_str());
+    match outcome.get("outcome").and_then(|o| o.as_str()) {
+        Some("selected") => match option_id {
+            Some(nano_protocol::acp::QUESTION_DISMISS_ID) => {
+                AskOutcome::Denied("dismissed by the user".into())
+            }
+            Some(id) => match id_to_label.get(id) {
+                Some(label) => AskOutcome::Answered(label.clone()),
+                None => AskOutcome::Denied(format!("malformed response: unknown option id {id:?}")),
+            },
+            None => AskOutcome::Denied("malformed response: no optionId".into()),
+        },
+        Some("rejected") => AskOutcome::Denied("dismissed by the user".into()),
+        _ => AskOutcome::Denied("malformed response: unknown outcome".into()),
+    }
+}
+
+/// The bounded context prefix prepended at every session context rebuild
+/// (C10): the UNTRUSTED-labeled AGENTS.md block (§4, rendered FRESH each
+/// rebuild so mid-session edits are picked up next turn), the plan-posture
+/// instructions while active (§3 prompt layer — defense in depth, never
+/// the mechanism), and the restored todo block (§2 Q2: 50 items / 4k chars,
+/// clearly delimited). Empty when nothing applies.
+fn session_context_prefix(
+    workspace: &std::path::Path,
+    todos: &Arc<Mutex<Vec<TodoItem>>>,
+    plan: &Arc<Mutex<crate::session_tools::PlanPosture>>,
+) -> Vec<Message> {
+    let mut messages = Vec::new();
+    if let Some(message) = nano_agent::skills::prepare_agents_md_context(workspace) {
+        messages.push(message);
+    }
+    let plan_guard = plan.lock().unwrap_or_else(|p| p.into_inner());
+    if plan_guard.active {
+        messages.push(Message::system(
+            crate::session_tools::plan_mode_instructions(plan_guard.plan_file()),
+        ));
+    }
+    drop(plan_guard);
+    let todos_guard = todos.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(block) = crate::session_tools::todo_restore_block(&todos_guard) {
+        messages.push(Message::system(block));
+    }
+    messages
 }
 
 /// Builds the `session/load` replay: one notification per historical beat, in
@@ -1779,6 +2206,16 @@ mod tests {
             .join("nano-c2-definitely-outside")
     }
 
+    /// A plan-posture cell for gate tests: rooted at `<workspace>/sessions`
+    /// (created on demand), session id "test-session".
+    fn test_posture(workspace: &std::path::Path) -> Arc<Mutex<crate::session_tools::PlanPosture>> {
+        let sessions = workspace.join("sessions");
+        std::fs::create_dir_all(&sessions).expect("sessions dir");
+        Arc::new(Mutex::new(
+            crate::session_tools::PlanPosture::new(&sessions, "test-session").expect("posture"),
+        ))
+    }
+
     /// A gate plus its scripted host: when `answer` is Some, a responder
     /// thread answers every permission request with that optionId; when
     /// None, any prompt would block forever — tests that expect NO prompt
@@ -1788,6 +2225,7 @@ mod tests {
         gate: AcpApproval<Vec<u8>>,
         out: Arc<Mutex<Vec<u8>>>,
         mode_cell: Arc<Mutex<PermissionMode>>,
+        plan: Arc<Mutex<crate::session_tools::PlanPosture>>,
         stop: Arc<std::sync::atomic::AtomicBool>,
         responder: Option<std::thread::JoinHandle<()>>,
     }
@@ -1831,6 +2269,7 @@ mod tests {
                     }
                 })
             });
+            let plan = test_posture(workspace);
             let gate = AcpApproval {
                 session_id: "test-session".into(),
                 out: out.clone(),
@@ -1842,11 +2281,13 @@ mod tests {
                 policy: PermissionProfile::workspace_write().file_system_sandbox_policy(),
                 cwd: workspace.to_path_buf(),
                 sandbox_available,
+                plan: plan.clone(),
             };
             Self {
                 gate,
                 out,
                 mode_cell,
+                plan,
                 stop,
                 responder,
             }
@@ -2305,5 +2746,242 @@ mod tests {
             !git_dir.join("escape.txt").exists(),
             "SECURITY HOLE: the write escaped through the planted junction"
         );
+    }
+
+    // ── C10 gate tests: plan posture + the question channel ─────────────
+
+    fn question_call(options: &[&str]) -> ToolCall {
+        call(
+            "ask_user",
+            serde_json::json!({
+                "question": "Pick one",
+                "options": options.iter().map(|l| serde_json::json!({"label": l})).collect::<Vec<_>>()
+            }),
+        )
+    }
+
+    /// C10 §3 matrix: under the ACTIVE posture, in EVERY C2 mode, a
+    /// workspace write denies at the gate with no prompt and the plan-file
+    /// write auto-approves with no prompt. Session tools auto-allow.
+    #[test]
+    fn plan_posture_matrix_in_every_mode() {
+        let ws = workspace();
+        for mode in PermissionMode::ALL {
+            let rig = TestGate::new(mode, &ws.0, true, None);
+            rig.plan.lock().unwrap().active = true;
+
+            // Workspace write: categorical denial, NO prompt, reason names
+            // the posture — in read_only, default, AND full_auto alike.
+            assert_eq!(
+                rig.gate.approve(&contained_write(&ws.0)),
+                ApprovalDecision::Deny,
+                "{mode:?}: workspace write must deny under the posture"
+            );
+            assert_eq!(
+                rig.gate.approve(&call(
+                    "fs_edit",
+                    serde_json::json!({"path": ws.0.join("a.txt"), "old_string": "a", "new_string": "b"})
+                )),
+                ApprovalDecision::Deny,
+                "{mode:?}: workspace edit must deny under the posture"
+            );
+            // The plan file itself: auto-approved, no prompt.
+            let plan_file = rig.plan.lock().unwrap().plan_file().to_path_buf();
+            assert_eq!(
+                rig.gate.approve(&call(
+                    "fs_write",
+                    serde_json::json!({"path": plan_file, "content": "plan"})
+                )),
+                ApprovalDecision::Approve,
+                "{mode:?}: the plan file is the one write exception"
+            );
+            assert_eq!(
+                rig.prompt_count(),
+                0,
+                "{mode:?}: the posture never prompts — deny or auto-approve"
+            );
+            assert_eq!(
+                rig.gate.denial_reason(),
+                Some("plan mode is active: writes are restricted to the session's plan file")
+            );
+
+            // Session tools auto-allow in every mode (todo's write path is
+            // journaled session state; the plan tools carry their own
+            // semantics; ask_user IS the prompt).
+            for tool in ["todo", "ask_user", "enter_plan_mode", "exit_plan_mode"] {
+                assert_eq!(
+                    rig.gate.approve(&call(tool, serde_json::json!({}))),
+                    ApprovalDecision::Approve,
+                    "{mode:?}: {tool} auto-allowed"
+                );
+            }
+            assert_eq!(rig.prompt_count(), 0, "{mode:?}: no prompts at all");
+        }
+    }
+
+    /// C10 §5: the happy path — a `selected` opt_{i} response resolves to
+    /// the option LABEL (the wire carried only the minted id).
+    #[test]
+    fn ask_happy_path_resolves_the_label() {
+        use nano_agent::turn::AskOutcome;
+        let ws = workspace();
+        let rig = TestGate::new(PermissionMode::Default, &ws.0, true, Some("opt_1"));
+        let outcome = rig.gate.ask(&question_call(&["Alpha", "Beta", "Gamma"]));
+        assert_eq!(outcome, AskOutcome::Answered("Beta".to_string()));
+        assert_eq!(rig.prompt_count(), 1, "exactly one question frame");
+        // The pending entry was removed on exit.
+        assert!(rig.gate.pending.lock().unwrap().is_empty());
+    }
+
+    /// C10 §5: dismiss (reject id / rejected outcome) and malformed or
+    /// unknown-id responses are typed denials — fail closed, never a
+    /// fabricated answer.
+    #[test]
+    fn ask_dismiss_and_unknown_id_deny() {
+        use nano_agent::turn::AskOutcome;
+        let ws = workspace();
+        // The TUI's Esc path: selected + the reject id.
+        let rig = TestGate::new(PermissionMode::Default, &ws.0, true, Some("reject"));
+        assert_eq!(
+            rig.gate.ask(&question_call(&["A", "B"])),
+            AskOutcome::Denied("dismissed by the user".into())
+        );
+        // An id outside the minted set: typed denial.
+        let rig = TestGate::new(PermissionMode::Default, &ws.0, true, Some("opt_9"));
+        assert!(matches!(
+            rig.gate.ask(&question_call(&["A", "B"])),
+            AskOutcome::Denied(ref reason) if reason.contains("unknown option id")
+        ));
+        // The approval-shaped answer (allow) means nothing to a question.
+        let rig = TestGate::new(PermissionMode::Default, &ws.0, true, Some("allow"));
+        assert!(matches!(
+            rig.gate.ask(&question_call(&["A", "B"])),
+            AskOutcome::Denied(_)
+        ));
+    }
+
+    /// C10 §5 (Q3 RULED): the bounded timeout unblocks the turn, removes
+    /// the pending-map entry, and a late answer has nowhere to land.
+    #[test]
+    fn ask_timeout_unblocks_and_clears_pending() {
+        use nano_agent::turn::AskOutcome;
+        let ws = workspace();
+        let rig = TestGate::new(PermissionMode::Default, &ws.0, true, None);
+        let mut q = question_call(&["A", "B"]);
+        q.arguments["timeout_seconds"] = serde_json::json!(1);
+        let start = std::time::Instant::now();
+        let outcome = rig.gate.ask(&q);
+        assert!(
+            matches!(outcome, AskOutcome::Denied(ref r) if r.contains("timed out")),
+            "{outcome:?}"
+        );
+        assert!(start.elapsed() >= std::time::Duration::from_secs(1));
+        assert!(
+            rig.gate.pending.lock().unwrap().is_empty(),
+            "timeout removes the pending entry (a late answer drops in the reader's unknown-id arm)"
+        );
+    }
+
+    /// C10 §5: session/cancel mid-question denies within a poll tick.
+    #[test]
+    fn ask_cancel_denies_within_a_tick() {
+        use nano_agent::turn::AskOutcome;
+        let ws = workspace();
+        let rig = TestGate::new(PermissionMode::Default, &ws.0, true, None);
+        let cancel = rig.gate.cancel.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            cancel.store(true, Ordering::SeqCst);
+        });
+        let outcome = rig.gate.ask(&question_call(&["A", "B"]));
+        assert_eq!(outcome, AskOutcome::Denied("cancelled".into()));
+        canceller.join().unwrap();
+        assert!(rig.gate.pending.lock().unwrap().is_empty());
+    }
+
+    /// A stub inner executor for SessionTools tests (never called by the
+    /// session-tool arms).
+    #[derive(Debug)]
+    struct NoopExecutor;
+
+    #[async_trait::async_trait]
+    impl ToolExecutor for NoopExecutor {
+        async fn execute(&self, call: &ToolCall) -> nano_agent::turn::ToolOutcome {
+            nano_agent::turn::ToolOutcome {
+                ok: true,
+                output: format!("ran {}", call.name),
+                progress: nano_agent::loop_protection::ProgressSignals::default(),
+            }
+        }
+    }
+
+    /// C10 §3/§5: the plan exit ALWAYS asks — even under full_auto (a plan
+    /// gate full-auto could blow through is theatre). Approval flips the
+    /// posture off through the journaled transition; any other answer
+    /// keeps it.
+    #[test]
+    fn full_auto_does_not_auto_approve_plan_exit() {
+        let ws = workspace();
+        let journal = ws.0.join("session.jsonl");
+        let todos: Arc<Mutex<Vec<nano_session::op::TodoItem>>> = Arc::new(Mutex::new(Vec::new()));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        // (a) full_auto + user picks "Keep planning": the QUESTION WAS
+        //     ASKED (no auto-approve) and the posture stays.
+        let rig = TestGate::new(PermissionMode::FullAuto, &ws.0, true, Some("opt_1"));
+        rig.plan.lock().unwrap().active = true;
+        let inner = NoopExecutor;
+        let tools = crate::session_tools::SessionTools::new(
+            &inner,
+            &rig.gate,
+            todos.clone(),
+            rig.plan.clone(),
+            journal.clone(),
+            "test-session".into(),
+        );
+        let outcome = rt.block_on(tools.execute(&call("exit_plan_mode", serde_json::json!({}))));
+        assert!(!outcome.ok, "revise is a typed error: {}", outcome.output);
+        assert!(outcome.output.contains("Keep planning"));
+        assert!(rig.plan.lock().unwrap().active, "posture stays on revise");
+        assert_eq!(rig.prompt_count(), 1, "full_auto still asked the host");
+        assert!(
+            !nano_session::reader::read_journal(&journal)
+                .map(|r| r
+                    .envelopes
+                    .iter()
+                    .any(|e| matches!(e.op, Op::PlanSet { active: false })))
+                .unwrap_or(false),
+            "no exit transition journaled on revise"
+        );
+
+        // (b) approval: posture flips off, PlanSet(false) journaled.
+        let rig = TestGate::new(PermissionMode::FullAuto, &ws.0, true, Some("opt_0"));
+        rig.plan.lock().unwrap().active = true;
+        let tools = crate::session_tools::SessionTools::new(
+            &inner,
+            &rig.gate,
+            todos,
+            rig.plan.clone(),
+            journal.clone(),
+            "test-session".into(),
+        );
+        let outcome = rt.block_on(tools.execute(&call("exit_plan_mode", serde_json::json!({}))));
+        assert!(outcome.ok, "approved exit: {}", outcome.output);
+        assert!(
+            !rig.plan.lock().unwrap().active,
+            "posture off after approval"
+        );
+        let report = nano_session::reader::read_journal(&journal).unwrap();
+        assert!(
+            report
+                .envelopes
+                .iter()
+                .any(|e| matches!(e.op, Op::PlanSet { active: false })),
+            "exit journaled"
+        );
+        assert_eq!(rig.prompt_count(), 1);
     }
 }

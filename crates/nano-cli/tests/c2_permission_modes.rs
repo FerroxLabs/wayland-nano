@@ -217,7 +217,7 @@ impl Harness {
                     },
                     &config,
                     move |_| driver.clone(),
-                    move |_, _| (MockTools, workspace_policy()),
+                    move |_, _, _, _| (MockTools, workspace_policy()),
                 )
                 .await
             })
@@ -377,7 +377,9 @@ fn assert_advertises_three_modes(result: &serde_json::Value) {
         .iter()
         .map(|m| m["id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, ["read_only", "default", "full_auto"]);
+    // C10 §3 (Q1 RULED): "plan" is the fourth advertised id — a projection
+    // of the orthogonal posture, NOT a privilege mode.
+    assert_eq!(ids, ["read_only", "default", "full_auto", "plan"]);
 }
 
 // ── the tests ───────────────────────────────────────────────────────────
@@ -450,7 +452,8 @@ fn accepted_set_mode_journals_modeset_and_kill_resume_returns_to_default() {
     );
     let session_id = host.new_session(&dirs.workspace());
     let ack = host.set_mode(&session_id, "full_auto");
-    assert_eq!(ack["result"], serde_json::json!({}), "ACP ack shape");
+    // C10: the ack carries the modes block with the re-advertised id.
+    assert_eq!(ack["result"]["modes"]["currentModeId"], "full_auto");
     assert_eq!(journal_modes(&dirs, &session_id), ["full_auto"]);
     host.shutdown();
 
@@ -508,8 +511,8 @@ fn read_only_denies_writes_at_the_gate_without_prompting() {
     );
     let session_id = host.new_session(&dirs.workspace());
     assert_eq!(
-        host.set_mode(&session_id, "read_only")["result"],
-        serde_json::json!({})
+        host.set_mode(&session_id, "read_only")["result"]["modes"]["currentModeId"],
+        "read_only"
     );
 
     let before = host.permission_frames();
@@ -571,8 +574,8 @@ fn full_auto_contained_write_skips_the_prompt_uncontained_prompts_once() {
     );
     let session_id = host.new_session(&dirs.workspace());
     assert_eq!(
-        host.set_mode(&session_id, "full_auto")["result"],
-        serde_json::json!({})
+        host.set_mode(&session_id, "full_auto")["result"]["modes"]["currentModeId"],
+        "full_auto"
     );
 
     // Contained (relative) write: auto-approved, NO permission frame.

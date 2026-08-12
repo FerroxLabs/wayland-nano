@@ -235,7 +235,7 @@ impl Recorder {
                     move |_| driver.clone(),
                     // C2: make_tools returns the executor AND its exact fs
                     // policy (the gate's advisory oracle shares provenance).
-                    move |_, _| (MockTools, workspace_policy()),
+                    move |_, _, _, _| (MockTools, workspace_policy()),
                 )
                 .await
             })
@@ -299,13 +299,25 @@ impl Recorder {
     }
 }
 
-/// Normalize the one nondeterministic value (the generated session id).
-fn normalize(recorded: &[(char, serde_json::Value)], session_id: &str) -> String {
+/// Normalize nondeterministic values (the generated session id; the temp
+/// sessions dir — C10: it surfaces in the set_mode plan ack's planFile).
+fn normalize(
+    recorded: &[(char, serde_json::Value)],
+    session_id: &str,
+    sessions_dir: &std::path::Path,
+) -> String {
+    // In the serialized line the dir's backslashes are JSON-escaped.
+    let dir = sessions_dir.display().to_string();
+    let dir_escaped = dir.replace('\\', "\\\\");
     let mut out = String::new();
     for (dir, frame) in recorded {
         let line = serde_json::to_string(&serde_json::json!({"dir": dir, "frame": frame}))
             .expect("serialize");
-        out.push_str(&line.replace(session_id, RECORDED_SESSION_ID));
+        out.push_str(
+            &line
+                .replace(session_id, RECORDED_SESSION_ID)
+                .replace(&dir_escaped, "<sessions>"),
+        );
         out.push('\n');
     }
     out
@@ -426,18 +438,39 @@ fn record_full_journey_fixture() {
     assert_eq!(set_model["result"]["models"]["currentModelId"], "flux-fast");
 
     // (d) session/set_mode (C2): default → full_auto → default. Each
-    // accepted change journals ModeSet first and acks the ACP empty object;
-    // the TUI's /mode drive (l2) replays exactly these exchanges.
+    // accepted change journals ModeSet first; the ack carries the modes
+    // block with the re-advertised currentModeId (C10 §3 Q1 — the
+    // posture-projection reporting rule).
     let set_mode = rec.request(
         "session/set_mode",
         serde_json::json!({"sessionId": session_id, "modeId": "full_auto"}),
     );
-    assert_eq!(set_mode["result"], serde_json::json!({}));
+    assert_eq!(set_mode["result"]["modes"]["currentModeId"], "full_auto");
     let set_mode = rec.request(
         "session/set_mode",
         serde_json::json!({"sessionId": session_id, "modeId": "default"}),
     );
-    assert_eq!(set_mode["result"], serde_json::json!({}));
+    assert_eq!(set_mode["result"]["modes"]["currentModeId"], "default");
+
+    // (d2) C10 §3: the plan-posture projection. set_mode "plan" flips the
+    // posture on (journaled PlanSet), leaves the privilege mode untouched,
+    // and acks currentModeId "plan" + the plan file path under nano_home.
+    let set_plan = rec.request(
+        "session/set_mode",
+        serde_json::json!({"sessionId": session_id, "modeId": "plan"}),
+    );
+    assert_eq!(set_plan["result"]["modes"]["currentModeId"], "plan");
+    let plan_file = set_plan["result"]["planFile"]
+        .as_str()
+        .expect("plan entry acks the plan file path");
+    assert!(plan_file.ends_with(&format!("{session_id}.plan.md")));
+    // Setting a privilege mode clears the posture and re-advertises the
+    // mode — a client never reads plan→default as a privilege change.
+    let set_default = rec.request(
+        "session/set_mode",
+        serde_json::json!({"sessionId": session_id, "modeId": "default"}),
+    );
+    assert_eq!(set_default["result"]["modes"]["currentModeId"], "default");
 
     // session/cancel shape pinned on the recording (between turns).
     rec.send(serde_json::json!({
@@ -446,7 +479,7 @@ fn record_full_journey_fixture() {
     }));
 
     let phase1_len = rec.recorded.len();
-    let full_journey = normalize(&rec.recorded, &session_id);
+    let full_journey = normalize(&rec.recorded, &session_id, &sessions_dir);
     rec.shutdown();
 
     // The L3 smoke needs just the opening (initialize, session/new, first
@@ -495,7 +528,7 @@ fn record_full_journey_fixture() {
             break;
         }
     }
-    let phase2 = normalize(&rec2.recorded, &session_id);
+    let phase2 = normalize(&rec2.recorded, &session_id, &sessions_dir);
     rec2.shutdown();
 
     let full = format!("{full_journey}{phase2}");

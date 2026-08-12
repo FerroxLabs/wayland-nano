@@ -16,6 +16,7 @@ pub mod event;
 pub mod fake_host;
 pub mod frame_requester;
 pub mod modal;
+pub mod notify;
 pub mod render;
 pub mod sanitize;
 pub mod slash_commands;

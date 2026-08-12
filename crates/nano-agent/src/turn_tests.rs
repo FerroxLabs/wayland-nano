@@ -397,4 +397,19 @@ mod tests {
             requests[1].messages
         );
     }
+
+    /// C10 §5: the default `ApprovalGate::ask` is `Unavailable` — a gate
+    /// that never learned questions (ApproveAll, DenyAll child gates, test
+    /// doubles) fails closed to the typed unavailability, never a block.
+    #[test]
+    fn default_ask_is_unavailable() {
+        use crate::turn::{ApprovalGate, AskOutcome};
+        let gate = crate::turn::ApproveAll;
+        let call = nano_model::types::ToolCall {
+            id: "c1".into(),
+            name: "ask_user".into(),
+            arguments: serde_json::json!({"question": "q", "options": [{"label": "a"}, {"label": "b"}]}),
+        };
+        assert_eq!(gate.ask(&call), AskOutcome::Unavailable);
+    }
 }

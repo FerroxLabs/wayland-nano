@@ -169,20 +169,30 @@ pub fn session_models_value(
 }
 
 /// The `modes` block shared by session/new and session/load responses
-/// (C2): every advertised mode comes from the single [`PermissionMode`]
-/// metadata, exactly the way `session_models_value` parameterizes models,
-/// so the wire can never drift from what the gate enforces. `currentModeId`
-/// is always the session's actual mode — sessions start (and resume) in
-/// `default`, never a resurrected one.
-pub fn session_modes_value(current: PermissionMode) -> serde_json::Value {
+/// (C2): every advertised PRIVILEGE mode comes from the single
+/// [`PermissionMode`] metadata, exactly the way `session_models_value`
+/// parameterizes models, so the wire can never drift from what the gate
+/// enforces. C10 §3 (panel ruling Q1): `plan` is a FOURTH advertised id — a
+/// PROJECTION of the orthogonal plan posture, not a privilege mode. While
+/// the posture is active `currentModeId` reports `plan`; the underlying C2
+/// privilege mode is preserved engine-side, never altered by entering or
+/// exiting plan, and is re-advertised as `currentModeId` on exit. A client
+/// must never read plan→default→plan as a privilege change.
+pub fn session_modes_value(current_id: &str) -> serde_json::Value {
+    let mut available: Vec<serde_json::Value> = PermissionMode::ALL
+        .iter()
+        .map(|mode| serde_json::json!({"id": mode.id(), "name": mode.label()}))
+        .collect();
+    available.push(serde_json::json!({"id": PLAN_MODE_ID, "name": "Plan"}));
     serde_json::json!({
-        "availableModes": PermissionMode::ALL
-            .iter()
-            .map(|mode| serde_json::json!({"id": mode.id(), "name": mode.label()}))
-            .collect::<Vec<_>>(),
-        "currentModeId": current.id(),
+        "availableModes": available,
+        "currentModeId": current_id,
     })
 }
+
+/// The wire id of the plan-posture projection (C10 §3). Never parses as a
+/// [`PermissionMode`] — the set_mode handler special-cases it.
+pub const PLAN_MODE_ID: &str = "plan";
 
 /// session/new response.
 pub fn session_new_result(
@@ -192,7 +202,7 @@ pub fn session_new_result(
 ) -> serde_json::Value {
     serde_json::json!({
         "sessionId": session_id,
-        "modes": session_modes_value(PermissionMode::default()),
+        "modes": session_modes_value(PermissionMode::default().id()),
         "models": session_models_value(current_model_id, available)
     })
 }
@@ -208,7 +218,7 @@ pub fn session_load_result(
     available: &[AvailableModel],
 ) -> serde_json::Value {
     serde_json::json!({
-        "modes": session_modes_value(PermissionMode::default()),
+        "modes": session_modes_value(PermissionMode::default().id()),
         "models": session_models_value(current_model_id, available)
     })
 }
@@ -383,6 +393,89 @@ pub fn request_permission_request(
     }
 }
 
+/// The terminal dismiss option id minted by [`request_question_request`].
+/// Deliberately `reject`-prefixed: Desktop maps the outcome by substring
+/// (`optionId.includes('reject')` ⇒ rejected — AcpConnection.ts:729-730),
+/// so a dismiss arrives as a `rejected` outcome and an answer as
+/// `selected`+`opt_{i}`.
+pub const QUESTION_DISMISS_ID: &str = "reject";
+
+/// session/request_permission carrying a STRUCTURED QUESTION (C10 §5): the
+/// same ACP method as the approval prompt (the shape already carries an
+/// arbitrary options[] array and Desktop's handler maps whatever arrives —
+/// AcpConnection.ts:720-744), but the options are minted FROM the tool's
+/// option labels: `opt_{i}` per label plus a terminal Dismiss. The wire
+/// carries only the minted ids; the agent resolves the selected id back to
+/// the label through the id→label map captured at send time.
+/// `toolCall.toolCallId` MUST equal the tool_call id already streamed in
+/// session/update for the ask_user call, so Desktop's permission card and
+/// answer channel line up (the wcore #504 failure mode is an empty or
+/// mis-keyed option set).
+pub fn request_question_request(
+    id: u64,
+    session_id: &str,
+    call_id: &str,
+    title: &str,
+    args: &serde_json::Value,
+    option_labels: &[String],
+) -> JsonRpcRequest {
+    let mut options: Vec<serde_json::Value> = option_labels
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            serde_json::json!({ "optionId": format!("opt_{i}"), "kind": "allow_once", "name": label })
+        })
+        .collect();
+    options.push(
+        serde_json::json!({ "optionId": QUESTION_DISMISS_ID, "kind": "reject_once", "name": "Dismiss" }),
+    );
+    JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: serde_json::json!(id),
+        method: "session/request_permission".into(),
+        params: Some(serde_json::json!({
+            "sessionId": session_id,
+            "toolCall": {
+                "toolCallId": call_id,
+                "title": title,
+                "rawInput": args
+            },
+            "options": options
+        })),
+    }
+}
+
+/// A tool_call_update carrying an ACP-standard `diff` content block
+/// (C10 §6): `{ "type": "diff", path, oldText, newText }`. Emitted when a
+/// fs_write/fs_edit produced a diff — live-wire-only (never journaled),
+/// sensitive-path-suppressed, 32k/side capped upstream. `rawOutput` flows
+/// unchanged in the regular done frame; this is an ADDITIONAL update for
+/// the same call id (ACP tool_call_update frames are order-tolerant).
+pub fn tool_call_diff(
+    session_id: &str,
+    call_id: &str,
+    path: &std::path::Path,
+    old_text: Option<&str>,
+    new_text: &str,
+) -> JsonRpcNotification {
+    JsonRpcNotification::new(
+        "session/update",
+        serde_json::json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": call_id,
+                "content": [{
+                    "type": "diff",
+                    "path": path.display().to_string(),
+                    "oldText": old_text,
+                    "newText": new_text
+                }]
+            }
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,12 +598,16 @@ mod tests {
             .iter()
             .map(|m| m["id"].as_str().unwrap())
             .collect();
-        // The full C2 vocabulary, in privilege order, from PermissionMode::ALL.
-        assert_eq!(ids, ["read_only", "default", "full_auto"]);
-        for entry in advertised {
+        // The full C2 vocabulary, in privilege order, from PermissionMode::ALL,
+        // plus the C10 plan-posture projection as the fourth advertised id.
+        assert_eq!(ids, ["read_only", "default", "full_auto", "plan"]);
+        for entry in advertised.iter().take(3) {
             let mode = PermissionMode::parse(entry["id"].as_str().unwrap()).unwrap();
             assert_eq!(entry["name"].as_str().unwrap(), mode.label());
         }
+        // `plan` is a posture projection, never a PermissionMode.
+        assert_eq!(PermissionMode::parse("plan"), None);
+        assert_eq!(advertised[3]["name"].as_str().unwrap(), "Plan");
         // session/load advertises the same block and never resurrects a mode.
         let loaded = session_load_result("flux-auto", &[]);
         assert_eq!(loaded["modes"]["currentModeId"], "default");
@@ -521,5 +618,78 @@ mod tests {
     fn method_not_found_is_typed() {
         let resp = JsonRpcResponse::method_not_found(serde_json::json!(7), "bogus/method");
         assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    /// C10 §5 protocol fixture (pinned BEFORE the consumers landed): the
+    /// question request reuses session/request_permission with minted
+    /// option ids and a terminal reject-kind Dismiss — the exact shape
+    /// Desktop's generic handlePermissionRequest maps.
+    #[test]
+    fn question_request_shape_is_pinned() {
+        let labels = vec!["Yes, proceed".to_string(), "No, stop".to_string()];
+        let req = request_question_request(
+            9,
+            "s1",
+            "call-ask_user",
+            "Proceed?",
+            &serde_json::json!({"question": "Proceed?", "options": [{"label": "Yes, proceed"}, {"label": "No, stop"}]}),
+            &labels,
+        );
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["method"], "session/request_permission");
+        assert_eq!(json["id"], 9);
+        let params = &json["params"];
+        assert_eq!(params["sessionId"], "s1");
+        // The toolCallId MUST equal the streamed ask_user tool_call id.
+        assert_eq!(params["toolCall"]["toolCallId"], "call-ask_user");
+        assert_eq!(params["toolCall"]["title"], "Proceed?");
+        let options = params["options"].as_array().unwrap();
+        assert_eq!(options.len(), 3); // 2 minted + terminal Dismiss
+        assert_eq!(
+            options[0],
+            serde_json::json!({"optionId": "opt_0", "kind": "allow_once", "name": "Yes, proceed"})
+        );
+        assert_eq!(
+            options[1],
+            serde_json::json!({"optionId": "opt_1", "kind": "allow_once", "name": "No, stop"})
+        );
+        assert_eq!(
+            options[2],
+            serde_json::json!({"optionId": "reject", "kind": "reject_once", "name": "Dismiss"})
+        );
+    }
+
+    /// C10 §6 protocol fixture (pinned BEFORE the producers landed): the
+    /// ACP-standard diff content block on tool_call_update.
+    #[test]
+    fn diff_content_block_shape_is_pinned() {
+        let frame = tool_call_diff(
+            "s1",
+            "c1",
+            std::path::Path::new("src/main.rs"),
+            Some("old line"),
+            "new line",
+        );
+        let json = serde_json::to_value(&frame).unwrap();
+        assert_eq!(json["method"], "session/update");
+        let update = &json["params"]["update"];
+        assert_eq!(update["sessionUpdate"], "tool_call_update");
+        assert_eq!(update["toolCallId"], "c1");
+        assert_eq!(
+            update["content"][0],
+            serde_json::json!({
+                "type": "diff",
+                "path": "src/main.rs",
+                "oldText": "old line",
+                "newText": "new line"
+            })
+        );
+        // Whole-file add: oldText serializes as JSON null.
+        let add = tool_call_diff("s1", "c2", std::path::Path::new("new.rs"), None, "body");
+        let json = serde_json::to_value(&add).unwrap();
+        assert_eq!(
+            json["params"]["update"]["content"][0]["oldText"],
+            serde_json::Value::Null
+        );
     }
 }
