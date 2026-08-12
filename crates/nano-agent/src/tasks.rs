@@ -1337,7 +1337,17 @@ mod tests {
             gate.approve(&call("shell", serde_json::json!({"command": "ls"}))),
             ApprovalDecision::Approve
         );
-        // Everything interactive: immediate typed denial.
+        // Everything interactive: immediate typed denial. The uncontained
+        // write anchors at the FILESYSTEM ROOT, not a tempdir sibling: the
+        // workspace_write policy includes the tmp roots, so a `..` escape
+        // from a tempdir copy root would be CONTAINED on unix (the 495a2ef
+        // platform-neutrality precedent).
+        let outside = std::env::temp_dir()
+            .ancestors()
+            .last()
+            .expect("filesystem root")
+            .join("nano-c6-gate-outside")
+            .join("escape.txt");
         for denied in [
             call("mcp__server__tool", serde_json::json!({})),
             call(
@@ -1351,7 +1361,7 @@ mod tests {
             call("task_spawn", serde_json::json!({"prompt": "recurse"})),
             call(
                 "fs_write",
-                serde_json::json!({"path": "../escape.txt", "content": "x"}),
+                serde_json::json!({"path": outside, "content": "x"}),
             ),
         ] {
             assert_eq!(
