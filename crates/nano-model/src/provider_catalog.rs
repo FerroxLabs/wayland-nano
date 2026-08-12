@@ -103,21 +103,17 @@ mod tests {
             "together",
             "fireworks",
             "moonshot",
+            "xai",
+            "cohere",
+            "mistral",
+            "perplexity",
         ] {
             let spec = provider_by_id(id).expect("catalog carries the v1 set");
             assert!(spec.proven, "{id} was live-proven on 2026-08-12");
         }
         // Still gated: no working key has proven these end-to-end. A missing
         // flag is a build-time error, not a silent default.
-        for id in [
-            "openrouter",
-            "mistral",
-            "perplexity",
-            "cohere",
-            "nvidia",
-            "minimax",
-            "xai",
-        ] {
+        for id in ["openrouter", "nvidia", "minimax"] {
             let spec = provider_by_id(id).expect("catalog carries the v1 set");
             assert!(!spec.proven, "{id} awaits its live proof");
         }

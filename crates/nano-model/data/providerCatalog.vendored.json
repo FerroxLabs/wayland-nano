@@ -55,7 +55,7 @@
       "wire": "openai-completions",
       "api_path": "/chat/completions",
       "env_var": "MISTRAL_API_KEY",
-      "proven": false
+      "proven": true
     },
     {
       "id": "deepseek",
@@ -91,7 +91,7 @@
       "wire": "openai-completions",
       "api_path": "/chat/completions",
       "env_var": "PERPLEXITY_API_KEY",
-      "proven": false
+      "proven": true
     },
     {
       "id": "cohere",
@@ -100,7 +100,7 @@
       "wire": "openai-completions",
       "api_path": "/chat/completions",
       "env_var": "COHERE_API_KEY",
-      "proven": false
+      "proven": true
     },
     {
       "id": "cerebras",
@@ -118,7 +118,7 @@
       "wire": "openai-completions",
       "api_path": "/chat/completions",
       "env_var": "XAI_API_KEY",
-      "proven": false
+      "proven": true
     },
     {
       "id": "moonshot",
