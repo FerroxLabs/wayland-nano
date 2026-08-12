@@ -12,6 +12,7 @@ use nano_protocol::host::{HostConfig, run_host_loop};
 use nano_protocol::messages::Event;
 use nano_tools::fs::FsTools;
 use nano_tools::shell::ShellTool;
+use std::sync::{Arc, Mutex};
 
 fn executor_has_registry(executor: &nano_agent::mcp::McpToolExecutor) -> bool {
     !executor.tool_definitions_from_registry().is_empty()
@@ -45,16 +46,37 @@ pub async fn run(
         executor = executor.with_web_fetch(fetch);
     }
     let driver = FluxDriver::new(FluxCompletionsClient::new(EgressClient::flux()), api_key);
-    let approve_all = nano_agent::turn::ApproveAll;
+
+    // C10: the session-owned tools need a session cell set even here (the
+    // protocol host has no ACP session — one fixed id journals todo/plan
+    // ops under nano_home/sessions, journal-first exactly like acp-host).
+    // The plan posture is enforced by PlanAwareApproval; questions are
+    // Unavailable on this transport (typed error, posture stays).
+    let sessions_dir = nano_home.join("sessions");
+    std::fs::create_dir_all(&sessions_dir)?;
+    let plan = nano_cli::session_tools::PlanPosture::new(&sessions_dir, "protocol-host")
+        .map(|posture| Arc::new(Mutex::new(posture)))
+        .map_err(std::io::Error::other)?;
+    let todos: Arc<Mutex<Vec<nano_session::op::TodoItem>>> = Arc::new(Mutex::new(Vec::new()));
+    let journal = sessions_dir.join("protocol-host.jsonl");
+    let gate = nano_cli::session_tools::PlanAwareApproval::new(plan.clone(), workspace);
 
     // MCP: register configured servers (failures log, never crash the host).
     let registry = nano_cli::mcp_specs::register_all(nano_cli::mcp_specs::mcp_specs_from_env());
-    let executor = nano_agent::mcp::McpToolExecutor::new(registry, &executor);
-    let mcp_definitions = if executor_has_registry(&executor) {
-        executor_tool_definitions(&executor)
+    let mcp_executor = nano_agent::mcp::McpToolExecutor::new(registry, &executor);
+    let mcp_definitions = if executor_has_registry(&mcp_executor) {
+        executor_tool_definitions(&mcp_executor)
     } else {
         vec![]
     };
+    let executor = nano_cli::session_tools::SessionTools::new(
+        &mcp_executor,
+        &gate,
+        todos.clone(),
+        plan.clone(),
+        journal,
+        "protocol-host".into(),
+    );
 
     // Skills: default roots are <nano_home>/skills and <workspace>/.nano/skills.
     let skill_context = nano_agent::skills::prepare_skill_context(&[
@@ -71,10 +93,12 @@ pub async fn run(
         budget: TurnBudget::default(),
         model_name: "flux-auto".into(),
         tool_definitions,
-        approval: Some(&approve_all),
+        approval: Some(&gate),
         compaction: None,
     };
     let skill_context = std::sync::Arc::new(skill_context);
+    let plan_cell = plan;
+    let todo_cell = todos;
 
     let config = HostConfig::default();
     let stdin = std::io::stdin();
@@ -85,14 +109,37 @@ pub async fn run(
     run_host_loop(&mut reader, &mut writer, &config, |msg_id, content| {
         let engine = &engine;
         let skill_context = std::sync::Arc::clone(&skill_context);
+        let plan_cell = plan_cell.clone();
+        let todo_cell = todo_cell.clone();
         async move {
-            let result = if let Some(context) = skill_context.as_ref() {
-                engine
-                    .run_turn_with_context(&msg_id, &content, Some(context.clone()))
-                    .await
-            } else {
-                engine.run_turn(&msg_id, &content).await
-            };
+            // C10: fresh per-turn context blocks — the AGENTS.md block is
+            // re-read every turn (mid-session edits are picked up), the
+            // plan instructions ride while the posture is active, and the
+            // todo list renders while non-empty.
+            let mut context = Vec::new();
+            if let Some(message) = nano_agent::skills::prepare_agents_md_context(workspace) {
+                context.push(message);
+            }
+            {
+                let plan = plan_cell.lock().unwrap_or_else(|p| p.into_inner());
+                if plan.active {
+                    context.push(nano_model::types::Message::system(
+                        nano_cli::session_tools::plan_mode_instructions(plan.plan_file()),
+                    ));
+                }
+            }
+            {
+                let todos = todo_cell.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(block) = nano_cli::session_tools::todo_restore_block(&todos) {
+                    context.push(nano_model::types::Message::system(block));
+                }
+            }
+            if let Some(skill) = skill_context.as_ref() {
+                context.push(skill.clone());
+            }
+            let result = engine
+                .run_turn_with_context_messages(&msg_id, &content, context)
+                .await;
             let mut events = Vec::new();
             for op in &result.ops {
                 match &op.op {

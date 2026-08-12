@@ -85,6 +85,31 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
             Cell::Note(text) => {
                 push_prefixed(&mut lines, "· ", text, Style::default().fg(Color::DarkGray));
             }
+            // C10 §6: the human-facing diff — changed region with -/+
+            // coloring (the TUI is the v1 renderer; Desktop's ACP adapter
+            // preserves the block but has no diff renderer yet, §10).
+            Cell::Diff {
+                path,
+                removed,
+                added,
+            } => {
+                lines.push(Line::from(Span::styled(
+                    format!("  ± {path} (+{}/-{})", added.len(), removed.len()),
+                    Style::default().fg(Color::DarkGray),
+                )));
+                for line in removed {
+                    lines.push(Line::from(Span::styled(
+                        format!("    - {line}"),
+                        Style::default().fg(Color::Red),
+                    )));
+                }
+                for line in added {
+                    lines.push(Line::from(Span::styled(
+                        format!("    + {line}"),
+                        Style::default().fg(Color::Green),
+                    )));
+                }
+            }
         }
     }
     if let Some(active) = app.transcript.active_text() {

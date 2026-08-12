@@ -183,6 +183,30 @@ fn l2_acceptance_full_journey() {
         "note: {screen}"
     );
 
+    // (d2) /plan (C10): sends session/set_mode {modeId:"plan"} over the
+    // wire (the TUI is an ACP client — no local-only channel); the ack's
+    // modes block flips the status slot to "plan" and the plan file path
+    // prints for discoverability (Q5).
+    world.type_and_submit("/plan");
+    let screen = world.screen();
+    assert!(screen.contains("mode switched to plan"), "note: {screen}");
+    assert!(
+        screen.contains("plan file:") && screen.contains(".plan.md"),
+        "plan file path printed: {screen}"
+    );
+    // Back out via /mode → default: the modes list is
+    // [read_only, default, full_auto, plan] with "plan" current, so two
+    // Ups land on default.
+    world.type_and_submit("/mode");
+    world.key(KeyCode::Up);
+    world.key(KeyCode::Up);
+    world.key(KeyCode::Enter);
+    let screen = world.screen();
+    assert!(
+        screen.contains("mode switched to default"),
+        "plan exit re-advertises the privilege mode: {screen}"
+    );
+
     // The recorded phase-1 tail (a bare session/cancel between turns) is
     // not reproducible through TUI inputs — the TUI only cancels mid-turn;
     // that path has its own scenario (l2_cancel_mid_turn).

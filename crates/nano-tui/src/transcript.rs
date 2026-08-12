@@ -26,6 +26,13 @@ pub enum Cell {
     },
     /// A tool completion update (digest on replay, output live).
     ToolResult { call_id: String, status: String },
+    /// A file diff (C10 §6): the changed region with common prefix/suffix
+    /// trimmed — `removed`/`added` lines, rendered with -/+ coloring.
+    Diff {
+        path: String,
+        removed: Vec<String>,
+        added: Vec<String>,
+    },
     /// A TUI-side note: /status, /doctor, errors, lifecycle messages.
     Note(String),
 }
@@ -135,6 +142,51 @@ impl Transcript {
         }
     }
 
+    /// C10 §6: a diff content block from the wire. The model-facing
+    /// rawOutput stays terse; this is the human-facing review surface.
+    /// Renders the changed region only (common prefix/suffix trimmed),
+    /// bounded to 30 displayed lines with an elision marker.
+    pub fn push_tool_diff(&mut self, path: &str, old_text: Option<&str>, new_text: &str) {
+        self.commit_active();
+        self.follow_tail();
+        let old: Vec<String> = old_text
+            .map(|t| t.lines().map(str::to_string).collect())
+            .unwrap_or_default();
+        let new: Vec<String> = new_text.lines().map(str::to_string).collect();
+        // Trim the common prefix and suffix: the diff is the middle.
+        let mut start = 0;
+        while start < old.len() && start < new.len() && old[start] == new[start] {
+            start += 1;
+        }
+        let mut end = 0;
+        while end < old.len() - start
+            && end < new.len() - start
+            && old[old.len() - 1 - end] == new[new.len() - 1 - end]
+        {
+            end += 1;
+        }
+        let mut removed: Vec<String> = old[start..old.len() - end].to_vec();
+        let mut added: Vec<String> = new[start..new.len() - end].to_vec();
+        const MAX_REGION: usize = 30;
+        if removed.len() + added.len() > MAX_REGION {
+            let elided = removed.len() + added.len() - MAX_REGION;
+            removed.truncate(MAX_REGION / 2);
+            added.truncate(MAX_REGION / 2);
+            added.push(format!("…[{elided} more lines elided]"));
+        }
+        let clean = |lines: &[String]| {
+            lines
+                .iter()
+                .map(|l| crate::sanitize::sanitize(l))
+                .collect::<Vec<_>>()
+        };
+        self.cells.push(Cell::Diff {
+            path: crate::sanitize::sanitize(path),
+            removed: clean(&removed),
+            added: clean(&added),
+        });
+    }
+
     pub fn push_note(&mut self, text: &str) {
         self.commit_active();
         self.follow_tail();
@@ -196,6 +248,50 @@ mod tests {
         t.push_tool_call("c9", "shell", "in_progress", "{\"command\":\"ls\"}");
         t.commit_active();
         assert_eq!(t.cells().len(), 2);
+    }
+
+    #[test]
+    fn diff_renders_the_changed_region() {
+        let mut t = Transcript::new();
+        t.push_tool_diff(
+            "src/main.rs",
+            Some(
+                "fn main() {
+    old();
+}
+",
+            ),
+            "fn main() {
+    new();
+}
+",
+        );
+        match &t.cells()[0] {
+            Cell::Diff {
+                path,
+                removed,
+                added,
+            } => {
+                assert_eq!(path, "src/main.rs");
+                assert_eq!(removed, &["    old();"]);
+                assert_eq!(added, &["    new();"]);
+            }
+            other => panic!("expected diff cell, got {other:?}"),
+        }
+        // Whole-file add: no removed lines.
+        let mut t = Transcript::new();
+        t.push_tool_diff(
+            "new.rs", None, "a
+b
+",
+        );
+        match &t.cells()[0] {
+            Cell::Diff { removed, added, .. } => {
+                assert!(removed.is_empty());
+                assert_eq!(added.len(), 2);
+            }
+            other => panic!("expected diff cell, got {other:?}"),
+        }
     }
 
     #[test]

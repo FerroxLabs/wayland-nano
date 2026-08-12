@@ -390,12 +390,27 @@ impl FsTools {
 
     /// Writes a file (creating parents). Policy-checked.
     pub fn write_file(&self, path: &Path, content: &str) -> Result<(), ToolError> {
+        self.write_file_with_diff(path, content).map(|_| ())
+    }
+
+    /// C10 §6: write_file that additionally returns the before/after text
+    /// pair for the human-facing diff. The read-before-overwrite runs AFTER
+    /// the policy check (authorization), immediately before the mutation; a
+    /// failed or absent read is NON-FATAL — `old_text: None` covers both
+    /// "new file" (whole-file add) and "unreadable prior content" (the
+    /// caller cannot distinguish, and must not fail the write over it).
+    pub fn write_file_with_diff(&self, path: &Path, content: &str) -> Result<WriteDiff, ToolError> {
         self.check_write(path)?;
+        let old_text = std::fs::read_to_string(path).ok();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(path, content)?;
-        Ok(())
+        Ok(WriteDiff {
+            replacements: 0,
+            old_text,
+            new_text: content.to_string(),
+        })
     }
 
     /// Exact-replacement edit. Fails typed on zero or multiple matches
@@ -407,29 +422,56 @@ impl FsTools {
         new_string: &str,
         replace_all: bool,
     ) -> Result<usize, ToolError> {
+        self.edit_file_with_diff(path, old_string, new_string, replace_all)
+            .map(|diff| diff.replacements)
+    }
+
+    /// C10 §6: edit_file that additionally returns the whole-file
+    /// before/after text pair (the one structured diff representation).
+    pub fn edit_file_with_diff(
+        &self,
+        path: &Path,
+        old_string: &str,
+        new_string: &str,
+        replace_all: bool,
+    ) -> Result<WriteDiff, ToolError> {
         self.check_write(path)?;
         let content = std::fs::read_to_string(path)?;
         let matches: Vec<_> = content.match_indices(old_string).collect();
-        match (matches.len(), replace_all) {
-            (0, _) => Err(ToolError::Edit(format!(
-                "old_string not found in {}",
-                path.display()
-            ))),
-            (1, _) => {
-                let updated = content.replacen(old_string, new_string, 1);
-                std::fs::write(path, updated)?;
-                Ok(1)
+        let (replacements, updated) = match (matches.len(), replace_all) {
+            (0, _) => {
+                return Err(ToolError::Edit(format!(
+                    "old_string not found in {}",
+                    path.display()
+                )));
             }
-            (n, true) => {
-                let updated = content.replace(old_string, new_string);
-                std::fs::write(path, updated)?;
-                Ok(n)
+            (1, _) => (1, content.replacen(old_string, new_string, 1)),
+            (n, true) => (n, content.replace(old_string, new_string)),
+            (n, false) => {
+                return Err(ToolError::Edit(format!(
+                    "old_string is ambiguous ({n} matches) — pass replace_all or add context"
+                )));
             }
-            (n, false) => Err(ToolError::Edit(format!(
-                "old_string is ambiguous ({n} matches) — pass replace_all or add context"
-            ))),
-        }
+        };
+        std::fs::write(path, &updated)?;
+        Ok(WriteDiff {
+            replacements,
+            old_text: Some(content),
+            new_text: updated,
+        })
     }
+}
+
+/// The before/after text pair a mutating fs call produces (C10 §6).
+/// `replacements` is the edit count for `edit_file` (unused by `write_file`,
+/// which reports 0 — a write replaces the whole file by definition).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteDiff {
+    pub replacements: usize,
+    /// None = no readable prior content (whole-file add, or the
+    /// non-fatal read-before-overwrite failure case).
+    pub old_text: Option<String>,
+    pub new_text: String,
 }
 
 /// Convenience: resolve a possibly-relative path against the policy cwd.

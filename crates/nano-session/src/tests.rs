@@ -421,3 +421,72 @@ fn writer_never_truncates_integrity_broken_middle() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── C10: todo / plan-posture ops ───────────────────────────────────────
+
+#[test]
+fn todo_set_replays_last_write_wins() {
+    use crate::op::{TodoItem, TodoStatus};
+    let item = |id: &str, status: TodoStatus| TodoItem {
+        id: id.into(),
+        content: format!("task {id}"),
+        status,
+    };
+    let envelopes = vec![
+        OpEnvelope::new(
+            "t-1",
+            "now",
+            Op::TodoSet {
+                items: vec![item("a", TodoStatus::Pending)],
+            },
+        ),
+        OpEnvelope::new(
+            "t-2",
+            "now",
+            Op::TodoSet {
+                items: vec![
+                    item("a", TodoStatus::Completed),
+                    item("b", TodoStatus::InProgress),
+                ],
+            },
+        ),
+    ];
+    let state = crate::SessionState::fold(&envelopes);
+    assert_eq!(state.todos.len(), 2, "last write wins");
+    assert_eq!(state.todos[0].status, TodoStatus::Completed);
+    assert_eq!(state.todos[1].id, "b");
+}
+
+#[test]
+fn plan_set_is_journaled_but_never_replayed_into_state() {
+    // The posture is audit-only: SessionState carries no plan field at all,
+    // so replay CANNOT restore it (the type system enforces "content
+    // replays, postures don't"). This test pins that the op round-trips
+    // through the journal and the fold tolerates it without side effects.
+    let envelopes = vec![
+        OpEnvelope::new("p-1", "now", Op::PlanSet { active: true }),
+        OpEnvelope::new("p-2", "now", Op::PlanSet { active: false }),
+    ];
+    let state = crate::SessionState::fold(&envelopes);
+    assert!(state.todos.is_empty());
+    assert!(state.open_turn.is_none());
+    assert!(state.open_tool_calls.is_empty());
+    // Serde round-trip: the op survives the journal encoding (and older
+    // builds read it as Unknown — forward tolerance).
+    let line = serde_json::to_string(&envelopes[0]).unwrap();
+    assert!(line.contains("\"plan_set\""));
+    let back: OpEnvelope = serde_json::from_str(&line).unwrap();
+    assert!(matches!(back.op, Op::PlanSet { active: true }));
+}
+
+#[test]
+fn todo_set_unknown_future_status_is_tolerated() {
+    // A newer build's status vocabulary must not brick replay: the item
+    // folds with status Unknown rather than failing the read.
+    let line = r#"{"v":1,"id":"t-9","ts":"now","op":{"type":"todo_set","items":[{"id":"x","content":"c","status":"blocked"}]}}"#;
+    let envelope: OpEnvelope = serde_json::from_str(line).unwrap();
+    let state = crate::SessionState::fold(&[envelope]);
+    assert_eq!(state.todos.len(), 1);
+    assert_eq!(state.todos[0].status, crate::op::TodoStatus::Unknown);
+    assert!(!state.todos[0].status.is_open());
+}

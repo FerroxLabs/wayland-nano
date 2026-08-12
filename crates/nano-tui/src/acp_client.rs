@@ -49,6 +49,9 @@ pub enum SessionUpdate {
         call_id: String,
         status: String,
         raw_output: String,
+        /// A structured before/after diff content block (C10 §6), when the
+        /// host emitted one for this call.
+        diff: Option<DiffBlock>,
     },
     /// Context-compaction lifecycle notice (C1 §7): begin/complete/cancel,
     /// rendered as a system note in the transcript.
@@ -58,6 +61,16 @@ pub enum SessionUpdate {
     /// Forward-additive: kinds v1 doesn't render. Tolerated, never panics
     /// (torn/unknown replay frames must not kill the TUI, design §8).
     Unknown(String),
+}
+
+/// The ACP-standard diff content block (C10 §6): one structured
+/// old/new-text representation end-to-end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffBlock {
+    pub path: String,
+    /// None = whole-file add.
+    pub old_text: Option<String>,
+    pub new_text: String,
 }
 
 /// A well-formed session/request_permission request.
@@ -196,6 +209,7 @@ fn parse_session_update(update: &Value) -> SessionUpdate {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string(),
+            diff: parse_diff_block(update),
         },
         "compaction" => SessionUpdate::Compaction {
             status: update
@@ -262,6 +276,31 @@ fn parse_permission(id: Value, frame: &Value) -> Inbound {
         raw_input,
         options: parsed,
     })
+}
+
+/// The first `{"type":"diff", path, oldText, newText}` content block, if
+/// the update carries one (C10 §6). Malformed blocks are ignored, never
+/// fatal — the done frame's rawOutput still flows.
+fn parse_diff_block(update: &Value) -> Option<DiffBlock> {
+    let blocks = update.get("content")?.as_array()?;
+    for block in blocks {
+        if block.get("type").and_then(Value::as_str) != Some("diff") {
+            continue;
+        }
+        let path = block.get("path").and_then(Value::as_str)?.to_string();
+        let new_text = block.get("newText").and_then(Value::as_str)?.to_string();
+        // oldText is null for a whole-file add.
+        let old_text = block
+            .get("oldText")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        return Some(DiffBlock {
+            path,
+            old_text,
+            new_text,
+        });
+    }
+    None
 }
 
 /// Parse the `models` block carried by session/new, session/load and
@@ -614,6 +653,38 @@ mod tests {
                 title: "shell".into(),
                 status: "in_progress".into(),
                 raw_input: json!({"command": "ls"}),
+            })
+        );
+
+        // C10 §6: a done frame carrying a diff content block parses it.
+        let diffed = json!({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"c2",
+            "status":"completed","rawOutput":"written",
+            "content":[{"type":"diff","path":"src/main.rs","oldText":"old","newText":"new"}]}}});
+        assert_eq!(
+            classify(&diffed),
+            Inbound::Update(SessionUpdate::ToolCallUpdate {
+                call_id: "c2".into(),
+                status: "completed".into(),
+                raw_output: "written".into(),
+                diff: Some(DiffBlock {
+                    path: "src/main.rs".into(),
+                    old_text: Some("old".into()),
+                    new_text: "new".into(),
+                }),
+            })
+        );
+        // A done frame without content parses with no diff.
+        let plain = json!({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"c3",
+            "status":"completed","rawOutput":"ok"}}});
+        assert_eq!(
+            classify(&plain),
+            Inbound::Update(SessionUpdate::ToolCallUpdate {
+                call_id: "c3".into(),
+                status: "completed".into(),
+                raw_output: "ok".into(),
+                diff: None,
             })
         );
 

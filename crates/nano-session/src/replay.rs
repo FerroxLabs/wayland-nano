@@ -47,6 +47,9 @@ pub struct SessionState {
     pub changed_files: BTreeSet<String>,
     pub compaction: Option<CompactionPhase>,
     pub last_compaction_summary: Option<String>,
+    /// The session's todo list (C10 §2): content, replayed last-write-wins
+    /// from journaled TodoSet ops so a resumed session restores the list.
+    pub todos: Vec<crate::op::TodoItem>,
     seen_ids: HashSet<String>,
 }
 
@@ -127,6 +130,15 @@ impl SessionState {
             // Mode changes are audit history only (C2): context-neutral on
             // replay, never restored into session state.
             Op::ModeSet { .. } => {}
+            // Todo lists are CONTENT (C10 §2): replayed last-write-wins so a
+            // resumed session restores the list.
+            Op::TodoSet { items } => {
+                self.todos = items.clone();
+            }
+            // Plan posture is a POSTURE (C10 §3): journaled for audit,
+            // deliberately never restored — "content replays, postures
+            // don't". A resumed session starts with plan mode off.
+            Op::PlanSet { .. } => {}
             Op::Unknown => {}
         }
     }

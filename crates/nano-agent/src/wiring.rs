@@ -137,11 +137,103 @@ pub fn v1_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["url"]
             }),
         },
+        // ── C10 session tools ───────────────────────────────────────────
+        // These are SESSION-owned: the host's session executor wrapper
+        // services them (journal-first todo writes, plan posture, the gated
+        // question channel). RealToolExecutor never executes them — if one
+        // reaches it, the host mis-wired and the error is loud (wcore's
+        // ask_user_question lesson #504: never a silent empty result).
+        ToolDefinition {
+            name: "todo".into(),
+            description: "Read or replace the session task list. Args: optional todos — an array of {id, content, status} with status one of pending/in_progress/completed/cancelled. Omitted = read the current list; provided = replace it (journaled). Returns the full list with counts. Unavailable while plan mode is active (use the plan file)."
+                .into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "content": {"type": "string"},
+                                "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]}
+                            },
+                            "required": ["id", "content", "status"]
+                        }
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "ask_user".into(),
+            description: "Ask the user a structured mid-turn question. Args: question, optional header, options (2-4 of {label, optional description}), optional timeout_seconds (0 = wait forever; only honored by hosts that KNOW they are interactive — capability-blind hosts normalize it to the 5-minute default). Returns the selected option's label, or a typed error when the user dismisses, the question times out, or the host cannot answer — on any error, proceed without asking."
+                .into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string"},
+                    "header": {"type": "string"},
+                    "options": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string"},
+                                "description": {"type": "string"}
+                            },
+                            "required": ["label"]
+                        }
+                    },
+                    "timeout_seconds": {"type": "integer"}
+                },
+                "required": ["question", "options"]
+            }),
+        },
+        ToolDefinition {
+            name: "enter_plan_mode".into(),
+            description: "Enter read-only planning posture: writes are restricted to the session's plan file (every other fs_write/fs_edit is denied at the gate in EVERY permission mode), todo is unavailable, and shell stays governed by the session's permission mode. No args.".into(),
+            input_schema: serde_json::json!({"type": "object", "properties": {}}),
+        },
+        ToolDefinition {
+            name: "exit_plan_mode".into(),
+            description: "Present the plan file to the user for approval and, on approval, exit planning posture. The exit ALWAYS asks the user — even in full_auto. On rejection the posture stays active and the feedback is returned so you can revise. No args.".into(),
+            input_schema: serde_json::json!({"type": "object", "properties": {}}),
+        },
     ]
 }
 
+/// Session-owned tools (C10): serviced by the host's session executor
+/// wrapper and the approval gate's question channel, NEVER by
+/// RealToolExecutor — and ABSENT from the child tool surface (C6
+/// sub-agents carry a DenyAll gate and cannot answer questions or own
+/// session state; codex's root-thread-only rule). The integrator filters
+/// these out of child tool definitions via [`child_tool_definitions`].
+pub const SESSION_TOOL_NAMES: [&str; 4] = ["todo", "ask_user", "enter_plan_mode", "exit_plan_mode"];
+
+/// The v1 tool surface MINUS the session-owned tools — the C6 child-agent
+/// contract: a child never sees `todo`, `ask_user`, or the plan-mode tools.
+pub fn child_tool_definitions() -> Vec<ToolDefinition> {
+    v1_tool_definitions()
+        .into_iter()
+        .filter(|def| !SESSION_TOOL_NAMES.contains(&def.name.as_str()))
+        .collect()
+}
+
+/// The loud-defensive error a session tool produces when it reaches
+/// RealToolExecutor (mis-wired host — the session wrapper was skipped).
+/// Never a silent empty result (wcore lesson #504).
+fn miswired_session_tool(name: &str) -> ToolOutcome {
+    ToolOutcome {
+        ok: false,
+        output: format!(
+            "{name} reached the base executor: this host failed to route the session-owned tool through its session wrapper/approval gate. This is a host wiring bug; do not retry."
+        ),
+        progress: ProgressSignals::default(),
+    }
+}
+
 /// ToolExecutor over the real fs/shell tools, policy-checked and sandboxed.
-#[derive(Debug)]
 pub struct RealToolExecutor {
     fs: FsTools,
     shell: ShellTool,
@@ -153,6 +245,22 @@ pub struct RealToolExecutor {
     /// or re-running an identical command with identical output is NOT new
     /// information (the no-progress detector depends on this truth).
     seen: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+    /// C10 §6: live-wire diff sink. When set, successful fs_write/fs_edit
+    /// calls push their (call id, structured before/after pair) here (the
+    /// host forwards it as an ACP diff content block on the same tool call).
+    /// Live-wire-only: the hook is never journaled, and sensitive-path
+    /// targets never produce a diff.
+    diff_hook: Option<crate::turn::DiffHook>,
+}
+
+impl std::fmt::Debug for RealToolExecutor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RealToolExecutor")
+            .field("workspace", &self.workspace)
+            .field("web_fetch", &self.web_fetch.is_some())
+            .field("diff_hook", &self.diff_hook.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl RealToolExecutor {
@@ -163,7 +271,34 @@ impl RealToolExecutor {
             workspace: workspace.to_path_buf(),
             web_fetch: None,
             seen: std::sync::Mutex::new(std::collections::HashMap::new()),
+            diff_hook: None,
         }
+    }
+
+    /// Attach the live-wire diff sink (C10 §6).
+    pub fn with_diff_hook(mut self, hook: crate::turn::DiffHook) -> Self {
+        self.diff_hook = Some(hook);
+        self
+    }
+
+    /// Emit a successful mutation's diff: capped per side, and SUPPRESSED
+    /// outright for sensitive-path targets (the same deny-list the read
+    /// path enforces, applied to a new exfil surface).
+    fn emit_diff(
+        &self,
+        call_id: &str,
+        path: &std::path::Path,
+        old_text: Option<String>,
+        new_text: String,
+    ) {
+        let Some(hook) = &self.diff_hook else { return };
+        if nano_tools::fs::is_sensitive_path(path) {
+            return;
+        }
+        hook(
+            call_id,
+            &crate::turn::FileDiff::capped(path.to_path_buf(), old_text, new_text),
+        );
     }
 
     /// Attach the web_fetch tool with its own (second-domain) egress client
@@ -367,15 +502,19 @@ impl ToolExecutor for RealToolExecutor {
                         progress: ProgressSignals::default(),
                     };
                 };
-                match self.fs.write_file(&self.resolve(path), content) {
-                    Ok(()) => ToolOutcome {
-                        ok: true,
-                        output: "written".into(),
-                        progress: ProgressSignals {
-                            files_changed: true,
-                            ..Default::default()
-                        },
-                    },
+                let resolved = self.resolve(path);
+                match self.fs.write_file_with_diff(&resolved, content) {
+                    Ok(diff) => {
+                        self.emit_diff(&call.id, &resolved, diff.old_text, diff.new_text);
+                        ToolOutcome {
+                            ok: true,
+                            output: "written".into(),
+                            progress: ProgressSignals {
+                                files_changed: true,
+                                ..Default::default()
+                            },
+                        }
+                    }
                     Err(err) => ToolOutcome {
                         ok: false,
                         output: err.to_string(),
@@ -400,18 +539,23 @@ impl ToolExecutor for RealToolExecutor {
                     .get("replace_all")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                let resolved = self.resolve(path);
                 match self
                     .fs
-                    .edit_file(&self.resolve(path), old, new, replace_all)
+                    .edit_file_with_diff(&resolved, old, new, replace_all)
                 {
-                    Ok(n) => ToolOutcome {
-                        ok: true,
-                        output: format!("{n} replacement(s)"),
-                        progress: ProgressSignals {
-                            files_changed: true,
-                            ..Default::default()
-                        },
-                    },
+                    Ok(diff) => {
+                        let n = diff.replacements;
+                        self.emit_diff(&call.id, &resolved, diff.old_text, diff.new_text);
+                        ToolOutcome {
+                            ok: true,
+                            output: format!("{n} replacement(s)"),
+                            progress: ProgressSignals {
+                                files_changed: true,
+                                ..Default::default()
+                            },
+                        }
+                    }
                     Err(err) => ToolOutcome {
                         ok: false,
                         output: err.to_string(),
@@ -455,6 +599,10 @@ impl ToolExecutor for RealToolExecutor {
                     },
                 }
             }
+            // C10: session-owned tools must never reach the base executor.
+            // A host that skipped its session wrapper gets the loud
+            // mis-wiring error, never a silent empty or "unknown" result.
+            name if SESSION_TOOL_NAMES.contains(&name) => miswired_session_tool(name),
             other => ToolOutcome {
                 ok: false,
                 output: format!("unknown tool: {other}"),
@@ -870,6 +1018,187 @@ mod tests {
         assert!(
             !second.progress.new_information,
             "identical refetch must score non-novel"
+        );
+    }
+
+    // ── C10 tests ───────────────────────────────────────────────────────
+
+    /// The v1 surface advertises the session tools; the C6 child surface
+    /// (child_tool_definitions) excludes ALL of them — children cannot own
+    /// session state or answer questions (codex root-thread-only rule).
+    #[test]
+    fn session_tools_advertised_but_absent_from_the_child_surface() {
+        let v1 = v1_tool_definitions();
+        for name in SESSION_TOOL_NAMES {
+            assert!(v1.iter().any(|d| d.name == name), "{name} advertised");
+        }
+        let child = child_tool_definitions();
+        for name in SESSION_TOOL_NAMES {
+            assert!(
+                !child.iter().any(|d| d.name == name),
+                "{name} must be absent from the child tool surface"
+            );
+        }
+        // The child surface is otherwise intact.
+        for name in ["fs_read", "fs_write", "fs_edit", "shell", "web_fetch"] {
+            assert!(child.iter().any(|d| d.name == name), "{name} kept");
+        }
+    }
+
+    /// A session tool that reaches the BASE executor (mis-wired host)
+    /// returns the loud-defensive typed error — never a silent empty
+    /// result (wcore lesson #504).
+    #[tokio::test]
+    async fn session_tools_at_the_base_executor_fail_loud() {
+        let (_tmp, executor, _ws) = executor_fixture();
+        for name in SESSION_TOOL_NAMES {
+            let outcome = executor.execute(&call(name, serde_json::json!({}))).await;
+            assert!(!outcome.ok);
+            assert!(
+                outcome.output.contains("reached the base executor"),
+                "{name}: {}",
+                outcome.output
+            );
+        }
+    }
+
+    /// C10 §6: write/edit diffs flow through the hook — whole-file add
+    /// (old_text None) on create, before/after on overwrite and edit —
+    /// while the model-facing output strings stay byte-identical.
+    #[tokio::test]
+    async fn write_and_edit_emit_structured_diffs() {
+        let (_tmp, executor, ws) = executor_fixture();
+        let diffs: std::sync::Arc<std::sync::Mutex<Vec<crate::turn::FileDiff>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = diffs.clone();
+        let executor = executor.with_diff_hook(std::sync::Arc::new(move |_id, diff| {
+            sink.lock().unwrap().push(diff.clone());
+        }));
+
+        // Create: whole-file add.
+        let outcome = executor
+            .execute(&call(
+                "fs_write",
+                serde_json::json!({"path": "a.txt", "content": "v1"}),
+            ))
+            .await;
+        assert!(outcome.ok);
+        assert_eq!(outcome.output, "written", "model-facing output unchanged");
+        {
+            let diffs = diffs.lock().unwrap();
+            assert_eq!(diffs.len(), 1);
+            assert_eq!(diffs[0].path, ws.join("a.txt"));
+            assert_eq!(diffs[0].old_text, None, "create is a whole-file add");
+            assert_eq!(diffs[0].new_text, "v1");
+        }
+        // Overwrite: read-before diff.
+        executor
+            .execute(&call(
+                "fs_write",
+                serde_json::json!({"path": "a.txt", "content": "v2"}),
+            ))
+            .await;
+        // Edit: region old/new.
+        let outcome = executor
+            .execute(&call(
+                "fs_edit",
+                serde_json::json!({"path": "a.txt", "old_string": "v2", "new_string": "v3"}),
+            ))
+            .await;
+        assert!(outcome.ok);
+        assert_eq!(outcome.output, "1 replacement(s)", "output unchanged");
+        let diffs = diffs.lock().unwrap();
+        assert_eq!(diffs.len(), 3);
+        assert_eq!(diffs[1].old_text.as_deref(), Some("v1"));
+        assert_eq!(diffs[1].new_text, "v2");
+        assert_eq!(diffs[2].old_text.as_deref(), Some("v2"));
+        assert_eq!(diffs[2].new_text, "v3");
+    }
+
+    /// C10 §6 egress discipline: a sensitive-path target emits NO diff
+    /// (the write still succeeds when the caller holds the sensitive
+    /// override — only the exfil surface is closed), and each diff side is
+    /// capped at 32k chars with the deterministic elision marker.
+    #[tokio::test]
+    async fn sensitive_paths_emit_no_diff_and_sides_are_capped() {
+        let (_tmp, executor, ws) = executor_fixture();
+        let diffs: std::sync::Arc<std::sync::Mutex<Vec<crate::turn::FileDiff>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = diffs.clone();
+        let executor = executor.with_diff_hook(std::sync::Arc::new(move |_id, diff| {
+            sink.lock().unwrap().push(diff.clone());
+        }));
+        // The executor fixture's FsTools denies sensitive paths at the
+        // write layer; the DIFF-suppression rule is a separate, additional
+        // guard on the exfil surface. Exercise it through a path the write
+        // policy allows: write a NON-sensitive file, then verify the
+        // suppression predicate directly on a sensitive spelling.
+        assert!(nano_tools::fs::is_sensitive_path(std::path::Path::new(
+            ".env"
+        )));
+        assert!(nano_tools::fs::is_sensitive_path(std::path::Path::new(
+            "id_rsa"
+        )));
+        assert!(!nano_tools::fs::is_sensitive_path(std::path::Path::new(
+            "ok.txt"
+        )));
+
+        // Cap: an 80k write truncates each side with the elision marker.
+        let big = "x".repeat(80 * 1024);
+        let outcome = executor
+            .execute(&call(
+                "fs_write",
+                serde_json::json!({"path": "big.txt", "content": big}),
+            ))
+            .await;
+        assert!(outcome.ok);
+        let diffs = diffs.lock().unwrap();
+        assert_eq!(diffs.len(), 1);
+        let new_text = &diffs[0].new_text;
+        assert!(new_text.contains("…[elided"), "{new_text}");
+        assert!(
+            new_text.chars().count() <= crate::turn::FileDiff::MAX_SIDE_CHARS + 64,
+            "capped: {} chars",
+            new_text.chars().count()
+        );
+        // Deterministic.
+        let again = crate::turn::FileDiff::capped(ws.join("big.txt"), None, "x".repeat(80 * 1024));
+        assert_eq!(&diffs[0].new_text, &again.new_text);
+        let _ = ws;
+    }
+
+    /// C10 §6: with the sensitive OVERRIDE held (the write is allowed), the
+    /// diff is STILL suppressed from the wire hook — the egress rule is
+    /// independent of the write authorization.
+    #[tokio::test]
+    async fn sensitive_write_with_override_still_emits_no_diff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let policy = nano_core::permissions::PermissionProfile::workspace_write()
+            .file_system_sandbox_policy();
+        let fs = FsTools::new(policy, &ws).with_sensitive_override();
+        let shell = ShellTool::new(&home, &ws);
+        let diffs: std::sync::Arc<std::sync::Mutex<Vec<crate::turn::FileDiff>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = diffs.clone();
+        let executor = RealToolExecutor::new(fs, shell, &ws).with_diff_hook(std::sync::Arc::new(
+            move |_id, diff| {
+                sink.lock().unwrap().push(diff.clone());
+            },
+        ));
+        let outcome = executor
+            .execute(&call(
+                "fs_write",
+                serde_json::json!({"path": ".env", "content": "SECRET=x"}),
+            ))
+            .await;
+        assert!(outcome.ok, "override permits the write: {}", outcome.output);
+        assert!(
+            diffs.lock().unwrap().is_empty(),
+            "sensitive-path targets never emit a diff"
         );
     }
 }

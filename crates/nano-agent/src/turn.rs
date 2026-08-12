@@ -107,6 +107,81 @@ pub trait ApprovalGate: Debug + Send + Sync {
     fn denial_reason(&self) -> Option<&'static str> {
         None
     }
+    /// Structured mid-turn question channel (C10 §5): `ask_user` calls and
+    /// the plan-exit approval round-trip route here — the ONE question
+    /// channel, reused, never parallel machinery. The argument is the raw
+    /// tool call; the implementation mints wire option ids from
+    /// `arguments.options[].label` and resolves the response back to the
+    /// selected LABEL. Default: `Unavailable` — hosts that cannot answer
+    /// (headless, or a gate that never learned questions) map to the typed
+    /// "questions unavailable in this host" tool error, never a block.
+    fn ask(&self, _call: &ToolCall) -> AskOutcome {
+        AskOutcome::Unavailable
+    }
+}
+
+/// The live-wire diff sink type (C10 §6): called with (tool call id, diff)
+/// when a fs_write/fs_edit succeeds. Live-wire-only, never journaled.
+pub type DiffHook = std::sync::Arc<dyn Fn(&str, &FileDiff) + Send + Sync>;
+
+/// A structured before/after text pair for one file mutation (C10 §6): the
+/// ONE diff representation end-to-end (no unified-diff string anywhere).
+/// Emitted on the live wire as an ACP `diff` content block for human review;
+/// NEVER journaled (diffs can carry secret-bearing file content and the
+/// journal is digest-only) and NEVER fed back to the model (the model-facing
+/// outcome string stays terse). `old_text: None` = whole-file add.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileDiff {
+    pub path: std::path::PathBuf,
+    pub old_text: Option<String>,
+    pub new_text: String,
+}
+
+impl FileDiff {
+    /// Per-side cap (C10 §6): 32k chars, deterministic head+tail truncation
+    /// with an explicit elision marker, so a huge write cannot flood the
+    /// wire frame.
+    pub const MAX_SIDE_CHARS: usize = 32 * 1024;
+
+    /// Builds a diff with each side capped to [`Self::MAX_SIDE_CHARS`].
+    pub fn capped(path: std::path::PathBuf, old_text: Option<String>, new_text: String) -> Self {
+        Self {
+            path,
+            old_text: old_text.map(|t| cap_diff_side(&t)),
+            new_text: cap_diff_side(&new_text),
+        }
+    }
+}
+
+/// Head+tail truncation: over the cap, keep the first and last halves with a
+/// deterministic elision marker between. Char-based, so the cut never splits
+/// a UTF-8 sequence (C1's truncation rule).
+fn cap_diff_side(text: &str) -> String {
+    let total = text.chars().count();
+    if total <= FileDiff::MAX_SIDE_CHARS {
+        return text.to_string();
+    }
+    let half = FileDiff::MAX_SIDE_CHARS / 2;
+    let head: String = text.chars().take(half).collect();
+    let tail: String = {
+        let skip = total - half;
+        text.chars().skip(skip).collect()
+    };
+    format!("{head}\n…[elided {} chars]…\n{tail}", total - 2 * half)
+}
+
+/// Outcome of a structured mid-turn question (C10 §5). Every exit is
+/// fail-closed to a typed tool error except an explicit answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AskOutcome {
+    /// The user picked an option; carries its LABEL (the wire only carried
+    /// the minted id; the gate resolved it through its id→label map).
+    Answered(String),
+    /// Dismissed, cancelled, timed out, disconnected, or a malformed
+    /// response — the string is the bounded typed reason.
+    Denied(String),
+    /// This host has no question channel at all (call-time failure).
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +211,18 @@ impl<'a> TurnEngine<'a> {
         context: Option<Message>,
     ) -> TurnResult {
         self.run_turn_inner(turn_id, input, context.into_iter().collect(), None, None)
+            .await
+    }
+
+    /// Runs a turn with prepended context messages (skill activation,
+    /// AGENTS.md, restored session blocks — C10).
+    pub async fn run_turn_with_context_messages(
+        &self,
+        turn_id: &str,
+        input: &str,
+        context: Vec<Message>,
+    ) -> TurnResult {
+        self.run_turn_inner(turn_id, input, context, None, None)
             .await
     }
 
