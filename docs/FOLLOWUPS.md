@@ -78,3 +78,43 @@ promotes/closes entries; builders append only.
 - **Close means:** Desktop PR adding the steer input path + notice
   renderers + the regenerated error-table mappings (the 40-kind TS module
   already ships on PR #953), plus one CDP drive per surface.
+
+## F-6: Cron job creation has no production path (C11 proof, F-C11-3) — OWNER RULING NEEDED
+
+- **Filed:** 2026-08-12, from the C11 adversarial proof.
+- **Gap:** the `cronjob` tool is absent from the interactive ACP tool list,
+  and exec mode auto-denies `create` — so no shipped path can create a
+  cron job; the proof authored `jobs.json` externally to exercise the
+  (fully proven) fire path. Design §5.5's "prompts even under full_auto"
+  is unreachable.
+- **Close means:** an owner ruling — ship cron creation (add the tool to
+  the ACP list with the gate prompt) or formally descope it to
+  host-managed-only and amend the design text.
+
+## F-7: Permission-parked turn silences the host ≥15s (C11 proof, F-C11-6)
+
+- **Filed:** 2026-08-12, from the C11 adversarial proof (live probe).
+- **Gap:** while a turn is permission-parked, acp-host answers NOTHING —
+  fork, second prompt, and even cancel were unobserved for ≥15s
+  (single-threaded runtime + synchronous gate wait). The typed
+  `turn_in_progress` contract holds only against model-active turns.
+  The F-C2-1 relay covers cancel + de-escalation on the READER thread;
+  this probe suggests a live-path wedge the wire tests don't capture
+  (possibly the probe's park simply outlasted the observation window —
+  the evidence section has the repro).
+- **Close means:** reproduce under the scripted harness with a parked
+  prompt + explicit cancel; if the relay genuinely starves, move the
+  gate's wait off the synchronous path (queued approvals) — design
+  decision, not a patch.
+
+## F-8: C11 hardening candidates (C11 proof, F-C11-1/2/4/5)
+
+- **Filed:** 2026-08-12, documented-not-patched per proof discipline.
+- **Items:** cron idempotency check runs outside the SessionGuard
+  (narrow cross-process double-fire window); protocol-host has no cron
+  wiring (acp-host only); goal driver swallows journal failures
+  (`let _ =`) and degrades context silently on read failure; exec
+  mid-turn journal append failure continues with a journal hole.
+- **Close means:** one hardening pass against the journal-first
+  discipline; each site either journals fail-closed or documents why
+  the degradation is the intended semantics.
