@@ -219,6 +219,12 @@ impl Harness {
                 // C8: per-turn binding resolution needs SOME flux credential
                 // in env (never networked — the scripted driver intercepts).
                 ensure_test_flux_key();
+                // C5: memory store for this harness (writes off).
+                let memory_config = acp_mode::MemoryHostConfig {
+                    dir: sessions_dir_for_thread.parent().expect("root").join("memory"),
+                    write_enabled: false,
+                    block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
+                };
                 let config = acp_mode::ServeConfig {
                     sessions_dir: &sessions_dir_for_thread,
                     default_model: "mock",
@@ -229,6 +235,7 @@ impl Harness {
                     limit_override: None,
                     sandbox_probe: &sandbox_probe,
                     router: &router,
+                    memory: &memory_config,
                 };
                 acp_mode::serve(
                     ChannelReader {

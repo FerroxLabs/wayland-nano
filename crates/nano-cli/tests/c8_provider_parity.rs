@@ -561,6 +561,12 @@ impl Host {
                 .expect("tokio runtime");
             runtime.block_on(async move {
                 let sandbox_probe = || true;
+                // C5: memory store for this harness (writes off).
+                let memory_config = acp_mode::MemoryHostConfig {
+                    dir: sessions_dir.parent().expect("root").join("memory"),
+                    write_enabled: false,
+                    block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
+                };
                 let config = acp_mode::ServeConfig {
                     sessions_dir: &sessions_dir,
                     default_model: &default_model,
@@ -571,6 +577,7 @@ impl Host {
                     limit_override: None,
                     sandbox_probe: &sandbox_probe,
                     router: &router,
+                    memory: &memory_config,
                 };
                 acp_mode::serve(
                     ChannelReader {

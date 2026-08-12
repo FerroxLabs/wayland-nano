@@ -158,6 +158,10 @@ pub struct UsageFrame {
 pub struct NanoCapabilities {
     pub cost_attribution: bool,
     pub mcp: bool,
+    /// `memory_enabled: true` means persisted agent memory is injected into
+    /// context; memory write tools may additionally be gated by host config
+    /// (C5 panel ruling Q6 — the flag asserts the READ side only; write
+    /// availability is discoverable via the tool listing).
     pub memory_enabled: bool,
     pub plugins: bool,
     pub streaming_tools: bool,

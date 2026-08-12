@@ -78,6 +78,17 @@ pub async fn run(
         "protocol-host".into(),
     );
 
+    // C5: cross-session memory. The store is <nano_home>/memory; read tools
+    // and injection are always on over the user-managed store, write tools
+    // only behind NANO_MEMORY_WRITE. The block is re-rendered FRESH every
+    // turn (never cached at startup).
+    let memory_write = std::env::var("NANO_MEMORY_WRITE")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    let memory_store = nano_agent::memory::MemoryStore::new(nano_home);
+    let executor =
+        nano_agent::memory::MemoryToolExecutor::new(memory_store.clone(), memory_write, &executor);
+
     // Skills: default roots are <nano_home>/skills and <workspace>/.nano/skills.
     let skill_context = nano_agent::skills::prepare_skill_context(&[
         nano_home.join("skills"),
@@ -86,6 +97,7 @@ pub async fn run(
 
     let mut tool_definitions = v1_tool_definitions();
     tool_definitions.extend(mcp_definitions);
+    tool_definitions.extend(nano_agent::memory::memory_tool_definitions(memory_write));
 
     let engine = TurnEngine {
         model: &driver,
@@ -111,12 +123,35 @@ pub async fn run(
         let skill_context = std::sync::Arc::clone(&skill_context);
         let plan_cell = plan_cell.clone();
         let todo_cell = todo_cell.clone();
+        let memory_store = memory_store.clone();
         async move {
-            // C10: fresh per-turn context blocks — the AGENTS.md block is
-            // re-read every turn (mid-session edits are picked up), the
-            // plan instructions ride while the posture is active, and the
-            // todo list renders while non-empty.
+            // Fresh per-turn context blocks: the C5 memory block is
+            // re-rendered from the store every turn (a save/delete/hand-edit
+            // in turn N is visible from turn N+1; the combined ceiling uses
+            // the conservative 128k window and the skills block's size);
+            // C10: the AGENTS.md block is re-read every turn, the plan
+            // instructions ride while the posture is active, and the todo
+            // list renders while non-empty.
+            let skills_chars = match skill_context.as_ref() {
+                Some(message) => message
+                    .content
+                    .iter()
+                    .map(|b| match b {
+                        nano_model::types::ContentBlock::Text { text } => text.len(),
+                        _ => 0,
+                    })
+                    .sum::<usize>(),
+                None => 0,
+            };
             let mut context = Vec::new();
+            if let Some(memory_block) = nano_agent::memory::prepare_memory_context(
+                &memory_store,
+                128_000,
+                skills_chars,
+                nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
+            ) {
+                context.push(memory_block);
+            }
             if let Some(message) = nano_agent::skills::prepare_agents_md_context(workspace) {
                 context.push(message);
             }

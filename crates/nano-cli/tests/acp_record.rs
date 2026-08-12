@@ -210,6 +210,13 @@ impl Recorder {
                 let sandbox_probe = || true;
                 let router = nano_cli::provider_router::ProviderRouter::default();
                 ensure_test_flux_key();
+                // C5: memory store for this harness (writes off unless a
+                // test opts in).
+                let memory_config = acp_mode::MemoryHostConfig {
+                    dir: sessions_dir.parent().expect("root").join("memory"),
+                    write_enabled: false,
+                    block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
+                };
                 let config = acp_mode::ServeConfig {
                     sessions_dir: &sessions_dir,
                     default_model: "flux-auto",
@@ -220,6 +227,7 @@ impl Recorder {
                     limit_override: None,
                     sandbox_probe: &sandbox_probe,
                     router: &router,
+                    memory: &memory_config,
                 };
                 acp_mode::serve(
                     ChannelReader {

@@ -355,6 +355,32 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     // Operator-supplied MCP servers (NANO_MCP_SERVERS) merge into every
     // session alongside the mcpServers param Desktop publishes.
     let env_mcp_specs = crate::mcp_specs::mcp_specs_from_env();
+    // C5: memory. Writes are opt-in (NANO_MEMORY_WRITE=1/true); the block
+    // cap override is downward-only (a larger value is a typed config error,
+    // not a silent clamp — same posture as the C1 overrides).
+    let memory_write = std::env::var("NANO_MEMORY_WRITE")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    let memory_block_cap = match parse_env_u64("NANO_MEMORY_BLOCK_CHARS") {
+        Ok(Some(cap)) if cap as usize > nano_agent::memory::MEMORY_BLOCK_CHAR_CAP => {
+            eprintln!(
+                "wayland-nano: NANO_MEMORY_BLOCK_CHARS is downward-only (max {})",
+                nano_agent::memory::MEMORY_BLOCK_CHAR_CAP
+            );
+            return Ok(2);
+        }
+        Ok(Some(cap)) => cap as usize,
+        Ok(None) => nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
+        Err(err) => {
+            eprintln!("wayland-nano: {err}");
+            return Ok(2);
+        }
+    };
+    let memory_config = MemoryHostConfig {
+        dir: nano_home.join("memory"),
+        write_enabled: memory_write,
+        block_cap: memory_block_cap,
+    };
     let config = ServeConfig {
         sessions_dir: &sessions,
         default_model: &default_model,
@@ -365,6 +391,7 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         limit_override,
         sandbox_probe: &sandbox_probe,
         router: &router,
+        memory: &memory_config,
     };
     serve(reader, writer, &config, make_driver, make_tools).await
 }
@@ -429,6 +456,22 @@ pub struct ServeConfig<'a> {
     /// C8: the validated provider routing table (payload + catalog). Backs
     /// set_model's typed errors and the per-turn binding re-resolution.
     pub router: &'a crate::provider_router::ProviderRouter,
+    /// C5: cross-session memory. Read/injection is always available over the
+    /// user-managed store; the write tools exist only when the operator
+    /// opted in (NANO_MEMORY_WRITE).
+    pub memory: &'a MemoryHostConfig,
+}
+
+/// C5 memory wiring for the ACP host.
+pub struct MemoryHostConfig {
+    /// The store root (`<nano_home>/memory`).
+    pub dir: std::path::PathBuf,
+    /// NANO_MEMORY_WRITE: agent-authored memory writes (memory_save /
+    /// memory_delete) — default OFF (panel ruling Q1).
+    pub write_enabled: bool,
+    /// NANO_MEMORY_BLOCK_CHARS: downward-only override of the 24k injected
+    /// block cap.
+    pub block_cap: usize,
 }
 
 /// The live-wire diff sink (C10 §6): called with (tool call id, diff) when
@@ -1092,7 +1135,7 @@ where
                             active.cancel.store(false, Ordering::SeqCst);
                             active.turn_counter += 1;
                             let turn_id = format!("{}-turn-{}", active.id, active.turn_counter);
-                            let prior_context = active.context.clone();
+                            let mut prior_context = active.context.clone();
                             // C1: resolve this turn's context-management
                             // config against the ACTIVE model's catalog
                             // window. Overrides are downward-only; an
@@ -1102,6 +1145,24 @@ where
                                 &active.model,
                                 config.catalog,
                             );
+                            // C5 §6: prepend the memory block, rendered FRESH
+                            // from the store at every prompt — never cached
+                            // at session open — so a save/delete/hand-edit in
+                            // turn N is visible from turn N+1. Read errors
+                            // fail open (no block). The ACP seam has no
+                            // skills block, so skills_chars is 0 here.
+                            if let Some(memory_block) =
+                                nano_agent::memory::prepare_memory_context(
+                                    &nano_agent::memory::MemoryStore::from_dir(
+                                        config.memory.dir.clone(),
+                                    ),
+                                    catalog_window,
+                                    0,
+                                    config.memory.block_cap,
+                                )
+                            {
+                                prior_context.insert(0, memory_block);
+                            }
                             let compaction = match nano_agent::compact::resolve_compaction_config(
                                 catalog_window,
                                 config.window_override,
@@ -1199,6 +1260,8 @@ where
                             let gate_ids = permission_ids.clone();
                             let sink_out = out.clone();
                             let sandbox_probe = config.sandbox_probe;
+                            let memory_dir = config.memory.dir.clone();
+                            let memory_write = config.memory.write_enabled;
                             let make_driver = &make_driver;
                             let make_tools = &make_tools;
                             let turn_future = async move {
@@ -1246,6 +1309,19 @@ where
                                 let mut tool_definitions = v1_tool_definitions();
                                 tool_definitions
                                     .extend(mcp_executor.tool_definitions_from_registry());
+                                // C5: the memory family routes through its own
+                                // chokepoint wrapper (validation + redaction +
+                                // caps). Read tools always; write tools only
+                                // behind the operator opt-in — the listing the
+                                // model sees reflects exactly that.
+                                let memory_executor = nano_agent::memory::MemoryToolExecutor::new(
+                                    nano_agent::memory::MemoryStore::from_dir(memory_dir),
+                                    memory_write,
+                                    &mcp_executor,
+                                );
+                                tool_definitions.extend(
+                                    nano_agent::memory::memory_tool_definitions(memory_write),
+                                );
                                 let gate = AcpApproval {
                                     session_id: session_id.clone(),
                                     out: gate_out,
@@ -1274,7 +1350,7 @@ where
                                 // route questions through the gate's ONE ask
                                 // channel.
                                 let executor = crate::session_tools::SessionTools::new(
-                                    &mcp_executor,
+                                    &memory_executor,
                                     &gate,
                                     todos_cell,
                                     plan_cell,
@@ -1969,9 +2045,16 @@ impl<W: Write> AcpApproval<W> {
 /// plain read activity is never confirmation-gated). Anything that mutates
 /// (`fs_write`/`fs_edit`) or executes (`shell`) must ask — and so must every
 /// `mcp__*` call: MCP tools are mutating-unknown, so they never match the
-/// read-only prefixes and always go through the permission gate.
+/// read-only prefixes and always go through the permission gate. C5:
+/// `memory_list`/`memory_read` are read-only; `memory_save`/`memory_delete`
+/// mutate the user-managed store and always ask (under read_only they are
+/// categorically denied, like every other mutation).
 fn is_read_only_tool(name: &str) -> bool {
-    name.starts_with("fs_read") || name.starts_with("search") || name.starts_with("glob")
+    name.starts_with("fs_read")
+        || name.starts_with("search")
+        || name.starts_with("glob")
+        || name.starts_with("memory_list")
+        || name.starts_with("memory_read")
 }
 
 /// Interprets a `session/request_permission` response. Approves only an

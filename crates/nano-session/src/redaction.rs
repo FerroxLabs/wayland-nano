@@ -63,29 +63,91 @@ pub fn scan_for_secrets(text: &str) -> Result<(), RedactionError> {
     if text.contains("PRIVATE KEY-----") && text.contains("-----BEGIN") {
         return Err(RedactionError::Secret(SecretKind::PrivateKeyBlock));
     }
-    // (prefix, minimum trailing token length, kind)
-    const RULES: &[(&str, usize, SecretKind)] = &[
-        (TEST_CANARY_PREFIX, 8, SecretKind::TestCanary),
-        ("github_pat_", 20, SecretKind::GithubToken),
-        ("ghp_", 20, SecretKind::GithubToken),
-        ("gho_", 20, SecretKind::GithubToken),
-        ("ghu_", 20, SecretKind::GithubToken),
-        ("ghs_", 20, SecretKind::GithubToken),
-        ("ghr_", 20, SecretKind::GithubToken),
-        ("xoxb-", 10, SecretKind::SlackToken),
-        ("xoxp-", 10, SecretKind::SlackToken),
-        ("xoxa-", 10, SecretKind::SlackToken),
-        ("xoxr-", 10, SecretKind::SlackToken),
-        ("xoxs-", 10, SecretKind::SlackToken),
-        ("sk-", 20, SecretKind::ApiToken),
-        ("AKIA", 16, SecretKind::AwsAccessKey),
-    ];
     for (prefix, min_tail, kind) in RULES {
         if has_token_with_prefix(text, prefix, *min_tail) {
             return Err(RedactionError::Secret(*kind));
         }
     }
     Ok(())
+}
+
+// (prefix, minimum trailing token length, kind) — the SINGLE pattern table:
+// scan_for_secrets and redact_secrets share it so the two can never drift,
+// and the fixture corpus pins both behaviors at once.
+const RULES: &[(&str, usize, SecretKind)] = &[
+    (TEST_CANARY_PREFIX, 8, SecretKind::TestCanary),
+    ("github_pat_", 20, SecretKind::GithubToken),
+    ("ghp_", 20, SecretKind::GithubToken),
+    ("gho_", 20, SecretKind::GithubToken),
+    ("ghu_", 20, SecretKind::GithubToken),
+    ("ghs_", 20, SecretKind::GithubToken),
+    ("ghr_", 20, SecretKind::GithubToken),
+    ("xoxb-", 10, SecretKind::SlackToken),
+    ("xoxp-", 10, SecretKind::SlackToken),
+    ("xoxa-", 10, SecretKind::SlackToken),
+    ("xoxr-", 10, SecretKind::SlackToken),
+    ("xoxs-", 10, SecretKind::SlackToken),
+    ("sk-", 20, SecretKind::ApiToken),
+    ("AKIA", 16, SecretKind::AwsAccessKey),
+];
+
+/// Best-effort redacting transform (C5 §4): returns `text` with every
+/// pinned-pattern match replaced by a `[redacted:<kind>]` marker. This is a
+/// SIEVE, honestly documented — unknown token formats, prose credentials,
+/// and encoded secrets pass through; the memory layer compensates
+/// structurally (writes default-off, caps, trust label). Fail-closed on
+/// scanner limitation: an input over [`MAX_SCAN_BYTES`] is an error, never a
+/// partially scanned pass.
+///
+/// The marker names the kind only — matched text never appears in the
+/// output, so a redacted artifact cannot become a secondary secret channel.
+pub fn redact_secrets(text: &str) -> Result<String, RedactionError> {
+    if text.len() > MAX_SCAN_BYTES {
+        return Err(RedactionError::TooLarge { bytes: text.len() });
+    }
+    let mut out = text.to_string();
+    // PEM block: replace the BEGIN..END PRIVATE KEY span (body included, so
+    // no key material survives); without an END marker, strip through the
+    // BEGIN header so the output cannot reassemble into a key-shaped block.
+    while let Some(begin) = out.find("-----BEGIN") {
+        let Some(header_tail) = out[begin..].find("PRIVATE KEY-----") else {
+            break;
+        };
+        let span_end = match out[begin..].find("-----END") {
+            Some(end_start) => match out[begin + end_start..].find("PRIVATE KEY-----") {
+                Some(tail) => begin + end_start + tail + "PRIVATE KEY-----".len(),
+                None => begin + header_tail + "PRIVATE KEY-----".len(),
+            },
+            None => begin + header_tail + "PRIVATE KEY-----".len(),
+        };
+        out.replace_range(begin..span_end, "[redacted:private-key]");
+    }
+    for (prefix, min_tail, kind) in RULES {
+        let marker = match kind {
+            SecretKind::ApiToken => "[redacted:api-token]",
+            SecretKind::GithubToken => "[redacted:github-token]",
+            SecretKind::AwsAccessKey => "[redacted:aws-access-key]",
+            SecretKind::SlackToken => "[redacted:slack-token]",
+            SecretKind::TestCanary => "[redacted:test-canary]",
+            SecretKind::PrivateKeyBlock => continue, // handled above
+        };
+        let mut search_from = 0;
+        while let Some(found) = out[search_from..].find(prefix) {
+            let abs = search_from + found;
+            let tail_start = abs + prefix.len();
+            let tail_len = out.as_bytes()[tail_start..]
+                .iter()
+                .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-')
+                .count();
+            if tail_len >= *min_tail {
+                out.replace_range(abs..tail_start + tail_len, marker);
+                search_from = abs + marker.len();
+            } else {
+                search_from = tail_start;
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Whether `text` contains `prefix` immediately followed by at least
@@ -173,6 +235,52 @@ mod tests {
                 bytes: MAX_SCAN_BYTES + 1
             })
         );
+    }
+
+    #[test]
+    fn redact_clears_every_corpus_positive() {
+        // The C5 memory-write path stores redact_secrets output; every
+        // pinned positive MUST come out scan-clean, and the redacted text
+        // must not contain the original payload.
+        for case in corpus("positives.txt") {
+            let redacted = redact_secrets(&case).expect("corpus sizes are under the cap");
+            assert_eq!(
+                scan_for_secrets(&redacted),
+                Ok(()),
+                "positive still trips after redaction: {case:?}"
+            );
+            assert!(redacted.contains("[redacted:"), "no marker: {redacted:?}");
+        }
+    }
+
+    #[test]
+    fn redact_leaves_corpus_negatives_byte_identical() {
+        for case in corpus("negatives.txt") {
+            assert_eq!(
+                redact_secrets(&case).expect("under cap"),
+                case,
+                "negative mutated: {case:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn redact_oversized_fails_closed() {
+        let huge = "x".repeat(MAX_SCAN_BYTES + 1);
+        assert!(matches!(
+            redact_secrets(&huge),
+            Err(RedactionError::TooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn redact_pem_block_replaces_the_whole_span() {
+        let text = "before -----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY----- after";
+        let redacted = redact_secrets(text).expect("redact");
+        assert!(!redacted.contains("MIIB"), "key body gone: {redacted}");
+        assert!(redacted.contains("[redacted:private-key]"));
+        assert!(redacted.starts_with("before ") && redacted.ends_with(" after"));
+        assert_eq!(scan_for_secrets(&redacted), Ok(()));
     }
 
     #[test]
