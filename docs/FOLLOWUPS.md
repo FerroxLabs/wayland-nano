@@ -283,3 +283,53 @@ promotes/closes entries; builders append only.
   rather than pinning static lists.
 - **Close means:** Desktop payload builder refreshes from live
   /models (with a short cache) or accepts a user-typed model id.
+
+## F-21: Flux grounding is query-phrasing-dependent (P1 adversarial proof) — FIXED at 9849541
+
+- **Filed:** 2026-08-12, from the P1 adversarial live proof (finding F-P1-2, HIGH).
+- **Gap:** Flux `{"type":"web_search"}` grounding only fires reliably when
+  the query is phrased as a search command (8/8 probes grounded, 20
+  results each). Bare keyword queries — what models actually type
+  organically — returned an ungrounded prose completion (0/4 probes),
+  surfacing as a typed parse failure. Organic use of web_search failed
+  without phrasing steering.
+- **Fix:** `FluxSearchBackend` shapes the grounding query with a constant
+  prefix (`shape_grounding_query`, web_search.rs) — search-command
+  phrasings pass through byte-identically. Constant prefix only; the Flux
+  isolation property (no conversation context on the wire) is untouched.
+- **Verified by:** unit pin + loopback wire pin at 9849541. Live organic
+  re-proof (keyword queries must ground with citations, no steering) is
+  the closing evidence — to be appended to CONSOLIDATED-VERIFICATION.md
+  P1 section when run.
+
+## F-22: ChainedSearchBackend masked real backend failures as "unavailable" (P1 adversarial proof) — FIXED at 9849541
+
+- **Filed:** 2026-08-12, from the P1 adversarial live proof (finding F-P1-1,
+  MEDIUM). Originally web_search.rs:609.
+- **Gap:** when every CONFIGURED backend failed, the chain returned
+  `Unavailable` ("no search backend configured") instead of the real typed
+  error — the model saw a misleading "not configured" message and could
+  not adapt (e.g. report the actual Flux failure).
+- **Fix:** the chain now propagates the LAST configured backend's typed
+  `Backend { backend, kind }` error (naming the backend); `Unavailable`
+  is reserved for "nothing resolved/configured" (construction-time tail
+  or empty ladder). `Cancelled` remains terminal at every layer.
+- **Verified by:** updated chain pin
+  (`chain_all_down_propagates_the_last_backend_error`) + clippy/workspace
+  gates at 9849541.
+
+## F-23: task_spawn failure result lacks a typed error_kind (P1 adversarial proof) — OPEN, structural
+
+- **Filed:** 2026-08-12, from the P1 adversarial live proof (finding F-P1-3,
+  LOW). `crates/nano-agent/src/tasks.rs:1352` routes spawn failure through
+  `TaskToolExecutor::error` with `error_kind: None`.
+- **Why still open:** attaching a kind is NOT a fix-slice change.
+  `NanoErrorKind` (`crates/nano-session/src/error_kind.rs`) is the closed,
+  serde-pinned journaled op vocabulary with no task-family variant; the
+  spawn-failure `TaskError`s (`FanOutCap`, `DepthLimit`, `WorkspaceCopy`,
+  `DriverUnavailable`) map to nothing existing without misusing kinds
+  (e.g. `FsIo` for `WorkspaceCopy` would be dishonest). Doing this right
+  needs a new variant added to the wire vocabulary.
+- **Close means:** a design/panel decision adds a task-family variant to
+  `NanoErrorKind` (serde-compatible vocabulary extension) and threads it
+  through the spawn-failure path.
