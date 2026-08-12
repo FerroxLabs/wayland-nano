@@ -147,6 +147,10 @@ pub struct TurnResult {
     pub tool_calls: u32,
     pub final_text: String,
     pub ops: Vec<OpEnvelope>,
+    /// Server-reported usage of the LAST model response in the turn (C11:
+    /// feeds the goal-level token accumulator and exec's turn_completed
+    /// event). Zero when no model call succeeded.
+    pub usage: nano_model::types::Usage,
 }
 
 pub struct TurnEngine<'a> {
@@ -346,7 +350,7 @@ impl<'a> TurnEngine<'a> {
         turn_id: &str,
         input: &str,
         cancel: Option<&std::sync::atomic::AtomicBool>,
-        sink: &mut dyn FnMut(&OpEnvelope) -> bool,
+        sink: &mut (dyn FnMut(&OpEnvelope) -> bool + Send),
     ) -> TurnResult {
         self.run_turn_inner(turn_id, input, Vec::new(), cancel, Some(sink))
             .await
@@ -361,7 +365,7 @@ impl<'a> TurnEngine<'a> {
         input: &str,
         prior: Vec<Message>,
         cancel: Option<&std::sync::atomic::AtomicBool>,
-        sink: &mut dyn FnMut(&OpEnvelope) -> bool,
+        sink: &mut (dyn FnMut(&OpEnvelope) -> bool + Send),
     ) -> TurnResult {
         self.run_turn_inner(turn_id, input, prior, cancel, Some(sink))
             .await
@@ -373,7 +377,7 @@ impl<'a> TurnEngine<'a> {
         input: &str,
         context: Vec<Message>,
         cancel: Option<&std::sync::atomic::AtomicBool>,
-        sink: Option<&mut dyn FnMut(&OpEnvelope) -> bool>,
+        sink: Option<&mut (dyn FnMut(&OpEnvelope) -> bool + Send)>,
     ) -> TurnResult {
         let mut ops: Vec<OpEnvelope> = Vec::new();
         let mut next_id = 0u32;
@@ -413,6 +417,7 @@ impl<'a> TurnEngine<'a> {
         let mut messages = context;
         messages.push(Message::user(input));
         let mut final_text = String::new();
+        let mut last_usage = nano_model::types::Usage::default();
         // C1 context management: server-anchored token accounting, the
         // consecutive-ineffective-compaction guard, and the one-shot reactive
         // overflow retry.
@@ -713,6 +718,7 @@ impl<'a> TurnEngine<'a> {
             // The server sample is authoritative (C1 §2): the LAST REQUEST's
             // input_tokens, covering the messages as they stood at the call.
             tokens.record_usage(&response.usage, messages.len());
+            last_usage = response.usage.clone();
 
             if matches!(state, TurnState::Understand | TurnState::Replan) {
                 transition(&mut state, &mut history, TurnState::Plan);
@@ -978,6 +984,7 @@ impl<'a> TurnEngine<'a> {
             tool_calls: budget_tracker.tool_calls_count(),
             final_text,
             ops,
+            usage: last_usage,
         }
     }
 }

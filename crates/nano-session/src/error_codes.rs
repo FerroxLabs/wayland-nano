@@ -245,6 +245,18 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
         ),
         NanoErrorKind::NoSession => response(-32602, false, "No session", "Call session/new first"),
         NanoErrorKind::InvalidParams => response(-32602, false, "Invalid request parameters", ""),
+        NanoErrorKind::SessionForkFailed => response(
+            -32603,
+            false,
+            "Session fork failed",
+            "Check the session id; retry when no turn is running",
+        ),
+        NanoErrorKind::GoalOpFailed => response(
+            -32603,
+            false,
+            "Goal operation failed",
+            "Check goal status, then retry",
+        ),
         // Unknown kinds classify TERMINAL in both clients and never retry
         // (design §2/D2 forward-compat rule).
         NanoErrorKind::Unknown => response(
@@ -297,6 +309,8 @@ pub const ALL_KINDS: &[NanoErrorKind] = &[
     NanoErrorKind::TurnInProgress,
     NanoErrorKind::NoSession,
     NanoErrorKind::InvalidParams,
+    NanoErrorKind::SessionForkFailed,
+    NanoErrorKind::GoalOpFailed,
 ];
 
 /// The static, provider-free presentation for one kind: title plus the
@@ -414,7 +428,7 @@ mod tests {
     /// adding one without a spec fails to compile (exhaustive match above).
     #[test]
     fn all_kinds_count_is_pinned() {
-        assert_eq!(ALL_KINDS.len(), 38);
+        assert_eq!(ALL_KINDS.len(), 40);
     }
 
     /// The drift alarm: the committed JSON artifact must be byte-identical

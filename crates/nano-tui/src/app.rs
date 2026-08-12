@@ -48,6 +48,7 @@ enum Pending {
     Compact,
     /// C9: a mid-turn session/steer enqueue; the ack carries the position.
     Steer,
+    Goal,
 }
 
 /// The open modal, if any.
@@ -392,6 +393,7 @@ impl App {
             Some(SlashCommand::Plan) => self.submit_plan(conn),
             Some(SlashCommand::Todo) => self.show_todos(),
             Some(SlashCommand::Compact) => self.submit_compact(conn),
+            Some(SlashCommand::Goal(action)) => self.submit_goal(conn, &action),
             Some(SlashCommand::Status) => {
                 self.transcript.push_note(&self.status.report());
                 // C1: /status doctor data comes from the short-lived
@@ -451,6 +453,32 @@ impl App {
     /// The host rejects it while a turn runs; the TUI blocks it early for a
     /// clearer note. Begin/complete surface as compaction session/update
     /// notices from the host.
+    /// `/goal` (C11): thin mirror over the `_wayland/goal/*` extension
+    /// methods — the lifecycle state machine lives engine-side.
+    fn submit_goal<C: Connection>(&mut self, conn: &mut C, action: &str) {
+        if !self.ready {
+            self.transcript
+                .push_note("not connected yet — wait for the session");
+            return;
+        }
+        let Some(session_id) = self.session_id.clone() else {
+            return;
+        };
+        let (method, params) = match action {
+            "status" | "pause" | "resume" | "cancel" => (
+                acp_client::goal_method(action),
+                acp_client::goal_params(&session_id, None),
+            ),
+            other => {
+                self.transcript.push_note(&format!(
+                    "unknown /goal action {other:?} (status|pause|resume|cancel)"
+                ));
+                return;
+            }
+        };
+        self.send_request(conn, &method, params, Pending::Goal);
+    }
+
     fn submit_compact<C: Connection>(&mut self, conn: &mut C) {
         if !self.ready {
             self.transcript
@@ -684,6 +712,7 @@ impl App {
                     self.requested_mode = None;
                 }
                 Pending::Compact => {}
+                Pending::Goal => {}
             }
             return;
         }
@@ -849,6 +878,14 @@ impl App {
                     self.transcript
                         .push_note("session/compact returned an unexpected result");
                 }
+            }
+            Pending::Goal => {
+                // Render the engine's answer compactly (status JSON or the
+                // transition ack).
+                self.transcript.push_note(&format!(
+                    "goal: {}",
+                    serde_json::to_string(&result).unwrap_or_default()
+                ));
             }
         }
     }

@@ -75,6 +75,13 @@ pub enum NanoErrorKind {
     TurnInProgress,
     NoSession,
     InvalidParams,
+    /// A `_wayland/session/fork` failure (C11): guard-busy, missing parent,
+    /// or journal I/O — the static presentation is the wire surface; the
+    /// detail stays logs-side.
+    SessionForkFailed,
+    /// A `_wayland/goal/*` failure (C11): transition rejection or journal
+    /// I/O — same static-presentation discipline.
+    GoalOpFailed,
     /// A kind written by a newer build (forward tolerance — deserialize
     /// only; never constructed by this build's mappers).
     #[serde(other)]

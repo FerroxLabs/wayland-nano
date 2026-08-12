@@ -14,6 +14,8 @@
 pub mod compact;
 pub mod error_codes;
 pub mod error_kind;
+pub mod fork;
+pub mod lock;
 pub mod op;
 pub mod reader;
 pub mod redaction;
@@ -21,11 +23,20 @@ pub mod replay;
 pub mod writer;
 
 pub use error_kind::NanoErrorKind;
-pub use op::{CompactionCancelReason, Op, OpEnvelope, SCHEMA_VERSION, TurnOutcome};
+pub use fork::{ForkError, ForkOutcome, ForkPoint, fork_journal};
+pub use lock::{FileLock, LockError};
+pub use op::{
+    CompactionCancelReason, GoalBudgets, GoalOutcome, GoalReason, GoalStatusKind,
+    MAX_GOAL_OBJECTIVE_LEN, MAX_GOAL_SUMMARY_LEN, Op, OpEnvelope, SCHEMA_VERSION, TurnOutcome,
+};
 pub use reader::{JournalReport, read_journal};
 pub use redaction::{RedactionError, SecretKind, scan_for_secrets};
-pub use replay::{CompactionPhase, SessionState};
+pub use replay::{CompactionPhase, GoalLive, ReplayError, SessionState};
 pub use writer::JournalWriter;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "fork_tests.rs"]
+mod fork_tests;

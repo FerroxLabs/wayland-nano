@@ -239,6 +239,7 @@ impl Harness {
                     limit_override: None,
                     reasoning_effort,
                     verbosity: None,
+                    cron_home: None,
                     sandbox_probe: &sandbox_probe,
                     journal_append_failer: None,
                     router: &router,

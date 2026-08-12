@@ -582,6 +582,7 @@ impl Host {
                     memory: &memory_config,
                     reasoning_effort: None,
                     verbosity: None,
+                    cron_home: None,
                 };
                 acp_mode::serve(
                     ChannelReader {

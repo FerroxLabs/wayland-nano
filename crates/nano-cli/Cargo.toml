@@ -19,8 +19,8 @@ name = "gen_error_table"
 path = "src/bin/gen_error_table.rs"
 
 [dependencies]
-dirs-next = "2"
 async-trait = "0.1"
+dirs-next = "2"
 nano-agent = { version = "0.1.0", path = "../nano-agent" }
 nano-core = { version = "0.1.0", path = "../nano-core" }
 nano-egress = { version = "0.1.0", path = "../nano-egress" }

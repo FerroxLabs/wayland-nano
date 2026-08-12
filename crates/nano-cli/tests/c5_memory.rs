@@ -215,6 +215,7 @@ impl Harness {
                     memory: &memory_config,
                     reasoning_effort: None,
                     verbosity: None,
+                    cron_home: None,
                     journal_append_failer: None,
                 };
                 acp_mode::serve(

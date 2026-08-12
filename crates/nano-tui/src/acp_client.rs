@@ -553,6 +553,19 @@ pub fn parse_steer_capability(result: &Value) -> bool {
         .is_some()
 }
 
+/// _wayland/goal/* (C11): the goal lifecycle mirror. The subcommand selects
+/// the extension method; `set` carries the objective.
+pub fn goal_method(action: &str) -> String {
+    format!("_wayland/goal/{action}")
+}
+
+pub fn goal_params(session_id: &str, objective: Option<&str>) -> Value {
+    match objective {
+        Some(objective) => json!({"sessionId": session_id, "objective": objective}),
+        None => json!({"sessionId": session_id}),
+    }
+}
+
 pub fn cancel_notification(session_id: &str) -> Value {
     json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": session_id}})
 }

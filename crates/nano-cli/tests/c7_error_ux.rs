@@ -262,8 +262,9 @@ impl Harness {
                 let router = nano_cli::provider_router::ProviderRouter::default();
                 ensure_test_flux_key();
                 let failer_closure = journal_failer.map(|flag| move || flag.load(Ordering::SeqCst));
-                let failer_ref: Option<&dyn Fn() -> bool> =
-                    failer_closure.as_ref().map(|f| f as &dyn Fn() -> bool);
+                let failer_ref: Option<&(dyn Fn() -> bool + Send + Sync)> = failer_closure
+                    .as_ref()
+                    .map(|f| f as &(dyn Fn() -> bool + Send + Sync));
                 let memory_config = acp_mode::MemoryHostConfig {
                     dir: sessions_dir_owned.parent().expect("root").join("memory"),
                     write_enabled: false,
@@ -283,6 +284,7 @@ impl Harness {
                     memory: &memory_config,
                     reasoning_effort: None,
                     verbosity: None,
+                    cron_home: None,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -701,6 +703,7 @@ fn real_executor_denial_maps_through() {
                 memory: &memory_config,
                 reasoning_effort: None,
                 verbosity: None,
+                cron_home: None,
             };
             let driver = MockDriver {
                 script: Arc::new(Mutex::new(
