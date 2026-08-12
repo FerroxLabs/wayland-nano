@@ -68,6 +68,69 @@ pub enum CompactionCancelReason {
     Unknown,
 }
 
+/// Goal lifecycle states (C11, kimi-minimal — Q7 RULED). `complete` is the
+/// only success terminal; a budget trip is `blocked` with a machine-readable
+/// reason, never a separate status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalStatusKind {
+    Active,
+    Paused,
+    Blocked,
+    Complete,
+    /// A status written by a newer build this one does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Bounded, machine-readable reasons for a goal transition (C11). Same rule
+/// as [`CompactionCancelReason`]: never free text — a reason field must never
+/// become a secondary persistence channel for content that failed a gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalReason {
+    /// No reason applies (e.g. activation, completion).
+    #[default]
+    Unspecified,
+    BudgetTokens,
+    BudgetTurns,
+    BudgetWallclock,
+    ModelDeclared,
+    Error,
+    Cancelled,
+    /// A reason written by a newer build this one does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Terminal goal outcomes journaled by `GoalEnd` (C11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalOutcome {
+    Complete,
+    Blocked,
+    /// An outcome written by a newer build this one does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Goal budget limits (C11, kimi `GoalBudgetLimits` shape): all optional,
+/// any combination. Enforcement lives in the goal driver (nano-agent).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalBudgets {
+    #[serde(default)]
+    pub token_budget: Option<u64>,
+    #[serde(default)]
+    pub turn_budget: Option<u64>,
+    #[serde(default)]
+    pub wall_clock_budget_ms: Option<u64>,
+}
+
+/// Cap on a goal objective (kimi `MAX_GOAL_OBJECTIVE_LENGTH`).
+pub const MAX_GOAL_OBJECTIVE_LEN: usize = 4000;
+/// Cap on a `goal_complete` summary, schema-validated like any other argument.
+pub const MAX_GOAL_SUMMARY_LEN: usize = 2000;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Op {
@@ -137,6 +200,65 @@ pub enum Op {
     ModeSet {
         /// The PermissionMode wire id ("read_only" | "default" | "full_auto").
         mode: String,
+    },
+    /// Fork lineage marker (C11): the second envelope of every forked child
+    /// journal, right after the child genesis `SessionBegin`. It opens the
+    /// imported region — the next `imported_ops` envelopes are the parent's
+    /// journal through the fork point, copied byte-verbatim. Replay folds the
+    /// imported region BY CLASS: context/turn-structure ops fold normally,
+    /// control ops (goal/cron) are suppressed from live state into an
+    /// audit-only namespace. A declared `imported_ops` count that overruns
+    /// the actual stream is a typed replay error (fail-closed).
+    ForkedFrom {
+        parent_session_id: String,
+        /// Id of the last imported parent envelope (the fork point).
+        parent_op_id: String,
+        /// The turn the fork was taken at (`None` = fork at end).
+        at_turn: Option<String>,
+        /// SHA-256 (hex) of the parent journal before and after the copy —
+        /// the byte-identical-parent proof, asserted equal by the fork.
+        parent_digest_before: String,
+        parent_digest_after: String,
+        /// Number of envelopes in the imported region that follows.
+        imported_ops: u64,
+    },
+    /// Goal activation (C11). One current goal per session; the writer side
+    /// rejects a second non-terminal goal and objectives over
+    /// [`MAX_GOAL_OBJECTIVE_LEN`].
+    GoalBegin {
+        goal_id: String,
+        objective: String,
+        budgets: GoalBudgets,
+    },
+    /// Every goal transition (C11). Reasons are the bounded [`GoalReason`]
+    /// enum, never free text.
+    GoalStatus {
+        goal_id: String,
+        status: GoalStatusKind,
+        #[serde(default)]
+        reason: GoalReason,
+    },
+    /// Goal terminal record (C11): `complete`, or terminal `blocked`.
+    GoalEnd {
+        goal_id: String,
+        outcome: GoalOutcome,
+    },
+    /// Cron fire reservation (C11 §5.4): journaled and flushed BEFORE any
+    /// prompt injection or model call — the durable act of firing. Keyed by
+    /// `occurrence_id` (`{job_id}:{scheduled_fire_time}` RFC3339 UTC, minute
+    /// resolution), stable across restarts/jitter/coalescing, so a durable
+    /// reservation can never double-fire. `mode_at_fire` records the capped
+    /// `min(session_mode, default)` derivation for after-the-fact audit.
+    CronFired {
+        job_id: String,
+        session_id: String,
+        turn_id: String,
+        occurrence_id: String,
+        /// Permission-mode wire id the fired turn ran under.
+        mode_at_fire: String,
+        /// Number of missed occurrences this fire coalesces (0 = on time).
+        #[serde(default)]
+        coalesced: u32,
     },
     /// Forward tolerance: any Op type this build does not know. Skipped on
     /// replay; the raw line stays in the journal for future readers.
