@@ -10,10 +10,12 @@
 //!   single production wire per the same WIRE-2 verdict.
 
 pub mod anthropic_messages;
+pub mod catalog_schema;
 pub mod flux_common;
 pub mod flux_completions;
 pub mod flux_models;
 pub mod flux_responses;
+pub mod provider_catalog;
 pub mod retry;
 pub mod sse;
 pub mod types;

@@ -21,11 +21,19 @@
 //!   context so the next prompt continues with full prior history. Tool
 //!   outputs stay digest-only (the journal never carries payloads), so
 //!   restored tool results are marked elided rather than fabricated.
-//! - session/new (and session/load) advertise the Flux model catalog in the
-//!   `models` block Desktop's picker consumes; session/set_model switches
-//!   the session's model (validated against the advertised catalog — an
-//!   unknown id is a typed error, never a silent no-op), and the next turn's
-//!   model request carries the chosen id.
+//! - session/new (and session/load) advertise the Flux model catalog PLUS
+//!   the validated WAYLAND_NANO_PROVIDERS payload's `<provider>:<model>`
+//!   namespaced ids in the `models` block Desktop's picker consumes (C8);
+//!   session/set_model switches the session's model (validated against the
+//!   advertised catalog — an unknown id is a typed error, never a silent
+//!   no-op — and re-resolves the provider credential: missing key → typed
+//!   provider_key_missing, expired injected bearer → retryable
+//!   oauth_expired, unproven arm → provider_unproven), and the next turn's
+//!   model request carries the chosen id's bare model segment.
+//! - C8 startup semantics (B2): acp-host starts iff AT LEAST ONE advertised
+//!   provider has a usable credential (Flux's three-source order, a payload
+//!   provider's env/file key, or an unexpired injected OAuth bearer); the
+//!   initial binding is deterministic (Flux first, else catalog order).
 //! - MCP is per-session: session/new (and session/load) register the
 //!   `mcpServers` param (Desktop-published connectors) plus NANO_MCP_SERVERS
 //!   (operator-supplied) into a FRESH registry — a session never inherits
@@ -39,9 +47,11 @@ use nano_agent::mcp::{McpRegistry, McpServerSpec, McpToolExecutor};
 use nano_agent::turn::{
     ApprovalDecision, ApprovalGate, ModelDriver, ToolExecutor, TurnEngine, TurnState,
 };
-use nano_agent::wiring::{FluxDriver, RealToolExecutor, v1_tool_definitions};
+use nano_agent::wiring::{ProviderDriver, RealToolExecutor, v1_tool_definitions};
 use nano_egress::client::EgressClient;
+use nano_model::anthropic_messages::AnthropicMessagesClient;
 use nano_model::flux_completions::FluxCompletionsClient;
+use nano_model::provider_catalog::WireKind;
 use nano_model::types::{ContentBlock, Message, Role, ToolCall};
 use nano_protocol::acp::{
     AvailableModel, JsonRpcNotification, JsonRpcResponse, agent_capabilities, agent_message_chunk,
@@ -135,13 +145,43 @@ fn is_fs_safe_session_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// Wall-clock seconds for bearer-expiry checks (§7).
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
-    let Some(api_key) = crate::flux_key::flux_api_key() else {
-        eprintln!(
-            "wayland-nano: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for acp-host mode"
-        );
+    let env_reader = |name: &str| std::env::var(name).ok();
+    let now = unix_now_secs();
+    // C8 §3: Flux's three-source order first (back-compat), then the
+    // validated payload providers (env > file > injected bearer).
+    let flux_key = crate::flux_key::flux_api_key();
+    let (router, payload_diag) = crate::provider_router::ProviderRouter::from_env();
+    if let Some(diag) = payload_diag {
+        // payload_invalid: diagnostic-only, never suppresses an otherwise
+        // usable Flux startup (codex r2) — and secret-free by construction.
+        eprintln!("wayland-nano: {diag}");
+    }
+    let credentialed = router.credentialed_providers(&env_reader, now);
+    // B2 startup semantics (replaces the Flux-only exit-2 gate): start iff
+    // AT LEAST ONE advertised provider has a usable credential. Per-provider
+    // credential failures NEVER abort startup — they surface at set_model /
+    // dispatch as typed errors.
+    if flux_key.is_none() && credentialed.is_empty() {
+        eprintln!("wayland-nano: {}", router.no_credential_message());
         return Ok(2);
-    };
+    }
+    // Egress stays deny-by-default: Flux's host plus exactly the hosts of
+    // providers that are BOTH advertised and credentialed at spawn (their
+    // base_urls come from the vendored catalog — the sole endpoint
+    // authority; the payload can never add a host).
+    let mut policy = nano_egress::policy::EgressPolicy::flux_only();
+    for provider in &credentialed {
+        policy = policy.allow_url(provider.spec.base_url);
+    }
 
     let reader = std::io::BufReader::new(std::io::stdin());
     let writer = std::io::stdout();
@@ -150,9 +190,13 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     // The model catalog the session advertises and validates set_model
     // against: live GET /v1/models once (cached in-process), vendored
     // fixture when offline/unkeyed. If BOTH fail, advertise only the default
-    // model — honest (it really runs) and keeps the host usable.
-    let catalog =
-        nano_model::flux_models::ModelCatalog::new(EgressClient::flux(), Some(api_key.clone()));
+    // model — honest (it really runs) and keeps the host usable. C8: when
+    // Flux is uncredentialed the catalog is fixture-only, and the payload
+    // providers' namespaced models join the advertisement below.
+    let catalog = nano_model::flux_models::ModelCatalog::new(
+        EgressClient::new(policy.clone()),
+        flux_key.clone(),
+    );
     // The resolved catalog doubles as the C1 context-window source
     // (`max_input_tokens` per model id; unknown models fall back to 128k).
     let (catalog_models, available): (
@@ -171,7 +215,8 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         ),
         Err(err) => {
             eprintln!(
-                "wayland-nano: model catalog unavailable ({err}); advertising the default model only"
+                "wayland-nano: model catalog unavailable ({}); advertising the default model only",
+                nano_egress::redact::sanitize_text(&err.to_string())
             );
             (
                 Vec::new(),
@@ -182,6 +227,18 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
             )
         }
     };
+    // C8 §5: the payload providers' namespaced models join the Flux catalog
+    // in the advertisement (Flux ids stay bare; `<provider>:<model>` per
+    // Q2, human-friendly display names).
+    let mut available = available;
+    available.extend(router.advertised_models());
+    // B2: the deterministic initial binding. Flux when its credential
+    // resolves (back-compat with every existing flow); otherwise the first
+    // credentialed provider in catalog-table order, bound to its first
+    // advertised model in payload order.
+    let default_model: String = router
+        .initial_model(flux_key.as_deref(), &env_reader, now)
+        .expect("B2 gate passed: a credentialed advertised provider exists");
     // C1 config overrides (env is the only config channel that exists).
     // Both are DOWNWARD-ONLY; a non-numeric value is a typed config error,
     // not a silent ignore.
@@ -199,17 +256,29 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
-    // NOTE(wiring.rs): FluxDriver carries no model — the model id is a
-    // per-turn TurnEngine input (model_name → ModelRequest.model), so model
-    // switching needs no driver change. If a future driver needs per-model
-    // client state, wiring.rs could grow a `FluxDriver::with_model` or a
-    // set_model affordance; until then per-prompt model_name is the least
-    // churn and keeps wiring.rs untouched.
-    let make_driver = move || {
-        FluxDriver::new(
-            FluxCompletionsClient::new(EgressClient::flux()),
-            api_key.clone(),
-        )
+    // NOTE(wiring.rs): drivers carry no model — the model id is a per-turn
+    // TurnEngine input (model_name → ModelRequest.model). C8: the turn's
+    // PROVIDER BINDING (catalog endpoint fields + resolved credential,
+    // memory-only) selects the wire client per prompt; set_model only
+    // changes the session's model id, and the binding is re-resolved per
+    // turn so credential/expiry changes are observed.
+    let driver_policy = policy.clone();
+    let make_driver = move |binding: &crate::provider_router::ProviderBinding| {
+        let egress = EgressClient::new(driver_policy.clone());
+        match binding.wire {
+            WireKind::OpenAiCompletions => ProviderDriver::openai(
+                FluxCompletionsClient::new(egress)
+                    .with_base_url(binding.base_url.clone())
+                    .with_api_path(binding.api_path.clone()),
+                binding.credential.secret().to_string(),
+            ),
+            WireKind::AnthropicMessages => ProviderDriver::anthropic(
+                AnthropicMessagesClient::new(egress)
+                    .with_base_url(binding.base_url.clone())
+                    .with_api_path(binding.api_path.clone()),
+                binding.credential.secret().to_string(),
+            ),
+        }
     };
     let make_tools = move |workspace: &std::path::Path,
                            mode: PermissionMode|
@@ -250,13 +319,14 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     let env_mcp_specs = crate::mcp_specs::mcp_specs_from_env();
     let config = ServeConfig {
         sessions_dir: &sessions,
-        default_model: "flux-auto",
+        default_model: &default_model,
         available_models: &available,
         env_mcp_specs: &env_mcp_specs,
         catalog: &catalog_models,
         window_override,
         limit_override,
         sandbox_probe: &sandbox_probe,
+        router: &router,
     };
     serve(reader, writer, &config, make_driver, make_tools).await
 }
@@ -318,15 +388,20 @@ pub struct ServeConfig<'a> {
     /// PER TURN at gate construction (never per approval). Production wires
     /// the platform probe; tests inject both answers.
     pub sandbox_probe: &'a dyn Fn() -> bool,
+    /// C8: the validated provider routing table (payload + catalog). Backs
+    /// set_model's typed errors and the per-turn binding re-resolution.
+    pub router: &'a crate::provider_router::ProviderRouter,
 }
 
 /// `make_driver`/`make_tools` build a fresh pair per prompt (tools are
-/// anchored to the session workspace). `make_tools` takes the turn's
-/// CAPTURED permission mode (C2: read_only builds the tightened profile)
-/// and returns the executor together with the EXACT filesystem policy the
-/// executor was built from — the approval gate's advisory containment check
-/// must run the same policy value, never a separately reconstructed
-/// nominally-equivalent one.
+/// anchored to the session workspace). `make_driver` takes the turn's
+/// freshly-resolved PROVIDER BINDING (C8: catalog endpoint + credential,
+/// re-resolved at every prompt so credential/expiry changes are observed).
+/// `make_tools` takes the turn's CAPTURED permission mode (C2: read_only
+/// builds the tightened profile) and returns the executor together with the
+/// EXACT filesystem policy the executor was built from — the approval
+/// gate's advisory containment check must run the same policy value, never
+/// a separately reconstructed nominally-equivalent one.
 pub async fn serve<R, W, FD, FT, D, T>(
     reader: R,
     writer: W,
@@ -337,7 +412,7 @@ pub async fn serve<R, W, FD, FT, D, T>(
 where
     R: BufRead + Send + 'static,
     W: Write + Send,
-    FD: Fn() -> D,
+    FD: Fn(&crate::provider_router::ProviderBinding) -> D,
     FT: Fn(
         &std::path::Path,
         PermissionMode,
@@ -414,7 +489,7 @@ where
                                 &JsonRpcResponse::err(
                                     id,
                                     -32602,
-                                    "wayland-nano uses FLUX_API_KEY from the environment; no interactive auth",
+                                    "wayland-nano takes provider credentials from the environment (injected by the spawning host); no interactive auth",
                                 ),
                             )?;
                         }
@@ -648,6 +723,8 @@ where
                             // Fail closed: only ids from the advertised catalog
                             // are routable; anything else is a typed error
                             // (Desktop greps the message for model_not_found).
+                            // C8: the advertised set is Flux bare ids PLUS the
+                            // payload's `<provider>:<model>` namespaced ids.
                             if !config.available_models.iter().any(|m| m.id == model_id) {
                                 write_out(
                                     &out,
@@ -659,6 +736,23 @@ where
                                         ),
                                     ),
                                 )?;
+                                continue;
+                            }
+                            // C8 §5: parse the namespace → catalog row →
+                            // live-proof gate → RE-RESOLVE the credential
+                            // (never the advisory hasKey): a mid-session
+                            // switch to a provider whose key was not injected
+                            // fails closed with a typed error, an expired
+                            // bearer with retryable oauth_expired + respawn
+                            // hint. Resolution registers the secret with the
+                            // sanitization boundary (§8/B4).
+                            let env_reader = |name: &str| std::env::var(name).ok();
+                            if let Err(err) = config.router.resolve_binding(
+                                model_id,
+                                &env_reader,
+                                unix_now_secs(),
+                            ) {
+                                write_out(&out, &err.acp_response(id))?;
                                 continue;
                             }
                             active.model = model_id.to_string();
@@ -828,7 +922,7 @@ where
                                     continue;
                                 }
                             };
-                            prompt_id = Some(id);
+                            prompt_id = Some(id.clone());
                             turn_session = active.id.clone();
                             let session_id = active.id.clone();
                             let workspace = active.workspace.clone();
@@ -836,8 +930,29 @@ where
                             // The session's current model (set via
                             // session/set_model) is captured NOW: the whole
                             // turn runs on it, and a later switch only takes
-                            // effect on the next prompt.
+                            // effect on the next prompt. C8: resolve the
+                            // provider binding (credential re-resolution +
+                            // bearer freshness) BEFORE the turn starts — a
+                            // vanished key or an expired bearer fails the
+                            // prompt with the typed error, never a
+                            // half-authed turn.
                             let turn_model = active.model.clone();
+                            let env_reader = |name: &str| std::env::var(name).ok();
+                            let binding = match config.router.resolve_binding(
+                                &turn_model,
+                                &env_reader,
+                                unix_now_secs(),
+                            ) {
+                                Ok(binding) => binding,
+                                Err(err) => {
+                                    write_out(&out, &err.acp_response(id))?;
+                                    continue;
+                                }
+                            };
+                            if let Err(err) = binding.check_fresh(unix_now_secs()) {
+                                write_out(&out, &err.acp_response(id))?;
+                                continue;
+                            }
                             // The session's MCP registry: the turn executor
                             // routes mcp__ calls through it (and advertises
                             // its tools to the model) without taking ownership.
@@ -860,7 +975,11 @@ where
                             let make_driver = &make_driver;
                             let make_tools = &make_tools;
                             let turn_future = async move {
-                                let driver = make_driver();
+                                // The binding's bare model id goes on the
+                                // wire (the namespace is a Nano-side routing
+                                // concern, never sent to the provider).
+                                let turn_model = binding.model.clone();
+                                let driver = make_driver(&binding);
                                 // The executor AND its exact policy: the
                                 // gate's advisory containment check runs this
                                 // same policy value (shared provenance), and
@@ -1017,8 +1136,24 @@ where
                                     .changed_files
                                     .into_iter()
                                     .collect();
-                            let driver = make_driver();
-                            let model_name = active.model.clone();
+                            // C8: compaction runs on the session's bound
+                            // provider too — re-resolve the binding (typed
+                            // error on a vanished credential, never a
+                            // fallback onto another provider).
+                            let env_reader = |name: &str| std::env::var(name).ok();
+                            let binding = match config.router.resolve_binding(
+                                &active.model,
+                                &env_reader,
+                                unix_now_secs(),
+                            ) {
+                                Ok(binding) => binding,
+                                Err(err) => {
+                                    write_out(&out, &err.acp_response(id))?;
+                                    continue;
+                                }
+                            };
+                            let driver = make_driver(&binding);
+                            let model_name = binding.model.clone();
                             let session_id = active.id.clone();
                             let mut context = std::mem::take(&mut active.context);
                             let mut op_sequence = 0u32;

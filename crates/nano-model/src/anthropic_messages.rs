@@ -64,6 +64,7 @@ pub const METADATA_CACHE_CONTROL: &str = "anthropic.cache_control";
 pub struct AnthropicMessagesClient {
     egress: EgressClient,
     base_url: String,
+    messages_path: String,
     retry: RetryPolicy,
 }
 
@@ -72,6 +73,7 @@ impl AnthropicMessagesClient {
         Self {
             egress,
             base_url: FLUX_BASE.to_string(),
+            messages_path: MESSAGES_PATH.to_string(),
             retry: RetryPolicy::default(),
         }
     }
@@ -81,8 +83,24 @@ impl AnthropicMessagesClient {
         self
     }
 
-    fn endpoint(&self, path: &str) -> String {
-        format!("{}{}", self.base_url.trim_end_matches('/'), path)
+    /// Override the messages path (C8: the vendored catalog's `api_path`;
+    /// e.g. `/v1/messages` for api.anthropic.com — the Flux-compat default
+    /// is `/anthropic/v1/messages`). count_tokens rides the same prefix.
+    pub fn with_api_path(mut self, api_path: impl Into<String>) -> Self {
+        self.messages_path = api_path.into();
+        self
+    }
+
+    fn messages_endpoint(&self) -> String {
+        format!(
+            "{}{}",
+            self.base_url.trim_end_matches('/'),
+            self.messages_path
+        )
+    }
+
+    fn count_tokens_endpoint(&self) -> String {
+        format!("{}/count_tokens", self.messages_endpoint())
     }
 
     pub async fn complete(
@@ -95,7 +113,7 @@ impl AnthropicMessagesClient {
         loop {
             let builder = self
                 .egress
-                .request(reqwest::Method::POST, &self.endpoint(MESSAGES_PATH))?
+                .request(reqwest::Method::POST, &self.messages_endpoint())?
                 .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01")
                 .json(&body);
@@ -146,7 +164,7 @@ impl AnthropicMessagesClient {
         loop {
             let builder = self
                 .egress
-                .request(reqwest::Method::POST, &self.endpoint(COUNT_TOKENS_PATH))?
+                .request(reqwest::Method::POST, &self.count_tokens_endpoint())?
                 .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01")
                 .json(&body);

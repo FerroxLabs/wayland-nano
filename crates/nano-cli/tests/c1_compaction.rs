@@ -228,6 +228,8 @@ impl Harness {
                 }];
                 // C2: default-mode tests never consult the sandbox probe.
                 let sandbox_probe = || true;
+                let router = nano_cli::provider_router::ProviderRouter::default();
+                ensure_test_flux_key();
                 let config = acp_mode::ServeConfig {
                     sessions_dir: &sessions_dir,
                     default_model: "mock",
@@ -237,6 +239,7 @@ impl Harness {
                     window_override: Some(1_000),
                     limit_override: None,
                     sandbox_probe: &sandbox_probe,
+                    router: &router,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -249,7 +252,7 @@ impl Harness {
                         buf: Vec::new(),
                     },
                     &config,
-                    move || driver.clone(),
+                    move |_| driver.clone(),
                     move |_, _| {
                         (
                             MockTools::default(),
@@ -889,4 +892,17 @@ fn canary_summary_on_manual_compact_fails_closed() {
         last.messages.iter().any(|m| m.role == Role::Assistant),
         "original history retained: {last:?}"
     );
+}
+
+/// C8: prompt and set_model RE-RESOLVE the session credential per turn.
+/// The scripted driver never reaches the network, but the resolution needs
+/// SOME flux credential in the process env (set once, never removed; every
+/// harness in this file shares it).
+fn ensure_test_flux_key() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if std::env::var("FLUX_API_KEY").is_err() {
+            unsafe { std::env::set_var("FLUX_API_KEY", "sk-test-harness-never-networked") };
+        }
+    });
 }

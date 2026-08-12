@@ -65,6 +65,54 @@ impl ModelDriver for FluxDriver {
     }
 }
 
+/// One of the C8 provider wire surfaces (§4): the generalized OpenAI
+/// chat-completions client (Flux is the `base_url = FLUX_BASE` special
+/// case) or the Anthropic-native messages client. base_url + api_path come
+/// from the vendored catalog row — the sole endpoint authority.
+#[derive(Debug)]
+enum ProviderClient {
+    OpenAi(FluxCompletionsClient),
+    Anthropic(AnthropicMessagesClient),
+}
+
+/// ModelDriver for a session's provider binding (C8 §5): the wire client
+/// is constructed from the binding's catalog row; the credential (API key
+/// or injected OAuth bearer) is presented per call exactly like FluxDriver
+/// presents the Flux key.
+#[derive(Debug)]
+pub struct ProviderDriver {
+    client: ProviderClient,
+    credential: String,
+}
+
+impl ProviderDriver {
+    /// OpenAI chat-completions surface (flux-router and the compat set).
+    pub fn openai(client: FluxCompletionsClient, credential: impl Into<String>) -> Self {
+        Self {
+            client: ProviderClient::OpenAi(client),
+            credential: credential.into(),
+        }
+    }
+
+    /// Anthropic-native messages surface (the `anthropic` provider arm).
+    pub fn anthropic(client: AnthropicMessagesClient, credential: impl Into<String>) -> Self {
+        Self {
+            client: ProviderClient::Anthropic(client),
+            credential: credential.into(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelDriver for ProviderDriver {
+    async fn complete(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError> {
+        match &self.client {
+            ProviderClient::OpenAi(client) => client.complete(request, &self.credential).await,
+            ProviderClient::Anthropic(client) => client.complete(request, &self.credential).await,
+        }
+    }
+}
+
 /// The v1 tool surface advertised to the model.
 pub fn v1_tool_definitions() -> Vec<ToolDefinition> {
     vec![
