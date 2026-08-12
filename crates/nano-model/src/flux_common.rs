@@ -10,14 +10,31 @@
 //! bodies were not separately probed (same LiteLLM proxy — flagged gap, not
 //! a blocker), so all adapters share this single classification path.
 
-use crate::types::ModelError;
+use crate::types::{ModelError, TransportPhase};
 
 pub const FLUX_BASE: &str = "https://api.fluxrouter.ai";
 
-/// Map a reqwest transport failure through the single redaction path
-/// (nano-egress strips userinfo/query — fail-closed).
-pub fn classify_transport(err: reqwest::Error) -> ModelError {
-    ModelError::Transport(nano_egress::client::sanitize_transport_error(&err))
+/// Map a reqwest transport failure to a typed TransportPhase (C9):
+/// reqwest's typed accessors + whether the adapter has observed any
+/// response byte — never string inspection. `is_connect()` covers TCP
+/// connect AND TLS handshake failures (reqwest's public taxonomy folds the
+/// handshake into the connect class; the retry classes are identical, so no
+/// behavior diverges). A `send()`-phase failure that is not connect means
+/// the request went out but no response byte arrived: `BeforeFirstByte`.
+/// Failures while reading the body are `MidStream`. Message text still
+/// passes through the single nano-egress redaction path (fail-closed).
+pub fn classify_transport(err: reqwest::Error, response_started: bool) -> ModelError {
+    let phase = if err.is_connect() {
+        TransportPhase::Connect
+    } else if response_started {
+        TransportPhase::MidStream
+    } else {
+        TransportPhase::BeforeFirstByte
+    };
+    ModelError::Transport {
+        phase,
+        message: nano_egress::client::sanitize_transport_error(&err),
+    }
 }
 
 pub async fn read_error_body(response: reqwest::Response) -> String {
@@ -35,13 +52,21 @@ pub fn classify_status(status: u16, body: String) -> ModelError {
         .to_string();
     let error_type = error.and_then(|e| e.get("type")).and_then(|t| t.as_str());
     match status {
-        401 | 403 => ModelError::Auth(message),
+        // Typed HTTP-status provenance (C9): the 401 recovery seam retries
+        // exactly Some(401); 403 and every other auth failure never retry.
+        401 | 403 => ModelError::Auth {
+            message,
+            status: Some(status),
+        },
         // Live wire (batch-3 badkey fixture): an invalid key arrives as
         // HTTP 500 with error.type=="auth_error", NOT 401. The embedded
         // message carries `key=<sha256-of-presented-key>` — a digest, not
         // the key itself, matching this crate's hashed-digest convention —
         // so carrying it in ModelError::Auth logs is acceptable.
-        500 if error_type == Some("auth_error") => ModelError::Auth(message),
+        500 if error_type == Some("auth_error") => ModelError::Auth {
+            message,
+            status: Some(500),
+        },
         402 => ModelError::Entitlement(message),
         // Kept for spec compliance; live Flux never sends 429 (burst load
         // saturates the edge with bare 503 nginx HTML, no Retry-After).

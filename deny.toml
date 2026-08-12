@@ -14,6 +14,9 @@ allow = [
     "CC0-1.0",
     # foldhash (via hashbrown 0.16, via ratatui) — OSI-approved permissive
     "Zlib",
+    # borrow-or-share (via fluent-uri/referencing, via jsonschema — C9's
+    # named structured-output validator) — OSI-approved, no-attribution MIT
+    "MIT-0",
 ]
 
 [bans]

@@ -125,7 +125,13 @@ fn request_body_uses_completions_shape() {
 #[test]
 fn error_classification_maps_flux_shapes() {
     let auth = classify_status(401, r#"{"error":{"message":"bad key"}}"#.into());
-    assert!(matches!(auth, ModelError::Auth(_)));
+    assert!(matches!(
+        auth,
+        ModelError::Auth {
+            status: Some(401),
+            ..
+        }
+    ));
     let entitlement = classify_status(402, r#"{"error":{"message":"upgrade required"}}"#.into());
     assert!(matches!(entitlement, ModelError::Entitlement(_)));
     let server = classify_status(503, r#"{"error":{"message":"upstream down"}}"#.into());
@@ -139,9 +145,11 @@ fn batch3_badkey_500_auth_error_classifies_as_auth_not_retryable() {
     let path = newest_file("errors", "_cc_badkey_response.json");
     let body = std::fs::read_to_string(&path).unwrap();
     let err = classify_status(500, body);
-    let ModelError::Auth(message) = &err else {
+    let ModelError::Auth { message, status } = &err else {
         panic!("500 auth_error must classify as Auth: {err:?}");
     };
+    // A 500-classified auth failure is NOT the 401 seam's concern.
+    assert_eq!(*status, Some(500));
     // The message carries only the SHA-256 digest of the presented key
     // (`key=<64 hex chars>`), never the key itself.
     assert!(message.contains("auth") || message.contains("Authentication"));
@@ -241,7 +249,6 @@ fn responses_sse_stream_assembles_lifecycle() {
     let path = newest_file("streaming", "_rs_sse.txt");
     let text = std::fs::read_to_string(&path).unwrap();
     let response = parse_sse_responses_stream(&text).expect("parse stream");
-
     let reasoning: String = response
         .events
         .iter()
@@ -561,5 +568,39 @@ fn count_tokens_request_body_has_no_max_tokens() {
         500,
         r#"{"error":{"message":"x","type":"auth_error"}}"#.into(),
     );
-    assert!(matches!(err, ModelError::Auth(_)));
+    assert!(matches!(
+        err,
+        ModelError::Auth {
+            status: Some(500),
+            ..
+        }
+    ));
+}
+
+/// C9 §5: a rate-limit payload riding a Responses stream frame is parsed
+/// MID-STREAM into the observation channel — the dedicated typed path,
+/// never a ModelEvent.
+#[test]
+fn responses_stream_rate_limit_frame_emits_mid_stream_observation() {
+    let text = concat!(
+        "data: {\"type\": \"response.rate_limits\", \"rate_limits\": {\"scope\": \"account\", \"tokens_limit\": 100000, \"tokens_remaining\": 99500}}\n\n",
+        "data: {\"type\": \"response.output_text.delta\", \"delta\": \"hi\"}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let mut observed = Vec::new();
+    let response =
+        crate::flux_responses::parse_sse_responses_stream_observed(text, &mut |snapshot| {
+            observed.push(snapshot);
+        })
+        .expect("parse stream");
+    assert_eq!(observed.len(), 1);
+    assert_eq!(observed[0].scope.as_deref(), Some("account"));
+    assert_eq!(observed[0].tokens_limit, Some(100_000));
+    // The stream itself is unaffected (no ModelEvent pollution).
+    assert!(
+        response
+            .events
+            .iter()
+            .any(|e| matches!(e, ModelEvent::TextDelta(t) if t == "hi"))
+    );
 }
