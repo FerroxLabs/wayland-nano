@@ -129,10 +129,11 @@ impl<'a> McpToolExecutor<'a> {
     }
 }
 
+#[async_trait::async_trait]
 impl ToolExecutor for McpToolExecutor<'_> {
-    fn execute(&self, call: &ToolCall) -> ToolOutcome {
+    async fn execute(&self, call: &ToolCall) -> ToolOutcome {
         if !call.name.starts_with("mcp__") {
-            return self.inner.execute(call);
+            return self.inner.execute(call).await;
         }
         let mut registry = self.registry.lock().unwrap();
         let Some(index) = registry
@@ -205,8 +206,8 @@ mod integration_tests {
     use crate::loop_protection::ProgressSignals;
     use crate::turn::ToolExecutor;
 
-    #[test]
-    fn executor_routes_namespaced_call_to_server() {
+    #[tokio::test]
+    async fn executor_routes_namespaced_call_to_server() {
         // Full round-trip through a real stdio fake server (powershell on
         // Windows, sh on unix — same JSON-RPC line protocol both ways).
         #[cfg(windows)]
@@ -265,8 +266,9 @@ done
 
         #[derive(Debug)]
         struct Noop;
+        #[async_trait::async_trait]
         impl ToolExecutor for Noop {
-            fn execute(&self, _call: &ToolCall) -> crate::turn::ToolOutcome {
+            async fn execute(&self, _call: &ToolCall) -> crate::turn::ToolOutcome {
                 crate::turn::ToolOutcome {
                     ok: false,
                     output: "should not route here".into(),
@@ -275,11 +277,13 @@ done
             }
         }
         let executor = McpToolExecutor::new(registry, &Noop);
-        let outcome = executor.execute(&ToolCall {
-            id: "c1".into(),
-            name: "mcp__fake__echo".into(),
-            arguments: serde_json::json!({"text": "ping"}),
-        });
+        let outcome = executor
+            .execute(&ToolCall {
+                id: "c1".into(),
+                name: "mcp__fake__echo".into(),
+                arguments: serde_json::json!({"text": "ping"}),
+            })
+            .await;
         assert!(outcome.ok, "mcp call must succeed: {}", outcome.output);
         assert!(outcome.output.contains("pong"));
     }

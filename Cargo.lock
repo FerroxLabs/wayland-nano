@@ -1202,6 +1202,7 @@ name = "nano-agent"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures-util",
  "nano-core",
  "nano-egress",
  "nano-mcp",
@@ -1254,6 +1255,8 @@ dependencies = [
 name = "nano-egress"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "futures-util",
  "pretty_assertions",
  "reqwest",
  "sha2",
@@ -1363,11 +1366,14 @@ dependencies = [
  "dunce",
  "globset",
  "nano-core",
+ "nano-egress",
  "nano-sandbox",
  "pretty_assertions",
  "regex",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]

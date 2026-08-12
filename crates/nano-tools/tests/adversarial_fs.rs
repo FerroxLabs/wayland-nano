@@ -299,10 +299,10 @@ fn read_through_hard_link_into_denied_dir_documents_alias_transparency() {
     std::fs::hard_link(&target, &link).expect("hard link needs no privilege");
 
     let tools = FsTools::new(deny_read_policy(&outside), &ws);
-    let (content, _) = tools
+    let page = tools
         .read_file(&link, &ReadBounds::default())
         .expect("documented limitation: policy layer is alias-transparent for hard links");
-    assert_eq!(content, "nano-outside-secret");
+    assert_eq!(page.content, "nano-outside-secret");
 }
 
 /// `DOMAIN\user` for icacls ACEs.

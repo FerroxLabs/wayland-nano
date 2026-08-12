@@ -304,6 +304,7 @@ fn tool_kind(name: &str) -> &'static str {
         n if n.starts_with("fs_edit") || n.starts_with("fs_write") => "edit",
         n if n.starts_with("shell") => "execute",
         n if n.starts_with("search") || n.starts_with("glob") => "search",
+        n if n.starts_with("web_fetch") => "fetch",
         _ => "other",
     }
 }
@@ -397,6 +398,35 @@ mod tests {
         let json = serde_json::to_value(&tool).unwrap();
         assert_eq!(json["params"]["update"]["kind"], "execute");
         assert_eq!(json["params"]["update"]["status"], "in_progress");
+
+        let fetch = tool_call_update(
+            "s1",
+            "c2",
+            "web_fetch",
+            &serde_json::json!({"url":"https://example.com/"}),
+        );
+        let json = serde_json::to_value(&fetch).unwrap();
+        assert_eq!(json["params"]["update"]["kind"], "fetch");
+    }
+
+    /// Cross-cutting C3/C4: a full-size fs_read page (100 KB) and a
+    /// full-size web_fetch body (64 KB) ride `tool_call_done`'s rawOutput
+    /// through the frame codec (serde JSON / NDJSON) without corruption.
+    /// The global engine-side ceiling is tracked separately
+    /// (docs/FOLLOWUPS.md F-1).
+    #[test]
+    fn full_size_tool_results_round_trip_through_the_codec() {
+        let page = "line content\n".repeat(8 * 1024); // ~106 KB, C3 page-sized
+        let body = "x".repeat(64 * 1024); // C4 body cap
+        for output in [&page, &body] {
+            let frame = tool_call_done("s1", "c1", true, output);
+            let line = serde_json::to_string(&frame).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(
+                parsed["params"]["update"]["rawOutput"].as_str().unwrap(),
+                output,
+            );
+        }
     }
 
     #[test]

@@ -138,8 +138,9 @@ struct MockTools {
     calls: Arc<Mutex<Vec<ToolCall>>>,
 }
 
+#[async_trait::async_trait]
 impl ToolExecutor for MockTools {
-    fn execute(&self, call: &ToolCall) -> ToolOutcome {
+    async fn execute(&self, call: &ToolCall) -> ToolOutcome {
         self.calls.lock().unwrap().push(call.clone());
         ToolOutcome {
             ok: true,

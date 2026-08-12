@@ -121,8 +121,9 @@ impl ModelDriver for MockDriver {
 #[derive(Debug, Clone, Default)]
 struct MockTools;
 
+#[async_trait::async_trait]
 impl ToolExecutor for MockTools {
-    fn execute(&self, call: &ToolCall) -> ToolOutcome {
+    async fn execute(&self, call: &ToolCall) -> ToolOutcome {
         ToolOutcome {
             ok: true,
             output: format!("ran {}", call.name),

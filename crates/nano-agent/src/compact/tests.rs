@@ -101,8 +101,9 @@ fn call(id: &str, name: &str) -> ToolCall {
 #[derive(Debug)]
 struct OkTools;
 
+#[async_trait::async_trait]
 impl ToolExecutor for OkTools {
-    fn execute(&self, call: &ToolCall) -> crate::turn::ToolOutcome {
+    async fn execute(&self, call: &ToolCall) -> crate::turn::ToolOutcome {
         crate::turn::ToolOutcome {
             ok: true,
             output: format!("ran {}", call.name),

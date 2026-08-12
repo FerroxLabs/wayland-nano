@@ -19,5 +19,6 @@ thiserror = "2"
 [dev-dependencies]
 nano-core = { version = "0.1.0", path = "../nano-core" }
 nano-egress = { version = "0.1.0", path = "../nano-egress" }
+futures-util = "0.3"
 tempfile = "3"
 pretty_assertions = "1"

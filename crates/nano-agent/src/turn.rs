@@ -21,8 +21,12 @@ pub trait ModelDriver: Debug + Send + Sync {
 }
 
 /// One tool invocation the engine can perform (fs/shell/etc. register here).
+/// Async (C3/C4 Q1, Option A — mirrors the ModelDriver precedent above):
+/// web_fetch awaits the egress pipeline; fs/shell arms stay synchronous
+/// internally. No ambient-runtime bridge.
+#[async_trait::async_trait]
 pub trait ToolExecutor: Debug + Send + Sync {
-    fn execute(&self, call: &ToolCall) -> ToolOutcome;
+    async fn execute(&self, call: &ToolCall) -> ToolOutcome;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -493,7 +497,7 @@ impl<'a> TurnEngine<'a> {
                         args: call.arguments.clone(),
                     },
                 );
-                let outcome = self.tools.execute(call);
+                let outcome = self.tools.execute(call).await;
                 step_progress.files_changed |= outcome.progress.files_changed;
                 step_progress.process_outcome_changed |= outcome.progress.process_outcome_changed;
                 step_progress.new_information |= outcome.progress.new_information;

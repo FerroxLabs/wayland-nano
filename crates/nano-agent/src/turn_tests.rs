@@ -71,8 +71,9 @@ mod tests {
         pub progress: ProgressSignals,
     }
 
+    #[async_trait::async_trait]
     impl ToolExecutor for RecordingTools {
-        fn execute(&self, call: &ToolCall) -> crate::turn::ToolOutcome {
+        async fn execute(&self, call: &ToolCall) -> crate::turn::ToolOutcome {
             self.calls.lock().unwrap().push(call.clone());
             crate::turn::ToolOutcome {
                 ok: true,

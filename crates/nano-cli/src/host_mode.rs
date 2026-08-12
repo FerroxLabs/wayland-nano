@@ -38,7 +38,12 @@ pub async fn run(
         nano_core::permissions::PermissionProfile::workspace_write().file_system_sandbox_policy();
     let fs = FsTools::new(policy, workspace);
     let shell = ShellTool::new(nano_home, workspace);
-    let executor = RealToolExecutor::new(fs, shell, workspace);
+    let mut executor = RealToolExecutor::new(fs, shell, workspace);
+    // C4: web_fetch is inert (typed denial) unless NANO_WEB_FETCH_HOSTS
+    // configures the second egress policy domain.
+    if let Some(fetch) = nano_cli::fetch_specs::web_fetch_tool_from_env() {
+        executor = executor.with_web_fetch(fetch);
+    }
     let driver = FluxDriver::new(FluxCompletionsClient::new(EgressClient::flux()), api_key);
     let approve_all = nano_agent::turn::ApproveAll;
 

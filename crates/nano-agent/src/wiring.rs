@@ -6,8 +6,9 @@ use nano_model::anthropic_messages::AnthropicMessagesClient;
 use nano_model::flux_completions::FluxCompletionsClient;
 use nano_model::flux_responses::FluxResponsesClient;
 use nano_model::types::{ModelError, ModelRequest, ModelResponse, ToolCall, ToolDefinition};
-use nano_tools::fs::{FsTools, ReadBounds};
+use nano_tools::fs::{FileToken, FsTools, PageCursor, ReadBounds, ReadPage};
 use nano_tools::shell::{ShellKind, ShellTool};
+use nano_tools::web::{FetchArgs, WebFetchTool, render_fetch_output};
 
 /// One of the three Flux wire surfaces. Completions is the production wire;
 /// Responses and Anthropic Messages are selectable compat surfaces (per
@@ -69,14 +70,16 @@ pub fn v1_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "fs_read".into(),
-            description: "Read a file (bounded). Args: path, optional line_offset, max_lines."
+            description: "Read a file in bounded pages. line_offset is 0-BASED; truncated results end with a footer carrying the next cursor (line_offset, or byte_offset_in_line for a hard-cut oversized line) and an advisory file_token. Args: path, optional line_offset, max_lines (clamped to [1,2000]), file_token, byte_offset_in_line."
                 .into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
                     "line_offset": {"type": "integer"},
-                    "max_lines": {"type": "integer"}
+                    "max_lines": {"type": "integer"},
+                    "file_token": {"type": "string"},
+                    "byte_offset_in_line": {"type": "integer"}
                 },
                 "required": ["path"]
             }),
@@ -120,6 +123,20 @@ pub fn v1_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["command"]
             }),
         },
+        ToolDefinition {
+            name: "web_fetch".into(),
+            description: "Fetch a URL (GET only) through the deny-by-default egress policy (a SECOND policy domain, separate from the model API allowlist; https only). Args: url, optional max_bytes (clamped to [1,65536], default 32768), timeout_ms (clamped to [1000,30000], default 15000). The body is RAW untrusted remote content — no extraction — capped at max_bytes with a marked truncation footer."
+                .into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "max_bytes": {"type": "integer"},
+                    "timeout_ms": {"type": "integer"}
+                },
+                "required": ["url"]
+            }),
+        },
     ]
 }
 
@@ -129,6 +146,9 @@ pub struct RealToolExecutor {
     fs: FsTools,
     shell: ShellTool,
     workspace: std::path::PathBuf,
+    /// web_fetch (C4): None = no fetch hosts configured = the tool denies
+    /// everything (deny-by-default for the second egress policy domain).
+    web_fetch: Option<WebFetchTool>,
     /// Dedup state for honest progress signals: re-reading identical content
     /// or re-running an identical command with identical output is NOT new
     /// information (the no-progress detector depends on this truth).
@@ -141,8 +161,16 @@ impl RealToolExecutor {
             fs,
             shell,
             workspace: workspace.to_path_buf(),
+            web_fetch: None,
             seen: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Attach the web_fetch tool with its own (second-domain) egress client
+    /// built from configured fetch hosts.
+    pub fn with_web_fetch(mut self, tool: WebFetchTool) -> Self {
+        self.web_fetch = Some(tool);
+        self
     }
 
     /// Returns true when this (kind:key) content digest was NOT seen before.
@@ -167,43 +195,155 @@ impl RealToolExecutor {
             self.workspace.join(path)
         }
     }
+
+    /// Non-negative integer arg: negative or non-integer is a TYPED error,
+    /// never silently ignored (C3 §2.4).
+    fn arg_u64(call: &ToolCall, key: &str) -> Result<Option<u64>, String> {
+        match call.arguments.get(key) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(v) => v
+                .as_u64()
+                .map(Some)
+                .ok_or_else(|| format!("{key} must be a non-negative integer")),
+        }
+    }
+
+    fn arg_error(message: impl Into<String>) -> ToolOutcome {
+        ToolOutcome {
+            ok: false,
+            output: message.into(),
+            progress: ProgressSignals::default(),
+        }
+    }
 }
 
+/// Render one fs_read page: content plus the structured footer (C3 §2.3).
+/// The `…[truncated]` / `…[eof:` prefix convention is preserved so consumers
+/// pattern-matching on the legacy marker keep working. No footer when the
+/// page is not truncated (byte-identical to pre-C3 output).
+fn render_read_output(line_offset: usize, max_lines: usize, page: &ReadPage) -> String {
+    let token = page.file_token;
+    match page.cursor {
+        PageCursor::Eof { total_lines } => {
+            if page.content.is_empty() && line_offset > 0 && line_offset >= total_lines {
+                // Typed out-of-range: real total, never a fabricated page.
+                format!(
+                    "…[eof: line_offset {line_offset} >= total_lines {total_lines}; file_token={token}]"
+                )
+            } else {
+                page.content.clone()
+            }
+        }
+        PageCursor::Lines { next_line_offset } => {
+            let last = next_line_offset.saturating_sub(1);
+            let total_lines = page
+                .total_lines
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "unknown".into());
+            format!(
+                "{}\n…[truncated: showing lines {line_offset}-{last} (0-based); total_bytes={}; total_lines={total_lines}; next: fs_read(path, line_offset={next_line_offset}, max_lines={max_lines}); file_token={token}]",
+                page.content, page.total_bytes
+            )
+        }
+        PageCursor::LineTruncated {
+            line_offset: line,
+            byte_offset_in_line,
+        } => {
+            format!(
+                "{}\n…[truncated: line {line} cut at byte {byte_offset_in_line} (0-based intra-line); next: fs_read(path, line_offset={line}, byte_offset_in_line={byte_offset_in_line}); file_token={token}]",
+                page.content
+            )
+        }
+    }
+}
+
+#[async_trait::async_trait]
 impl ToolExecutor for RealToolExecutor {
-    fn execute(&self, call: &ToolCall) -> ToolOutcome {
+    async fn execute(&self, call: &ToolCall) -> ToolOutcome {
         match call.name.as_str() {
             "fs_read" => {
                 let Some(path) = Self::arg_str(call, "path") else {
-                    return ToolOutcome {
-                        ok: false,
-                        output: "missing path".into(),
-                        progress: ProgressSignals::default(),
-                    };
+                    return Self::arg_error("missing path");
                 };
+                let line_offset = match Self::arg_u64(call, "line_offset") {
+                    Ok(v) => v.map(|v| v as usize),
+                    Err(e) => return Self::arg_error(e),
+                };
+                let max_lines = match Self::arg_u64(call, "max_lines") {
+                    // C3 §2.4: clamp to [1, 2000].
+                    Ok(v) => v.map(|v| v.clamp(1, 2000) as usize).unwrap_or(1000),
+                    Err(e) => return Self::arg_error(e),
+                };
+                let byte_offset_in_line = match Self::arg_u64(call, "byte_offset_in_line") {
+                    Ok(v) => v.map(|v| v as usize),
+                    Err(e) => return Self::arg_error(e),
+                };
+                let file_token = Self::arg_str(call, "file_token");
+                let resolved = self.resolve(path);
+                // Advisory freshness token (C3 §2.3): validated when PAGING
+                // (line_offset > 0 or an intra-line resume) and a token was
+                // supplied. Mismatch is a typed error, never silent. Calls
+                // without a token page at their own risk (back-compat).
+                if line_offset.unwrap_or(0) > 0 || byte_offset_in_line.unwrap_or(0) > 0 {
+                    if let Some(token) = file_token {
+                        let Ok(expected) = token.parse::<FileToken>() else {
+                            return Self::arg_error(
+                                "malformed file_token: expected m:<mtime_secs>-l:<len>",
+                            );
+                        };
+                        match self.fs.stat_token(&resolved) {
+                            Ok(current) if current == expected => {}
+                            Ok(_) => {
+                                return Self::arg_error(
+                                    "stale_file_token: file changed since the token was issued; re-read from line_offset=0",
+                                );
+                            }
+                            Err(err) => return Self::arg_error(err.to_string()),
+                        }
+                    }
+                }
                 let bounds = ReadBounds {
-                    line_offset: call
-                        .arguments
-                        .get("line_offset")
-                        .and_then(|v| v.as_u64())
-                        .map(|v| v as usize),
-                    max_lines: call
-                        .arguments
-                        .get("max_lines")
-                        .and_then(|v| v.as_u64())
-                        .map(|v| v as usize)
-                        .unwrap_or(1000),
+                    line_offset,
+                    max_lines,
+                    byte_offset_in_line,
                     ..Default::default()
                 };
-                match self.fs.read_file(&self.resolve(path), &bounds) {
-                    Ok((content, truncated)) => {
-                        let novel = self.mark_and_check_novelty("read", path, &content);
+                match self.fs.read_file(&resolved, &bounds) {
+                    Ok(page) => {
+                        let novel = self.mark_and_check_novelty("read", path, &page.content);
                         ToolOutcome {
                             ok: true,
-                            output: if truncated {
-                                format!("{content}\n…[truncated]")
-                            } else {
-                                content
+                            output: render_read_output(line_offset.unwrap_or(0), max_lines, &page),
+                            progress: ProgressSignals {
+                                new_information: novel,
+                                ..Default::default()
                             },
+                        }
+                    }
+                    Err(err) => ToolOutcome {
+                        ok: false,
+                        output: err.to_string(),
+                        progress: ProgressSignals::default(),
+                    },
+                }
+            }
+            "web_fetch" => {
+                let Some(tool) = &self.web_fetch else {
+                    return Self::arg_error(
+                        "web_fetch denied: no fetch hosts configured (the fetch egress policy is a separate domain; set NANO_WEB_FETCH_HOSTS)",
+                    );
+                };
+                let args = match FetchArgs::parse(&call.arguments) {
+                    Ok(args) => args,
+                    Err(err) => return Self::arg_error(err.to_string()),
+                };
+                match tool.fetch(&args).await {
+                    Ok(outcome) => {
+                        let body_text = String::from_utf8_lossy(&outcome.body);
+                        let novel = self.mark_and_check_novelty("fetch", &args.url, &body_text);
+                        ToolOutcome {
+                            ok: true,
+                            output: render_fetch_output(&outcome),
                             progress: ProgressSignals {
                                 new_information: novel,
                                 ..Default::default()
@@ -383,5 +523,353 @@ mod tests {
                 "{name} no longer requires `path`"
             );
         }
+    }
+
+    // --- C3/C4 executor-level battery -----------------------------------------
+
+    use nano_model::types::ToolCall as _ToolCall;
+
+    fn executor_fixture() -> (tempfile::TempDir, RealToolExecutor, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let policy = nano_core::permissions::PermissionProfile::workspace_write()
+            .file_system_sandbox_policy();
+        let fs = FsTools::new(policy, &ws);
+        let shell = ShellTool::new(&home, &ws);
+        let executor = RealToolExecutor::new(fs, shell, &ws);
+        (tmp, executor, ws)
+    }
+
+    fn call(name: &str, arguments: serde_json::Value) -> _ToolCall {
+        _ToolCall {
+            id: "c1".into(),
+            name: name.into(),
+            arguments,
+        }
+    }
+
+    fn extract_token(output: &str) -> String {
+        output
+            .split("file_token=")
+            .nth(1)
+            .and_then(|rest| rest.split(']').next())
+            .expect("footer carries file_token")
+            .to_string()
+    }
+
+    /// Back-compat: a small-file default read is byte-identical to pre-C3
+    /// output (content only, no footer).
+    #[tokio::test]
+    async fn fs_read_small_file_output_is_byte_identical() {
+        let (_tmp, executor, ws) = executor_fixture();
+        std::fs::write(ws.join("note.txt"), "hello\nworld\n").unwrap();
+        let outcome = executor
+            .execute(&call("fs_read", serde_json::json!({"path": "note.txt"})))
+            .await;
+        assert!(outcome.ok);
+        assert_eq!(outcome.output, "hello\nworld");
+    }
+
+    /// Truncated page footer: 0-based line range, real total_bytes, total
+    /// lines unknown (no EOF), next cursor, and the freshness token.
+    #[tokio::test]
+    async fn fs_read_truncated_footer_carries_cursor_and_token() {
+        let (_tmp, executor, ws) = executor_fixture();
+        let body = (0..3000)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(ws.join("big.txt"), &body).unwrap();
+        let outcome = executor
+            .execute(&call("fs_read", serde_json::json!({"path": "big.txt"})))
+            .await;
+        assert!(outcome.ok);
+        assert!(outcome.output.starts_with("line 0\n"));
+        assert!(
+            outcome
+                .output
+                .contains("…[truncated: showing lines 0-999 (0-based); total_bytes="),
+            "footer: {}",
+            &outcome.output[outcome.output.len() - 200..]
+        );
+        assert!(outcome.output.contains("total_lines=unknown"));
+        assert!(
+            outcome
+                .output
+                .contains("next: fs_read(path, line_offset=1000, max_lines=1000)")
+        );
+        assert!(outcome.output.contains("file_token=m:"));
+    }
+
+    /// max_lines clamps to [1, 2000]; non-integer/negative args are typed
+    /// errors (C3 §2.4).
+    #[tokio::test]
+    async fn fs_read_clamps_max_lines_and_types_bad_args() {
+        let (_tmp, executor, ws) = executor_fixture();
+        let body = (0..3000)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(ws.join("big.txt"), &body).unwrap();
+        let outcome = executor
+            .execute(&call(
+                "fs_read",
+                serde_json::json!({"path": "big.txt", "max_lines": 1_000_000_000_u64}),
+            ))
+            .await;
+        assert!(outcome.ok);
+        assert_eq!(outcome.output.matches('\n').count(), 2000 - 1 + 1); // 2000 lines + footer
+        assert!(
+            outcome
+                .output
+                .contains("next: fs_read(path, line_offset=2000, max_lines=2000)")
+        );
+        let outcome = executor
+            .execute(&call(
+                "fs_read",
+                serde_json::json!({"path": "big.txt", "max_lines": 0}),
+            ))
+            .await;
+        assert!(outcome.ok);
+        assert!(
+            outcome
+                .output
+                .starts_with("line 0\n…[truncated: showing lines 0-0")
+        );
+        let outcome = executor
+            .execute(&call(
+                "fs_read",
+                serde_json::json!({"path": "big.txt", "line_offset": -1}),
+            ))
+            .await;
+        assert!(!outcome.ok, "negative offset is a typed error");
+        assert!(
+            outcome
+                .output
+                .contains("line_offset must be a non-negative integer")
+        );
+    }
+
+    /// Out-of-range offset: typed EOF footer with the REAL total (ok: true,
+    /// empty content), never a fabricated page.
+    #[tokio::test]
+    async fn fs_read_out_of_range_is_typed_eof() {
+        let (_tmp, executor, ws) = executor_fixture();
+        std::fs::write(ws.join("short.txt"), "a\nb\nc\n").unwrap();
+        let outcome = executor
+            .execute(&call(
+                "fs_read",
+                serde_json::json!({"path": "short.txt", "line_offset": 5000}),
+            ))
+            .await;
+        assert!(outcome.ok);
+        assert_eq!(
+            outcome.output,
+            format!(
+                "…[eof: line_offset 5000 >= total_lines 3; file_token={}]",
+                extract_token(&outcome.output)
+            )
+        );
+        assert!(
+            outcome
+                .output
+                .starts_with("…[eof: line_offset 5000 >= total_lines 3;")
+        );
+    }
+
+    /// Oversized line: the footer carries the intra-line byte cursor, and
+    /// the resume call continues from it.
+    #[tokio::test]
+    async fn fs_read_oversized_line_footer_and_byte_resume() {
+        let (_tmp, executor, ws) = executor_fixture();
+        let long_line = "a".repeat(150 * 1024);
+        std::fs::write(ws.join("long.txt"), format!("{long_line}\ntail")).unwrap();
+        let outcome = executor
+            .execute(&call("fs_read", serde_json::json!({"path": "long.txt"})))
+            .await;
+        assert!(outcome.ok);
+        assert!(
+            outcome.output.contains(
+                "…[truncated: line 0 cut at byte 102400 (0-based intra-line); next: fs_read(path, line_offset=0, byte_offset_in_line=102400)"
+            ),
+            "footer: {}",
+            &outcome.output[outcome.output.len() - 250..]
+        );
+        let token = extract_token(&outcome.output);
+        let outcome = executor
+            .execute(&call(
+                "fs_read",
+                serde_json::json!({
+                    "path": "long.txt",
+                    "line_offset": 0,
+                    "byte_offset_in_line": 102400,
+                    "file_token": token,
+                }),
+            ))
+            .await;
+        assert!(outcome.ok, "resume: {}", outcome.output);
+        assert!(outcome.output.ends_with("tail"));
+    }
+
+    /// Freshness token (C3 §2.3): an edit between reads invalidates a paged
+    /// call carrying the old token (typed error); the same flow WITHOUT a
+    /// token pages at its own risk; re-reading from 0 issues a fresh token
+    /// that pages coherently.
+    #[tokio::test]
+    async fn fs_read_stale_token_is_typed_error() {
+        let (_tmp, executor, ws) = executor_fixture();
+        let body = (0..3000)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(ws.join("fresh.txt"), &body).unwrap();
+        let page1 = executor
+            .execute(&call("fs_read", serde_json::json!({"path": "fresh.txt"})))
+            .await;
+        let token = extract_token(&page1.output);
+
+        // Edit between reads (length change — the case the advisory token
+        // CAN detect; coarse-mtime + same-length edits are documented out
+        // of scope for the token).
+        std::fs::write(ws.join("fresh.txt"), format!("{body}\nextra")).unwrap();
+
+        let stale = executor
+            .execute(&call(
+                "fs_read",
+                serde_json::json!({"path": "fresh.txt", "line_offset": 1000, "file_token": token}),
+            ))
+            .await;
+        assert!(!stale.ok);
+        assert_eq!(
+            stale.output,
+            "stale_file_token: file changed since the token was issued; re-read from line_offset=0"
+        );
+
+        // Documented at-risk path: no token → pages anyway.
+        let no_token = executor
+            .execute(&call(
+                "fs_read",
+                serde_json::json!({"path": "fresh.txt", "line_offset": 1000}),
+            ))
+            .await;
+        assert!(no_token.ok);
+        assert!(no_token.output.starts_with("line 1000\n"));
+
+        // Re-read from 0 issues a fresh token that pages coherently.
+        let fresh = executor
+            .execute(&call("fs_read", serde_json::json!({"path": "fresh.txt"})))
+            .await;
+        let fresh_token = extract_token(&fresh.output);
+        let page2 = executor
+            .execute(&call(
+                "fs_read",
+                serde_json::json!({"path": "fresh.txt", "line_offset": 1000, "file_token": fresh_token}),
+            ))
+            .await;
+        assert!(page2.ok, "fresh token must page: {}", page2.output);
+        assert!(page2.output.starts_with("line 1000\n"));
+
+        // Malformed token: typed error, never silently ignored.
+        let malformed = executor
+            .execute(&call(
+                "fs_read",
+                serde_json::json!({"path": "fresh.txt", "line_offset": 1000, "file_token": "bogus"}),
+            ))
+            .await;
+        assert!(!malformed.ok);
+        assert!(malformed.output.contains("malformed file_token"));
+    }
+
+    /// web_fetch with no configured fetch hosts: typed denial — the second
+    /// egress domain is deny-by-default even though the tool is compiled in.
+    #[tokio::test]
+    async fn web_fetch_unconfigured_is_typed_denial() {
+        let (_tmp, executor, _ws) = executor_fixture();
+        let outcome = executor
+            .execute(&call(
+                "web_fetch",
+                serde_json::json!({"url": "https://example.com/"}),
+            ))
+            .await;
+        assert!(!outcome.ok);
+        assert!(
+            outcome
+                .output
+                .contains("web_fetch denied: no fetch hosts configured")
+        );
+    }
+
+    /// Loop protection: fetching the same URL twice with an identical body
+    /// scores non-novel (the same digest path as fs_read).
+    #[tokio::test]
+    async fn web_fetch_identical_refetch_scores_non_novel() {
+        use nano_egress::client::{FetchDriver, FetchHop};
+        #[derive(Debug)]
+        struct FakeDriver;
+        #[async_trait::async_trait]
+        impl FetchDriver for FakeDriver {
+            async fn resolve(
+                &self,
+                _host: &str,
+                _port: u16,
+            ) -> std::io::Result<Vec<std::net::IpAddr>> {
+                Ok(vec!["93.184.216.34".parse().unwrap()])
+            }
+            async fn send(
+                &self,
+                _host: &str,
+                _port: u16,
+                _addrs: &[std::net::IpAddr],
+                _url: &str,
+                _timeout: std::time::Duration,
+            ) -> Result<FetchHop, nano_egress::client::EgressError> {
+                Ok(FetchHop {
+                    status: 200,
+                    location: None,
+                    content_type: Some("text/plain".into()),
+                    content_length: Some(11),
+                    body: Box::pin(futures_util::stream::iter(vec![Ok::<
+                        Vec<u8>,
+                        nano_egress::client::EgressError,
+                    >(
+                        b"hello world".to_vec()
+                    )])),
+                })
+            }
+        }
+        let (_tmp, executor, _ws) = executor_fixture();
+        let client = nano_egress::client::EgressClient::new(
+            nano_egress::policy::EgressPolicy::new().allow_host("example.com"),
+        )
+        .with_fetch_driver_for_tests(std::sync::Arc::new(FakeDriver));
+        let executor = executor.with_web_fetch(nano_tools::web::WebFetchTool::new(client));
+
+        let first = executor
+            .execute(&call(
+                "web_fetch",
+                serde_json::json!({"url": "https://example.com/"}),
+            ))
+            .await;
+        assert!(first.ok, "first fetch: {}", first.output);
+        assert!(first.progress.new_information);
+        assert!(first.output.contains("status: 200"));
+        assert!(first.output.contains("hello world"));
+        assert!(first.output.contains("declared_bytes: 11"));
+        assert!(first.output.contains("untrusted remote content"));
+
+        let second = executor
+            .execute(&call(
+                "web_fetch",
+                serde_json::json!({"url": "https://example.com/"}),
+            ))
+            .await;
+        assert!(second.ok);
+        assert!(
+            !second.progress.new_information,
+            "identical refetch must score non-novel"
+        );
     }
 }

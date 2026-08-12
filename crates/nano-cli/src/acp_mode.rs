@@ -231,7 +231,13 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         let policy = profile.file_system_sandbox_policy();
         let fs = FsTools::new(policy.clone(), workspace);
         let shell = ShellTool::new(&home, workspace);
-        (RealToolExecutor::new(fs, shell, workspace), policy)
+        let mut executor = RealToolExecutor::new(fs, shell, workspace);
+        // C4: web_fetch is inert (typed denial) unless NANO_WEB_FETCH_HOSTS
+        // configures the second egress policy domain.
+        if let Some(fetch) = crate::fetch_specs::web_fetch_tool_from_env() {
+            executor = executor.with_web_fetch(fetch);
+        }
+        (executor, policy)
     };
     // C2: the full_auto shell gate's sandbox availability probe — the same
     // composition doctor reports. Probed ONCE PER TURN at gate construction

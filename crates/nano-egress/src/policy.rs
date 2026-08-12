@@ -14,9 +14,15 @@ pub enum EgressDecision {
 }
 
 /// Fail-closed host policy. Empty = deny everything.
+///
+/// Scheme hardening (C4 §3.5): `https` only by default; `http` requires a
+/// per-host opt-in (`allow_host_with_http`) so local endpoints such as
+/// `http://localhost:PORT` MCP servers stay possible without opening http
+/// for the world. Every other scheme (ftp, file, …) is denied.
 #[derive(Debug, Clone, Default)]
 pub struct EgressPolicy {
     allowed_hosts: BTreeSet<String>,
+    http_allowed_hosts: BTreeSet<String>,
 }
 
 impl EgressPolicy {
@@ -24,8 +30,17 @@ impl EgressPolicy {
         Self::default()
     }
 
+    /// Allow `host` over https only.
     pub fn allow_host(mut self, host: impl Into<String>) -> Self {
         self.allowed_hosts.insert(host.into());
+        self
+    }
+
+    /// Allow `host` over https AND plain http (the per-host http opt-in).
+    pub fn allow_host_with_http(mut self, host: impl Into<String>) -> Self {
+        let host = host.into();
+        self.allowed_hosts.insert(host.clone());
+        self.http_allowed_hosts.insert(host);
         self
     }
 
@@ -35,10 +50,18 @@ impl EgressPolicy {
     }
 
     pub fn decide(&self, url: &str) -> EgressDecision {
+        let Some((scheme, _)) = url.split_once("://") else {
+            return EgressDecision::Deny;
+        };
         let Some(host) = host_of(url) else {
             return EgressDecision::Deny;
         };
-        if self.allowed_hosts.contains(&host) {
+        let allowed = match scheme.to_ascii_lowercase().as_str() {
+            "https" => self.allowed_hosts.contains(&host),
+            "http" => self.http_allowed_hosts.contains(&host),
+            _ => false,
+        };
+        if allowed {
             EgressDecision::Allow
         } else {
             EgressDecision::Deny
@@ -109,6 +132,23 @@ mod tests {
         assert!(policy.allows("https://api.fluxrouter.ai/anthropic/v1/messages"));
         assert!(!policy.allows("https://api.openai.com/v1/responses"));
         assert!(!policy.allows("http://169.254.169.254/latest/meta-data"));
+        // https-only: even the allowlisted Flux host is denied over plain
+        // http without the per-host opt-in.
+        assert!(!policy.allows("http://api.fluxrouter.ai/v1/chat/completions"));
+        // non-http(s) schemes fail closed even for allowlisted hosts
+        assert!(!policy.allows("ftp://api.fluxrouter.ai/v1/models"));
+    }
+
+    #[test]
+    fn http_requires_the_per_host_opt_in() {
+        let policy = EgressPolicy::new().allow_host_with_http("localhost");
+        assert!(policy.allows("http://localhost:3000/mcp"));
+        assert!(policy.allows("https://localhost:3000/mcp"));
+        // the opt-in is per-host: other hosts stay https-only
+        assert!(!policy.allows("http://example.com/mcp"));
+        let https_only = EgressPolicy::new().allow_host("example.com");
+        assert!(https_only.allows("https://example.com/"));
+        assert!(!https_only.allows("http://example.com/"));
     }
 
     #[test]
