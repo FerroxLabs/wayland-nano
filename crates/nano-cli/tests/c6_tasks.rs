@@ -263,6 +263,8 @@ impl Harness {
                     reasoning_effort: None,
                     verbosity: None,
                     cron_home: None,
+                    pricing: None,
+                    budget_cap: None,
                     journal_append_failer: None,
                 };
                 acp_mode::serve(

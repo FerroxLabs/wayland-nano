@@ -161,6 +161,13 @@ where
                         cache_read_tokens: u.cached_input_tokens,
                         cache_write_tokens: None,
                         cost_usd: u.cost_usd,
+                        // P1 §5: this host predates meter wiring; the
+                        // optional session-total fields stay absent (older
+                        // and newer hosts both parse the frame).
+                        session_total_input_tokens: None,
+                        session_total_output_tokens: None,
+                        cost_microcents: None,
+                        priced: None,
                     });
                     write_frame(
                         writer,

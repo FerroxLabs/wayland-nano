@@ -49,6 +49,8 @@ enum Pending {
     /// C9: a mid-turn session/steer enqueue; the ack carries the position.
     Steer,
     Goal,
+    /// P1 §4.1: a `/budget continue` grant request.
+    Budget,
 }
 
 /// The open modal, if any.
@@ -394,6 +396,7 @@ impl App {
             Some(SlashCommand::Todo) => self.show_todos(),
             Some(SlashCommand::Compact) => self.submit_compact(conn),
             Some(SlashCommand::Goal(action)) => self.submit_goal(conn, &action),
+            Some(SlashCommand::Budget(tokens)) => self.submit_budget(conn, tokens),
             Some(SlashCommand::Status) => {
                 self.transcript.push_note(&self.status.report());
                 // C1: /status doctor data comes from the short-lived
@@ -407,7 +410,7 @@ impl App {
             Some(SlashCommand::Quit) => self.begin_quit(conn),
             Some(SlashCommand::Unknown(command)) => {
                 self.transcript.push_note(&format!(
-                    "unknown command: {command} (have: /model /mode /plan /todo /status /doctor /compact /quit)"
+                    "unknown command: {command} (have: /model /mode /plan /todo /status /doctor /compact /budget /quit)"
                 ));
             }
         }
@@ -477,6 +480,41 @@ impl App {
             }
         };
         self.send_request(conn, &method, params, Pending::Goal);
+    }
+
+    /// `/budget` (P1 §4.1/§5): bare prints the meter view; `continue
+    /// <tokens>` rides session/budget — the journal-first grant ordering
+    /// lives host-side, exactly as /compact rides session/compact.
+    fn submit_budget<C: Connection>(&mut self, conn: &mut C, tokens: Option<u64>) {
+        let Some(tokens) = tokens else {
+            let view = self
+                .status
+                .budget
+                .as_ref()
+                .map(|b| b.summary())
+                .unwrap_or_else(|| "no budget data yet this session".to_string());
+            self.transcript.push_note(&format!("budget: {view}"));
+            return;
+        };
+        if !self.ready {
+            self.transcript
+                .push_note("not connected yet — wait for the session");
+            return;
+        }
+        if self.turn_active {
+            self.transcript
+                .push_note("cannot grant budget while a turn is running");
+            return;
+        }
+        let Some(session_id) = self.session_id.clone() else {
+            return;
+        };
+        self.send_request(
+            conn,
+            "session/budget",
+            acp_client::budget_params(&session_id, tokens),
+            Pending::Budget,
+        );
     }
 
     fn submit_compact<C: Connection>(&mut self, conn: &mut C) {
@@ -713,6 +751,7 @@ impl App {
                 }
                 Pending::Compact => {}
                 Pending::Goal => {}
+                Pending::Budget => {}
             }
             return;
         }
@@ -887,6 +926,19 @@ impl App {
                     serde_json::to_string(&result).unwrap_or_default()
                 ));
             }
+            Pending::Budget => {
+                // The host's budget notice (emitted before the response)
+                // already refreshed the status slot; the response confirms
+                // the new effective limit.
+                match result.get("limit").and_then(Value::as_u64) {
+                    Some(limit) => self
+                        .transcript
+                        .push_note(&format!("budget granted; new session limit: {limit}")),
+                    None => self
+                        .transcript
+                        .push_note("session/budget returned an unexpected result"),
+                }
+            }
         }
     }
 
@@ -963,6 +1015,39 @@ impl App {
                     tokens_remaining,
                     tokens_limit,
                 });
+            }
+            SessionUpdate::Budget {
+                session_tokens,
+                microcents,
+                priced,
+                limit,
+                observed,
+            } => {
+                self.status.budget = Some(crate::status::BudgetView {
+                    session_tokens,
+                    microcents,
+                    priced,
+                    cap: limit.zip(observed),
+                });
+            }
+            SessionUpdate::BudgetWarn {
+                limit,
+                observed,
+                pct_used,
+            } => {
+                // P1 §4.1: the typed warn lands as a transcript note AND
+                // refreshes the status slot's cap position.
+                self.transcript.push_note(&format!(
+                    "budget warn: {pct_used}% of the session token cap used ({observed}/{limit})"
+                ));
+                if let Some(view) = self.status.budget.as_mut() {
+                    view.cap = Some((limit, observed));
+                }
+            }
+            SessionUpdate::BudgetClamp { requested, granted } => {
+                self.transcript.push_note(&format!(
+                    "budget clamp: max output clamped to the reserved allowance ({granted} of {requested} requested)"
+                ));
             }
             SessionUpdate::ToolCall {
                 call_id,

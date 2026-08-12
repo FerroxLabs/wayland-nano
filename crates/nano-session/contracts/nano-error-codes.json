@@ -233,6 +233,14 @@
       "wireCode": -32603
     },
     {
+      "hint": "/budget continue <tokens> grants more, or start a new session",
+      "kind": "budget_exceeded",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Session token budget exceeded",
+      "wireCode": -32603
+    },
+    {
       "hint": "Rephrase or narrow the task",
       "kind": "no_progress",
       "retryable": false,

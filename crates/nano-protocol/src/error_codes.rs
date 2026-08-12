@@ -157,7 +157,7 @@ mod tests {
     /// The shim must not drift from the canonical module.
     #[test]
     fn shim_re_exports_the_canonical_table() {
-        assert_eq!(ALL_KINDS.len(), 40);
+        assert_eq!(ALL_KINDS.len(), 41);
         assert_eq!(
             spec(NanoErrorKind::ModelRateLimited).title,
             nano_session::error_codes::spec(NanoErrorKind::ModelRateLimited).title

@@ -65,6 +65,7 @@ fn turn(id_prefix: &str, turn_id: &str, input: &str) -> Vec<OpEnvelope> {
             Op::TurnEnd {
                 turn_id: turn_id.into(),
                 outcome: TurnOutcome::Completed,
+                usage: None,
             },
         ),
     ]
@@ -389,6 +390,7 @@ fn child_authored_op_ids_never_collide_with_imported() {
             Op::TurnEnd {
                 turn_id: "child-turn-1".into(),
                 outcome: TurnOutcome::Completed,
+                usage: None,
             },
         ))
         .unwrap();

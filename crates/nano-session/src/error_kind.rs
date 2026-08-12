@@ -63,6 +63,12 @@ pub enum NanoErrorKind {
     ApprovalDenied,
     // ── engine stops (turn-fatal, NOT user cancels) ─────────────────────
     BudgetExhausted,
+    /// P1 §4.1: the session token cap stopped the turn (a zero output
+    /// reservation = hard stop). Distinct from `BudgetExhausted` (the
+    /// per-turn step/tool-call budget): the wire contract carries
+    /// `{type: budget_exceeded, limit, observed, reason}` and the session
+    /// stays alive for `/budget continue`, read-only commands, and `/quit`.
+    BudgetExceeded,
     NoProgress,
     RepeatForceStop,
     /// The ONLY kind that is never an error: it surfaces as

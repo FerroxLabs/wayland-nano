@@ -5,5 +5,6 @@
 //! no provider knowledge (that is nano-model).
 
 pub mod abs;
+pub mod budget;
 pub mod permissions;
 pub mod policy_engine;

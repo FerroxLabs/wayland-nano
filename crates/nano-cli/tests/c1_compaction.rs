@@ -276,6 +276,8 @@ impl Harness {
                     reasoning_effort: None,
                     verbosity: None,
                     cron_home: None,
+                    pricing: None,
+                    budget_cap: None,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -701,6 +703,7 @@ fn crash_after_begin_replays_uncompacted() {
             Op::TurnEnd {
                 turn_id: "t1".into(),
                 outcome: nano_session::TurnOutcome::Completed,
+                usage: None,
             },
         ),
         OpEnvelope::new(
@@ -754,6 +757,7 @@ fn crash_after_complete_replays_compacted() {
             Op::TurnEnd {
                 turn_id: "t1".into(),
                 outcome: nano_session::TurnOutcome::Completed,
+                usage: None,
             },
         ),
         OpEnvelope::new(
@@ -809,6 +813,7 @@ fn forged_compaction_ops_are_replay_tolerant() {
             Op::TurnEnd {
                 turn_id: "t1".into(),
                 outcome: nano_session::TurnOutcome::Completed,
+                usage: None,
             },
         ),
     ];

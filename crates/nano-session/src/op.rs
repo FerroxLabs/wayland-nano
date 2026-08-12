@@ -114,6 +114,214 @@ pub enum GoalOutcome {
     Unknown,
 }
 
+// ── P1 economy (panel-certified design: P1-search-economy-design.md) ─────
+// JOURNAL-MIGRATION REVIEW FLAG (RC2 coordinated review): the THREE P1
+// journal additions — (a) `usage` on `Op::TurnEnd`, (b) `Op::BudgetGrant`,
+// (c) `Op::ChildUsageRollup` — ride the coordinated RC2 journal-migration
+// review together (design §3.3/§6): no piecemeal schema erosion. All three
+// are numbers/bounded-enums-only payloads (digest-only invariant untouched),
+// all serde-defaulted so pre-P1 journals replay unchanged, and old readers
+// skip them via the `Unknown`-op forward tolerance.
+
+/// Where a usage figure came from (P1 §3.5 provenance): provider-reported
+/// wire usage vs the fail-closed conservative estimate charged when the wire
+/// reports nothing. Bounded enum, `#[serde(other)]`-tolerant like
+/// [`GoalReason`] — never free text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageSource {
+    /// The provider reported these tokens on the wire.
+    #[default]
+    ProviderReported,
+    /// The wire reported nothing; the meter charged the §3.5 conservative
+    /// estimate (never zero — an under-reporting provider must not become a
+    /// budget bypass).
+    Estimated,
+    /// A source written by a newer build this one does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Stable id of the §3.5 conservative-estimation formula (Q4 RULED): bump
+/// when the formula changes so old journals stay re-derivable under the
+/// rules that produced them.
+pub const ESTIMATION_METHOD_VERSION: u32 = 1;
+
+/// The turn-scoped usage record (P1 §3.4–3.5): the SUM across EVERY
+/// `record_usage` call in the turn — explicitly NOT the last response's
+/// usage — plus cost and estimation provenance. NUMBERS and bounded enums
+/// only, no content: the digest-only journal invariant is untouched. All
+/// fields serde-defaulted; the whole record is optional on `TurnEnd` and
+/// omitted when a turn recorded no usage at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnUsage {
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub cached_input_tokens: u64,
+    #[serde(default)]
+    pub reasoning_tokens: u64,
+    /// Meter-computed cost in integer microcents (the budget authority;
+    /// provider-reported `cost_usd` is observability only and is NEVER
+    /// journaled here). Meaningful only when `priced` is true.
+    #[serde(default)]
+    pub microcents: u64,
+    /// Cost-truth honesty flag (P1 §3.1): true = every contributing record
+    /// had a real metered (or known-free) price; false = unpriceable, NEVER
+    /// render as $0. Defaults true for an empty sum (nothing unpriced yet).
+    #[serde(default = "default_priced")]
+    pub priced: bool,
+    /// Provenance (P1 §3.5): `estimated` when ANY contributing record took
+    /// the conservative missing-usage charge.
+    #[serde(default)]
+    pub usage_source: UsageSource,
+    /// The formula id that produced estimated charges ([`ESTIMATION_METHOD_VERSION`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimation_method_version: Option<u32>,
+    /// Sum of the request-side input estimates used by estimated charges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_estimate_input: Option<u64>,
+    /// Sum of the request-side output estimates (the reserved allowance)
+    /// used by estimated charges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_estimate_output: Option<u64>,
+    /// Sum of the conservative charges actually applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_estimate: Option<u64>,
+}
+
+fn default_priced() -> bool {
+    true
+}
+
+impl Default for TurnUsage {
+    /// An empty sum is "nothing unpriced yet" (`priced: true`); the first
+    /// unpriceable record flips it false permanently.
+    fn default() -> Self {
+        Self {
+            input_tokens: 0,
+            output_tokens: 0,
+            cached_input_tokens: 0,
+            reasoning_tokens: 0,
+            microcents: 0,
+            priced: true,
+            usage_source: UsageSource::default(),
+            estimation_method_version: None,
+            request_estimate_input: None,
+            request_estimate_output: None,
+            applied_estimate: None,
+        }
+    }
+}
+
+impl TurnUsage {
+    /// Total tokens counted against the session cap (input + output, the C11
+    /// goal-budget accounting rule; cached input is part of the provider's
+    /// reported input total, never double-counted).
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens.saturating_add(self.output_tokens)
+    }
+
+    /// True when nothing was recorded (the `TurnEnd.usage` field stays
+    /// omitted — new journals stay byte-minimal).
+    pub fn is_zero(&self) -> bool {
+        self.total_tokens() == 0
+            && self.cached_input_tokens == 0
+            && self.reasoning_tokens == 0
+            && self.applied_estimate.unwrap_or(0) == 0
+    }
+
+    /// Fold one provider-reported response's usage into the sum.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_provider_reported(
+        &mut self,
+        input_tokens: u64,
+        output_tokens: u64,
+        cached_input_tokens: u64,
+        reasoning_tokens: u64,
+        microcents: u64,
+        priced: bool,
+    ) {
+        self.input_tokens = self.input_tokens.saturating_add(input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(output_tokens);
+        self.cached_input_tokens = self.cached_input_tokens.saturating_add(cached_input_tokens);
+        self.reasoning_tokens = self.reasoning_tokens.saturating_add(reasoning_tokens);
+        self.microcents = self.microcents.saturating_add(microcents);
+        self.priced &= priced;
+    }
+
+    /// Fold one §3.5 conservative (missing-usage) charge into the sum, WITH
+    /// auditable provenance.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_estimated(
+        &mut self,
+        input_tokens: u64,
+        output_tokens: u64,
+        microcents: u64,
+        priced: bool,
+        method_version: u32,
+        applied_estimate: u64,
+    ) {
+        self.input_tokens = self.input_tokens.saturating_add(input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(output_tokens);
+        self.microcents = self.microcents.saturating_add(microcents);
+        self.priced &= priced;
+        self.usage_source = UsageSource::Estimated;
+        self.estimation_method_version = Some(method_version);
+        self.request_estimate_input = Some(
+            self.request_estimate_input
+                .unwrap_or(0)
+                .saturating_add(input_tokens),
+        );
+        self.request_estimate_output = Some(
+            self.request_estimate_output
+                .unwrap_or(0)
+                .saturating_add(output_tokens),
+        );
+        self.applied_estimate = Some(
+            self.applied_estimate
+                .unwrap_or(0)
+                .saturating_add(applied_estimate),
+        );
+    }
+
+    /// Fold another recorded sum into this one (replay reconstruction,
+    /// orphan-child rollups). Provenance merges conservatively: any
+    /// estimated contribution marks the result estimated.
+    pub fn add_sum(&mut self, other: &TurnUsage) {
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.cached_input_tokens = self
+            .cached_input_tokens
+            .saturating_add(other.cached_input_tokens);
+        self.reasoning_tokens = self.reasoning_tokens.saturating_add(other.reasoning_tokens);
+        self.microcents = self.microcents.saturating_add(other.microcents);
+        self.priced &= other.priced;
+        if other.usage_source == UsageSource::Estimated {
+            self.usage_source = UsageSource::Estimated;
+        }
+        if other.estimation_method_version.is_some() {
+            self.estimation_method_version = other.estimation_method_version;
+        }
+        let merge = |a: &mut Option<u64>, b: Option<u64>| {
+            if let Some(b) = b {
+                *a = Some(a.unwrap_or(0).saturating_add(b));
+            }
+        };
+        merge(
+            &mut self.request_estimate_input,
+            other.request_estimate_input,
+        );
+        merge(
+            &mut self.request_estimate_output,
+            other.request_estimate_output,
+        );
+        merge(&mut self.applied_estimate, other.applied_estimate);
+    }
+}
+
 /// Goal budget limits (C11, kimi `GoalBudgetLimits` shape): all optional,
 /// any combination. Enforcement lives in the goal driver (nano-agent).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +384,18 @@ pub enum Op {
     TurnEnd {
         turn_id: String,
         outcome: TurnOutcome,
+        /// P1 §3.4 — JOURNAL-MIGRATION REVIEW FLAG (addition (a) of the RC2
+        /// coordinated review trio). The turn-scoped usage SUM across every
+        /// `record_usage` call in the turn (explicitly NOT the last
+        /// response's usage), with §3.5 estimation provenance — numbers and
+        /// bounded enums only, so the digest-only invariant is untouched.
+        /// Journaled for EVERY terminal outcome (Completed/Cancelled/Failed):
+        /// a cancelled stream that consumed tokens journals those tokens.
+        /// Serde-defaulted so pre-P1 journals replay unchanged (the
+        /// `ToolResult.error_kind` pattern); omitted when the turn recorded
+        /// no usage, keeping new journals byte-minimal.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<TurnUsage>,
     },
     CompactionBegin {
         compaction_id: String,
@@ -310,6 +530,38 @@ pub enum Op {
         /// Number of missed occurrences this fire coalesces (0 = on time).
         #[serde(default)]
         coalesced: u32,
+    },
+    /// An ACCEPTED `/budget continue` grant (P1 §4.3) — JOURNAL-MIGRATION
+    /// REVIEW FLAG (addition (b) of the RC2 coordinated review trio).
+    /// Journaled DURABLY at acceptance under journal-first, accepted-only
+    /// ordering (the C10 `TodoSet` pattern): the command validates, this op
+    /// lands, and only then does the session's effective-limit cell mutate;
+    /// an append failure leaves the limit unchanged. Numbers and ids only.
+    /// Replay folds it into budget state, so a kill-resumed session
+    /// reconstructs the exact effective limit (replay-deterministic, never
+    /// session-volatile).
+    BudgetGrant {
+        grant_id: String,
+        tokens: u64,
+        after_limit: u64,
+    },
+    /// A C6 child task's usage folded into the PARENT journal at the child's
+    /// terminal state (P1 §3.3) — JOURNAL-MIGRATION REVIEW FLAG (addition
+    /// (c) of the RC2 coordinated review trio). Journal-first at the
+    /// reconciliation boundary: this op lands DURABLY BEFORE the child's
+    /// terminal result becomes visible to the parent session
+    /// (`task_result`/`task_apply`); append failure fails closed (the
+    /// completion is held, never reported while its usage is unjournaled).
+    /// Numbers and stable ids only. Replay folds it into meter totals keyed
+    /// by `task_id`; envelope-id dedup makes a retried append idempotent,
+    /// and the op's presence is the orphan-fold dedup marker at resume.
+    ChildUsageRollup {
+        task_id: String,
+        /// The child's single turn id (`{task_id}-turn-1`, tasks.rs).
+        child_turn_id: String,
+        outcome: TurnOutcome,
+        /// The child's turn-scoped usage sum (§3.4) with §3.5 provenance.
+        usage: TurnUsage,
     },
     /// Forward tolerance: any Op type this build does not know. Skipped on
     /// replay; the raw line stays in the journal for future readers.

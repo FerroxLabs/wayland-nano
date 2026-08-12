@@ -36,6 +36,10 @@ pub enum SlashCommand {
     /// sends the `_wayland/goal/*` ACP extension methods; the state machine
     /// lives engine-side. The payload is the subcommand (default "status").
     Goal(String),
+    /// P1 §4.1/§5: `/budget` prints the meter view; `/budget continue
+    /// <tokens>` sends `session/budget` (the single-shot grant — the
+    /// journal-first ordering lives host-side).
+    Budget(Option<u64>),
     /// Shut down (cancel any turn, kill the host, restore the terminal).
     Quit,
     /// Unknown `/...` input — reported, never executed.
@@ -65,6 +69,18 @@ pub fn parse(text: &str) -> Option<SlashCommand> {
                 .unwrap_or("status")
                 .to_string(),
         ),
+        "/budget" => {
+            let mut parts = trimmed.split_whitespace();
+            let _ = parts.next(); // "/budget"
+            match (parts.next(), parts.next()) {
+                (None, _) => SlashCommand::Budget(None),
+                (Some("continue"), Some(n)) => match n.parse::<u64>() {
+                    Ok(tokens) if tokens > 0 => SlashCommand::Budget(Some(tokens)),
+                    _ => SlashCommand::Unknown(trimmed.to_string()),
+                },
+                _ => SlashCommand::Unknown(trimmed.to_string()),
+            }
+        }
         "/quit" => SlashCommand::Quit,
         other => SlashCommand::Unknown(other.to_string()),
     })
@@ -92,6 +108,24 @@ mod tests {
             Some(SlashCommand::Goal("pause".to_string()))
         );
         assert_eq!(parse("/quit"), Some(SlashCommand::Quit));
+        assert_eq!(parse("/budget"), Some(SlashCommand::Budget(None)));
+        assert_eq!(
+            parse("/budget continue 200"),
+            Some(SlashCommand::Budget(Some(200)))
+        );
+        // A non-positive or malformed grant is UNKNOWN, never sent.
+        assert_eq!(
+            parse("/budget continue 0"),
+            Some(SlashCommand::Unknown("/budget continue 0".into()))
+        );
+        assert_eq!(
+            parse("/budget continue abc"),
+            Some(SlashCommand::Unknown("/budget continue abc".into()))
+        );
+        assert_eq!(
+            parse("/budget bogus"),
+            Some(SlashCommand::Unknown("/budget bogus".into()))
+        );
         assert_eq!(
             parse("/bogus"),
             Some(SlashCommand::Unknown("/bogus".into()))

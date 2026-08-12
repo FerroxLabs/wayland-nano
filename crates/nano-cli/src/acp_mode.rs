@@ -60,11 +60,12 @@ use nano_model::provider_catalog::WireKind;
 use nano_model::types::{ContentBlock, Message, ModelObservation, Role, ToolCall};
 use nano_protocol::acp::{
     AvailableModel, JsonRpcNotification, JsonRpcResponse, NanoErrorExtras, PLAN_MODE_ID,
-    agent_capabilities, agent_message_chunk, compaction_notice, error_presentation,
-    param_inert_notice, prompt_result, rate_limit_notice, reconnect_notice,
-    request_permission_request, request_question_request, session_load_result, session_modes_value,
-    session_new_result, set_model_result, steer_dropped_notice, steer_queued_result,
-    tool_call_diff, tool_call_done, tool_call_replay, tool_call_update, user_message_chunk,
+    agent_capabilities, agent_message_chunk, budget_clamp_notice, budget_notice,
+    budget_warn_notice, compaction_notice, error_presentation, param_inert_notice, prompt_result,
+    rate_limit_notice, reconnect_notice, request_permission_request, request_question_request,
+    session_load_result, session_modes_value, session_new_result, set_model_result,
+    steer_dropped_notice, steer_queued_result, tool_call_diff, tool_call_done, tool_call_replay,
+    tool_call_update, user_message_chunk,
 };
 use nano_protocol::permission_mode::PermissionMode;
 use nano_session::NanoErrorKind;
@@ -148,6 +149,50 @@ struct Session {
     /// Drop tears every child down (bounded), and the reader thread holds a
     /// handle so session/cancel cascades to children mid-poll.
     tasks: Arc<nano_agent::tasks::TaskRegistry>,
+    /// P1 §3.2: the session cost meter — Arc-shared into the turn engine
+    /// (reservation/clamp) and every C6 child context (live rollup), and
+    /// the budget authority behind warn/stop/grant. `None` = pre-P1
+    /// unmetered posture.
+    meter: Option<nano_agent::cost::CostMeter>,
+}
+
+/// P1 §3.3: the parent-journal rollup sink — appends
+/// `Op::ChildUsageRollup` durably (journal-first at the reconciliation
+/// boundary). Opens the journal per append: the writer re-reads the file,
+/// so a retried append of the stable `{task_id}-rollup-1` envelope id is
+/// idempotent (`Ok(false)` = already durable).
+fn child_rollup_sink(journal: std::path::PathBuf) -> nano_agent::tasks::RollupSink {
+    Arc::new(move |envelope: &OpEnvelope| -> bool {
+        let outcome = JournalWriter::open(&journal).and_then(|mut w| w.append(envelope).map(|_| w));
+        let outcome = outcome.and_then(|mut w| w.sync());
+        match outcome {
+            Ok(()) => true,
+            Err(err) => {
+                eprintln!("wayland-nano: child usage rollup append failed: {err}");
+                false
+            }
+        }
+    })
+}
+
+/// P1 §3.2: build the session meter when the host carries a pricing
+/// catalog (else the pre-P1 unmetered posture). The pricing provider key
+/// comes from the session model's namespace (bare ids are Flux, whose
+/// vendored catalog id is `flux-router`); per turn the engine rebinds to
+/// the resolved binding's provider (`CostMeter::with_provider`).
+fn session_meter(
+    pricing: &Option<std::sync::Arc<nano_model::pricing::PricingCatalog>>,
+    budget_cap: Option<u64>,
+    model: &str,
+) -> Option<nano_agent::cost::CostMeter> {
+    let catalog = pricing.clone()?;
+    let provider = match crate::provider_router::ProviderRouter::parse_model_id(model) {
+        Ok(crate::provider_router::ModelRef::Namespaced { provider, .. }) => provider,
+        _ => "flux-router".to_string(),
+    };
+    Some(nano_agent::cost::CostMeter::new(
+        provider, catalog, budget_cap,
+    ))
 }
 
 /// ACP session ids are filesystem-safe (they name the journal file) and
@@ -405,6 +450,26 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         write_enabled: memory_write,
         block_cap: memory_block_cap,
     };
+    // P1 §3.1: the pricing catalog — FAIL-CLOSED: a malformed
+    // NANO_PRICING_PATH override is a typed startup error naming the path,
+    // never a silent fallback to bundled, never a partial parse.
+    let pricing = match nano_model::pricing::PricingCatalog::load_default() {
+        Ok(catalog) => Some(Arc::new(catalog)),
+        Err(err) => {
+            eprintln!("wayland-nano: {err}");
+            return Ok(2);
+        }
+    };
+    // P1 §4.1: the session token cap (unset = no cap, back-compat); a
+    // malformed value is a typed startup error, never a silently-uncapped
+    // session.
+    let budget_cap = match nano_core::budget::session_token_cap_from_env() {
+        Ok(cap) => cap,
+        Err(err) => {
+            eprintln!("wayland-nano: {err}");
+            return Ok(2);
+        }
+    };
     let config = ServeConfig {
         sessions_dir: &sessions,
         default_model: &default_model,
@@ -420,6 +485,8 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         journal_append_failer: None,
         memory: &memory_config,
         cron_home: Some(nano_home),
+        pricing,
+        budget_cap,
     };
     serve(reader, writer, &config, make_driver, make_tools).await
 }
@@ -514,6 +581,13 @@ pub struct ServeConfig<'a> {
     /// host (30s, wcore TICK_INTERVAL parity), firing due jobs through the
     /// §5.4 transaction. `None` in tests and headless profiles.
     pub cron_home: Option<&'a std::path::Path>,
+    /// P1 §3.1: the pricing catalog (loaded at startup, fail-closed). When
+    /// present, every session gets a cost meter; `None` = the pre-P1
+    /// unmetered posture (tests).
+    pub pricing: Option<std::sync::Arc<nano_model::pricing::PricingCatalog>>,
+    /// P1 §4.1: the session token cap (`NANO_BUDGET_SESSION_TOKENS`).
+    /// `None` = no cap (back-compat).
+    pub budget_cap: Option<u64>,
 }
 
 /// C5 memory wiring for the ACP host.
@@ -811,12 +885,30 @@ where
                             if let Some(old) = session.take() {
                                 old.tasks.teardown_all();
                             }
-                            let tasks = Arc::new(nano_agent::tasks::TaskRegistry::new(
+                            // P1 §3.2/§4.1: the session cost meter (None
+                            // when the host carries no pricing catalog).
+                            let meter = session_meter(
+                                &config.pricing,
+                                config.budget_cap,
+                                config.default_model,
+                            );
+                            let registry = nano_agent::tasks::TaskRegistry::new(
                                 &task_nano_home,
                                 &cwd,
                                 config.default_model.to_string(),
                                 make_task_driver_factory(config.default_model),
-                            ));
+                            );
+                            // P1 §3.3: metered sessions Arc-share the meter
+                            // into every child context AND journal durable
+                            // per-child rollups into the parent journal.
+                            let tasks = Arc::new(match &meter {
+                                Some(meter) => registry.with_meter(
+                                    meter.clone(),
+                                    child_rollup_sink(journal.clone()),
+                                    session_id.clone(),
+                                ),
+                                None => registry,
+                            });
                             *current_tasks.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(tasks.clone());
                             session = Some(Session {
@@ -833,6 +925,7 @@ where
                                 mode_changes: 0,
                                 mcp,
                                 tasks,
+                                meter,
                             });
                             write_out(
                                 &out,
@@ -984,10 +1077,10 @@ where
                             };
                             // C10 §2 (Q2 RULED): the todo list IS content —
                             // folded from the journal last-write-wins and
-                            // re-injected as a bounded block on rebuild.
-                            let todos = Arc::new(Mutex::new(
-                                SessionState::fold(&report.envelopes).todos,
-                            ));
+                            // re-injected as a bounded block on rebuild. P1:
+                            // ONE fold also feeds the meter reseed below.
+                            let folded = SessionState::fold(&report.envelopes);
+                            let todos = Arc::new(Mutex::new(folded.todos.clone()));
                             let mut context = session_context_prefix(&cwd, &todos, &plan);
                             context.extend(context_messages);
                             // C6: replacing a live session tears its children
@@ -995,12 +1088,38 @@ where
                             if let Some(old) = session.take() {
                                 old.tasks.teardown_all();
                             }
-                            let tasks = Arc::new(nano_agent::tasks::TaskRegistry::new(
+                            // P1 §3.3/§4.3: reconstruct the exact budget
+                            // position — meter totals from TurnEnd.usage +
+                            // ChildUsageRollup + the crash-recovery orphan
+                            // fold; grants replayed from Op::BudgetGrant.
+                            let meter = session_meter(
+                                &config.pricing,
+                                config.budget_cap,
+                                config.default_model,
+                            );
+                            if let Some(meter) = &meter {
+                                let mut usage = folded.session_usage.clone();
+                                usage.add_sum(&nano_agent::tasks::fold_orphan_child_usage(
+                                    &task_nano_home,
+                                    session_id,
+                                    &folded.rollup_task_ids,
+                                ));
+                                meter.reseed(&usage, folded.budget_granted_tokens);
+                            }
+                            let registry = nano_agent::tasks::TaskRegistry::new(
                                 &task_nano_home,
                                 &cwd,
                                 config.default_model.to_string(),
                                 make_task_driver_factory(config.default_model),
-                            ));
+                            );
+                            let tasks = Arc::new(match &meter {
+                                Some(meter) => registry.with_meter(
+                                    meter.clone(),
+                                    child_rollup_sink(journal.clone()),
+                                    session_id.to_string(),
+                                ),
+                                None => registry,
+                            });
                             *current_tasks.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(tasks.clone());
                             session = Some(Session {
@@ -1026,6 +1145,7 @@ where
                                 mode_changes: 0,
                                 mcp,
                                 tasks,
+                                meter,
                             });
                             write_out(
                                 &out,
@@ -1566,6 +1686,14 @@ where
                             // The session's task registry (C6): the turn's
                             // executor routes task_* calls through it.
                             let turn_tasks = active.tasks.clone();
+                            // P1 §3.2/§4.2: the session meter, rebound per
+                            // turn to the resolved binding's pricing
+                            // provider (an absent row prices unpriced —
+                            // honest, never a wrong price).
+                            let turn_meter = active
+                                .meter
+                                .clone()
+                                .map(|meter| meter.with_provider(&binding.provider_id));
                             // C9 §3.2/§3.3: the turn's steer queue, bound to
                             // THIS turn id. The drop closure translates each
                             // still-queued steer at close into exactly one
@@ -1599,6 +1727,7 @@ where
                             let gate_pending = pending.clone();
                             let gate_ids = permission_ids.clone();
                             let sink_out = out.clone();
+                            let budget_out = out.clone();
                             let observer_out = out.clone();
                             let sandbox_probe = config.sandbox_probe;
                             let memory_dir = config.memory.dir.clone();
@@ -1749,6 +1878,22 @@ where
                                                     .unwrap_or(serde_json::Value::Null),
                                             )
                                         }
+                                        // P1 §4.1/§4.2: typed budget
+                                        // notices (C7 vocabulary).
+                                        ModelObservation::BudgetWarn {
+                                            limit,
+                                            observed,
+                                            pct_used,
+                                        } => budget_warn_notice(
+                                            &obs_session,
+                                            limit,
+                                            observed,
+                                            pct_used,
+                                        ),
+                                        ModelObservation::BudgetClamp {
+                                            requested,
+                                            granted,
+                                        } => budget_clamp_notice(&obs_session, requested, granted),
                                     };
                                     let mut guard =
                                         obs_out.lock().unwrap_or_else(|p| p.into_inner());
@@ -1769,6 +1914,11 @@ where
                                         reasoning_effort: turn_effort,
                                         verbosity: turn_verbosity,
                                         output_schema: None,
+                                        // P1: the session meter drives the
+                                        // atomic reservation/clamp and the
+                                        // journaled turn-sum; None = pre-P1.
+                                        meter: turn_meter.clone(),
+                                        extra_usage: None,
                                     },
                                 };
                                 let sink_session = session_id.clone();
@@ -1822,6 +1972,24 @@ where
                                         &mut sink,
                                     )
                                     .await;
+                                // P1 §5: the meter's status payload rides
+                                // every turn end (Σ tokens | $cost|unpriced
+                                // + the cap position when configured).
+                                if let Some(meter) = &turn_meter {
+                                    let usage = meter.session_usage();
+                                    let state = meter.budget_state();
+                                    let notice = budget_notice(
+                                        &session_id,
+                                        usage.total_tokens(),
+                                        usage.microcents,
+                                        usage.priced,
+                                        state.map(|s| s.limit),
+                                        state.map(|s| s.observed),
+                                    );
+                                    let mut guard =
+                                        budget_out.lock().unwrap_or_else(|p| p.into_inner());
+                                    let _ = write_json(&mut *guard, &notice);
+                                }
                                 // C7/D1+D6: turn-fatal failures and non-cancel
                                 // engine stops answer with a TYPED error
                                 // response; stopReason survives only for
@@ -2016,6 +2184,132 @@ where
                                         NanoErrorExtras::default(),
                                     ),
                                 )?,
+                            }
+                        }
+                        // P1 §4.1/§4.3: `/budget continue <tokens>` — the
+                        // single-shot grant (one grant per stop is the RC2
+                        // scope). Journal-first, accepted-only (the C10
+                        // TodoSet ordering pattern): the command validates,
+                        // Op::BudgetGrant lands DURABLY, and only then does
+                        // the effective-limit cell mutate. Append failure =
+                        // typed error, limit unchanged. Without this command
+                        // a budget-stopped session stays stopped — typed
+                        // error on every prompt, never a soft-continue.
+                        "session/budget" => {
+                            if turn.is_some() {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::TurnInProgress,
+                                        "turn in progress",
+                                        NanoErrorExtras::default(),
+                                    ),
+                                )?;
+                                continue;
+                            }
+                            let Some(active) = session.as_mut() else {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::NoSession,
+                                        "no session: call session/new first",
+                                        NanoErrorExtras::default(),
+                                    ),
+                                )?;
+                                continue;
+                            };
+                            let tokens = params
+                                .as_ref()
+                                .and_then(|p| p.get("tokens"))
+                                .and_then(|t| t.as_u64())
+                                .filter(|t| *t > 0);
+                            let (meter, tokens) = match (active.meter.clone(), tokens) {
+                                (Some(meter), Some(tokens)) => (meter, tokens),
+                                _ => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            NanoErrorKind::InvalidParams,
+                                            "session/budget requires a positive integer `tokens` (and a metered session)",
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                            };
+                            let Some(state) = meter.budget_state() else {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::InvalidParams,
+                                        "no session token cap configured (set NANO_BUDGET_SESSION_TOKENS)",
+                                        NanoErrorExtras::default(),
+                                    ),
+                                )?;
+                                continue;
+                            };
+                            let after_limit = state.limit.saturating_add(tokens);
+                            active.mode_changes += 1;
+                            let grant_id = format!("{}-grant-{}", active.id, active.mode_changes);
+                            let envelope_id =
+                                format!("{}-budget-grant-{}", active.id, active.mode_changes);
+                            // Journal-first: the op lands durably BEFORE the
+                            // limit cell mutates.
+                            let journaled = JournalWriter::open(&active.journal)
+                                .and_then(|mut w| {
+                                    w.append(&OpEnvelope::new(
+                                        envelope_id,
+                                        "now",
+                                        Op::BudgetGrant {
+                                            grant_id,
+                                            tokens,
+                                            after_limit,
+                                        },
+                                    ))
+                                    .map(|_| w)
+                                })
+                                .and_then(|mut w| w.sync());
+                            match journaled {
+                                Ok(()) => {
+                                    let after = meter
+                                        .apply_grant(tokens)
+                                        .expect("cap presence checked above");
+                                    let usage = meter.session_usage();
+                                    let state = meter.budget_state();
+                                    let notice = budget_notice(
+                                        &active.id,
+                                        usage.total_tokens(),
+                                        usage.microcents,
+                                        usage.priced,
+                                        state.map(|s| s.limit),
+                                        state.map(|s| s.observed),
+                                    );
+                                    write_out(&out, &notice)?;
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::ok(
+                                            id,
+                                            serde_json::json!({ "limit": after }),
+                                        ),
+                                    )?;
+                                }
+                                Err(err) => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            NanoErrorKind::JournalUnavailable,
+                                            format!(
+                                                "budget grant journal append failed (limit unchanged): {err}"
+                                            ),
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                }
                             }
                         }
                         // ── C11 (Q1 RULED): ACP extension methods, thin

@@ -58,6 +58,7 @@ fn session_ops() -> Vec<OpEnvelope> {
             Op::TurnEnd {
                 turn_id: "t1".into(),
                 outcome: TurnOutcome::Completed,
+                usage: None,
             },
         ),
     ]
@@ -491,4 +492,244 @@ fn todo_set_unknown_future_status_is_tolerated() {
     assert_eq!(state.todos.len(), 1);
     assert_eq!(state.todos[0].status, crate::op::TodoStatus::Unknown);
     assert!(!state.todos[0].status.is_open());
+}
+
+// ── P1 economy: journal ops + replay folds (design §3.3–3.5, §4.3) ──────
+
+mod p1_economy {
+    use super::*;
+    use crate::op::{ESTIMATION_METHOD_VERSION, TurnUsage, UsageSource};
+    use pretty_assertions::assert_eq;
+
+    fn usage(input: u64, output: u64) -> TurnUsage {
+        TurnUsage {
+            input_tokens: input,
+            output_tokens: output,
+            priced: true,
+            ..Default::default()
+        }
+    }
+
+    /// TurnEnd.usage is serde-defaulted: a pre-P1 journal line (no `usage`
+    /// key) replays unchanged, and a P1 line round-trips the full payload.
+    #[test]
+    fn turn_end_usage_is_serde_defaulted_and_round_trips() {
+        let pre_p1 = r#"{"v":1,"id":"5","ts":"now","op":{"type":"turn_end","turn_id":"t1","outcome":"completed"}}"#;
+        let envelope: OpEnvelope = serde_json::from_str(pre_p1).unwrap();
+        match &envelope.op {
+            Op::TurnEnd { usage, .. } => assert_eq!(*usage, None),
+            other => panic!("expected TurnEnd, got {other:?}"),
+        }
+        // Byte-minimal: no usage recorded => the field is omitted.
+        assert!(!serde_json::to_string(&envelope).unwrap().contains("usage"));
+
+        let p1 = env(
+            "6",
+            Op::TurnEnd {
+                turn_id: "t1".into(),
+                outcome: TurnOutcome::Cancelled,
+                usage: Some(usage(120, 45)),
+            },
+        );
+        let decoded: OpEnvelope =
+            serde_json::from_str(&serde_json::to_string(&p1).unwrap()).unwrap();
+        match &decoded.op {
+            Op::TurnEnd {
+                outcome,
+                usage: Some(u),
+                ..
+            } => {
+                assert_eq!(*outcome, TurnOutcome::Cancelled);
+                assert_eq!(u.input_tokens, 120);
+                assert_eq!(u.output_tokens, 45);
+                assert_eq!(u.usage_source, UsageSource::ProviderReported);
+            }
+            other => panic!("expected TurnEnd with usage, got {other:?}"),
+        }
+    }
+
+    /// The three P1 op payloads carry NUMBERS and bounded enums only — no
+    /// content strings (digest-only invariant): BudgetGrant, ChildUsageRollup.
+    #[test]
+    fn p1_ops_round_trip_numbers_only() {
+        let grant = env(
+            "g1",
+            Op::BudgetGrant {
+                grant_id: "s1-grant-1".into(),
+                tokens: 200,
+                after_limit: 300,
+            },
+        );
+        let decoded: OpEnvelope =
+            serde_json::from_str(&serde_json::to_string(&grant).unwrap()).unwrap();
+        assert_eq!(decoded, grant);
+
+        let rollup = env(
+            "r1",
+            Op::ChildUsageRollup {
+                task_id: "task-1".into(),
+                child_turn_id: "task-1-turn-1".into(),
+                outcome: TurnOutcome::Completed,
+                usage: usage(10, 5),
+            },
+        );
+        let decoded: OpEnvelope =
+            serde_json::from_str(&serde_json::to_string(&rollup).unwrap()).unwrap();
+        assert_eq!(decoded, rollup);
+        // An old reader tolerates both via Unknown-op forward tolerance:
+        // the envelope parses as Unknown and is skipped on replay.
+        let as_old: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&rollup).unwrap()).unwrap();
+        assert_eq!(as_old["op"]["type"], "child_usage_rollup");
+    }
+
+    /// Replay reconstructs session totals from TurnEnd.usage +
+    /// ChildUsageRollup + grants — the kill-resume budget position.
+    #[test]
+    fn replay_folds_usage_rollups_and_grants() {
+        let envelopes = vec![
+            env(
+                "1",
+                Op::SessionBegin {
+                    session_id: "s1".into(),
+                    cwd: "C:\repo".into(),
+                },
+            ),
+            env(
+                "2",
+                Op::TurnEnd {
+                    turn_id: "t1".into(),
+                    outcome: TurnOutcome::Completed,
+                    usage: Some(usage(100, 40)),
+                },
+            ),
+            env(
+                "3",
+                Op::TurnEnd {
+                    turn_id: "t2".into(),
+                    outcome: TurnOutcome::Cancelled,
+                    usage: Some(usage(50, 10)),
+                },
+            ),
+            env(
+                "4",
+                Op::ChildUsageRollup {
+                    task_id: "task-1".into(),
+                    child_turn_id: "task-1-turn-1".into(),
+                    outcome: TurnOutcome::Completed,
+                    usage: usage(30, 20),
+                },
+            ),
+            env(
+                "5",
+                Op::BudgetGrant {
+                    grant_id: "s1-grant-1".into(),
+                    tokens: 200,
+                    after_limit: 300,
+                },
+            ),
+        ];
+        let state = SessionState::fold(&envelopes);
+        assert_eq!(state.session_usage.input_tokens, 180);
+        assert_eq!(state.session_usage.output_tokens, 70);
+        assert!(state.rollup_task_ids.contains("task-1"));
+        assert_eq!(state.budget_granted_tokens, 200);
+        assert_eq!(state.budget_after_limit, Some(300));
+    }
+
+    /// Envelope-id dedup: a retried rollup append never double-counts.
+    #[test]
+    fn replay_dedupes_retried_rollup_append() {
+        let rollup = || {
+            env(
+                "4",
+                Op::ChildUsageRollup {
+                    task_id: "task-1".into(),
+                    child_turn_id: "task-1-turn-1".into(),
+                    outcome: TurnOutcome::Completed,
+                    usage: usage(30, 20),
+                },
+            )
+        };
+        let envelopes = vec![
+            env(
+                "1",
+                Op::SessionBegin {
+                    session_id: "s1".into(),
+                    cwd: "C:\repo".into(),
+                },
+            ),
+            rollup(),
+            rollup(), // retried append, same envelope id
+        ];
+        let state = SessionState::fold(&envelopes);
+        assert_eq!(state.session_usage.input_tokens, 30);
+        assert_eq!(state.session_usage.output_tokens, 20);
+    }
+
+    /// §3.5 provenance: an estimated charge is journaled WITH its
+    /// provenance fields and folds into replay as estimated.
+    #[test]
+    fn estimated_usage_carries_provenance_through_replay() {
+        let mut estimated = TurnUsage::default();
+        estimated.add_estimated(500, 200, 0, false, ESTIMATION_METHOD_VERSION, 700);
+        assert_eq!(estimated.usage_source, UsageSource::Estimated);
+        assert_eq!(
+            estimated.estimation_method_version,
+            Some(ESTIMATION_METHOD_VERSION)
+        );
+        assert_eq!(estimated.request_estimate_input, Some(500));
+        assert_eq!(estimated.request_estimate_output, Some(200));
+        assert_eq!(estimated.applied_estimate, Some(700));
+        assert!(!estimated.priced);
+
+        let envelopes = vec![
+            env(
+                "1",
+                Op::SessionBegin {
+                    session_id: "s1".into(),
+                    cwd: "C:\repo".into(),
+                },
+            ),
+            env(
+                "2",
+                Op::TurnEnd {
+                    turn_id: "t1".into(),
+                    outcome: TurnOutcome::Failed,
+                    usage: Some(estimated),
+                },
+            ),
+        ];
+        let state = SessionState::fold(&envelopes);
+        assert_eq!(state.session_usage.usage_source, UsageSource::Estimated);
+        assert_eq!(state.session_usage.applied_estimate, Some(700));
+        assert!(!state.session_usage.priced);
+    }
+
+    /// UsageSource is #[serde(other)]-tolerant: a source from a newer build
+    /// deserializes as Unknown instead of breaking the fold.
+    #[test]
+    fn usage_source_is_forward_tolerant() {
+        let raw = r#"{"input_tokens":1,"output_tokens":2,"usage_source":"from_the_future"}"#;
+        let usage: TurnUsage = serde_json::from_str(raw).unwrap();
+        assert_eq!(usage.usage_source, UsageSource::Unknown);
+        assert_eq!(usage.total_tokens(), 3);
+
+        assert_eq!(usage.total_tokens(), 3);
+    }
+
+    /// TurnUsage::add_sum merges provenance conservatively (any estimated
+    /// contribution marks the result estimated; estimates sum).
+    #[test]
+    fn add_sum_merges_provenance() {
+        let mut a = usage(10, 5);
+        let mut b = TurnUsage::default();
+        b.add_estimated(100, 50, 0, false, ESTIMATION_METHOD_VERSION, 150);
+        a.add_sum(&b);
+        assert_eq!(a.input_tokens, 110);
+        assert_eq!(a.output_tokens, 55);
+        assert_eq!(a.usage_source, UsageSource::Estimated);
+        assert_eq!(a.applied_estimate, Some(150));
+        assert!(!a.priced);
+    }
 }
