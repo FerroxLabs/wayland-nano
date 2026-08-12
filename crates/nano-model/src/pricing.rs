@@ -415,9 +415,14 @@ output_per_mtok_usd = 15.0
 
     /// Fail-closed override (P1 §3.1): a malformed NANO_PRICING_PATH file is
     /// a typed error NAMING THE PATH — never a silent fallback to bundled,
-    /// never a partial parse.
+    /// never a partial parse; an unreadable override path is likewise
+    /// typed. Env-mutating tests must not run in parallel with each other
+    /// (or with `load_default` readers): keep every NANO_PRICING_PATH case
+    /// in ONE test body so the harness serializes them (the flux_key.rs
+    /// convention).
     #[test]
-    fn malformed_override_is_a_typed_error_naming_the_path() {
+    fn override_failures_are_typed_and_bundled_loads_clean() {
+        // Malformed override → typed Parse error naming the path.
         let dir = std::env::temp_dir().join(format!("nano-pricing-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("bad-pricing.toml");
@@ -432,12 +437,9 @@ output_per_mtok_usd = 15.0
             }
             other => panic!("malformed override must be a typed Parse error, got {other:?}"),
         }
-    }
 
-    /// An unreadable override path is likewise typed (fail-closed), never a
-    /// silent bundled fallback.
-    #[test]
-    fn unreadable_override_is_a_typed_error_naming_the_path() {
+        // Unreadable override path → typed Io error naming the path
+        // (fail-closed), never a silent bundled fallback.
         let path = std::env::temp_dir().join(format!(
             "nano-pricing-missing-{}/no-such.toml",
             std::process::id()
@@ -451,13 +453,15 @@ output_per_mtok_usd = 15.0
             }
             other => panic!("unreadable override must be a typed Io error, got {other:?}"),
         }
-    }
 
-    /// Absence is never $0: a model with no row resolves unpriced through
-    /// the status API (the caller decides; the numeric API stays an Err).
-    #[test]
-    fn missing_model_row_is_unpriced_never_zero() {
-        let cat = PricingCatalog::load_default().expect("bundled catalog parses");
+        // Bundled catalog parses clean (override var unset — same
+        // serialized body).
+        let cat = PricingCatalog::load_default().expect("bundled catalog should parse");
+        assert!(!cat.providers.is_empty());
+
+        // Absence is never $0: a model with no row resolves unpriced
+        // through the status API (the caller decides; the numeric API
+        // stays an Err).
         assert!(matches!(
             cat.estimate_cost_status("flux-router", "no-such-model", 10, 10),
             Err(PricingError::UnknownModel { .. })
@@ -466,11 +470,5 @@ output_per_mtok_usd = 15.0
             cat.get("no-such-provider", "x"),
             Err(PricingError::UnknownProvider(_))
         ));
-    }
-
-    #[test]
-    fn load_default_succeeds() {
-        let cat = PricingCatalog::load_default().expect("bundled catalog should parse");
-        assert!(!cat.providers.is_empty());
     }
 }

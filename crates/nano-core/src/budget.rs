@@ -34,24 +34,24 @@ pub fn session_token_cap_from_env() -> Result<Option<u64>, String> {
 mod tests {
     use super::*;
 
+    // Env-mutating tests must not run in parallel with each other; keep
+    // them in one test body so the harness serializes them (the
+    // flux_key.rs convention — a shared env var across parallel tests
+    // races).
     #[test]
-    fn unset_is_no_cap() {
+    fn cap_resolution_unset_valid_and_malformed() {
+        // Unset = no cap (back-compat).
         unsafe { std::env::remove_var(SESSION_TOKENS_ENV) };
         assert_eq!(session_token_cap_from_env(), Ok(None));
-    }
 
-    #[test]
-    fn valid_positive_integer_is_the_cap() {
+        // A valid positive integer is the cap.
         unsafe { std::env::set_var(SESSION_TOKENS_ENV, "100") };
         let parsed = session_token_cap_from_env();
         unsafe { std::env::remove_var(SESSION_TOKENS_ENV) };
         assert_eq!(parsed, Ok(Some(100)));
-    }
 
-    /// Fail-closed: a malformed cap is a typed error naming the var, never
-    /// a silently-uncapped session.
-    #[test]
-    fn malformed_value_is_a_typed_error_naming_the_var() {
+        // Fail-closed: a malformed cap is a typed error naming the var,
+        // never a silently-uncapped session.
         for bad in ["abc", "-5", "0", "1.5", "  "] {
             unsafe { std::env::set_var(SESSION_TOKENS_ENV, bad) };
             let parsed = session_token_cap_from_env();
