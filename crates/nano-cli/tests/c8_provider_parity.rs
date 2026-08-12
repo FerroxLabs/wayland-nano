@@ -588,6 +588,8 @@ impl Host {
                     reasoning_effort: None,
                     verbosity: None,
                     cron_home: None,
+                    search: None,
+                    search_meter: None,
                 };
                 acp_mode::serve(
                     ChannelReader {

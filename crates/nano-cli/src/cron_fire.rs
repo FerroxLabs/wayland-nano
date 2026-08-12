@@ -145,6 +145,9 @@ where
             journal,
             events,
             &[],
+            // P1: cron executors carry no search wiring — the scheduled
+            // surface stays the pre-P1 set (fail-closed registration).
+            false,
         )
         .await;
         match outcome.state {

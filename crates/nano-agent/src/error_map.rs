@@ -123,6 +123,27 @@ pub fn kind_of_web_fetch(err: &nano_tools::web::WebFetchError) -> NanoErrorKind 
     }
 }
 
+/// web_search failures (P1): argument validation is model-correctable;
+/// unavailability (and the unmetered-construction refusal) is the
+/// fail-closed policy posture — the same kind the unconfigured web_fetch
+/// arm uses; backend failures route through the model/egress tables;
+/// cancellation is the one kind that is never an error on the wire.
+pub fn kind_of_web_search(err: &nano_tools::web_search::WebSearchError) -> NanoErrorKind {
+    use nano_tools::web_search::{BackendErrorKind, WebSearchError};
+    match err {
+        WebSearchError::Args(_) => NanoErrorKind::MissingArgs,
+        WebSearchError::Unavailable(_) | WebSearchError::Unmetered(_) => {
+            NanoErrorKind::EgressDenied
+        }
+        WebSearchError::Cancelled => NanoErrorKind::UserCancelled,
+        WebSearchError::Backend { kind, .. } => match kind {
+            BackendErrorKind::Model(err) => kind_of_model(err),
+            BackendErrorKind::Egress(err) => kind_of_egress(err),
+            BackendErrorKind::Parse(_) => NanoErrorKind::ModelProtocol,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +237,61 @@ mod tests {
         assert_eq!(
             kind_of_mcp(&McpError::OutputBounded(9)),
             NanoErrorKind::McpOutputBounded
+        );
+    }
+
+    /// P1 web_search pins: the C7 table is REUSED — no new kinds (args →
+    /// missing_args, unavailable/unmetered → egress_denied like the
+    /// unconfigured web_fetch arm, backend kinds route through the
+    /// model/egress tables, cancelled → user_cancelled).
+    #[test]
+    fn web_search_variant_pins() {
+        use nano_model::types::ModelError;
+        use nano_tools::web_search::{BackendErrorKind, WebSearchError};
+
+        assert_eq!(
+            kind_of_web_search(&WebSearchError::Args("x".into())),
+            NanoErrorKind::MissingArgs
+        );
+        assert_eq!(
+            kind_of_web_search(&WebSearchError::Unavailable("x".into())),
+            NanoErrorKind::EgressDenied
+        );
+        assert_eq!(
+            kind_of_web_search(&WebSearchError::Unmetered("x".into())),
+            NanoErrorKind::EgressDenied
+        );
+        assert_eq!(
+            kind_of_web_search(&WebSearchError::Cancelled),
+            NanoErrorKind::UserCancelled
+        );
+        assert_eq!(
+            kind_of_web_search(&WebSearchError::Backend {
+                backend: "flux".into(),
+                kind: BackendErrorKind::Model(ModelError::Transport {
+                    phase: nano_model::types::TransportPhase::Connect,
+                    message: "x".into(),
+                }),
+            }),
+            NanoErrorKind::ModelTransport
+        );
+        assert_eq!(
+            kind_of_web_search(&WebSearchError::Backend {
+                backend: "brave".into(),
+                kind: BackendErrorKind::Egress(nano_egress::client::EgressError::HttpStatus {
+                    status: 500,
+                    host: "h".into(),
+                    digest: "d".into(),
+                }),
+            }),
+            NanoErrorKind::ModelServer5xx
+        );
+        assert_eq!(
+            kind_of_web_search(&WebSearchError::Backend {
+                backend: "flux".into(),
+                kind: BackendErrorKind::Parse("x".into()),
+            }),
+            NanoErrorKind::ModelProtocol
         );
     }
 }

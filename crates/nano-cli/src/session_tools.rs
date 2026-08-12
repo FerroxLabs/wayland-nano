@@ -508,6 +508,20 @@ impl ToolExecutor for SessionTools<'_> {
             _ => self.inner.execute(call).await,
         }
     }
+
+    /// P1: thread the turn's cancel flag through to the inner executor
+    /// (web_search's in-flight cancellation); the session-owned arms are
+    /// serviced here and complete at the loop's boundary checks.
+    async fn execute_cancellable(
+        &self,
+        call: &ToolCall,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ToolOutcome {
+        match call.name.as_str() {
+            "todo" | "enter_plan_mode" | "exit_plan_mode" | "ask_user" => self.execute(call).await,
+            _ => self.inner.execute_cancellable(call, cancel).await,
+        }
+    }
 }
 
 /// The protocol-host approval gate (C10 §3): the historical host gate is

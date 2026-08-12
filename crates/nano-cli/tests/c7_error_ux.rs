@@ -285,6 +285,8 @@ impl Harness {
                     reasoning_effort: None,
                     verbosity: None,
                     cron_home: None,
+                    search: None,
+                    search_meter: None,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -704,6 +706,8 @@ fn real_executor_denial_maps_through() {
                 reasoning_effort: None,
                 verbosity: None,
                 cron_home: None,
+                search: None,
+                search_meter: None,
             };
             let driver = MockDriver {
                 script: Arc::new(Mutex::new(

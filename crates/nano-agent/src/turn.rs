@@ -45,6 +45,21 @@ pub trait ModelDriver: Debug + Send + Sync {
 #[async_trait::async_trait]
 pub trait ToolExecutor: Debug + Send + Sync {
     async fn execute(&self, call: &ToolCall) -> ToolOutcome;
+
+    /// The cancel-aware variant (P1 §2.2, r2 codex-F3 — the ModelDriver
+    /// `complete_observed` precedent): executors with cancel-selectable
+    /// in-flight I/O (web_search's grounding send/body-read) override this
+    /// to honor the flag mid-call; every other executor falls back to the
+    /// plain call — the flag is then checked at the turn loop's boundaries
+    /// exactly as before, never misrouted.
+    async fn execute_cancellable(
+        &self,
+        call: &ToolCall,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ToolOutcome {
+        let _ = cancel;
+        self.execute(call).await
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -892,7 +907,7 @@ impl<'a> TurnEngine<'a> {
                         continue;
                     }
                 }
-                let outcome = self.tools.execute(call).await;
+                let outcome = self.tools.execute_cancellable(call, cancel).await;
                 step_progress.files_changed |= outcome.progress.files_changed;
                 step_progress.process_outcome_changed |= outcome.progress.process_outcome_changed;
                 step_progress.new_information |= outcome.progress.new_information;

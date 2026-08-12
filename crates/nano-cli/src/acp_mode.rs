@@ -323,6 +323,16 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
             ),
         }
     };
+    // P1: web_search — the key-gated ladder, resolved ONCE at host start
+    // (design §2.3: mid-session re-resolution is out of scope). The meter
+    // handle is Lane B's session CostMeter; the stub stands the seam up
+    // (no pricing, no cap authority) until it lands.
+    let search_meter: Arc<dyn nano_model::metering::UsageSink> =
+        Arc::new(nano_model::metering::StubCostMeter::new());
+    let search = crate::search_specs::web_search_tool_from_env(Some(search_meter.clone()));
+    let search_tool = search.as_ref().map(|resolved| resolved.tool.clone());
+    let tools_search = search_tool.clone();
+    let tools_meter = search_meter.clone();
     let make_tools = move |workspace: &std::path::Path,
                            mode: PermissionMode,
                            plan_file: &std::path::Path,
@@ -363,6 +373,10 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         // configures the second egress policy domain.
         if let Some(fetch) = crate::fetch_specs::web_fetch_tool_from_env() {
             executor = executor.with_web_fetch(fetch);
+        }
+        // P1: web_search with the session meter handle (design §2.5).
+        if let Some(tool) = &tools_search {
+            executor = executor.with_web_search(tool.clone(), tools_meter.clone());
         }
         // C10 §6: live-wire diffs (never journaled).
         if let Some(hook) = diff_hook {
@@ -420,6 +434,8 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         journal_append_failer: None,
         memory: &memory_config,
         cron_home: Some(nano_home),
+        search: search.as_ref(),
+        search_meter: Some(&search_meter),
     };
     serve(reader, writer, &config, make_driver, make_tools).await
 }
@@ -514,6 +530,11 @@ pub struct ServeConfig<'a> {
     /// host (30s, wcore TICK_INTERVAL parity), firing due jobs through the
     /// §5.4 transaction. `None` in tests and headless profiles.
     pub cron_home: Option<&'a std::path::Path>,
+    /// P1: the resolved web_search surface and its session meter handle
+    /// (Lane B swaps the stub for the session CostMeter). `None` =
+    /// unregistered — the advertised surface and every child match.
+    pub search: Option<&'a crate::search_specs::ResolvedSearch>,
+    pub search_meter: Option<&'a Arc<dyn nano_model::metering::UsageSink>>,
 }
 
 /// C5 memory wiring for the ACP host.
@@ -811,12 +832,22 @@ where
                             if let Some(old) = session.take() {
                                 old.tasks.teardown_all();
                             }
-                            let tasks = Arc::new(nano_agent::tasks::TaskRegistry::new(
+                            let mut registry = nano_agent::tasks::TaskRegistry::new(
                                 &task_nano_home,
                                 &cwd,
                                 config.default_model.to_string(),
                                 make_task_driver_factory(config.default_model),
-                            ));
+                            );
+                            // P1 (D12): children inherit the session search
+                            // chain + meter — advertised and metered exactly
+                            // like the parent surface.
+                            if let (Some(resolved), Some(meter)) =
+                                (config.search, config.search_meter)
+                            {
+                                registry = registry
+                                    .with_web_search(resolved.tool.clone(), meter.clone());
+                            }
+                            let tasks = Arc::new(registry);
                             *current_tasks.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(tasks.clone());
                             session = Some(Session {
@@ -995,12 +1026,22 @@ where
                             if let Some(old) = session.take() {
                                 old.tasks.teardown_all();
                             }
-                            let tasks = Arc::new(nano_agent::tasks::TaskRegistry::new(
+                            let mut registry = nano_agent::tasks::TaskRegistry::new(
                                 &task_nano_home,
                                 &cwd,
                                 config.default_model.to_string(),
                                 make_task_driver_factory(config.default_model),
-                            ));
+                            );
+                            // P1 (D12): children inherit the session search
+                            // chain + meter — advertised and metered exactly
+                            // like the parent surface.
+                            if let (Some(resolved), Some(meter)) =
+                                (config.search, config.search_meter)
+                            {
+                                registry = registry
+                                    .with_web_search(resolved.tool.clone(), meter.clone());
+                            }
+                            let tasks = Arc::new(registry);
                             *current_tasks.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(tasks.clone());
                             session = Some(Session {
@@ -1651,7 +1692,8 @@ where
                                 // session registry, everything else to the core
                                 // tools; the model sees both tool sets.
                                 let mcp_executor = McpToolExecutor::from_shared(turn_mcp, &tools);
-                                let mut tool_definitions = v1_tool_definitions();
+                                let mut tool_definitions =
+                                    v1_tool_definitions(config.search.is_some());
                                 tool_definitions
                                     .extend(mcp_executor.tool_definitions_from_registry());
                                 // C5: the memory family routes through its own

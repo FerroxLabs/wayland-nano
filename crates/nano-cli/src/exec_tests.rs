@@ -131,6 +131,7 @@ async fn run_fake_shared(tag: &str, model: FakeModel, params: &ExecParams) -> (E
         move || model.clone(),
         move |_, _| (FakeTools::default(), fake_policy()),
         false,
+        false,
         &[],
         writer,
     )
@@ -365,6 +366,7 @@ async fn resume_restarts_seq_and_continues_journal() {
         || FakeModel::with(vec![text_response("one")]),
         move |_, _| (FakeTools::default(), fake_policy()),
         false,
+        false,
         &[],
         SharedWriter(shared.clone()),
     )
@@ -391,6 +393,7 @@ async fn resume_restarts_seq_and_continues_journal() {
         "fake-model",
         || FakeModel::with(vec![text_response("two")]),
         move |_, _| (FakeTools::default(), fake_policy()),
+        false,
         false,
         &[],
         SharedWriter(shared.clone()),
@@ -646,6 +649,7 @@ done
         "fake-model",
         || FakeModel::with(vec![text_response("hi")]),
         move |_, _| (FakeTools::default(), fake_policy()),
+        false,
         false,
         &[spec],
         SharedWriter(shared),

@@ -64,7 +64,7 @@ fn engine_for<'a>(
             max_wall_time: std::time::Duration::from_secs(600),
         },
         model_name: "flux-fast".into(),
-        tool_definitions: v1_tool_definitions(),
+        tool_definitions: v1_tool_definitions(false),
         approval: Some(approve_all),
         compaction: None,
         robustness: Default::default(),

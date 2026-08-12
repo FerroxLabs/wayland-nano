@@ -517,6 +517,22 @@ impl ToolExecutor for MemoryToolExecutor<'_> {
             _ => self.inner.execute(call).await,
         }
     }
+
+    /// P1: thread the turn's cancel flag through to the inner executor
+    /// (web_search's in-flight cancellation); memory's own arms are
+    /// synchronous and complete at the loop's boundary checks.
+    async fn execute_cancellable(
+        &self,
+        call: &ToolCall,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ToolOutcome {
+        match call.name.as_str() {
+            "memory_list" | "memory_read" | "memory_save" | "memory_delete" => {
+                self.execute(call).await
+            }
+            _ => self.inner.execute_cancellable(call, cancel).await,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -296,7 +296,14 @@ where
                     attempt: next,
                     delay_ms,
                 } => {
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    // P1 (r2 codex-F3): the fast-class sleep rides the same
+                    // cancel-selectable wait as the reconnect class — EVERY
+                    // retry-sleep surface preempts promptly on cancel.
+                    if sleep_or_cancel(std::time::Duration::from_millis(delay_ms), hooks.cancel)
+                        .await
+                    {
+                        return Err(ModelError::Cancelled);
+                    }
                     fast_attempt = next;
                     last_class = Some(RetryClass::Fast);
                 }
@@ -680,6 +687,45 @@ mod tests {
         })
         .await
         .expect("cancel must preempt the 30s sleep promptly");
+        assert!(matches!(result, Err(ModelError::Cancelled)));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    /// P1 (r2 codex-F3): the FAST-class retry sleep is cancel-selectable
+    /// too — every retry-sleep surface preempts promptly with typed
+    /// Cancelled (the design note's grounding-cancellation invariant).
+    #[tokio::test]
+    async fn cancel_preempts_a_fast_sleep() {
+        let cancel = AtomicBool::new(false);
+        let config = RetryConfig {
+            fast: RetryPolicy {
+                max_attempts: 3,
+                base_delay_ms: 30_000,
+                max_delay_ms: 30_000,
+            },
+            ..tiny_config()
+        };
+        let hooks = CallHooks {
+            cancel: Some(&cancel),
+            observer: None,
+        };
+        let started = std::time::Instant::now();
+        let flag = &cancel;
+        let driver = run_with_retries(&config, &hooks, || async {
+            Err::<ModelResponse, _>(ModelError::RateLimited {
+                retry_after_ms: None,
+            })
+        });
+        tokio::pin!(driver);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let canceller = async {
+                tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            };
+            tokio::join!(driver, canceller).0
+        })
+        .await
+        .expect("cancel must preempt the 30s fast sleep promptly");
         assert!(matches!(result, Err(ModelError::Cancelled)));
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }

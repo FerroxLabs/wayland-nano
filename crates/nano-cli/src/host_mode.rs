@@ -45,6 +45,15 @@ pub async fn run(
     if let Some(fetch) = nano_cli::fetch_specs::web_fetch_tool_from_env() {
         executor = executor.with_web_fetch(fetch);
     }
+    // P1: web_search — the key-gated ladder, resolved ONCE at host start.
+    // The meter handle is Lane B's session CostMeter; the stub stands the
+    // seam up (no pricing, no cap authority) until it lands.
+    let search_meter: Arc<dyn nano_model::metering::UsageSink> =
+        Arc::new(nano_model::metering::StubCostMeter::new());
+    let search = nano_cli::search_specs::web_search_tool_from_env(Some(search_meter.clone()));
+    if let Some(resolved) = &search {
+        executor = executor.with_web_search(resolved.tool.clone(), search_meter.clone());
+    }
     let driver = FluxDriver::new(FluxCompletionsClient::new(EgressClient::flux()), api_key);
 
     // C10: the session-owned tools need a session cell set even here (the
@@ -95,7 +104,7 @@ pub async fn run(
         workspace.join(".nano").join("skills"),
     ]);
 
-    let mut tool_definitions = v1_tool_definitions();
+    let mut tool_definitions = v1_tool_definitions(search.is_some());
     tool_definitions.extend(mcp_definitions);
     tool_definitions.extend(nano_agent::memory::memory_tool_definitions(memory_write));
 

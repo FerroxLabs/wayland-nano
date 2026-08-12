@@ -1497,14 +1497,17 @@ dependencies = [
 name = "nano-tools"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "dunce",
  "globset",
  "libc",
  "nano-core",
  "nano-egress",
+ "nano-model",
  "nano-sandbox",
  "pretty_assertions",
  "regex",
+ "reqwest",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
