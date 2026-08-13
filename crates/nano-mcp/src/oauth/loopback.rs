@@ -24,6 +24,7 @@ use std::time::Instant;
 
 use super::FailReason;
 use super::OAuthError;
+use super::bounded_error_code;
 use super::pkce::random_token_128;
 
 /// Listener lifetime (§6.2: torn down on completion OR 180s expiry).
@@ -89,7 +90,7 @@ pub fn bind(server_id: &str) -> Result<LoopbackBinding, OAuthError> {
 }
 
 /// Test hook: same binding with a shortened expiry (§12 shortens the clock).
-pub fn bind_with_timeout(
+pub(crate) fn bind_with_timeout(
     server_id: &str,
     timeout: Duration,
 ) -> Result<LoopbackBinding, OAuthError> {
@@ -155,6 +156,13 @@ fn accept_loop(
                     let _ = tx.send(CallbackOutcome::Failed(FailReason::StateMismatch));
                     return; // fail-closed teardown
                 }
+                ConnResult::ProviderError(code) => {
+                    // §6.2 step 5: the provider answered with an `error`
+                    // param on a validly-bound state — typed failure, fast
+                    // teardown (never the 180s CallbackTimeout hang).
+                    let _ = tx.send(CallbackOutcome::Failed(FailReason::ProviderError(code)));
+                    return;
+                }
                 ConnResult::Rejected => continue, // bounded 4xx already sent
             },
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -171,6 +179,9 @@ fn accept_loop(
 enum ConnResult {
     Success(String),
     StateMismatch,
+    /// §6.2 step 5: provider `error` param on a validly-bound state,
+    /// carrying the sanitized bounded code.
+    ProviderError(String),
     Rejected,
 }
 
@@ -212,6 +223,7 @@ fn handle_connection(
     }
     let mut code: Option<String> = None;
     let mut seen_state: Option<String> = None;
+    let mut provider_error: Option<String> = None;
     for pair in query.split('&').filter(|p| !p.is_empty()) {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         let v = form_decode(v);
@@ -222,7 +234,22 @@ fn handle_connection(
         match k {
             "code" => code = Some(v),
             "state" => seen_state = Some(v),
+            "error" => provider_error = Some(v),
             _ => {}
+        }
+    }
+    // §6.2 step 5: the provider answered with an `error` param. Only a
+    // validly-bound state makes it the typed ProviderError failure (bounded
+    // code only, `error_description` never crosses the boundary); anything
+    // else falls through to the code/state gauntlet below.
+    if let (Some(raw_code), Some(seen)) = (&provider_error, &seen_state) {
+        if *seen == state {
+            let _ = respond(
+                &mut stream,
+                "200 OK",
+                "<html><body>Wayland Nano login failed; you can close this tab.</body></html>",
+            );
+            return ConnResult::ProviderError(bounded_error_code(raw_code));
         }
     }
     match (code, seen_state) {
@@ -510,5 +537,44 @@ mod tests {
     fn form_decode_handles_plus_and_percent() {
         assert_eq!(form_decode("a+b%20c%2Fd"), "a b c/d");
         assert_eq!(form_decode("plain"), "plain");
+    }
+
+    /// §6.2 step 5: a provider `error` param on a validly-bound state is the
+    /// typed ProviderError failure — fast (no 180s CallbackTimeout hang),
+    /// bounded code only, and the listener is torn down.
+    #[test]
+    fn provider_error_with_valid_state_fails_typed_and_tears_down() {
+        let binding = bind_with_timeout("srv_test", Duration::from_secs(10)).expect("bind");
+        let addr = addr_of(&binding);
+        let host = addr.clone();
+        let path = binding.callback_path.clone();
+        let state = binding.state.clone();
+        let handle = std::thread::spawn(move || binding.await_callback());
+        let status = raw_request(
+            &addr,
+            &format!(
+                "GET {path}?error=Access_Denied&error_description=ignored+prose&state={state} HTTP/1.1\r\nHost: {host}\r\n\r\n"
+            ),
+        );
+        assert!(
+            status.contains("200"),
+            "browser gets a clean answer: {status}"
+        );
+        let err = handle
+            .join()
+            .expect("join")
+            .expect_err("provider error is typed, not a timeout");
+        match err {
+            OAuthError::Failed {
+                reason: FailReason::ProviderError(code),
+            } => assert_eq!(code, "access_denied", "bounded lowercase code"),
+            other => panic!("expected ProviderError, got: {other}"),
+        }
+        // Teardown proof: the port no longer accepts connections.
+        let later = raw_request(&addr, "GET / HTTP/1.1\r\n\r\n");
+        assert!(
+            later.starts_with("CONNECT-ERR"),
+            "listener must be closed after a provider error: {later}"
+        );
     }
 }

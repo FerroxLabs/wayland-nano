@@ -175,9 +175,14 @@ impl EgressTransport {
         Self { client }
     }
 
+    /// Bounded body read. The Content-Length pre-check is only a fast path:
+    /// a content-length-less (chunked) body is STREAMED with a hard byte
+    /// counter (the `fetch_bounded` pattern), refusing at the cap — never
+    /// fully buffered before the check, so a hostile AS cannot force an
+    /// unbounded allocation.
     async fn read_bounded(
         &self,
-        response: reqwest::Response,
+        mut response: reqwest::Response,
     ) -> Result<(u16, Vec<u8>), OAuthError> {
         let status = response.status().as_u16();
         if response
@@ -188,15 +193,26 @@ impl EgressTransport {
                 reason: FailReason::MetadataInvalid,
             });
         }
-        let body = response.bytes().await.map_err(|e| OAuthError::Transport {
-            detail: nano_egress::client::sanitize_transport_error(&e),
-        })?;
-        if body.len() > MAX_METADATA_BYTES {
-            return Err(OAuthError::Failed {
-                reason: FailReason::MetadataInvalid,
-            });
+        let mut body: Vec<u8> = Vec::new();
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    if body.len() + chunk.len() > MAX_METADATA_BYTES {
+                        return Err(OAuthError::Failed {
+                            reason: FailReason::MetadataInvalid,
+                        });
+                    }
+                    body.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    return Err(OAuthError::Transport {
+                        detail: nano_egress::client::sanitize_transport_error(&e),
+                    });
+                }
+            }
         }
-        Ok((status, body.to_vec()))
+        Ok((status, body))
     }
 
     fn gated(
@@ -292,5 +308,87 @@ pub fn bounded_error_code(raw: &str) -> String {
         "provider_error".to_string()
     } else {
         cleaned
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// MEDIUM-3 regression pin (§6.3): a content-length-less (chunked) body
+    /// larger than MAX_METADATA_BYTES is cut AT the cap — streamed with a
+    /// hard byte counter, never fully buffered first. The server streams
+    /// forever, so the read can only end via the cap cut; a fully-buffering
+    /// read would hang to the client's 300s total timeout (and then surface
+    /// as Transport, not the typed refusal).
+    #[tokio::test]
+    async fn chunked_body_over_cap_is_refused_without_full_buffering() {
+        use std::io::Read as _;
+        use std::io::Write as _;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+            // Consume the request head.
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .expect("headers");
+            // Stream 4 KiB chunks forever — no terminating chunk, no end.
+            let payload = vec![b'x'; 4096];
+            loop {
+                let frame = format!("{:x}\r\n", payload.len());
+                if stream.write_all(frame.as_bytes()).is_err()
+                    || stream.write_all(&payload).is_err()
+                    || stream.write_all(b"\r\n").is_err()
+                {
+                    break; // the client cut the stream
+                }
+            }
+        });
+
+        let transport = EgressTransport::new(nano_egress::client::EgressClient::without_redirects(
+            nano_egress::policy::EgressPolicy::new().allow_host_with_http("127.0.0.1"),
+        ));
+        let url = format!("http://127.0.0.1:{port}/.well-known/oauth-authorization-server");
+        let started = std::time::Instant::now();
+        let err = transport
+            .get_bounded(&url)
+            .await
+            .expect_err("an over-cap chunked body must be refused");
+        assert!(
+            matches!(
+                err,
+                OAuthError::Failed {
+                    reason: FailReason::MetadataInvalid
+                }
+            ),
+            "err: {err}"
+        );
+        // The never-ending body was cut at the cap. A buffering read would
+        // only end at the 300s client timeout — a 30s bound is a 10x margin
+        // over the sub-second streaming cut and 10x under the broken mode.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the refusal must come from the streaming cap cut, not a timeout: {:?}",
+            started.elapsed()
+        );
     }
 }

@@ -102,6 +102,11 @@ impl RedirectGate {
 pub struct EgressClient {
     client: reqwest::Client,
     policy: EgressPolicy,
+    /// The redirect posture chosen at construction: `without_redirects`
+    /// sets this false so the per-request grant-bearing client follows
+    /// NOTHING either (P3 §6.3 — a redirect is a typed failure, not a
+    /// followed hop, on every OAuth transport request).
+    follow_redirects: bool,
     fetch_driver: std::sync::Arc<dyn FetchDriver>,
 }
 
@@ -132,6 +137,7 @@ impl EgressClient {
         Self {
             client,
             policy,
+            follow_redirects: true,
             fetch_driver: std::sync::Arc::new(SystemFetchDriver),
         }
     }
@@ -150,6 +156,7 @@ impl EgressClient {
         Self {
             client,
             policy,
+            follow_redirects: false,
             fetch_driver: std::sync::Arc::new(SystemFetchDriver),
         }
     }
@@ -187,8 +194,13 @@ impl EgressClient {
         }
     }
 
-    /// The client a gated request is built on. Grant-less policies use the
-    /// shared client (host rules are method-agnostic, so the shared redirect
+    /// The client a gated request is built on. A `without_redirects`
+    /// posture always wins: the shared client already follows nothing, so
+    /// grant-bearing policies keep the no-follow posture instead of being
+    /// re-routed through the follow gate (P3 §6.3: OAuth's clients always
+    /// carry EndpointGrants, and an AS redirect must be a returned 3xx,
+    /// never a followed hop). Otherwise grant-less policies use the shared
+    /// client (host rules are method-agnostic, so the shared redirect
     /// closure's host-only gate is exact). Grant-bearing policies get a
     /// per-request client whose redirect closure tracks the chain's method
     /// and re-gates every hop with the EFFECTIVE next-hop method (P3 §6.3
@@ -196,7 +208,7 @@ impl EgressClient {
     /// or not at all). reqwest's redirect `Attempt` does not expose the
     /// method, which is why the gate lives on a per-request client.
     fn request_client(&self, method: &reqwest::Method) -> reqwest::Client {
-        if !self.policy.has_endpoint_grants() {
+        if !self.follow_redirects || !self.policy.has_endpoint_grants() {
             return self.client.clone();
         }
         let gate = std::sync::Arc::new(RedirectGate::new(self.policy.clone(), method.clone()));

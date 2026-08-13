@@ -1006,3 +1006,54 @@ async fn without_redirects_returns_3xx_and_never_follows() {
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(hit_count(&exfil), 0, "redirect target saw zero bytes");
 }
+
+/// The HIGH-1 regression pin (§6.3): a `without_redirects` client carrying
+/// an EndpointGrant (OAuth's bootstrap/scoped clients ALWAYS do) must keep
+/// the no-follow posture through `request_client` — a 307 to its own URL is
+/// RETURNED unfollowed, and the server sees exactly one request. Before the
+/// fix, grant-bearing policies were silently re-routed through the
+/// redirect-FOLLOW gate, so this test's second hit landed and the final
+/// status was 200.
+#[tokio::test]
+async fn without_redirects_grant_bearing_returns_3xx_unfollowed() {
+    let canary = format!("/nano-canary-noredir-grant-{}", std::process::id());
+    let redirect_target = canary.clone();
+    let origin = spawn_listener(&canary, move |mut stream, n| {
+        if n == 1 {
+            // 307 to ITSELF (method-preserving): a follow gate would loop
+            // back here; the no-follow posture must return it as-is.
+            respond(
+                &mut stream,
+                "307 Temporary Redirect",
+                &format!("Location: {redirect_target}\r\n"),
+                "",
+            );
+        } else {
+            respond(&mut stream, "200 OK", "", "nano-followed-hop");
+        }
+    });
+    let policy = EgressPolicy::new()
+        .allow_host_with_http("127.0.0.1")
+        // A grant forces grant-bearing routing; the no-follow posture must
+        // still win over the method-aware follow gate.
+        .allow_endpoint(
+            nano_egress::grant::HttpMethod::Post,
+            "https://as.example/token",
+        )
+        .expect("grant");
+    let client = EgressClient::without_redirects(policy);
+    let url = format!("http://127.0.0.1:{}{canary}", origin.addr.port());
+    let response = client
+        .request(reqwest::Method::POST, &url)
+        .expect("allowlisted")
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(
+        response.status().as_u16(),
+        307,
+        "the 307 must be returned, not followed"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(hit_count(&origin), 1, "zero second request may be sent");
+}
