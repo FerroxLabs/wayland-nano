@@ -21,6 +21,9 @@ dunce = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+[target.'cfg(unix)'.dependencies]
+portable-pty = "0.9"
+
 [features]
 # Compiles the pure unix argv/policy builders (seatbelt, landlock, bwrap) on
 # non-unix hosts so downstream crates can unit-test their sandbox transform

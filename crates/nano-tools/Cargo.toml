@@ -21,6 +21,7 @@ nano-session = { version = "0.1.0", path = "../nano-session" }
 async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 # P2a §4.7/D8: pinned at the workspace table with the link-level decoder
 # allowlist {png, jpeg, gif, webp} — do NOT enable further features here
@@ -36,6 +37,12 @@ tokio = { version = "1", features = ["rt", "sync"] }
 [target.'cfg(unix)'.dependencies]
 # Process-group kill for the C6 task kill domain (run_task).
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 # Feature-unify the pure unix argv/policy builders into test builds so the
