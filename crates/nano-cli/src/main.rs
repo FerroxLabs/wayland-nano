@@ -96,13 +96,18 @@ fn main() {
             let mut out = std::io::stdout();
             goal_command(&sessions_dir, &args[2..], &mut out)
         }
+        Some("sessions") => {
+            let sessions_dir = nano_home().join("sessions");
+            let mut out = std::io::stdout();
+            nano_cli::session_browser::print_sessions(&sessions_dir, &mut out)
+        }
         Some("--version") | Some("-V") => {
             println!("wayland-nano {}", env!("CARGO_PKG_VERSION"));
             0
         }
         _ => {
             eprintln!(
-                "usage: wayland-nano doctor | protocol-host | acp-host | exec | session fork | goal | --version"
+                "usage: wayland-nano doctor | protocol-host | acp-host | exec | session fork | sessions | goal | --version"
             );
             2
         }

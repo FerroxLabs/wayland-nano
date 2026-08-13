@@ -13,6 +13,7 @@ pub mod model_params;
 pub mod provider_key;
 pub mod provider_router;
 pub mod search_specs;
+pub mod session_browser;
 pub mod session_cmds;
 pub mod session_tools;
 

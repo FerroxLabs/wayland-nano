@@ -305,8 +305,9 @@ fn render_modal(
     let start = selected.saturating_sub(visible.saturating_sub(1));
     let mut lines = Vec::new();
     for (index, item) in view.items.iter().enumerate().skip(start).take(visible) {
-        let marker = if index == selected { "› " } else { "  " };
-        let name_style = if index == selected {
+        let selected_row = view.has_selection() && index == selected;
+        let marker = if selected_row { "› " } else { "  " };
+        let name_style = if selected_row {
             Style::default().add_modifier(Modifier::BOLD)
         } else {
             Style::default()
@@ -331,10 +332,10 @@ fn render_modal(
     }
     frame.render_widget(Paragraph::new(lines), list_area);
 
-    let hint = if kind == "approval" {
-        " Enter decides · Esc denies "
-    } else {
-        " Enter selects · Esc cancels "
+    let hint = match kind {
+        "approval" => " Enter decides · Esc denies ",
+        "session" => " Move to select · Enter resumes · Esc cancels ",
+        _ => " Enter selects · Esc cancels ",
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(

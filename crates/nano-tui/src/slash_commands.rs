@@ -1,6 +1,6 @@
 //! Slash commands (composer prefix `/`): `/model`, `/mode`, `/plan`,
-//! `/todo`, `/status`, `/doctor`, `/compact`, `/attach`, `/quit` — the v1
-//! set (design doc §4 + C10 + P2a).
+//! `/todo`, `/status`, `/doctor`, `/sessions`, `/resume`, `/compact`,
+//! `/attach`, `/quit` — the v1 set (design doc §4 + C10 + P2a + P4).
 //!
 //! `/status` and `/doctor` data path (normative, panel condition C1): both
 //! run `wayland-nano doctor` as a SHORT-LIVED SUBPROCESS and render the
@@ -30,6 +30,10 @@ pub enum SlashCommand {
     Status,
     /// Full doctor output.
     Doctor,
+    /// Request bounded session metadata and open an explicit-selection picker.
+    Sessions,
+    /// Explicitly resume one session id through the existing `session/load`.
+    Resume(String),
     /// Compact the session context now (engine-side, journaled).
     Compact,
     /// Goal lifecycle mirror (C11): `/goal [status|pause|resume|cancel]` —
@@ -66,6 +70,15 @@ pub fn parse(text: &str) -> Option<SlashCommand> {
         "/todo" => SlashCommand::Todo,
         "/status" => SlashCommand::Status,
         "/doctor" => SlashCommand::Doctor,
+        "/sessions" if trimmed == "/sessions" => SlashCommand::Sessions,
+        "/resume" => {
+            let mut parts = trimmed.split_whitespace();
+            let _ = parts.next();
+            match (parts.next(), parts.next()) {
+                (Some(id), None) => SlashCommand::Resume(id.to_string()),
+                _ => SlashCommand::Unknown(trimmed.to_string()),
+            }
+        }
         "/compact" => SlashCommand::Compact,
         "/goal" => SlashCommand::Goal(
             trimmed
@@ -114,6 +127,15 @@ mod tests {
         assert_eq!(parse("/todo"), Some(SlashCommand::Todo));
         assert_eq!(parse("/status"), Some(SlashCommand::Status));
         assert_eq!(parse("/doctor"), Some(SlashCommand::Doctor));
+        assert_eq!(parse("/sessions"), Some(SlashCommand::Sessions));
+        assert_eq!(
+            parse("/resume session-1"),
+            Some(SlashCommand::Resume("session-1".into()))
+        );
+        assert_eq!(
+            parse("/resume"),
+            Some(SlashCommand::Unknown("/resume".into()))
+        );
         assert_eq!(parse("/compact"), Some(SlashCommand::Compact));
         assert_eq!(
             parse("/goal"),

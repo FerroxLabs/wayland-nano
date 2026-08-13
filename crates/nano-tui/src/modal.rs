@@ -1,6 +1,6 @@
 //! One generic list-selection modal (design doc §4, the
 //! `bottom_pane/list_selection_view.rs` pattern) reused for the approval
-//! dialog and the model picker.
+//! dialog, model/mode pickers, and the explicit-selection session picker.
 //!
 //! Approval contract (`approval_overlay.rs` pattern): a selection ALWAYS
 //! emits an explicit decision event — there is no TUI-side auto-approve
@@ -13,7 +13,7 @@ use crossterm::event::KeyEvent;
 /// One row in the modal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListItem {
-    /// Stable identifier handed back on selection (wire optionId / modelId).
+    /// Stable identifier handed back on selection (optionId/modelId/sessionId).
     pub id: String,
     /// Display name.
     pub name: String,
@@ -39,12 +39,12 @@ pub enum ModalOutcome {
 pub struct ListSelectionView {
     pub title: String,
     pub items: Vec<ListItem>,
-    selected: usize,
+    selected: Option<usize>,
 }
 
 impl ListSelectionView {
     pub fn new(title: impl Into<String>, items: Vec<ListItem>) -> Self {
-        let selected = items.iter().position(|i| i.is_current).unwrap_or(0);
+        let selected = Some(items.iter().position(|i| i.is_current).unwrap_or(0));
         Self {
             title: title.into(),
             items,
@@ -52,35 +52,59 @@ impl ListSelectionView {
         }
     }
 
+    /// Session-browser picker constructor: no row is selected until the
+    /// user navigates, so Enter can never load the first row by default.
+    pub fn new_explicit(title: impl Into<String>, items: Vec<ListItem>) -> Self {
+        Self {
+            title: title.into(),
+            items,
+            selected: None,
+        }
+    }
+
     pub fn selected_index(&self) -> usize {
-        self.selected
+        self.selected.unwrap_or(0)
+    }
+
+    /// Whether navigation has explicitly selected a row.
+    pub fn has_selection(&self) -> bool {
+        self.selected.is_some()
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
-                self.selected = self.selected.saturating_sub(1);
+                self.selected = Some(match self.selected {
+                    Some(selected) => selected.saturating_sub(1),
+                    None => self.items.len().saturating_sub(1),
+                });
                 ModalOutcome::Open
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if !self.items.is_empty() {
-                    self.selected = (self.selected + 1).min(self.items.len() - 1);
+                    self.selected = Some(match self.selected {
+                        Some(selected) => (selected + 1).min(self.items.len() - 1),
+                        None => 0,
+                    });
                 }
                 ModalOutcome::Open
             }
             KeyCode::Home => {
-                self.selected = 0;
+                if !self.items.is_empty() {
+                    self.selected = Some(0);
+                }
                 ModalOutcome::Open
             }
             KeyCode::End => {
                 if !self.items.is_empty() {
-                    self.selected = self.items.len() - 1;
+                    self.selected = Some(self.items.len() - 1);
                 }
                 ModalOutcome::Open
             }
-            KeyCode::Enter => match self.items.get(self.selected) {
+            KeyCode::Enter => match self.selected.and_then(|selected| self.items.get(selected)) {
                 Some(item) => ModalOutcome::Selected(item.id.clone()),
-                None => ModalOutcome::Cancelled,
+                None if self.items.is_empty() => ModalOutcome::Cancelled,
+                None => ModalOutcome::Open,
             },
             KeyCode::Esc => ModalOutcome::Cancelled,
             _ => ModalOutcome::Open,
@@ -172,5 +196,19 @@ mod tests {
         its[1].is_current = true;
         let v = ListSelectionView::new("t", its);
         assert_eq!(v.selected_index(), 1);
+    }
+
+    #[test]
+    fn explicit_picker_has_no_default_or_enter_shortcut() {
+        let mut view = ListSelectionView::new_explicit("sessions", items());
+        assert!(!view.has_selection());
+        assert_eq!(view.handle_key(key(KeyCode::Enter)), ModalOutcome::Open);
+        assert!(!view.has_selection());
+        assert_eq!(view.handle_key(key(KeyCode::Down)), ModalOutcome::Open);
+        assert!(view.has_selection());
+        assert_eq!(
+            view.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::Selected("allow".into())
+        );
     }
 }

@@ -44,7 +44,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--help" | "-h" => {
                 return Err(
-                    "usage: nano-tui [--session <id>] [--cwd <dir>]\n  /model /status /doctor /quit"
+                    "usage: nano-tui [--session <id>] [--cwd <dir>]\n  /model /status /doctor /sessions /resume <id> /quit"
                         .to_string(),
                 );
             }
