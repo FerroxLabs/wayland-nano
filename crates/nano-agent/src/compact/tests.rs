@@ -69,6 +69,7 @@ fn text_response(text: &str, input_tokens: u64) -> Result<ModelResponse, ModelEr
             ..Default::default()
         },
         stop_reason: "stop".into(),
+        model: None,
     })
 }
 
@@ -87,6 +88,7 @@ fn tool_response(calls: Vec<ToolCall>, input_tokens: u64) -> Result<ModelRespons
             ..Default::default()
         },
         stop_reason: "tool_calls".into(),
+        model: None,
     })
 }
 

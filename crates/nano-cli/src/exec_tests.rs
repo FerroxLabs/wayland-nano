@@ -3,7 +3,8 @@
 //! containment, --output-last-message semantics, and bounded exit.
 
 use crate::exec_mode::{
-    ExecEvents, ExecGoal, ExecParams, ResumeTarget, atomic_replace_write, exec_gate_decision,
+    ExecEvents, ExecGoal, ExecParams, ExecRouting, ResumeTarget, atomic_replace_write,
+    exec_gate_decision,
 };
 use crate::exec_run::run_exec_with;
 use nano_agent::loop_protection::ProgressSignals;
@@ -12,6 +13,12 @@ use nano_model::types::{ModelError, ModelEvent, ModelRequest, ModelResponse, Too
 use nano_protocol::permission_mode::PermissionMode;
 use nano_session::GoalBudgets;
 use std::path::PathBuf;
+
+/// P5: the pre-P5 posture — implicit alias passthrough, reference flux-auto.
+const IMPLICIT_ROUTING: ExecRouting = ExecRouting {
+    mode: nano_session::RoutingMode::ImplicitAliasPassthrough,
+    reference: String::new(),
+};
 use std::sync::Mutex;
 
 fn tmpdir(tag: &str) -> PathBuf {
@@ -50,6 +57,7 @@ fn text_response(text: &str) -> Result<ModelResponse, ModelError> {
             ..Default::default()
         },
         stop_reason: "end_turn".into(),
+        model: None,
     })
 }
 
@@ -62,6 +70,7 @@ fn tool_response(call: ToolCall) -> Result<ModelResponse, ModelError> {
             ..Default::default()
         },
         stop_reason: "tool_use".into(),
+        model: None,
     })
 }
 
@@ -106,6 +115,8 @@ fn params(prompt: &str) -> ExecParams {
         resume: None,
         output_last_message: None,
         goal: None,
+        model: None,
+        auto: false,
     }
 }
 
@@ -133,6 +144,7 @@ async fn run_fake_shared(tag: &str, model: FakeModel, params: &ExecParams) -> (E
         false,
         false,
         &[],
+        &IMPLICIT_ROUTING,
         writer,
     )
     .await;
@@ -408,6 +420,7 @@ async fn resume_restarts_seq_and_continues_journal() {
         false,
         false,
         &[],
+        &IMPLICIT_ROUTING,
         SharedWriter(shared.clone()),
     )
     .await;
@@ -436,6 +449,7 @@ async fn resume_restarts_seq_and_continues_journal() {
         false,
         false,
         &[],
+        &IMPLICIT_ROUTING,
         SharedWriter(shared.clone()),
     )
     .await;
@@ -692,6 +706,7 @@ done
         false,
         false,
         &[spec],
+        &IMPLICIT_ROUTING,
         SharedWriter(shared),
     )
     .await;

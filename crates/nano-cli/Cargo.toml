@@ -34,6 +34,9 @@ nano-session = { version = "0.1.0", path = "../nano-session" }
 nano-tools = { version = "0.1.0", path = "../nano-tools" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# P5 §7: the candidate snapshot's catalog/proof digest (0.10, the in-tree
+# version — nano-session/nano-model).
+sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 tokio = { version = "1", features = ["macros", "rt", "sync"] }
 

@@ -30,6 +30,7 @@ fn usage_response(text: &str, input: u64, output: u64) -> ModelResponse {
             ..Default::default()
         },
         stop_reason: "stop".into(),
+        model: None,
     }
 }
 

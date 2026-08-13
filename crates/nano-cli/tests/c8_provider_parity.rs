@@ -30,6 +30,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+/// P5: the fail-closed default routing posture for test hosts (no Auto
+/// opt-in, no configured default).
+static DEFAULT_ROUTING: nano_cli::auto_routing::RoutingConfig =
+    nano_cli::auto_routing::RoutingConfig {
+        auto_opt_in: false,
+        configured_default: None,
+    };
+
 fn env_lock() -> MutexGuard<'static, ()> {
     ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -517,6 +525,7 @@ impl ModelDriver for CapturingDriver {
             ],
             usage: Usage::default(),
             stop_reason: "stop".into(),
+            model: None,
         })
     }
 }
@@ -599,6 +608,7 @@ impl Host {
                     budget_cap: None,
                     vision_catalog: &vision_catalog,
                     attachment_home,
+                    routing: &DEFAULT_ROUTING,
                 };
                 acp_mode::serve(
                     ChannelReader {

@@ -121,6 +121,9 @@ fn parse_exec_args(args: &[String]) -> Result<nano_cli::exec_mode::ExecParams, i
     let mut resume = None;
     let mut output_last_message = None;
     let mut goal: Option<nano_cli::exec_mode::ExecGoal> = None;
+    // P5 §1: the explicit model pin and the Auto opt-in.
+    let mut model = None;
+    let mut auto = false;
     let mut positional = Vec::new();
     let mut index = 0;
     let take_value = |args: &[String], index: &mut usize, flag: &str| -> Result<String, i32> {
@@ -131,6 +134,7 @@ fn parse_exec_args(args: &[String]) -> Result<nano_cli::exec_mode::ExecParams, i
                 eprintln!("wayland-nano: {flag} requires a value");
                 eprintln!(
                     "usage: wayland-nano exec [--mode read_only|default|full_auto] \
+                     [--model <id>] [--auto] \
                      [--resume <id> | --resume-last] [--output-last-message <file>] \
                      [--goal <objective> [--token-budget N] [--turn-budget N] \
                      [--wall-clock-budget MS]] [prompt]"
@@ -147,6 +151,17 @@ fn parse_exec_args(args: &[String]) -> Result<nano_cli::exec_mode::ExecParams, i
                     eprintln!("wayland-nano: {err}");
                     2
                 })?;
+            }
+            // P5 §1: an explicit CLI model pin (bare Flux id — exec's wire is
+            // Flux-only today; namespaced pins are the acp-host's C8 surface).
+            "--model" => {
+                let value = take_value(args, &mut index, "--model")?;
+                model = Some(value);
+            }
+            // P5 §1: the explicit Auto opt-in (the resolved reference must be
+            // `flux-auto`; a pin above wins over the opt-in — precedence).
+            "--auto" => {
+                auto = true;
             }
             "--resume" => {
                 let value = take_value(args, &mut index, "--resume")?;
@@ -202,6 +217,8 @@ fn parse_exec_args(args: &[String]) -> Result<nano_cli::exec_mode::ExecParams, i
         resume,
         output_last_message,
         goal,
+        model,
+        auto,
     })
 }
 

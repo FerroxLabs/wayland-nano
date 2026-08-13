@@ -267,6 +267,12 @@ pub struct ModelResponse {
     pub events: Vec<ModelEvent>,
     pub usage: Usage,
     pub stop_reason: String,
+    /// P5 §6: the provider-reported model id from the successful terminal
+    /// completion frame (the response body's `model` field), when supplied
+    /// by the wire. Evidence only — alias-valued or absent means "no
+    /// trustworthy leaf identity"; it never retroactively satisfies a
+    /// pre-dispatch capability gate.
+    pub model: Option<String>,
 }
 
 /// WHERE a transport failure happened (C9). Retry classification consumes

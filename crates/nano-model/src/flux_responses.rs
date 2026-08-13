@@ -307,10 +307,16 @@ pub fn parse_response_body(text: &str) -> Result<ModelResponse, ModelError> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| ModelError::Protocol(format!("bad json: {e}")))?;
     let (events, usage, stop_reason) = parse_response_object(&value);
+    // P5 §6: the provider-reported model id — actual-leaf evidence.
+    let model = value
+        .get("model")
+        .and_then(|m| m.as_str())
+        .map(str::to_string);
     Ok(ModelResponse {
         events,
         usage,
         stop_reason,
+        model,
     })
 }
 
@@ -426,6 +432,8 @@ pub fn parse_sse_responses_stream_observed(
         std::collections::BTreeMap::new();
     let mut usage = Usage::default();
     let mut stop_reason = "completed".to_string();
+    // P5 §6: the terminal frame's provider-reported model id.
+    let mut model: Option<String> = None;
 
     let frames = {
         let mut all = parser.feed(text).map_err(sse_integrity_error)?;
@@ -514,6 +522,11 @@ pub fn parse_sse_responses_stream_observed(
                 // `output[]` duplicates already-emitted deltas, so only the
                 // stop reason and usage are taken from it.
                 if let Some(response) = event.get("response") {
+                    // P5 §6: the terminal completion frame's model id is the
+                    // provider-reported actual-leaf evidence.
+                    if let Some(response_model) = response.get("model").and_then(|m| m.as_str()) {
+                        model = Some(response_model.to_string());
+                    }
                     stop_reason = response
                         .get("incomplete_details")
                         .and_then(|d| d.get("reason"))
@@ -558,5 +571,6 @@ pub fn parse_sse_responses_stream_observed(
         events,
         usage,
         stop_reason,
+        model,
     })
 }

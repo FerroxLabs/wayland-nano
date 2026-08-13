@@ -332,10 +332,18 @@ pub fn parse_completion_body(text: &str) -> Result<ModelResponse, ModelError> {
         })
         .unwrap_or_else(|| "stop".to_string());
 
+    // P5 §6: the provider-reported model id from the terminal completion
+    // frame — evidence for actual-leaf metering, never a client prediction.
+    let model = value
+        .get("model")
+        .and_then(|m| m.as_str())
+        .map(str::to_string);
+
     Ok(ModelResponse {
         events,
         usage,
         stop_reason,
+        model,
     })
 }
 
@@ -376,6 +384,9 @@ pub fn parse_sse_completion_stream(text: &str) -> Result<ModelResponse, ModelErr
         std::collections::BTreeMap::new();
     let mut usage = Usage::default();
     let mut stop_reason = "stop".to_string();
+    // P5 §6: the terminal frame's provider-reported model id (chunks repeat
+    // it; the LAST carrier wins — the terminal completion frame's value).
+    let mut model: Option<String> = None;
 
     let frames = {
         let mut all = parser.feed(text).map_err(sse_integrity_error)?;
@@ -391,6 +402,9 @@ pub fn parse_sse_completion_stream(text: &str) -> Result<ModelResponse, ModelErr
         let Ok(chunk) = serde_json::from_str::<serde_json::Value>(data) else {
             continue;
         };
+        if let Some(chunk_model) = chunk.get("model").and_then(|m| m.as_str()) {
+            model = Some(chunk_model.to_string());
+        }
         if let Some(choice) = chunk
             .get("choices")
             .and_then(|c| c.as_array())
@@ -452,5 +466,6 @@ pub fn parse_sse_completion_stream(text: &str) -> Result<ModelResponse, ModelErr
         events,
         usage,
         stop_reason,
+        model,
     })
 }

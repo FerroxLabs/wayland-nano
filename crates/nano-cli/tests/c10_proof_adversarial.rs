@@ -164,6 +164,14 @@ impl ToolExecutor for TestExec {
 /// Build the executor + policy exactly as the production factory does
 /// (acp_mode.rs:339-371): mode-selected profile, plan-file write root under
 /// nano_home, diff hook attached when the host passes one.
+/// P5: the fail-closed default routing posture for test hosts (no Auto
+/// opt-in, no configured default).
+static DEFAULT_ROUTING: nano_cli::auto_routing::RoutingConfig =
+    nano_cli::auto_routing::RoutingConfig {
+        auto_opt_in: false,
+        configured_default: None,
+    };
+
 fn build_real_tools(
     workspace: &Path,
     mode: PermissionMode,
@@ -208,6 +216,7 @@ fn text_response(text: &str) -> ModelResponse {
         ],
         usage: Usage::default(),
         stop_reason: "stop".into(),
+        model: None,
     }
 }
 
@@ -221,6 +230,7 @@ fn tool_response(call: ToolCall) -> ModelResponse {
         ],
         usage: Usage::default(),
         stop_reason: "tool_calls".into(),
+        model: None,
     }
 }
 
@@ -329,6 +339,7 @@ impl Harness {
                     budget_cap: None,
                     vision_catalog: &vision_catalog,
                     attachment_home,
+                    routing: &DEFAULT_ROUTING,
                 };
                 acp_mode::serve(
                     ChannelReader {

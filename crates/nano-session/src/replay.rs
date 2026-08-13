@@ -32,10 +32,53 @@ use crate::op::GoalReason;
 use crate::op::GoalStatusKind;
 use crate::op::Op;
 use crate::op::OpEnvelope;
+use crate::op::RoutingOutcome;
 use crate::op::TurnOutcome;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
+
+/// P5 §4.1: one turn's journaled routing-ladder record — the candidate
+/// snapshot, the per-rung attempt begins, and the receipts, keyed by
+/// ordinal. The kill-resume reconciler (host side) reads this to replay the
+/// journaled snapshot and remaining budget instead of rediscovering.
+#[derive(Debug, Default, Clone)]
+pub struct TurnRouting {
+    /// The `Op::RoutingSnapshot` op, when journaled (always before dispatch).
+    pub snapshot: Option<Op>,
+    /// `Op::RoutingAttemptBegin` ops by candidate ordinal.
+    pub begins: BTreeMap<u32, Op>,
+    /// `Op::RoutingReceipt` ops by candidate ordinal.
+    pub receipts: BTreeMap<u32, Op>,
+}
+
+impl TurnRouting {
+    /// Ordinals BEGUN without a matching receipt: the in-flight attempts a
+    /// kill left indeterminate (§4.1 — consumed, never auto-replayed).
+    pub fn stranded_ordinals(&self) -> Vec<u32> {
+        self.begins
+            .keys()
+            .filter(|ordinal| !self.receipts.contains_key(*ordinal))
+            .copied()
+            .collect()
+    }
+
+    /// Physical attempts consumed so far: receipted attempts plus one per
+    /// stranded (in-flight) begin.
+    pub fn attempts_consumed(&self) -> u32 {
+        let receipted: u32 = self
+            .receipts
+            .values()
+            .map(|op| match op {
+                Op::RoutingReceipt {
+                    attempts_consumed, ..
+                } => *attempts_consumed,
+                _ => 0,
+            })
+            .sum();
+        receipted + self.stranded_ordinals().len() as u32
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompactionPhase {
@@ -146,6 +189,9 @@ pub struct SessionState {
     pub budget_granted_tokens: u64,
     /// The effective limit after the latest journaled grant (latest-wins).
     pub budget_after_limit: Option<u64>,
+    /// P5: per-turn routing-ladder records (snapshot / begins / receipts)
+    /// folded from the journal — the kill-resume replay source (§4.1).
+    pub routing: BTreeMap<String, TurnRouting>,
     /// Set when the fold hit a structural failure (see [`ReplayError`]);
     /// `fold` records it, `fold_strict` returns it.
     pub integrity_error: Option<ReplayError>,
@@ -447,6 +493,44 @@ impl SessionState {
                 self.rollup_task_ids.insert(task_id.clone());
                 self.session_usage.add_sum(usage);
             }
+            // P5 §4.1: the routing ladder's journaled state (snapshot,
+            // per-rung attempt begins, receipts) folds per turn so a
+            // kill-resumed session replays the snapshot and budget instead
+            // of rediscovering. A `ConsumedInflight` receipt's usage is the
+            // §3.5 estimate charge for a killed in-flight attempt: the turn
+            // never journaled a TurnEnd, so the charge folds into the
+            // session totals HERE (envelope-id dedup = exactly-once).
+            Op::RoutingSnapshot { turn_id, .. } => {
+                self.routing.entry(turn_id.clone()).or_default().snapshot =
+                    Some(envelope.op.clone());
+            }
+            Op::RoutingAttemptBegin {
+                turn_id, ordinal, ..
+            } => {
+                self.routing
+                    .entry(turn_id.clone())
+                    .or_default()
+                    .begins
+                    .insert(*ordinal, envelope.op.clone());
+            }
+            Op::RoutingReceipt {
+                turn_id,
+                ordinal,
+                outcome,
+                usage,
+                ..
+            } => {
+                self.routing
+                    .entry(turn_id.clone())
+                    .or_default()
+                    .receipts
+                    .insert(*ordinal, envelope.op.clone());
+                if matches!(outcome, RoutingOutcome::ConsumedInflight)
+                    && let Some(usage) = usage
+                {
+                    self.session_usage.add_sum(&usage.to_turn_usage());
+                }
+            }
             Op::Unknown => {}
         }
     }
@@ -456,6 +540,28 @@ impl SessionState {
     fn restore_invariants(&mut self) {
         if self.open_turn.is_some() {
             self.turn_interrupted = true;
+            // P5 §4.1/§6: a killed routed turn's RECEIPTED usage never
+            // reached a TurnEnd — recover it into the session totals (a
+            // provider-reported frame for a consumed attempt is never free).
+            // Attempts BEGUN without a receipt stay untouched here: the
+            // host-side reconciler journals their §3.5 estimate as
+            // `ConsumedInflight` receipts, which fold via the receipt arm.
+            let interrupted = self.open_turn.as_ref().map(|turn| turn.turn_id.clone());
+            if let Some(turn_id) = interrupted
+                && let Some(routing) = self.routing.get(&turn_id)
+            {
+                for op in routing.receipts.values() {
+                    if let Op::RoutingReceipt {
+                        outcome,
+                        usage: Some(usage),
+                        ..
+                    } = op
+                        && !matches!(outcome, RoutingOutcome::ConsumedInflight)
+                    {
+                        self.session_usage.add_sum(&usage.to_turn_usage());
+                    }
+                }
+            }
         }
         if matches!(self.compaction, Some(CompactionPhase::Running { .. })) {
             self.compaction = Some(CompactionPhase::Idle);
