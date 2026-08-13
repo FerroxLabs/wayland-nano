@@ -8,8 +8,11 @@
 //! git config, attributes, external diff drivers, textconv, and the pager
 //! can all execute repository-controlled helpers):
 //! - fixed argv: `git --no-pager --no-optional-locks -c core.pager=
-//!   -c diff.external= diff --no-ext-diff --no-textconv HEAD` — pager,
-//!   external diff, and textconv are FLAG-disabled, not environment-hinted;
+//!   -c diff.external= -c core.fsmonitor= diff --no-ext-diff --no-textconv
+//!   HEAD` — pager, external diff, textconv, and the fsmonitor hook are
+//!   FLAG-disabled (command-line `-c` beats every config layer; repo config
+//!   is always read, so repo-local hooks must be neutralized explicitly),
+//!   not environment-hinted;
 //! - scrubbed environment (env-clear + whitelist, never inherit-and-hope):
 //!   `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` pointed
 //!   at the null device, `HOME` at an empty scratch dir,
@@ -107,13 +110,19 @@ pub fn compute_review_bundle(workspace: &Path) -> Result<ReviewDiffBundle, Revie
     }
     let scratch = ScratchHome::new()?;
 
-    let diff_args: [&str; 10] = [
+    let diff_args: [&str; 12] = [
         "--no-pager",
         "--no-optional-locks",
         "-c",
         "core.pager=",
         "-c",
         "diff.external=",
+        // A repo-local core.fsmonitor hook is an executable git spawns
+        // during index refresh — command-line `-c` beats every config
+        // layer (repo config is always read; only system/global are
+        // nulled), so the hook is disabled HERE, flag-style.
+        "-c",
+        "core.fsmonitor=",
         "diff",
         "--no-ext-diff",
         "--no-textconv",
@@ -153,6 +162,10 @@ pub fn compute_review_bundle(workspace: &Path) -> Result<ReviewDiffBundle, Revie
             "--no-optional-locks",
             "-c",
             "core.pager=",
+            // Same fsmonitor neutralization as the diff invocation —
+            // ls-files refreshes the index too.
+            "-c",
+            "core.fsmonitor=",
             "ls-files",
             "--others",
             "--exclude-standard",
@@ -513,49 +526,66 @@ mod tests {
     }
 
     /// §13 isolation battery / §14 promotion gate: a fixture repo whose
-    /// `.git/config` points core.pager and diff.external at a canary
-    /// executable, with a textconv attribute — the canary must NEVER
-    /// execute (fs oracle: no marker file), and the diff still returns.
+    /// `.git/config` points core.pager, diff.external, AND core.fsmonitor
+    /// at canary executables, with a textconv attribute — NO canary may
+    /// execute (fs oracle: no marker files), on EITHER hardened invocation
+    /// (diff and ls-files both refresh the index), and the diff still
+    /// returns. The fsmonitor leg is the merge-review HIGH: repo config is
+    /// always read, so a repo-local fsmonitor hook survives system/global
+    /// nulling unless `-c core.fsmonitor=` disables it command-line-side.
     #[test]
     fn git_helpers_never_execute() {
         let (_tmp, repo) = fixture_repo();
         let marker = repo.join("canary-ran.marker");
-        // The canary: any invocation writes the marker. .bat on Windows,
-        // sh elsewhere; git runs pager/external commands through the shell.
-        let (canary, ext) = if cfg!(windows) {
-            (repo.join("canary.bat"), "bat")
-        } else {
-            (repo.join("canary.sh"), "sh")
-        };
-        if cfg!(windows) {
-            std::fs::write(
-                &canary,
-                format!(
-                    "@echo off\r\necho ran> \"{}\"\r\n",
-                    marker.display().to_string().replace('/', "\\")
-                ),
-            )
-            .unwrap();
-        } else {
-            std::fs::write(
-                &canary,
-                format!("#!/bin/sh\ntouch \"{}\"\n", marker.display()),
-            )
-            .unwrap();
-            // The canary must be EXECUTABLE — the leg proves the hardening
-            // (flags/env), not a filesystem accident, keeps it from running.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&canary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let fsmonitor_marker = repo.join("fsmonitor-ran.marker");
+        // The canaries: any invocation writes its marker. .bat on Windows,
+        // sh elsewhere; git runs pager/external/fsmonitor commands through
+        // the shell.
+        let write_canary = |stem: &str, target: &Path| {
+            let canary = repo.join(format!(
+                "{stem}.{}",
+                if cfg!(windows) { "bat" } else { "sh" }
+            ));
+            if cfg!(windows) {
+                std::fs::write(
+                    &canary,
+                    format!(
+                        "@echo off\r\necho ran> \"{}\"\r\n",
+                        target.display().to_string().replace('/', "\\")
+                    ),
+                )
+                .unwrap();
+            } else {
+                std::fs::write(
+                    &canary,
+                    format!("#!/bin/sh\ntouch \"{}\"\n", target.display()),
+                )
+                .unwrap();
+                // The canary must be EXECUTABLE — the leg proves the
+                // hardening (flags/env), not a filesystem accident, keeps
+                // it from running.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&canary, std::fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                }
             }
-        }
+        };
+        write_canary("canary", &marker);
+        write_canary("fsmonitor-canary", &fsmonitor_marker);
+        let ext = if cfg!(windows) { "bat" } else { "sh" };
         let mut config = std::fs::read_to_string(repo.join(".git/config")).unwrap();
         // git config values use C-style escapes — forward slashes keep the
         // Windows path literal parseable.
         let canary_cfg = repo.join("canary").display().to_string().replace('\\', "/");
+        let fsmonitor_cfg = repo
+            .join("fsmonitor-canary")
+            .display()
+            .to_string()
+            .replace('\\', "/");
         config.push_str(&format!(
-            "[core]\n\tpager = {canary_cfg}.{ext}\n[diff]\n\texternal = {canary_cfg}.{ext}\n[diff \"canary\"]\n\ttextconv = {canary_cfg}.{ext}\n",
+            "[core]\n\tpager = {canary_cfg}.{ext}\n\tfsmonitor = {fsmonitor_cfg}.{ext}\n[diff]\n\texternal = {canary_cfg}.{ext}\n[diff \"canary\"]\n\ttextconv = {canary_cfg}.{ext}\n",
         ));
         std::fs::write(repo.join(".git/config"), config).unwrap();
         // The textconv attribute: route *.rs through the canary textconv.
@@ -566,7 +596,11 @@ mod tests {
         assert!(bundle.diff.contains("41"), "{}", bundle.diff);
         assert!(
             !marker.exists(),
-            "the canary helper executed — PROMOTION GATE FAILURE"
+            "the pager/ext-diff/textconv canary executed — PROMOTION GATE FAILURE"
+        );
+        assert!(
+            !fsmonitor_marker.exists(),
+            "the fsmonitor hook executed (diff or ls-files index refresh) — PROMOTION GATE FAILURE"
         );
     }
 
