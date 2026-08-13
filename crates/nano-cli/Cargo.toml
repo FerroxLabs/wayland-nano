@@ -46,3 +46,15 @@ async-trait = "0.1"
 nano-agent = { version = "0.1.0", path = "../nano-agent" }
 nano-model = { version = "0.1.0", path = "../nano-model" }
 tempfile = "3"
+
+# P4 §3.3: the hardened review-diff git invocation kills the child's
+# process GROUP on timeout (process_group(0) + SIGKILL) — the same libc
+# pin nano-tools/nano-sandbox carry.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# P4 §3.3: the Windows half spawns git suspended (CREATE_SUSPENDED) and
+# assigns it to the nano-sandbox Job Object before resume. windows-sys
+# stays on the workspace-pinned 0.52.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_System_Threading"] }

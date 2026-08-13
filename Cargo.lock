@@ -1460,6 +1460,7 @@ dependencies = [
  "async-trait",
  "base64",
  "dirs-next",
+ "libc",
  "nano-agent",
  "nano-core",
  "nano-egress",
@@ -1474,6 +1475,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

@@ -30,6 +30,8 @@ use nano_session::NanoErrorKind;
 
 pub const ACP_PROTOCOL_VERSION: u32 = 1;
 pub const SESSION_LIST_METHOD: &str = "_wayland/session/list";
+/// P4 §9: `/review` rides the wire (the TUI is a pure ACP client).
+pub const SESSION_REVIEW_METHOD: &str = "_wayland/session/review";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -173,6 +175,18 @@ pub enum SessionUpdate {
     BudgetClamp {
         requested: u64,
         granted: u64,
+    },
+    /// P4 §3.4/§9: the bounded review child's terminal card. `status` is
+    /// "completed" | "failed" | "interrupted"; `verdict` is the reviewer's
+    /// overall_correctness string (empty when interrupted); `error` carries
+    /// the typed failure (wire kind + presentation) when the host typed one
+    /// (e.g. `review_parse_failed`).
+    ReviewResult {
+        task_id: String,
+        status: String,
+        verdict: String,
+        text: String,
+        error: Option<(String, String)>,
     },
     /// Forward-additive: kinds v1 doesn't render. Tolerated, never panics
     /// (torn/unknown replay frames must not kill the TUI, design §8).
@@ -422,6 +436,33 @@ fn parse_session_update(update: &Value) -> SessionUpdate {
             requested: update.get("requested").and_then(Value::as_u64).unwrap_or(0),
             granted: update.get("granted").and_then(Value::as_u64).unwrap_or(0),
         },
+        "review_result" => SessionUpdate::ReviewResult {
+            task_id: update
+                .get("taskId")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            status: update
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            verdict: update
+                .get("verdict")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            text: update
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            error: update.get("error").and_then(|e| {
+                let kind = e.get("kind").and_then(Value::as_str)?;
+                let message = e.get("message").and_then(Value::as_str).unwrap_or("");
+                Some((kind.to_string(), message.to_string()))
+            }),
+        },
         other => SessionUpdate::Unknown(other.to_string()),
     }
 }
@@ -665,6 +706,25 @@ pub fn parse_session_list_capability(result: &Value) -> bool {
         .get("agentCapabilities")
         .and_then(|c| c.get("nanoExtensions"))
         .and_then(|extensions| extensions.get(SESSION_LIST_METHOD))
+        .and_then(|surface| surface.get("version"))
+        .and_then(Value::as_u64)
+        == Some(1)
+}
+
+/// P4 §9: `_wayland/session/review` params — `{ }` in v1 beyond the
+/// session id (working-tree scope only).
+pub fn session_review_params(session_id: &str) -> Value {
+    json!({"sessionId": session_id})
+}
+
+/// Review-mode support is capability-discovered, never probed (the
+/// advertisement flips host-side only with the §14 leg-2 live proof —
+/// the honesty rule).
+pub fn parse_review_capability(result: &Value) -> bool {
+    result
+        .get("agentCapabilities")
+        .and_then(|c| c.get("nanoExtensions"))
+        .and_then(|extensions| extensions.get(SESSION_REVIEW_METHOD))
         .and_then(|surface| surface.get("version"))
         .and_then(Value::as_u64)
         == Some(1)
@@ -1211,6 +1271,55 @@ mod tests {
                 "truncated":false,"liveStatusCaveat":"point-in-time"
             }))
             .is_none()
+        );
+    }
+
+    /// P4 §9/§3.4: the review capability is discovered (never probed) and
+    /// the review_result card parses typed, tolerating a missing error.
+    #[test]
+    fn review_capability_and_card_are_typed() {
+        let initialize = json!({"agentCapabilities":{"nanoExtensions":{
+            "_wayland/session/review":{"version":1}
+        }}});
+        assert!(parse_review_capability(&initialize));
+        assert!(!parse_review_capability(&json!({})));
+        assert_eq!(SESSION_REVIEW_METHOD, "_wayland/session/review");
+        assert_eq!(session_review_params("s1"), json!({"sessionId":"s1"}));
+
+        let frame = json!({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":"s","update":{"sessionUpdate":"review_result",
+                "taskId":"task-1","status":"completed",
+                "verdict":"patch is incorrect","text":"Review comment:\n\n- [P1] x — a.rs:1"}}});
+        let Inbound::Update(SessionUpdate::ReviewResult {
+            task_id,
+            status,
+            verdict,
+            text,
+            error,
+        }) = classify(&frame)
+        else {
+            panic!("review_result classifies: {:?}", classify(&frame));
+        };
+        assert_eq!(task_id, "task-1");
+        assert_eq!(status, "completed");
+        assert_eq!(verdict, "patch is incorrect");
+        assert!(text.contains("[P1]"), "{text}");
+        assert_eq!(error, None);
+
+        // The typed failure payload round-trips.
+        let failed = json!({"jsonrpc":"2.0","method":"session/update","params":{
+            "sessionId":"s","update":{"sessionUpdate":"review_result",
+                "taskId":"task-2","status":"failed","verdict":"","text":"",
+                "error":{"kind":"review_parse_failed","message":"couldn't parse"}}}});
+        let Inbound::Update(SessionUpdate::ReviewResult { error, .. }) = classify(&failed) else {
+            panic!("typed failure classifies");
+        };
+        assert_eq!(
+            error,
+            Some((
+                "review_parse_failed".to_string(),
+                "couldn't parse".to_string()
+            ))
         );
     }
 

@@ -59,6 +59,9 @@ enum Pending {
     Goal,
     /// P1 §4.1: a `/budget continue` grant request.
     Budget,
+    /// P4 §9: a `/review` spawn request; the result arrives separately as a
+    /// `review_result` session/update card.
+    Review,
 }
 
 /// The open modal, if any.
@@ -110,6 +113,9 @@ pub struct App {
     steer_supported: bool,
     /// Session browser support, discovered from `_wayland/session/list`.
     sessions_supported: bool,
+    /// P4 §9: review-mode support, discovered from `_wayland/session/review`
+    /// (advertised only after the §14 leg-2 live proof — honesty rule).
+    review_supported: bool,
     /// P2a §3.1: the per-session attachment list (paths, in mint order) —
     /// SESSION-VOLATILE composer state (§10); the journaled manifest is the
     /// durable record. The TUI never reads the bytes: the host resolves
@@ -146,6 +152,7 @@ impl App {
             turn_active: false,
             steer_supported: false,
             sessions_supported: false,
+            review_supported: false,
             attachments: Vec::new(),
             ready: false,
             should_quit: false,
@@ -469,13 +476,42 @@ impl App {
             }
             Some(SlashCommand::Sessions) => self.request_sessions(conn, None),
             Some(SlashCommand::Resume(session_id)) => self.request_sessions(conn, Some(session_id)),
+            Some(SlashCommand::Review) => self.submit_review(conn),
             Some(SlashCommand::Quit) => self.begin_quit(conn),
             Some(SlashCommand::Unknown(command)) => {
                 self.transcript.push_note(&format!(
-                    "unknown command: {command} (have: /model /mode /plan /todo /status /doctor /sessions /resume /compact /budget /attach /quit)"
+                    "unknown command: {command} (have: /model /mode /plan /todo /status /doctor /sessions /resume /review /compact /budget /attach /quit)"
                 ));
             }
         }
+    }
+
+    /// `/review` (P4 §9): sends `_wayland/session/review` over the wire —
+    /// the host computes the bounded diff and spawns the review child; the
+    /// card arrives as a `review_result` session/update. Capability-gated,
+    /// never probed.
+    fn submit_review<C: Connection>(&mut self, conn: &mut C) {
+        if !self.ready {
+            self.transcript
+                .push_note("not connected yet — wait for the session");
+            return;
+        }
+        if !self.review_supported {
+            self.transcript
+                .push_note("review mode not advertised by the host");
+            return;
+        }
+        let Some(session_id) = self.session_id.clone() else {
+            return;
+        };
+        self.send_request(
+            conn,
+            acp_client::SESSION_REVIEW_METHOD,
+            acp_client::session_review_params(&session_id),
+            Pending::Review,
+        );
+        self.transcript
+            .push_note("review requested — the findings card arrives when the review finishes");
     }
 
     /// `/attach <path>` (P2a §3.1): records the attachment in the
@@ -948,6 +984,7 @@ impl App {
                 Pending::Compact => {}
                 Pending::Goal => {}
                 Pending::Budget => {}
+                Pending::Review => {}
             }
             return;
         }
@@ -958,6 +995,7 @@ impl App {
                 // nanoExtensions block, never probed.
                 self.steer_supported = acp_client::parse_steer_capability(&result);
                 self.sessions_supported = acp_client::parse_session_list_capability(&result);
+                self.review_supported = acp_client::parse_review_capability(&result);
                 let cwd = self.cwd.clone();
                 if let Some(resume) = self.resume_session.clone() {
                     // session/load: journal-backed resume (design §2). Replay
@@ -1142,6 +1180,18 @@ impl App {
                         .push_note("session/budget returned an unexpected result"),
                 }
             }
+            Pending::Review => {
+                // The ack carries the spawned review task id; the findings
+                // card arrives as a review_result session/update (§3.4).
+                match result.get("taskId").and_then(Value::as_str) {
+                    Some(task_id) => self
+                        .transcript
+                        .push_note(&format!("review running ({task_id})")),
+                    None => self
+                        .transcript
+                        .push_note("_wayland/session/review returned an unexpected result"),
+                }
+            }
         }
     }
 
@@ -1309,6 +1359,37 @@ impl App {
                 // bounded status word — and push_note sanitizes regardless.
                 self.transcript
                     .push_note(&format!("context compaction: {status}"));
+            }
+            SessionUpdate::ReviewResult {
+                task_id,
+                status,
+                verdict,
+                text,
+                error,
+            } => {
+                // P4 §3.4/§9: the review card. Findings text is
+                // model-generated ABOUT workspace content — data, rendered
+                // as text, never executed (§10.1); push_note sanitizes.
+                match status.as_str() {
+                    "completed" => {
+                        self.transcript
+                            .push_note(&format!("review {task_id} — verdict: {verdict}"));
+                        if !text.is_empty() {
+                            self.transcript.push_note(&text);
+                        }
+                    }
+                    "interrupted" => {
+                        self.transcript
+                            .push_note(&format!("review {task_id} interrupted"));
+                    }
+                    _ => {
+                        let detail = error
+                            .map(|(kind, message)| format!("{kind}: {message}"))
+                            .unwrap_or_else(|| text.clone());
+                        self.transcript
+                            .push_note(&format!("review {task_id} failed — {detail}"));
+                    }
+                }
             }
         }
     }
@@ -1592,5 +1673,42 @@ mod p4_session_browser_tests {
         assert_eq!(conn.sent.len(), 2);
         assert_eq!(conn.sent[1]["method"], "session/load");
         assert_eq!(conn.sent[1]["params"]["sessionId"], "ancient");
+    }
+
+    /// P4 §9: /review rides the wire when advertised (discovered, never
+    /// probed), and is an honest note — never a send — when it is not.
+    #[test]
+    fn review_rides_the_wire_only_when_advertised() {
+        let mut app = test_app();
+        let mut conn = RecordingConn::default();
+        // Not advertised: no frame, an honest note.
+        app.composer.insert_paste("/review");
+        app.submit(&mut conn);
+        assert!(conn.sent.is_empty());
+
+        // Advertised: the extension method goes out with `{sessionId}` only.
+        app.review_supported = true;
+        app.composer.insert_paste("/review");
+        app.submit(&mut conn);
+        assert_eq!(conn.sent.len(), 1);
+        assert_eq!(conn.sent[0]["method"], acp_client::SESSION_REVIEW_METHOD);
+        assert_eq!(conn.sent[0]["params"], json!({"sessionId": "current"}));
+
+        // The ack notes the running task; the card arrives separately.
+        let id = conn.sent[0]["id"].as_u64().unwrap();
+        app.handle_conn_event(
+            &mut conn,
+            ConnEvent::Frame(
+                json!({"jsonrpc":"2.0","id":id,"result":{"taskId":"task-1","status":"running"}}),
+            ),
+        );
+        // A completed review card renders verdict + findings text.
+        app.handle_conn_event(
+            &mut conn,
+            ConnEvent::Frame(json!({"jsonrpc":"2.0","method":"session/update","params":{
+                "sessionId":"current","update":{"sessionUpdate":"review_result",
+                    "taskId":"task-1","status":"completed","verdict":"patch is correct",
+                    "text":"No findings."}}})),
+        );
     }
 }

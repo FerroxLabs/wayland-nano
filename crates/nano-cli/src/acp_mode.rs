@@ -186,6 +186,132 @@ struct Session {
     pty: Arc<nano_tools::pty::PtySessionManager>,
 }
 
+/// P4 §3.4: the review completion watcher. Polls the registry's C6
+/// completion path (`terminal_outcome` — the same reap/rollup reconciliation
+/// the model-facing poll rides) and delivers EXACTLY ONE `review_result`
+/// notice, then exits:
+/// - Done: strict schema parse → `completed` with the verdict and the
+///   formatted findings block (bounded to the C6 TASK_RESULT_CHAR_CAP
+///   discipline); empty/garbage output ⇒ `failed` carrying the
+///   `review_parse_failed` wire kind (the §8 `ReviewParseFailed` table
+///   entry is integrator-sequenced — the wire NAME is the contract);
+/// - Cancelled/Detached ⇒ "review interrupted", never a wedge;
+/// - Failed ⇒ `failed` with the bounded failure text.
+///
+/// The watcher is bounded: past the review wall-time budget (+30s margin)
+/// it cancels the child (typed stop — budget exhaustion rides
+/// BudgetExhausted/BudgetExceeded in the child journal) and reports the
+/// interrupt. A review never outlives its watcher, so a replaced session
+/// cannot leak a wedged registry.
+fn spawn_review_watcher<W: Write + Send + 'static>(
+    out: Arc<Mutex<W>>,
+    session_id: String,
+    tasks: Arc<nano_agent::tasks::TaskRegistry>,
+    task_id: String,
+) {
+    std::thread::spawn(move || {
+        use nano_agent::review_prompt as rp;
+        use nano_agent::tasks::{TASK_RESULT_CHAR_CAP, TaskState};
+        let deadline = std::time::Instant::now()
+            + nano_agent::review::REVIEW_WALL_TIME
+            + std::time::Duration::from_secs(30);
+        loop {
+            match tasks.terminal_outcome(&task_id) {
+                Ok(Some((state, report, failure))) => {
+                    let notice = match state {
+                        TaskState::Done => match rp::parse_review_output(&report) {
+                            Ok(parsed) => {
+                                let mut block = rp::render_review_block(&parsed);
+                                if block.chars().count() > TASK_RESULT_CHAR_CAP {
+                                    block = block.chars().take(TASK_RESULT_CHAR_CAP).collect();
+                                    block.push_str("\n[truncated: full report in the task dir]");
+                                }
+                                nano_protocol::acp::review_result_notice(
+                                    &session_id,
+                                    &task_id,
+                                    "completed",
+                                    parsed.verdict(),
+                                    &block,
+                                    None,
+                                )
+                            }
+                            Err(err) => {
+                                // §3.4: the raw output is bounded-logged,
+                                // never surfaced whole.
+                                eprintln!(
+                                    "wayland-nano: review {task_id} output unparsable: {}",
+                                    rp::bounded_log_excerpt(&report)
+                                );
+                                nano_protocol::acp::review_result_notice(
+                                    &session_id,
+                                    &task_id,
+                                    "failed",
+                                    "",
+                                    "",
+                                    Some((rp::REVIEW_PARSE_FAILED_WIRE, &err.to_string())),
+                                )
+                            }
+                        },
+                        TaskState::Cancelled | TaskState::Detached => {
+                            nano_protocol::acp::review_result_notice(
+                                &session_id,
+                                &task_id,
+                                "interrupted",
+                                "",
+                                "review interrupted",
+                                None,
+                            )
+                        }
+                        TaskState::Failed => {
+                            let mut text =
+                                failure.unwrap_or_else(|| "review child failed".to_string());
+                            if text.chars().count() > TASK_RESULT_CHAR_CAP {
+                                text = text.chars().take(TASK_RESULT_CHAR_CAP).collect();
+                            }
+                            nano_protocol::acp::review_result_notice(
+                                &session_id,
+                                &task_id,
+                                "failed",
+                                "",
+                                &text,
+                                None,
+                            )
+                        }
+                        TaskState::Running => continue,
+                    };
+                    if let Err(err) = write_out(&out, &notice) {
+                        eprintln!("wayland-nano: review {task_id} notice write failed: {err}");
+                    }
+                    return;
+                }
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        // Budget stop: the bounded C6 teardown (cancel flag
+                        // + kill registry), then the interrupt notice.
+                        let _ = tasks.cancel(&task_id);
+                        let _ = write_out(
+                            &out,
+                            &nano_protocol::acp::review_result_notice(
+                                &session_id,
+                                &task_id,
+                                "interrupted",
+                                "",
+                                "review interrupted (budget exhausted)",
+                                None,
+                            ),
+                        );
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                // The registry entry is gone (session teardown folded it):
+                // nothing to deliver, never a wedge.
+                Err(_) => return,
+            }
+        }
+    });
+}
+
 /// P1 §3.3: the parent-journal rollup sink — appends
 /// `Op::ChildUsageRollup` durably (journal-first at the reconciliation
 /// boundary). P3 §3.3: it routes through the session's JournalCoordinator —
@@ -3143,6 +3269,134 @@ where
                                             id,
                                             NanoErrorKind::JournalUnavailable,
                                             format!("session listing unavailable: {err}"),
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                }
+                            }
+                        }
+                        // ── P4 §3.4: bounded review mode. The host
+                        // computes the hardened diff (§3.3), spawns the
+                        // constrained C6 review child (§3.1/§3.2), answers
+                        // immediately, and delivers the terminal result as
+                        // a `review_result` notice via the watcher — the
+                        // prompt loop is never hijacked (review is a
+                        // background task, so a running turn does NOT gate
+                        // this). The nanoExtensions advertisement flips
+                        // only with the §14 leg-2 live proof (honesty
+                        // rule); dispatch is registered regardless. ──
+                        "_wayland/session/review" => {
+                            let Some(active) = session.as_ref() else {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::NoSession,
+                                        "no session: call session/new first",
+                                        NanoErrorExtras::default(),
+                                    ),
+                                )?;
+                                continue;
+                            };
+                            // v1 params are `{ }` (working-tree scope
+                            // only) — any content is a typed rejection,
+                            // never silently ignored.
+                            let params_nonempty = params.as_ref().is_some_and(|p| {
+                                p.as_object().map(|o| !o.is_empty()).unwrap_or(true)
+                            });
+                            if params_nonempty {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::InvalidParams,
+                                        "_wayland/session/review takes no params in v1 (working-tree scope only)",
+                                        NanoErrorExtras::default(),
+                                    ),
+                                )?;
+                                continue;
+                            }
+                            // The hardened git invocation is bounded
+                            // blocking work (≤ 10s, fail-closed) — keep it
+                            // off the reactor.
+                            let workspace = active.workspace.clone();
+                            let bundle = match tokio::task::spawn_blocking(move || {
+                                crate::review_diff::compute_review_bundle(&workspace)
+                            })
+                            .await
+                            {
+                                Ok(Ok(bundle)) => bundle,
+                                Ok(Err(err)) => {
+                                    // §3.3/§8: precondition failures ride
+                                    // InvalidParams with a bounded reason
+                                    // (the Display impls are capped).
+                                    eprintln!("wayland-nano: review diff refused: {err}");
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            NanoErrorKind::InvalidParams,
+                                            err.to_string(),
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                                Err(join_err) => {
+                                    eprintln!(
+                                        "wayland-nano: review diff worker failed: {join_err}"
+                                    );
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            NanoErrorKind::InvalidParams,
+                                            "review diff worker failed",
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                            };
+                            // §3.2 sterile context: the seed is the pinned
+                            // prompt + the diff bundle ONLY (assembled by
+                            // review_seed — no parent history, no AGENTS.md).
+                            let seed = nano_agent::review_prompt::review_seed(
+                                &bundle.diff,
+                                bundle.truncated,
+                                bundle.omitted_bytes,
+                                &bundle.untracked,
+                                bundle.untracked_truncated,
+                            );
+                            match active.tasks.spawn_review(&seed, Some("review")) {
+                                Ok(task_id) => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::ok(
+                                            id,
+                                            serde_json::json!({
+                                                "taskId": task_id,
+                                                "status": "running"
+                                            }),
+                                        ),
+                                    )?;
+                                    spawn_review_watcher(
+                                        out.clone(),
+                                        active.id.clone(),
+                                        active.tasks.clone(),
+                                        task_id,
+                                    );
+                                }
+                                Err(err) => {
+                                    // §8: capacity failures (fan-out cap)
+                                    // are typed refusals, not table
+                                    // entries.
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            NanoErrorKind::InvalidParams,
+                                            format!("review spawn refused: {err}"),
                                             NanoErrorExtras::default(),
                                         ),
                                     )?;

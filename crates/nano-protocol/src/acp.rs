@@ -949,6 +949,49 @@ pub fn compaction_notice(session_id: &str, status: &str) -> JsonRpcNotification 
     )
 }
 
+/// P4 §3.4: the `review_result` session/update notice (the custom-notice
+/// precedent — one new kind, closed payload). The host emits it when a
+/// `/review` child reaches a terminal state; the parent session is never
+/// hijacked (review is a background task + notice, §3.4 UX ruling).
+///
+/// - `status`: "completed" | "failed" | "interrupted";
+/// - `verdict`: the reviewer's `overall_correctness` verdict ("patch is
+///   correct" | "patch is incorrect" | "review_truncated" |
+///   "untracked_unreviewed" | "unparsed") — empty for interrupted;
+/// - `text`: the formatted findings block, host-bounded
+///   (TASK_RESULT_CHAR_CAP discipline);
+/// - `error`: typed failure payload (wire kind + static presentation) for
+///   failed reviews. The `review_parse_failed` kind string is
+///   nano_agent::review_prompt::REVIEW_PARSE_FAILED_WIRE until the
+///   integrator lands the §8 `ReviewParseFailed` table entry — the wire
+///   name is the contract either way.
+pub fn review_result_notice(
+    session_id: &str,
+    task_id: &str,
+    status: &str,
+    verdict: &str,
+    text: &str,
+    error: Option<(&str, &str)>,
+) -> JsonRpcNotification {
+    let mut update = serde_json::json!({
+        "sessionUpdate": "review_result",
+        "taskId": task_id,
+        "status": status,
+        "verdict": verdict,
+        "text": text,
+    });
+    if let Some((kind, message)) = error {
+        update["error"] = serde_json::json!({ "kind": kind, "message": message });
+    }
+    JsonRpcNotification::new(
+        "session/update",
+        serde_json::json!({
+            "sessionId": session_id,
+            "update": update
+        }),
+    )
+}
+
 // ── C9 robustness-pack wire shapes ──────────────────────────────────────
 
 /// The `session/steer` extension method (C9 Q1 RULED shape (b)): mid-turn
@@ -1783,5 +1826,47 @@ mod tests {
         let plain = JsonRpcResponse::err(serde_json::json!(1), -32700, "parse error");
         let json = serde_json::to_value(&plain).unwrap();
         assert!(json["error"].get("data").is_none());
+    }
+
+    /// P4 §3.4: the review_result notice frame shape is pinned (custom
+    /// notice kind, closed payload, optional typed error).
+    #[test]
+    fn review_result_notice_shape() {
+        let done = review_result_notice(
+            "s1",
+            "task-1",
+            "completed",
+            "patch is incorrect",
+            "Review comment:\n\n- [P1] x — a.rs:1",
+            None,
+        );
+        let json = serde_json::to_value(&done).unwrap();
+        assert_eq!(json["method"], "session/update");
+        let update = &json["params"]["update"];
+        assert_eq!(update["sessionUpdate"], "review_result");
+        assert_eq!(update["taskId"], "task-1");
+        assert_eq!(update["status"], "completed");
+        assert_eq!(update["verdict"], "patch is incorrect");
+        assert!(update["text"].as_str().unwrap().contains("[P1]"));
+        assert!(update.get("error").is_none(), "no error on success");
+
+        let failed = review_result_notice(
+            "s1",
+            "task-2",
+            "failed",
+            "",
+            "",
+            Some((
+                nano_agent::review_prompt::REVIEW_PARSE_FAILED_WIRE,
+                "The review finished but its report couldn't be parsed.",
+            )),
+        );
+        let json = serde_json::to_value(&failed).unwrap();
+        let error = &json["params"]["update"]["error"];
+        assert_eq!(error["kind"], "review_parse_failed");
+        assert_eq!(
+            error["message"],
+            "The review finished but its report couldn't be parsed."
+        );
     }
 }

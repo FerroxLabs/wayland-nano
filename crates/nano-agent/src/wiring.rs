@@ -478,6 +478,59 @@ pub fn child_tool_definitions(web_search_backed: bool, vision_backed: bool) -> V
         .collect()
 }
 
+/// P4 §3.2: the review child's tool definition set — an EXPLICIT
+/// allow-list, built FRESH here (never by filtering `v1_tool_definitions`;
+/// the note's drift note (c) bars copying the `child_tool_definitions`
+/// filter pattern). The set is exactly `fs_read`, `search`, `glob`: no
+/// write/edit, no shell, no web, no memory, no task/session tools, no
+/// repo_map. The matching executor is [`crate::review::ReviewToolExecutor`];
+/// the gate is [`crate::review::ReviewApproval`].
+pub fn review_tool_definitions() -> Vec<ToolDefinition> {
+    vec![
+        ToolDefinition {
+            name: "fs_read".into(),
+            description: "Read a file in bounded pages. line_offset is 0-BASED; truncated results end with a footer carrying the next cursor (line_offset, or byte_offset_in_line for a hard-cut oversized line). Args: path, optional line_offset, max_lines (clamped to [1,2000]), byte_offset_in_line."
+                .into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "line_offset": {"type": "integer"},
+                    "max_lines": {"type": "integer"},
+                    "byte_offset_in_line": {"type": "integer"}
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolDefinition {
+            name: "glob".into(),
+            description: "Find workspace files matching a git-style glob pattern (policy-filtered, sorted, bounded). Args: pattern, optional path (root, defaults to the workspace), optional max_results (clamped to [1,200], default 50).".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "path": {"type": "string"},
+                    "max_results": {"type": "integer"}
+                },
+                "required": ["pattern"]
+            }),
+        },
+        ToolDefinition {
+            name: "search".into(),
+            description: "Regex content search over workspace files (policy-filtered, bounded). Args: query (regex), optional path (root, defaults to the workspace), optional max_results (clamped to [1,200], default 50). Returns path:line: text rows.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "path": {"type": "string"},
+                    "max_results": {"type": "integer"}
+                },
+                "required": ["query"]
+            }),
+        },
+    ]
+}
+
 /// The loud-defensive error a session tool produces when it reaches
 /// RealToolExecutor (mis-wired host — the session wrapper was skipped).
 /// Never a silent empty result (wcore lesson #504).
@@ -714,7 +767,8 @@ impl RealToolExecutor {
 /// The `…[truncated]` / `…[eof:` prefix convention is preserved so consumers
 /// pattern-matching on the legacy marker keep working. No footer when the
 /// page is not truncated (byte-identical to pre-C3 output).
-fn render_read_output(line_offset: usize, max_lines: usize, page: &ReadPage) -> String {
+/// (pub(crate): the P4 review executor serves the same page contract.)
+pub(crate) fn render_read_output(line_offset: usize, max_lines: usize, page: &ReadPage) -> String {
     let token = page.file_token;
     match page.cursor {
         PageCursor::Eof { total_lines } => {

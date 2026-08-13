@@ -17,6 +17,8 @@ pub mod loop_protection;
 pub mod mcp;
 pub mod mcp_session_tools;
 pub mod memory;
+pub mod review;
+pub mod review_prompt;
 pub mod skills;
 pub mod steer;
 pub mod tasks;
