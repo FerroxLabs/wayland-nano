@@ -6,5 +6,6 @@
 //! bodies are never logged.
 
 pub mod client;
+pub mod grant;
 pub mod policy;
 pub mod redact;

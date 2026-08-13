@@ -156,9 +156,9 @@ fn lookalike_host_bypass_attempts_are_denied() {
 fn flux_allowlist_accepts_only_the_real_host() {
     // Control: the allowlist itself is not over-broad.
     let policy = EgressPolicy::flux_only();
-    assert!(policy.allows("https://api.fluxrouter.ai/v1/models"));
-    assert!(!policy.allows("https://api.fluxrouter.ai.evil.com/v1/models"));
-    assert!(!policy.allows("https://sub.api.fluxrouter.ai/v1/models"));
+    assert!(policy.allows_host("https://api.fluxrouter.ai/v1/models"));
+    assert!(!policy.allows_host("https://api.fluxrouter.ai.evil.com/v1/models"));
+    assert!(!policy.allows_host("https://sub.api.fluxrouter.ai/v1/models"));
 }
 
 // --- Redirect-following bypass ----------------------------------------------
@@ -915,4 +915,94 @@ async fn fetch_redirect_to_allowlisted_name_resolving_loopback_denied() {
         "err: {err:?}"
     );
     assert_eq!(sends.lock().unwrap().len(), 1, "only hop 1 left the loop");
+}
+
+// --- P3 §6.3: grant-bearing policies through the redirect-following path ----
+
+/// A policy carrying an EndpointGrant routes `request()` through the
+/// per-request method-aware redirect client. This integration leg proves the
+/// mechanism end-to-end over plain HTTP (grants themselves are https-only):
+/// a 303 on a POST downgrades to GET, the hop is re-gated, and the
+/// allowlisted-host follow completes — while the unit-level
+/// `redirect_gate_re_gates_downgraded_hops_as_get` pins the exact
+/// grant/tuple semantics the network can't express without TLS.
+#[tokio::test]
+async fn grant_bearing_policy_redirect_roundtrip_via_method_aware_client() {
+    let canary = format!("/nano-canary-grant-redirect-{}", std::process::id());
+    let final_path = format!("{canary}-final");
+    let origin = spawn_listener(&canary, move |mut stream, n| {
+        if n == 1 {
+            respond(
+                &mut stream,
+                "303 See Other",
+                &format!("Location: {final_path}\r\n"),
+                "",
+            );
+        } else {
+            respond(
+                &mut stream,
+                "200 OK",
+                "Content-Type: text/plain\r\n",
+                "nano-grant-final",
+            );
+        }
+    });
+    let policy = EgressPolicy::new()
+        .allow_host_with_http("127.0.0.1")
+        // A grant forces the per-request method-aware redirect gate; the
+        // host rule then authorizes both hops (method-agnostic).
+        .allow_endpoint(
+            nano_egress::grant::HttpMethod::Post,
+            "https://as.example/token",
+        )
+        .expect("grant");
+    let client = EgressClient::new(policy);
+    let url = format!("http://127.0.0.1:{}{canary}", origin.addr.port());
+    let response = client
+        .request(reqwest::Method::POST, &url)
+        .expect("allowlisted")
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(response.status().as_u16(), 200);
+    let body = response.text().await.expect("body");
+    assert_eq!(hit_count(&origin), 2, "the downgraded hop was followed");
+    assert!(body.contains("nano-grant-final"), "final body: {body}");
+}
+
+/// The without_redirects constructor (§6.3: OAuth bootstrap/scoped
+/// clients): a 302 is RETURNED, never followed — the redirect target sees
+/// zero connections.
+#[tokio::test]
+async fn without_redirects_returns_3xx_and_never_follows() {
+    let exfil_canary = format!("/nano-canary-noredir-exfil-{}", std::process::id());
+    let exfil = spawn_listener(&exfil_canary, |mut stream, _| {
+        respond(&mut stream, "200 OK", "", "nano-exfil-reached");
+    });
+    let exfil_port = exfil.addr.port();
+    let origin_canary = format!("/nano-canary-noredir-origin-{}", std::process::id());
+    let origin = spawn_listener(&origin_canary, move |mut stream, _| {
+        respond(
+            &mut stream,
+            "302 Found",
+            &format!("Location: http://127.0.0.1:{exfil_port}{exfil_canary}\r\n"),
+            "",
+        );
+    });
+    let client =
+        EgressClient::without_redirects(EgressPolicy::new().allow_host_with_http("127.0.0.1"));
+    let url = format!("http://127.0.0.1:{}{origin_canary}", origin.addr.port());
+    let response = client
+        .request(reqwest::Method::GET, &url)
+        .expect("allowlisted")
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(
+        response.status().as_u16(),
+        302,
+        "3xx returned, not followed"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(hit_count(&exfil), 0, "redirect target saw zero bytes");
 }

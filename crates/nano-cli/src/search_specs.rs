@@ -318,14 +318,14 @@ mod tests {
     #[test]
     fn single_host_policies_are_exact() {
         let brave = single_host_policy(BraveSearchBackend::HOST);
-        assert!(brave.allows("https://api.search.brave.com/res/v1/web/search?q=x"));
-        assert!(!brave.allows("https://api.tavily.com/search"));
-        assert!(!brave.allows("https://api.fluxrouter.ai/v1/chat/completions"));
-        assert!(!brave.allows("https://example.com/"));
+        assert!(brave.allows_host("https://api.search.brave.com/res/v1/web/search?q=x"));
+        assert!(!brave.allows_host("https://api.tavily.com/search"));
+        assert!(!brave.allows_host("https://api.fluxrouter.ai/v1/chat/completions"));
+        assert!(!brave.allows_host("https://example.com/"));
         // https-only without the per-host opt-in.
-        assert!(!brave.allows("http://api.search.brave.com/res/v1/web/search?q=x"));
+        assert!(!brave.allows_host("http://api.search.brave.com/res/v1/web/search?q=x"));
         let tavily = single_host_policy(TavilySearchBackend::HOST);
-        assert!(tavily.allows("https://api.tavily.com/search"));
-        assert!(!tavily.allows("https://api.search.brave.com/"));
+        assert!(tavily.allows_host("https://api.tavily.com/search"));
+        assert!(!tavily.allows_host("https://api.search.brave.com/"));
     }
 }

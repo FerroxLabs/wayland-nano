@@ -62,19 +62,19 @@ mod tests {
     fn hosts_build_a_second_domain_policy() {
         let policy =
             policy_from_hosts_str("example.com, http://localhost").expect("hosts configured");
-        assert!(policy.allows("https://example.com/"));
+        assert!(policy.allows_host("https://example.com/"));
         assert!(
-            !policy.allows("http://example.com/"),
+            !policy.allows_host("http://example.com/"),
             "bare hosts are https-only"
         );
         assert!(
-            policy.allows("http://localhost:3000/mcp"),
+            policy.allows_host("http://localhost:3000/mcp"),
             "http opt-in per host"
         );
-        assert!(policy.allows("https://localhost/mcp"));
+        assert!(policy.allows_host("https://localhost/mcp"));
         // the second domain never widens to unlisted hosts
-        assert!(!policy.allows("https://api.fluxrouter.ai/"));
-        assert!(!policy.allows("https://other.example/"));
+        assert!(!policy.allows_host("https://api.fluxrouter.ai/"));
+        assert!(!policy.allows_host("https://other.example/"));
     }
 
     /// Uppercase entries are normalized at load (the URL side of `decide`
@@ -84,11 +84,11 @@ mod tests {
     fn uppercase_entries_are_normalized_to_match() {
         let policy =
             policy_from_hosts_str("EXAMPLE.com, http://LOCALHOST").expect("hosts configured");
-        assert!(policy.allows("https://example.com/"));
+        assert!(policy.allows_host("https://example.com/"));
         assert!(
-            !policy.allows("http://example.com/"),
+            !policy.allows_host("http://example.com/"),
             "normalization never widens the scheme rule"
         );
-        assert!(policy.allows("http://localhost:8080/"));
+        assert!(policy.allows_host("http://localhost:8080/"));
     }
 }

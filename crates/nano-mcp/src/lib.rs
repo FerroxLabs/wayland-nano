@@ -11,5 +11,6 @@
 
 pub mod client;
 pub mod http;
+pub mod oauth;
 pub mod protocol;
 pub mod stdio;

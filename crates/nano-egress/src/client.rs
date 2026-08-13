@@ -51,6 +51,52 @@ pub enum EgressError {
 /// gate; the cap matches reqwest's former default redirect limit.
 const MAX_REDIRECT_HOPS: usize = 10;
 
+/// The method reqwest will actually send to the NEXT hop, replicating
+/// tower-http follow_redirect 0.6.x exactly (reqwest 0.12 delegates redirect
+/// handling to it): 301/302 downgrade POST→GET, 303 downgrades everything
+/// except HEAD to GET, 307/308 preserve the method. The policy gate must
+/// authorize what will be sent, not what was sent last.
+fn effective_redirect_method(previous: &reqwest::Method, status: u16) -> reqwest::Method {
+    match status {
+        301 | 302 if *previous == reqwest::Method::POST => reqwest::Method::GET,
+        303 if *previous != reqwest::Method::HEAD => reqwest::Method::GET,
+        _ => previous.clone(),
+    }
+}
+
+/// Method-aware redirect re-gate for grant-bearing policies (P3 §6.3, r3
+/// codex new-7). reqwest's redirect `Attempt` does not expose the method, so
+/// the gate tracks the chain's current method itself, applying
+/// [`effective_redirect_method`] per hop BEFORE deciding — a downgraded
+/// POST→GET hop is authorized as GET or not at all (a redirected POST never
+/// inherits the POST grant).
+#[derive(Debug)]
+struct RedirectGate {
+    policy: EgressPolicy,
+    current_method: std::sync::Mutex<reqwest::Method>,
+}
+
+impl RedirectGate {
+    fn new(policy: EgressPolicy, initial_method: reqwest::Method) -> Self {
+        Self {
+            policy,
+            current_method: std::sync::Mutex::new(initial_method),
+        }
+    }
+
+    /// Update the chain method for this hop and decide it. Returns the
+    /// decision for `status` redirecting to `url`.
+    fn gate_hop(&self, status: u16, url: &str) -> EgressDecision {
+        let mut current = self
+            .current_method
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let effective = effective_redirect_method(&current, status);
+        *current = effective.clone();
+        self.policy.decide(url, &effective)
+    }
+}
+
 /// A policy-gated outbound client. Construct once per policy domain.
 #[derive(Debug)]
 pub struct EgressClient {
@@ -70,12 +116,35 @@ impl EgressClient {
                 if attempt.previous().len() >= MAX_REDIRECT_HOPS {
                     return attempt.error("redirect hop limit exceeded");
                 }
-                if hop_gate.allows(attempt.url().as_str()) {
+                // The shared client is used only by host-rule requests
+                // (`request` routes grant-bearing policies through a
+                // per-request method-aware client), so the host-only
+                // introspection is exact here: host rules are
+                // method-agnostic.
+                if hop_gate.allows_host(attempt.url().as_str()) {
                     attempt.follow()
                 } else {
                     attempt.stop()
                 }
             }))
+            .build()
+            .expect("reqwest client build");
+        Self {
+            client,
+            policy,
+            fetch_driver: std::sync::Arc::new(SystemFetchDriver),
+        }
+    }
+
+    /// A client that follows NO redirects at all (P3 §6.3: the OAuth
+    /// bootstrap and scoped token/refresh clients — an AS that redirects its
+    /// metadata or token endpoint is a typed failure, never a followed hop).
+    pub fn without_redirects(policy: EgressPolicy) -> Self {
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(300))
+            .user_agent("wayland-nano/0.1.0")
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("reqwest client build");
         Self {
@@ -101,20 +170,51 @@ impl EgressClient {
     }
 
     /// Policy gate + request construction. Returns Err(Denied) before any
-    /// socket activity when the policy rejects the URL.
+    /// socket activity when the policy rejects the URL. The method is part
+    /// of the decision (P3 §6.3: endpoint grants are method-scoped).
     pub fn request(
         &self,
         method: reqwest::Method,
         url: &str,
     ) -> Result<reqwest::RequestBuilder, EgressError> {
-        match self.policy.decide(url) {
-            EgressDecision::Allow => Ok(self.client.request(method.clone(), url)),
+        match self.policy.decide(url, &method) {
+            EgressDecision::Allow => Ok(self.request_client(&method).request(method.clone(), url)),
             EgressDecision::Deny => Err(EgressError::Denied {
                 method: method.to_string(),
                 host: host_display(url),
                 digest: path_query_sha256(url),
             }),
         }
+    }
+
+    /// The client a gated request is built on. Grant-less policies use the
+    /// shared client (host rules are method-agnostic, so the shared redirect
+    /// closure's host-only gate is exact). Grant-bearing policies get a
+    /// per-request client whose redirect closure tracks the chain's method
+    /// and re-gates every hop with the EFFECTIVE next-hop method (P3 §6.3
+    /// blast-radius rule: a 303-downgraded POST→GET hop is authorized as GET
+    /// or not at all). reqwest's redirect `Attempt` does not expose the
+    /// method, which is why the gate lives on a per-request client.
+    fn request_client(&self, method: &reqwest::Method) -> reqwest::Client {
+        if !self.policy.has_endpoint_grants() {
+            return self.client.clone();
+        }
+        let gate = std::sync::Arc::new(RedirectGate::new(self.policy.clone(), method.clone()));
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(300))
+            .user_agent("wayland-nano/0.1.0")
+            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+                if attempt.previous().len() >= MAX_REDIRECT_HOPS {
+                    return attempt.error("redirect hop limit exceeded");
+                }
+                match gate.gate_hop(attempt.status().as_u16(), attempt.url().as_str()) {
+                    EgressDecision::Allow => attempt.follow(),
+                    EgressDecision::Deny => attempt.stop(),
+                }
+            }))
+            .build()
+            .expect("reqwest client build")
     }
 
     /// Classify a transport/HTTP outcome with secrets redacted by
@@ -150,8 +250,10 @@ impl EgressClient {
     ) -> Result<FetchOutcome, EgressError> {
         let mut current = url.to_string();
         for _hop in 0..MAX_REDIRECT_HOPS {
-            // (a) policy gate BEFORE any DNS or socket activity.
-            if self.policy.decide(&current) == EgressDecision::Deny {
+            // (a) policy gate BEFORE any DNS or socket activity. GET-only by
+            // signature, so the gate's method is an explicit GET (P3 §6.3:
+            // the method is mandatory at every decision point).
+            if self.policy.decide(&current, &reqwest::Method::GET) == EgressDecision::Deny {
                 return Err(EgressError::Denied {
                     method: "GET".into(),
                     host: host_display(&current),
@@ -611,5 +713,158 @@ mod tests {
             rendered.contains("127.0.0.1"),
             "host should remain observable: {rendered}"
         );
+    }
+
+    // --- P3 §6.3: effective next-hop method at the redirect gate ------------
+
+    /// The tower-http 0.6.x follow_redirect rule, replicated exactly:
+    /// 301/302 downgrade POST→GET; 303 downgrades everything except HEAD;
+    /// 307/308 preserve.
+    #[test]
+    fn effective_redirect_method_matches_tower_http_rule() {
+        use reqwest::Method;
+        // 307/308 preserve every method.
+        for status in [307, 308] {
+            assert_eq!(
+                effective_redirect_method(&Method::POST, status),
+                Method::POST
+            );
+            assert_eq!(effective_redirect_method(&Method::PUT, status), Method::PUT);
+        }
+        // 301/302 downgrade POST only.
+        for status in [301, 302] {
+            assert_eq!(
+                effective_redirect_method(&Method::POST, status),
+                Method::GET
+            );
+            assert_eq!(effective_redirect_method(&Method::PUT, status), Method::PUT);
+            assert_eq!(effective_redirect_method(&Method::GET, status), Method::GET);
+        }
+        // 303: everything except HEAD becomes GET.
+        assert_eq!(effective_redirect_method(&Method::POST, 303), Method::GET);
+        assert_eq!(effective_redirect_method(&Method::PUT, 303), Method::GET);
+        assert_eq!(effective_redirect_method(&Method::DELETE, 303), Method::GET);
+        assert_eq!(effective_redirect_method(&Method::HEAD, 303), Method::HEAD);
+    }
+
+    /// §12 decide blast radius: a 303 on a POST re-gates the follow-up as
+    /// GET — a redirected POST never inherits the POST grant. And a chain
+    /// tracks the method hop over hop (303 collapses to GET, a following 307
+    /// keeps GET).
+    #[test]
+    fn redirect_gate_re_gates_downgraded_hops_as_get() {
+        let policy = EgressPolicy::new()
+            .allow_endpoint(crate::grant::HttpMethod::Post, "https://as.example/token")
+            .expect("grant");
+        let gate = RedirectGate::new(policy, reqwest::Method::POST);
+        // 303 from the granted POST: the follow-up is a GET, and no GET grant
+        // exists anywhere — denied, on ANY path (including the granted one).
+        assert_eq!(
+            gate.gate_hop(303, "https://as.example/token"),
+            EgressDecision::Deny
+        );
+        // The chain method is now GET; a later 307 preserves GET (still
+        // denied without a GET grant).
+        assert_eq!(
+            gate.gate_hop(307, "https://as.example/token"),
+            EgressDecision::Deny
+        );
+
+        // With BOTH grants, the 303-downgraded hop is authorized as GET.
+        let policy = EgressPolicy::new()
+            .allow_endpoint(crate::grant::HttpMethod::Post, "https://as.example/token")
+            .expect("post grant")
+            .allow_endpoint(crate::grant::HttpMethod::Get, "https://as.example/after")
+            .expect("get grant");
+        let gate = RedirectGate::new(policy, reqwest::Method::POST);
+        assert_eq!(
+            gate.gate_hop(303, "https://as.example/after"),
+            EgressDecision::Allow
+        );
+
+        // 307 preserves POST: the POST grant authorizes the follow-up.
+        let policy = EgressPolicy::new()
+            .allow_endpoint(crate::grant::HttpMethod::Post, "https://as.example/token")
+            .expect("grant");
+        let gate = RedirectGate::new(policy, reqwest::Method::POST);
+        assert_eq!(
+            gate.gate_hop(307, "https://as.example/token"),
+            EgressDecision::Allow
+        );
+    }
+
+    /// §12 call-site pin: the three decision points all pass a method.
+    /// `decide` takes `&reqwest::Method` — this test failing to COMPILE after
+    /// a signature regression is the pin; the bodies additionally exercise
+    /// each gate.
+    #[tokio::test]
+    async fn decide_has_no_methodless_overload_at_any_gate() {
+        // Gate 1: EgressClient::request passes its own method parameter.
+        let client = EgressClient::new(
+            EgressPolicy::new()
+                .allow_endpoint(crate::grant::HttpMethod::Post, "https://as.example/token")
+                .expect("grant"),
+        );
+        assert!(
+            client
+                .request(reqwest::Method::GET, "https://as.example/token")
+                .is_err(),
+            "GET on the POST-granted path must deny"
+        );
+        assert!(
+            client
+                .request(reqwest::Method::POST, "https://as.example/token")
+                .is_ok(),
+            "the granted tuple must build"
+        );
+        // Gate 2: the redirect closure — exercised by
+        // redirect_gate_re_gates_downgraded_hops_as_get and the plain-http
+        // round-trip in tests/adversarial_egress.rs.
+        // Gate 3: fetch_bounded passes an explicit GET (GET-only by
+        // signature; a grant for GET is honored, a POST grant is not).
+        let driver = std::sync::Arc::new(GetGrantDriver);
+        let client = EgressClient::new(
+            EgressPolicy::new()
+                .allow_endpoint(crate::grant::HttpMethod::Get, "https://meta.example/data")
+                .expect("grant"),
+        )
+        .with_fetch_driver_for_tests(driver);
+        let outcome = client
+            .fetch_bounded(
+                "https://meta.example/data",
+                1024,
+                std::time::Duration::from_secs(5),
+            )
+            .await
+            .expect("GET grant must authorize the fetch");
+        assert_eq!(outcome.body, b"ok");
+    }
+
+    /// Driver for the fetch-side grant test: public answer, fixed body.
+    #[derive(Debug)]
+    struct GetGrantDriver;
+    #[async_trait::async_trait]
+    impl FetchDriver for GetGrantDriver {
+        async fn resolve(&self, _host: &str, _port: u16) -> std::io::Result<Vec<std::net::IpAddr>> {
+            Ok(vec!["93.184.216.34".parse().unwrap()])
+        }
+        async fn send(
+            &self,
+            _host: &str,
+            _port: u16,
+            _addrs: &[std::net::IpAddr],
+            _url: &str,
+            _timeout: std::time::Duration,
+        ) -> Result<FetchHop, EgressError> {
+            Ok(FetchHop {
+                status: 200,
+                location: None,
+                content_type: Some("text/plain".into()),
+                content_length: Some(2),
+                body: Box::pin(futures_util::stream::iter(vec![Ok::<_, EgressError>(
+                    b"ok".to_vec(),
+                )])),
+            })
+        }
     }
 }
