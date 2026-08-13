@@ -2,6 +2,31 @@
 
 ## Current position
 
+### RC2 MERGE WAVE (2026-08-13, integrator state)
+- **P1 SEARCH+ECONOMY: CLOSED** — merged, CI green, adversarial proof +
+  re-proof in CONSOLIDATED-VERIFICATION.md (fixes 9849541).
+- **P2a SENSES-INTAKE: merged + pushed** (`db41433`, fixes `31e1997`,
+  audit-HIGH fixes `abbe243`, parallel-harness race fix `a5dc8bc`; CI 6/6
+  green run 31671168022). Codex code audit: 2 HIGH fixed, 2 MEDIUM filed
+  (F-25/F-26). Claude code-audit lens EXTERNALLY BLOCKED (2 safeguard
+  refusals, documented in the manifest). Live adversarial proof in flight
+  (legs 1–6; leg 7 Desktop deferred to Mac per owner).
+- **P3 dispatcher+resources: merged** (`8b2412a` + integrator error-kind
+  repair `8d8425d` — new kinds McpResourceUnsupported/McpContentUnsupported,
+  ALL_KINDS 48→50). CI caught a macOS-Intel-only overflow-count race in
+  `server_cancel_drops_queued_request` — deterministic fix in flight
+  (never weakened). Review LOWs filed F-27.
+- **Packaging: merged locally** (`3617329` + tag/version publish guard
+  `d11ef6b`); repomap MERGE-OK queued; rules/PTY/oauth in fix rounds
+  (bash.exe escape; unix host-kill reaper; redirect-posture discard).
+- **Debt register:** F-25..F-31 in docs/FOLLOWUPS.md. Integration
+  obligations owed at wiring time: pty_spawn always-prompt arm +
+  PtySessionGone kind; repo_map three-gate registration + agreement test.
+- Merge order remaining: oauth → rules → pty → repomap → p2b → toolsearch
+  (agent-126 building elicitation bridge). Desktop error-table mirror
+  regenerates ONLY on a Desktop feature branch (NANO_ERROR_TABLE_DESKTOP_DIR
+  scratch gotcha recorded).
+
 ### OVERNIGHT WAVE (2026-08-12, publish + TUI + hardening goal)
 - **PUBLISHED: `waylandnano@0.1.0-alpha.0` live on npm** (unscoped, parity
   with getwayland), Sigstore provenance (public repo), `next`+`latest`
