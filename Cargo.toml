@@ -4,6 +4,7 @@ members = [
     "crates/nano-core",
     "crates/nano-agent",
     "crates/nano-model",
+    "crates/nano-repomap",
     "crates/nano-tools",
     "crates/nano-platform",
     "crates/nano-sandbox",

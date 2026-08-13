@@ -11,6 +11,7 @@ dunce = "1"
 globset = "0.4"
 regex = "1"
 nano-core = { version = "0.1.0", path = "../nano-core" }
+nano-repomap = { version = "0.1.0", path = "../nano-repomap" }
 nano-egress = { version = "0.1.0", path = "../nano-egress" }
 nano-model = { version = "0.1.0", path = "../nano-model" }
 async-trait = "0.1"
