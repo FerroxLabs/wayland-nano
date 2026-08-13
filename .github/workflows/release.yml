@@ -120,6 +120,14 @@ jobs:
           [ "$count" -eq 5 ] || { echo "expected 5 platform binaries, found $count"; exit 1; }
           node bin/install.js
 
+      - name: Guard: tag must match package.json version
+        working-directory: packaging/npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          [ "v$VERSION" = "$GITHUB_REF_NAME" ] || { echo "tag/version mismatch: pushed $GITHUB_REF_NAME but package.json says $VERSION — bump package.json and re-tag"; exit 1; }
+
       - name: Pack + publish (provenance)
         working-directory: packaging/npm
         env:
