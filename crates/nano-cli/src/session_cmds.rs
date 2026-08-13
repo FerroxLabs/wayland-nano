@@ -8,14 +8,14 @@ use nano_agent::bootstrap::{is_fs_safe_session_id, new_session_id, session_guard
 use nano_agent::goal::{journal_goal_transition, validate_objective};
 use nano_protocol::permission_mode::PermissionMode;
 use nano_session::op::GoalBudgets;
-use nano_session::writer::JournalWriter;
+// (JournalWriter import retired: appends route through JournalCoordinator)
 use nano_session::{
     ForkPoint, GoalOutcome, GoalReason, GoalStatusKind, SessionState, fork_journal,
 };
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex};
 
 fn journal_path(sessions_dir: &Path, session_id: &str) -> Result<std::path::PathBuf, String> {
     if !is_fs_safe_session_id(session_id) {
@@ -104,9 +104,7 @@ pub fn goal_set_core(
     }
     let sequence = AtomicU64::new(1);
     let goal_id = crate::exec_mode::begin_goal(
-        &Arc::new(Mutex::new(
-            JournalWriter::open(&journal).map_err(|err| err.to_string())?,
-        )),
+        &Arc::new(nano_session::JournalCoordinator::open(&journal).map_err(|err| err.to_string())?),
         &sequence,
         session_id,
         objective,
@@ -196,11 +194,10 @@ pub fn goal_transition_core(
         ),
         other => return Err(format!("unknown goal action: {other}")),
     };
-    let writer = Arc::new(Mutex::new(
-        JournalWriter::open(&journal).map_err(|err| err.to_string())?,
-    ));
+    let coordinator =
+        nano_session::JournalCoordinator::open(&journal).map_err(|err| err.to_string())?;
     journal_goal_transition(
-        &writer,
+        &coordinator,
         session_id,
         &AtomicU64::new(1),
         &goal.goal_id,

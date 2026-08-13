@@ -90,6 +90,12 @@ pub enum ReplayError {
     ImportedRegionOverrun { declared: u64, actual: u64 },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpOauthGrantState {
+    pub issuer: String,
+    pub endpoints: Vec<crate::op::GrantEndpoint>,
+}
+
 #[derive(Debug, Default)]
 pub struct SessionState {
     pub session_id: Option<String>,
@@ -101,6 +107,12 @@ pub struct SessionState {
     pub changed_files: BTreeSet<String>,
     pub compaction: Option<CompactionPhase>,
     pub last_compaction_summary: Option<String>,
+    /// P3 ToolSearch exposure restored from hydration ops and compaction carry.
+    pub mcp_hydrated: BTreeMap<String, BTreeSet<String>>,
+    pub mcp_tools_digest: BTreeMap<String, String>,
+    pub mcp_recent_digests: BTreeMap<String, Vec<String>>,
+    /// Latest replayable OAuth authority per `(server_id, as_origin)`.
+    pub mcp_oauth_grants: BTreeMap<(String, String), McpOauthGrantState>,
     /// The session's todo list (C10 §2): content, replayed last-write-wins
     /// from journaled TodoSet ops so a resumed session restores the list.
     pub todos: Vec<crate::op::TodoItem>,
@@ -273,11 +285,27 @@ impl SessionState {
             Op::CompactionComplete {
                 summary,
                 changed_files,
+                mcp_hydration,
                 ..
             } => {
                 self.compaction = Some(CompactionPhase::Idle);
                 self.last_compaction_summary = Some(summary.clone());
                 self.changed_files.extend(changed_files.iter().cloned());
+                if let Some(carry) = mcp_hydration {
+                    self.mcp_hydrated.clear();
+                    self.mcp_tools_digest.clear();
+                    self.mcp_recent_digests.clear();
+                    for entry in carry {
+                        self.mcp_hydrated.insert(
+                            entry.server_id.clone(),
+                            entry.tool_names.iter().cloned().collect(),
+                        );
+                        self.mcp_tools_digest
+                            .insert(entry.server_id.clone(), entry.tools_digest.clone());
+                        self.mcp_recent_digests
+                            .insert(entry.server_id.clone(), entry.recent_digests.clone());
+                    }
+                }
             }
             Op::CompactionCancel { .. } => {
                 self.compaction = Some(CompactionPhase::Idle);
@@ -301,6 +329,41 @@ impl SessionState {
             // deliberately never restored — "content replays, postures
             // don't". A resumed session starts with plan mode off.
             Op::PlanSet { .. } => {}
+            Op::McpToolHydration { entries, .. } => {
+                for entry in entries {
+                    self.mcp_hydrated
+                        .entry(entry.server_id.clone())
+                        .or_default()
+                        .extend(entry.tool_names.iter().cloned());
+                    self.mcp_tools_digest
+                        .insert(entry.server_id.clone(), entry.tools_digest.clone());
+                    let recent = self
+                        .mcp_recent_digests
+                        .entry(entry.server_id.clone())
+                        .or_default();
+                    recent.push(entry.tools_digest.clone());
+                    if recent.len() > 8 {
+                        recent.drain(..recent.len() - 8);
+                    }
+                }
+            }
+            // Audit-only: the durable effect rode the interrupted ToolResult.
+            Op::McpElicitation { .. } => {}
+            Op::McpOauthGrant {
+                server_id,
+                as_origin,
+                issuer,
+                endpoints,
+                ..
+            } => {
+                self.mcp_oauth_grants.insert(
+                    (server_id.clone(), as_origin.clone()),
+                    McpOauthGrantState {
+                        issuer: issuer.clone(),
+                        endpoints: endpoints.clone(),
+                    },
+                );
+            }
             Op::ForkedFrom { imported_ops, .. } => {
                 // Opens the imported region (child-authored region: only a
                 // genesis-positioned lineage op reaches this arm — nested

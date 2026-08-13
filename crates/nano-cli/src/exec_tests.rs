@@ -220,6 +220,46 @@ async fn jsonl_v1_schema_fixture() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// P3 §4.3: exec is non-interactive — DiscoveryLocal (tool_search, no server
+/// contact) approves in every mode; the server-contact classes would prompt,
+/// so they auto-DENY in every mode, full_auto included.
+#[test]
+fn p3_exec_gate_mcp_classes() {
+    let dir = tmpdir("gate-mcp");
+    let policy = fake_policy();
+    let call = |name: &str| ToolCall {
+        id: "c".into(),
+        name: name.into(),
+        arguments: serde_json::json!({}),
+    };
+    for mode in [
+        PermissionMode::ReadOnly,
+        PermissionMode::Default,
+        PermissionMode::FullAuto,
+    ] {
+        assert_eq!(
+            exec_gate_decision(&call("tool_search"), mode, &policy, &dir, false),
+            ApprovalDecision::Approve,
+            "{mode:?}: tool_search approves (DiscoveryLocal, no server contact)"
+        );
+        for name in ["mcp_list_resources", "mcp_read_resource"] {
+            assert_eq!(
+                exec_gate_decision(&call(name), mode, &policy, &dir, true),
+                ApprovalDecision::Deny,
+                "{mode:?}: {name} would prompt ⇒ exec auto-denies"
+            );
+        }
+        // The mcp__ catch-all stays strict: every mode denies in exec
+        // (default/read_only categorically, full_auto would prompt).
+        assert_eq!(
+            exec_gate_decision(&call("mcp__s__t"), mode, &policy, &dir, true),
+            ApprovalDecision::Deny,
+            "{mode:?}: mcp__ never auto-approves in exec"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// approval auto-deny: a promptable action in default mode is denied and
 /// emits approval_denied naming the tool and the mode; the model sees a
 /// tool error and may continue.

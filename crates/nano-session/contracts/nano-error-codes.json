@@ -202,6 +202,62 @@
     },
     {
       "hint": "",
+      "kind": "mcp_resource_unsupported",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "MCP server does not advertise resources",
+      "wireCode": -32603
+    },
+    {
+      "hint": "List resources first",
+      "kind": "mcp_resource_denied",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "MCP resource URI was not advertised",
+      "wireCode": -32603
+    },
+    {
+      "hint": "Only bounded text is accepted",
+      "kind": "mcp_content_unsupported",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "MCP resource content is not supported",
+      "wireCode": -32603
+    },
+    {
+      "hint": "Use a stdio server",
+      "kind": "mcp_elicitation_unsupported",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "MCP elicitation is unavailable on this transport",
+      "wireCode": -32603
+    },
+    {
+      "hint": "Run nano auth login for this server",
+      "kind": "mcp_authorization_required",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "MCP login required",
+      "wireCode": -32603
+    },
+    {
+      "hint": "Provision the operator refresh file (0600) or fix the keyring",
+      "kind": "mcp_credstore_unavailable",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "MCP credential storage unavailable",
+      "wireCode": -32603
+    },
+    {
+      "hint": "",
+      "kind": "mcp_oauth_failed",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "MCP OAuth login failed",
+      "wireCode": -32603
+    },
+    {
+      "hint": "",
       "kind": "unknown_tool",
       "retryable": false,
       "surface": "tool_card",

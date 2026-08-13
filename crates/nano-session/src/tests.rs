@@ -279,6 +279,7 @@ fn compaction_replay_is_actionably_equivalent() {
             covers_op_ids: vec!["2".into(), "3".into(), "4".into(), "5".into()],
             changed_files: vec!["main.rs".into()],
             image_influenced: false,
+            mcp_hydration: None,
         },
     ));
 
@@ -844,6 +845,7 @@ fn p2a_image_influenced_serde_default_and_skip() {
         covers_op_ids: vec![],
         changed_files: vec![],
         image_influenced: true,
+        mcp_hydration: None,
     };
     let json = serde_json::to_string(&influenced).expect("serialize");
     assert!(json.contains(r#""image_influenced":true"#));

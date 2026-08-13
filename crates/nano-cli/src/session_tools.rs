@@ -15,7 +15,6 @@ use nano_agent::loop_protection::ProgressSignals;
 use nano_agent::turn::{ApprovalGate, AskOutcome, ToolExecutor, ToolOutcome};
 use nano_model::types::ToolCall;
 use nano_session::op::{Op, OpEnvelope, TodoItem, TodoStatus};
-use nano_session::writer::JournalWriter;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -90,13 +89,13 @@ impl PlanPosture {
 /// flip. Append failure ⇒ state unchanged and a typed error to the caller.
 pub fn set_plan_posture(
     posture: &Arc<Mutex<PlanPosture>>,
-    journal: &Path,
+    coordinator: &nano_session::JournalCoordinator,
     op_id: String,
     active: bool,
 ) -> Result<(), String> {
     let envelope = OpEnvelope::new(op_id, "now", Op::PlanSet { active });
-    JournalWriter::open(journal)
-        .and_then(|mut writer| writer.append(&envelope))
+    coordinator
+        .append(&envelope)
         .map_err(|err| format!("cannot journal plan transition: {err}"))?;
     posture.lock().unwrap_or_else(|p| p.into_inner()).active = active;
     Ok(())
@@ -240,7 +239,7 @@ pub struct SessionTools<'a> {
     gate: &'a dyn ApprovalGate,
     todos: Arc<Mutex<Vec<TodoItem>>>,
     posture: Arc<Mutex<PlanPosture>>,
-    journal: PathBuf,
+    coordinator: Arc<nano_session::JournalCoordinator>,
     session_id: String,
     /// Monotonic per-lifetime counter for TodoSet/PlanSet op ids (the id
     /// also carries nanoseconds, so resumes never collide) — the C2
@@ -252,7 +251,7 @@ impl std::fmt::Debug for SessionTools<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionTools")
             .field("session_id", &self.session_id)
-            .field("journal", &self.journal)
+            .field("journal", &self.coordinator.path())
             .finish_non_exhaustive()
     }
 }
@@ -263,7 +262,7 @@ impl<'a> SessionTools<'a> {
         gate: &'a dyn ApprovalGate,
         todos: Arc<Mutex<Vec<TodoItem>>>,
         posture: Arc<Mutex<PlanPosture>>,
-        journal: PathBuf,
+        coordinator: Arc<nano_session::JournalCoordinator>,
         session_id: String,
     ) -> Self {
         Self {
@@ -271,7 +270,7 @@ impl<'a> SessionTools<'a> {
             gate,
             todos,
             posture,
-            journal,
+            coordinator,
             session_id,
             op_counter: std::sync::atomic::AtomicU64::new(0),
         }
@@ -353,9 +352,7 @@ impl<'a> SessionTools<'a> {
                 items: items.clone(),
             },
         );
-        if let Err(err) =
-            JournalWriter::open(&self.journal).and_then(|mut writer| writer.append(&envelope))
-        {
+        if let Err(err) = self.coordinator.append(&envelope) {
             return Self::error(format!("todo write failed (list unchanged): {err}"));
         }
         *self.todos.lock().unwrap_or_else(|p| p.into_inner()) = items;
@@ -372,9 +369,12 @@ impl<'a> SessionTools<'a> {
                 self.plan_file().display()
             ));
         }
-        if let Err(err) =
-            set_plan_posture(&self.posture, &self.journal, self.next_op_id("plan"), true)
-        {
+        if let Err(err) = set_plan_posture(
+            &self.posture,
+            &self.coordinator,
+            self.next_op_id("plan"),
+            true,
+        ) {
             return Self::error(format!("cannot enter plan mode: {err}"));
         }
         Self::plain(format!(
@@ -412,9 +412,12 @@ impl<'a> SessionTools<'a> {
         };
         match self.gate.ask(&ask_call) {
             AskOutcome::Answered(label) if label == PLAN_EXIT_APPROVE_LABEL => {
-                if let Err(err) =
-                    set_plan_posture(&self.posture, &self.journal, self.next_op_id("plan"), false)
-                {
+                if let Err(err) = set_plan_posture(
+                    &self.posture,
+                    &self.coordinator,
+                    self.next_op_id("plan"),
+                    false,
+                ) {
                     return Self::error(format!(
                         "plan approved but the posture transition failed: {err}"
                     ));
@@ -665,15 +668,17 @@ mod tests {
     fn posture_transition_is_journal_first() {
         let (tmp, posture) = posture_fixture();
         let journal = tmp.path().join("sessions").join("test-session.jsonl");
-        // Append failure (journal parent is a regular FILE, so the writer's
-        // create_dir_all fails) leaves the cell unchanged.
+        // Open failure (journal parent is a regular FILE, so the writer's
+        // create_dir_all fails) is typed at coordinator construction — a
+        // session that cannot journal never starts (fail closed).
         let blocker = tmp.path().join("blocker");
         std::fs::write(&blocker, "not a dir").unwrap();
         let bad = blocker.join("x.jsonl");
-        assert!(set_plan_posture(&posture, &bad, "op-1".into(), true).is_err(),);
+        assert!(nano_session::JournalCoordinator::open(&bad).is_err());
         assert!(!posture.lock().unwrap().active);
         // Successful append flips the cell and lands the op.
-        set_plan_posture(&posture, &journal, "op-2".into(), true).unwrap();
+        let coordinator = nano_session::JournalCoordinator::open(&journal).unwrap();
+        set_plan_posture(&posture, &coordinator, "op-2".into(), true).unwrap();
         assert!(posture.lock().unwrap().active);
         let report = nano_session::reader::read_journal(&journal).unwrap();
         assert!(
@@ -736,12 +741,13 @@ mod tests {
         let todos = Arc::new(Mutex::new(Vec::new()));
         let gate = NoopGate;
         let inner = NoopExec;
+        let coordinator = Arc::new(nano_session::JournalCoordinator::open(&journal).unwrap());
         let tools = SessionTools::new(
             &inner,
             &gate,
             todos.clone(),
             posture,
-            journal.clone(),
+            coordinator,
             "test-session".into(),
         );
         let call = |args: serde_json::Value| nano_model::types::ToolCall {
@@ -784,32 +790,15 @@ mod tests {
             "rejected write mutates nothing"
         );
 
-        // Append failure (journal parent replaced by a FILE): the visible
-        // list is unchanged and the error is typed.
+        // P3 §3.3: appends route through the session's single
+        // JournalCoordinator, opened at session construction — so the
+        // fail-closed boundary moves to OPEN time: a journal whose parent
+        // is unwritable fails construction typed, before any tool runs.
         let blocker = tmp.path().join("blocker");
         std::fs::write(&blocker, "file").unwrap();
-        let bad_tools = SessionTools::new(
-            &inner,
-            &gate,
-            todos.clone(),
-            posture_fixture().1,
-            blocker.join("x.jsonl"),
-            "test-session".into(),
-        );
-        let outcome = rt.block_on(bad_tools.execute(&call(serde_json::json!({
-            "todos": [{"id": "t3", "content": "y", "status": "pending"}]
-        }))));
-        assert!(!outcome.ok);
-        assert!(
-            outcome.output.contains("list unchanged"),
-            "{}",
-            outcome.output
-        );
-        assert_eq!(
-            todos.lock().unwrap().len(),
-            1,
-            "journal-first: append failure leaves the list visibly unchanged"
-        );
+        assert!(nano_session::JournalCoordinator::open(blocker.join("x.jsonl")).is_err());
+        // Journal-first ordering is unchanged: the append precedes the cell
+        // mutation in execute_todo (asserted by the round-trip above).
     }
 
     /// The protocol-host gate: trust-all at baseline, but the plan posture

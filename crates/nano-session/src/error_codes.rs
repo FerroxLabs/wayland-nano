@@ -196,6 +196,29 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
         NanoErrorKind::McpOutputBounded => card("MCP server output exceeded the bound", ""),
         NanoErrorKind::McpTransport => card_retryable("MCP server unreachable", ""),
         NanoErrorKind::McpTimeout => card_retryable("MCP server timed out", ""),
+        NanoErrorKind::McpResourceUnsupported => {
+            card("MCP server does not advertise resources", "")
+        }
+        NanoErrorKind::McpResourceDenied => card(
+            "MCP resource URI was not advertised",
+            "List resources first",
+        ),
+        NanoErrorKind::McpContentUnsupported => card(
+            "MCP resource content is not supported",
+            "Only bounded text is accepted",
+        ),
+        NanoErrorKind::McpElicitationUnsupported => card(
+            "MCP elicitation is unavailable on this transport",
+            "Use a stdio server",
+        ),
+        NanoErrorKind::McpAuthorizationRequired => {
+            card("MCP login required", "Run nano auth login for this server")
+        }
+        NanoErrorKind::McpCredstoreUnavailable => card(
+            "MCP credential storage unavailable",
+            "Provision the operator refresh file (0600) or fix the keyring",
+        ),
+        NanoErrorKind::McpOAuthFailed => card("MCP OAuth login failed", ""),
         NanoErrorKind::UnknownTool => card("Unknown tool", ""),
         NanoErrorKind::MissingArgs => card("Bad tool arguments", ""),
         NanoErrorKind::ApprovalDenied => card("Denied by user", ""),
@@ -346,6 +369,13 @@ pub const ALL_KINDS: &[NanoErrorKind] = &[
     NanoErrorKind::McpOutputBounded,
     NanoErrorKind::McpTransport,
     NanoErrorKind::McpTimeout,
+    NanoErrorKind::McpResourceUnsupported,
+    NanoErrorKind::McpResourceDenied,
+    NanoErrorKind::McpContentUnsupported,
+    NanoErrorKind::McpElicitationUnsupported,
+    NanoErrorKind::McpAuthorizationRequired,
+    NanoErrorKind::McpCredstoreUnavailable,
+    NanoErrorKind::McpOAuthFailed,
     NanoErrorKind::UnknownTool,
     NanoErrorKind::MissingArgs,
     NanoErrorKind::ApprovalDenied,
@@ -484,10 +514,88 @@ mod tests {
 
     /// Pinned count: adding a kind without updating ALL_KINDS fails here;
     /// adding one without a spec fails to compile (exhaustive match above).
-    /// P2a §7 added the seven vision-intake kinds (41 → 48).
+    /// P2a §7 added the seven vision-intake kinds (41 → 48); P3 §7 added the
+    /// seven MCP-ecosystem kinds (48 → 55).
     #[test]
     fn all_kinds_count_is_pinned() {
-        assert_eq!(ALL_KINDS.len(), 48);
+        assert_eq!(ALL_KINDS.len(), 55);
+    }
+
+    /// P3 §12 [r2 codex-F16]: symbolic wire names are the compatibility
+    /// contract — no two kinds may share a snake_case wire name.
+    #[test]
+    fn no_duplicate_wire_names() {
+        let mut seen = std::collections::HashSet::new();
+        for kind in ALL_KINDS {
+            let wire = serde_json::to_value(kind)
+                .expect("kind serializes")
+                .as_str()
+                .expect("kind is a string")
+                .to_string();
+            assert!(seen.insert(wire.clone()), "duplicate wire name: {wire}");
+        }
+        // The forward-tolerance escape hatch is part of the enum but not
+        // the advertised table; it must still have a unique wire name.
+        let unknown = serde_json::to_value(NanoErrorKind::Unknown)
+            .expect("kind serializes")
+            .as_str()
+            .expect("kind is a string")
+            .to_string();
+        assert!(
+            seen.insert(unknown.clone()),
+            "duplicate wire name: {unknown}"
+        );
+    }
+
+    /// P3 §12: wire-form pins for the seven new snake_case names.
+    #[test]
+    fn p3_wire_names_are_pinned() {
+        let wire = |kind: NanoErrorKind| {
+            serde_json::to_value(kind)
+                .expect("kind serializes")
+                .as_str()
+                .expect("kind is a string")
+                .to_string()
+        };
+        assert_eq!(
+            wire(NanoErrorKind::McpResourceUnsupported),
+            "mcp_resource_unsupported"
+        );
+        assert_eq!(
+            wire(NanoErrorKind::McpResourceDenied),
+            "mcp_resource_denied"
+        );
+        assert_eq!(
+            wire(NanoErrorKind::McpContentUnsupported),
+            "mcp_content_unsupported"
+        );
+        assert_eq!(
+            wire(NanoErrorKind::McpElicitationUnsupported),
+            "mcp_elicitation_unsupported"
+        );
+        assert_eq!(
+            wire(NanoErrorKind::McpAuthorizationRequired),
+            "mcp_authorization_required"
+        );
+        assert_eq!(
+            wire(NanoErrorKind::McpCredstoreUnavailable),
+            "mcp_credstore_unavailable"
+        );
+        assert_eq!(wire(NanoErrorKind::McpOAuthFailed), "mcp_oauth_failed");
+        // Every new kind is a non-retryable tool card (§7 table).
+        for kind in [
+            NanoErrorKind::McpResourceUnsupported,
+            NanoErrorKind::McpResourceDenied,
+            NanoErrorKind::McpContentUnsupported,
+            NanoErrorKind::McpElicitationUnsupported,
+            NanoErrorKind::McpAuthorizationRequired,
+            NanoErrorKind::McpCredstoreUnavailable,
+            NanoErrorKind::McpOAuthFailed,
+        ] {
+            let spec = spec(kind);
+            assert!(!spec.retryable, "{kind:?} must not be retryable");
+            assert_eq!(spec.surface, ErrorSurface::ToolCard, "{kind:?} surface");
+        }
     }
 
     /// The drift alarm: the committed JSON artifact must be byte-identical

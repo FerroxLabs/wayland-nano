@@ -1039,7 +1039,7 @@ fn questionless_host_fails_closed_with_typed_unavailability() {
         &gate,
         Arc::new(Mutex::new(Vec::new())),
         posture.clone(),
-        sessions.join("s.jsonl"),
+        Arc::new(nano_session::JournalCoordinator::open(sessions.join("s.jsonl")).unwrap()),
         "s".into(),
     );
 

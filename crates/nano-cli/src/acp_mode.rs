@@ -73,7 +73,6 @@ use nano_session::NanoErrorKind;
 use nano_session::SessionState;
 use nano_session::op::{InputBlock, Op, OpEnvelope, TodoItem};
 use nano_session::reader::read_journal;
-use nano_session::writer::JournalWriter;
 use nano_tools::fs::FsTools;
 use nano_tools::shell::ShellTool;
 // ── LANE-A BOUNDARY (P2a) ────────────────────────────────────────────────
@@ -122,6 +121,10 @@ struct Session {
     cancel: Arc<std::sync::atomic::AtomicBool>,
     /// Append-only journal for this ACP session (`<sessions_dir>/<id>.jsonl`).
     journal: std::path::PathBuf,
+    /// P3 §3.3: the session's single journal-append authority. EVERY append
+    /// routes through it (turn sink, mode/plan/todo ops, rollups, hydration,
+    /// elicitation, grants, compaction) — serialization is its one mutex.
+    coordinator: Arc<nano_session::JournalCoordinator>,
     /// Turns started in this session (restored from the journal on load), so
     /// turn ids — and therefore envelope ids — never collide across resumes.
     turn_counter: u64,
@@ -181,15 +184,17 @@ struct Session {
 
 /// P1 §3.3: the parent-journal rollup sink — appends
 /// `Op::ChildUsageRollup` durably (journal-first at the reconciliation
-/// boundary). Opens the journal per append: the writer re-reads the file,
-/// so a retried append of the stable `{task_id}-rollup-1` envelope id is
-/// idempotent (`Ok(false)` = already durable).
-fn child_rollup_sink(journal: std::path::PathBuf) -> nano_agent::tasks::RollupSink {
+/// boundary). P3 §3.3: it routes through the session's JournalCoordinator —
+/// the single append authority — so a rollup can never interleave into a
+/// compaction critical section. A retried append of the stable
+/// `{task_id}-rollup-1` envelope id is idempotent (`Ok(false)` = already
+/// durable).
+fn child_rollup_sink(
+    coordinator: Arc<nano_session::JournalCoordinator>,
+) -> nano_agent::tasks::RollupSink {
     Arc::new(move |envelope: &OpEnvelope| -> bool {
-        let outcome = JournalWriter::open(&journal).and_then(|mut w| w.append(envelope).map(|_| w));
-        let outcome = outcome.and_then(|mut w| w.sync());
-        match outcome {
-            Ok(()) => true,
+        match coordinator.append(envelope) {
+            Ok(_) => true,
             Err(err) => {
                 eprintln!("wayland-nano: child usage rollup append failed: {err}");
                 false
@@ -917,16 +922,33 @@ where
                             let journal = config.sessions_dir.join(format!("{session_id}.jsonl"));
                             // Fail closed: a session we cannot journal is a
                             // session we could not honestly resume later.
-                            let journaled = JournalWriter::open(&journal).and_then(|mut w| {
-                                w.append(&OpEnvelope::new(
-                                    format!("{session_id}-begin-1"),
-                                    "now",
-                                    Op::SessionBegin {
-                                        session_id: session_id.clone(),
-                                        cwd: cwd.display().to_string(),
-                                    },
-                                ))
-                            });
+                            // P3 §3.3: the JournalCoordinator is created here,
+                            // beside the session state, and owns EVERY later
+                            // append to this journal.
+                            let coordinator =
+                                match nano_session::JournalCoordinator::open(&journal) {
+                                    Ok(coordinator) => Arc::new(coordinator),
+                                    Err(err) => {
+                                        write_out(
+                                            &out,
+                                            &JsonRpcResponse::err_typed(
+                                                id,
+                                                NanoErrorKind::JournalUnavailable,
+                                                format!("cannot open session journal: {err}"),
+                                                NanoErrorExtras::default(),
+                                            ),
+                                        )?;
+                                        continue;
+                                    }
+                                };
+                            let journaled = coordinator.append(&OpEnvelope::new(
+                                format!("{session_id}-begin-1"),
+                                "now",
+                                Op::SessionBegin {
+                                    session_id: session_id.clone(),
+                                    cwd: cwd.display().to_string(),
+                                },
+                            ));
                             if let Err(err) = journaled {
                                 write_out(
                                     &out,
@@ -945,7 +967,22 @@ where
                             let mode_cell = Arc::new(Mutex::new(PermissionMode::default()));
                             *current_mode.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(mode_cell.clone());
-                            let mcp = session_mcp_registry(&params, config.env_mcp_specs);
+                            // P3 §5.2: the elicitation bridge factory is
+                            // installed BEFORE any server connection opens —
+                            // the capability is advertised only because a
+                            // handler exists.
+                            let elicitation = Some(elicitation_factory(
+                                out.clone(),
+                                pending.clone(),
+                                permission_ids.clone(),
+                                session_id.clone(),
+                                cancel.clone(),
+                                coordinator.clone(),
+                            ));
+                            let mcp =
+                                session_mcp_registry(&params, config.env_mcp_specs, elicitation);
+                            // P3 §3.1: bounded, loud startup warnings.
+                            mcp_session_notices(&out, &session_id, &mcp, None)?;
                             // C10 §3: the plan posture cell. Fail-closed
                             // construction — a sessions dir that cannot be
                             // canonicalized gets no session (the plan-file
@@ -1012,7 +1049,7 @@ where
                             let tasks = Arc::new(match &meter {
                                 Some(meter) => registry.with_meter(
                                     meter.clone(),
-                                    child_rollup_sink(journal.clone()),
+                                    child_rollup_sink(coordinator.clone()),
                                     session_id.clone(),
                                 ),
                                 None => registry,
@@ -1024,6 +1061,7 @@ where
                                 workspace: cwd,
                                 cancel,
                                 journal,
+                                coordinator,
                                 turn_counter: 0,
                                 context,
                                 model: config.default_model.to_string(),
@@ -1146,8 +1184,26 @@ where
                                 .count();
                             // A fresh SessionBegin marks the resume in the
                             // journal itself (audit trail, and it refreshes cwd).
-                            if let Ok(mut writer) = JournalWriter::open(&journal) {
-                                let _ = writer.append(&OpEnvelope::new(
+                            // P3 §3.3: the coordinator owns every append from
+                            // here on, including this resume marker.
+                            let coordinator =
+                                match nano_session::JournalCoordinator::open(&journal) {
+                                    Ok(coordinator) => Arc::new(coordinator),
+                                    Err(err) => {
+                                        write_out(
+                                            &out,
+                                            &JsonRpcResponse::err_typed(
+                                                id,
+                                                NanoErrorKind::JournalUnavailable,
+                                                format!("cannot open session journal: {err}"),
+                                                NanoErrorExtras::default(),
+                                            ),
+                                        )?;
+                                        continue;
+                                    }
+                                };
+                            {
+                                let _ = coordinator.append(&OpEnvelope::new(
                                     format!("{session_id}-begin-{}", begin_count + 1),
                                     "now",
                                     Op::SessionBegin {
@@ -1199,7 +1255,18 @@ where
                             let mode_cell = Arc::new(Mutex::new(PermissionMode::default()));
                             *current_mode.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(mode_cell.clone());
-                            let mcp = session_mcp_registry(&params, config.env_mcp_specs);
+                            // P3 §5.2: same bridge-before-connect wiring as
+                            // session/new.
+                            let elicitation = Some(elicitation_factory(
+                                out.clone(),
+                                pending.clone(),
+                                permission_ids.clone(),
+                                session_id.to_string(),
+                                cancel.clone(),
+                                coordinator.clone(),
+                            ));
+                            let mcp =
+                                session_mcp_registry(&params, config.env_mcp_specs, elicitation);
                             // C10 §3: same fail-closed posture construction
                             // as session/new. The posture itself is NEVER
                             // restored (content replays, postures don't) —
@@ -1226,6 +1293,12 @@ where
                             // re-injected as a bounded block on rebuild. P1:
                             // ONE fold also feeds the meter reseed below.
                             let folded = SessionState::fold(&report.envelopes);
+                            // P3 §3.4: the reconnect digest gate — hydrated
+                            // sets re-apply only on a canonical-digest match;
+                            // mismatches drop with a typed notice, and the
+                            // churn breaker can pin a server Deferred for the
+                            // session off the carried window.
+                            mcp_session_notices(&out, session_id, &mcp, Some(&folded))?;
                             let todos = Arc::new(Mutex::new(folded.todos.clone()));
                             let mut context = session_context_prefix(&cwd, &todos, &plan);
                             context.extend(context_messages);
@@ -1277,7 +1350,7 @@ where
                             let tasks = Arc::new(match &meter {
                                 Some(meter) => registry.with_meter(
                                     meter.clone(),
-                                    child_rollup_sink(journal.clone()),
+                                    child_rollup_sink(coordinator.clone()),
                                     session_id.to_string(),
                                 ),
                                 None => registry,
@@ -1289,6 +1362,7 @@ where
                                 workspace: cwd,
                                 cancel,
                                 journal,
+                                coordinator,
                                 turn_counter,
                                 context,
                                 // The journal does not persist the model pick,
@@ -1460,7 +1534,7 @@ where
                                     format!("{}-plan-{nanos}-{}", active.id, active.mode_changes);
                                 if let Err(err) = crate::session_tools::set_plan_posture(
                                     &active.plan,
-                                    &active.journal,
+                                    &active.coordinator,
                                     op_id,
                                     true,
                                 ) {
@@ -1523,8 +1597,7 @@ where
                                     mode: mode.id().to_string(),
                                 },
                             );
-                            let journaled = JournalWriter::open(&active.journal)
-                                .and_then(|mut writer| writer.append(&envelope).map(|_| ()));
+                            let journaled = active.coordinator.append(&envelope);
                             if let Err(err) = journaled {
                                 write_out(
                                     &out,
@@ -1545,7 +1618,7 @@ where
                             if plan_was_active
                                 && let Err(err) = crate::session_tools::set_plan_posture(
                                     &active.plan,
-                                    &active.journal,
+                                    &active.coordinator,
                                     format!(
                                         "{}-plan-{nanos}-{}-off",
                                         active.id, active.mode_changes
@@ -1906,23 +1979,10 @@ where
                                     continue;
                                 }
                             };
-                            // Fail closed: a turn we cannot journal is a turn
-                            // that would silently break a later resume.
-                            let journal_writer = match JournalWriter::open(&active.journal) {
-                                Ok(writer) => writer,
-                                Err(err) => {
-                                    write_out(
-                                        &out,
-                                        &JsonRpcResponse::err_typed(
-                                            id,
-                                            NanoErrorKind::JournalUnavailable,
-                                            format!("cannot open session journal: {err}"),
-                                            NanoErrorExtras::default(),
-                                        ),
-                                    )?;
-                                    continue;
-                                }
-                            };
+                            // P3 §3.3: the session's coordinator (opened
+                            // fail-closed at session/new|load) is the turn's
+                            // append authority — no per-turn writer.
+                            let turn_coordinator = active.coordinator.clone();
                             // C11 §3.1/§6: the SessionGuard is the ONE
                             // exclusion mechanism — interactive turns hold it
                             // for the turn's lifetime so a fork or cron fire
@@ -2019,7 +2079,6 @@ where
                                 .unwrap_or_else(|p| p.into_inner())
                                 .plan_file()
                                 .to_path_buf();
-                            let journal_path = active.journal.clone();
                             // The session's task registry (C6): the turn's
                             // executor routes task_* calls through it.
                             let turn_tasks = active.tasks.clone();
@@ -2144,11 +2203,35 @@ where
                                 // MCP-merged executor: mcp__ names route to the
                                 // session registry, everything else to the core
                                 // tools; the model sees both tool sets.
-                                let mcp_executor = McpToolExecutor::from_shared(turn_mcp, &tools);
+                                let mcp_executor =
+                                    McpToolExecutor::from_shared(turn_mcp.clone(), &tools);
                                 let mut tool_definitions =
                                     v1_tool_definitions(config.search.is_some());
                                 tool_definitions
                                     .extend(mcp_executor.tool_definitions_from_registry());
+                                // P3 §3.2/§4.3: the MCP session tools are
+                                // advertised ONLY when the live registry
+                                // warrants them — tool_search iff a deferred
+                                // inventory exists (its description carries
+                                // the bounded §3.5 source listing), the
+                                // resource pair iff a server negotiated the
+                                // resources capability.
+                                {
+                                    let registry =
+                                        turn_mcp.lock().unwrap_or_else(|p| p.into_inner());
+                                    let listing = registry
+                                        .has_deferred_tools()
+                                        .then(|| registry.deferred_source_listing());
+                                    let resources_available =
+                                        registry.has_resources_capability();
+                                    drop(registry);
+                                    tool_definitions.extend(
+                                        nano_agent::wiring::mcp_session_tool_definitions(
+                                            listing.as_deref(),
+                                            resources_available,
+                                        ),
+                                    );
+                                }
                                 // C5: the memory family routes through its own
                                 // chokepoint wrapper (validation + redaction +
                                 // caps). Read tools always; write tools only
@@ -2199,9 +2282,21 @@ where
                                     &gate,
                                     todos_cell,
                                     plan_cell,
-                                    journal_path,
+                                    turn_coordinator.clone(),
                                     session_id.clone(),
                                 );
+                                // P3 §3.2/§4.3: the MCP session tools
+                                // (tool_search / mcp_list_resources /
+                                // mcp_read_resource) ride the shared registry
+                                // journal-first through the session's
+                                // coordinator.
+                                let executor =
+                                    nano_agent::mcp_session_tools::McpSessionToolExecutor::new(
+                                        Some(turn_mcp.clone()),
+                                        turn_coordinator.clone(),
+                                        session_id.clone(),
+                                        &executor,
+                                    );
                                 // C6: the task family routes through the
                                 // session's registry
                                 // (spawn/poll/cancel/apply) — outermost, so
@@ -2295,7 +2390,7 @@ where
                                     },
                                 };
                                 let sink_session = session_id.clone();
-                                let mut journal_writer = journal_writer;
+                                let sink_coordinator = turn_coordinator.clone();
                                 let journal_failer = config.journal_append_failer;
                                 let mut sink = move |envelope: &OpEnvelope| -> bool {
                                     // Journal first: the durable record leads
@@ -2311,8 +2406,64 @@ where
                                             "wayland-nano: session journal append failed (injected)"
                                         );
                                         false
+                                    } else if let Op::CompactionComplete {
+                                        compaction_id,
+                                        summary,
+                                        changed_files,
+                                        image_influenced,
+                                        ..
+                                    } = &envelope.op
+                                    {
+                                        // P3 §3.3 [r4 codex new-1]: the
+                                        // compaction critical section — under
+                                        // the coordinator's ONE guard, capture
+                                        // the watermark (the full snapshot's
+                                        // op ids), build the carry as the
+                                        // EXACT fold of the replay input at
+                                        // the watermark (carry(W) ≡ fold),
+                                        // then append the Complete durably.
+                                        // No append can interleave between
+                                        // capture and publish. A failed append
+                                        // inside the section aborts the
+                                        // compaction: nothing is published,
+                                        // the session continues uncompacted
+                                        // (compact_messages turns the false
+                                        // into a typed CompactionCancel).
+                                        let section = sink_coordinator.compaction().and_then(
+                                            |mut guard| {
+                                                let snapshot = guard.snapshot()?;
+                                                let covers: Vec<String> = snapshot
+                                                    .iter()
+                                                    .map(|e| e.id.clone())
+                                                    .collect();
+                                                let carry =
+                                                    nano_session::hydration_carry_at(&snapshot);
+                                                let complete = OpEnvelope::new(
+                                                    envelope.id.clone(),
+                                                    envelope.ts.clone(),
+                                                    Op::CompactionComplete {
+                                                        compaction_id: compaction_id.clone(),
+                                                        summary: summary.clone(),
+                                                        covers_op_ids: covers,
+                                                        changed_files: changed_files.clone(),
+                                                        image_influenced: *image_influenced,
+                                                        mcp_hydration: carry,
+                                                    },
+                                                );
+                                                guard.append_complete(&complete)
+                                            },
+                                        );
+                                        match section {
+                                            Ok(_) => true,
+                                            Err(err) => {
+                                                eprintln!(
+                                                    "wayland-nano: compaction critical section failed: {err}"
+                                                );
+                                                false
+                                            }
+                                        }
                                     } else {
-                                        match journal_writer.append(envelope) {
+                                        match sink_coordinator.append(envelope) {
                                             Ok(_) => true,
                                             Err(err) => {
                                                 eprintln!(
@@ -2451,22 +2602,10 @@ where
                                 continue;
                             };
                             // Fail closed: a compaction we cannot journal must
-                            // never swap the in-memory history.
-                            let mut writer = match JournalWriter::open(&active.journal) {
-                                Ok(writer) => writer,
-                                Err(err) => {
-                                    write_out(
-                                        &out,
-                                        &JsonRpcResponse::err_typed(
-                                            id,
-                                            NanoErrorKind::JournalUnavailable,
-                                            format!("cannot open session journal: {err}"),
-                                            NanoErrorExtras::default(),
-                                        ),
-                                    )?;
-                                    continue;
-                                }
-                            };
+                            // never swap the in-memory history. P3 §3.3: the
+                            // session's JournalCoordinator (opened fail-closed
+                            // at session construction) is the append
+                            // authority; the read below is id sequencing only.
                             let report = match read_journal(&active.journal) {
                                 Ok(report) => report,
                                 Err(err) => {
@@ -2489,8 +2628,13 @@ where
                                 .count()
                                 + 1;
                             let compaction_id = format!("{}-compact-{sequence}", active.id);
-                            let covers_op_ids =
-                                report.envelopes.iter().map(|e| e.id.clone()).collect();
+                            // P3 §3.3: covers_op_ids is a PLACEHOLDER here —
+                            // the emit closure recomputes the watermark and
+                            // the hydration carry under the coordinator's
+                            // guard at CompactionComplete time (the atomic
+                            // cut), so no append can interleave between
+                            // capture and the durable Complete.
+                            let covers_op_ids = Vec::new();
                             let changed_files: Vec<String> =
                                 SessionState::fold(&report.envelopes)
                                     .changed_files
@@ -2530,6 +2674,7 @@ where
                             let notice_id = compaction_id.clone();
                             let notice_session = session_id.clone();
                             let notice_out = out.clone();
+                            let compact_coordinator = active.coordinator.clone();
                             let mut emit = |op: Op| -> bool {
                                 op_sequence += 1;
                                 let status = match &op {
@@ -2538,18 +2683,67 @@ where
                                     Op::CompactionCancel { .. } => Some("cancel"),
                                     _ => None,
                                 };
-                                let envelope = OpEnvelope::new(
-                                    format!("{notice_id}-op-{op_sequence}"),
-                                    "now",
-                                    op,
-                                );
-                                let journaled = match writer.append(&envelope) {
-                                    Ok(_) => true,
-                                    Err(err) => {
-                                        eprintln!(
-                                            "wayland-nano: session journal append failed: {err}"
-                                        );
-                                        false
+                                let envelope_id = format!("{notice_id}-op-{op_sequence}");
+                                // P3 §3.3 [r4 codex new-1]: the Complete lands
+                                // inside the coordinator's critical section —
+                                // watermark capture (the full snapshot's op
+                                // ids) + carry construction (carry(W) ≡
+                                // fold(replay input at W)) + the durable
+                                // append, all under the ONE guard. A failure
+                                // inside the section aborts the compaction:
+                                // nothing is published, the session continues
+                                // uncompacted.
+                                let journaled = if let Op::CompactionComplete {
+                                    compaction_id,
+                                    summary,
+                                    changed_files,
+                                    image_influenced,
+                                    ..
+                                } = &op
+                                {
+                                    compact_coordinator
+                                        .compaction()
+                                        .and_then(|mut guard| {
+                                            let snapshot = guard.snapshot()?;
+                                            let covers: Vec<String> = snapshot
+                                                .iter()
+                                                .map(|e| e.id.clone())
+                                                .collect();
+                                            let carry =
+                                                nano_session::hydration_carry_at(&snapshot);
+                                            guard.append_complete(&OpEnvelope::new(
+                                                envelope_id.clone(),
+                                                "now",
+                                                Op::CompactionComplete {
+                                                    compaction_id: compaction_id.clone(),
+                                                    summary: summary.clone(),
+                                                    covers_op_ids: covers,
+                                                    changed_files: changed_files.clone(),
+                                                    image_influenced: *image_influenced,
+                                                    mcp_hydration: carry,
+                                                },
+                                            ))
+                                        })
+                                        .map_err(|err| {
+                                            eprintln!(
+                                                "wayland-nano: compaction critical section failed: {err}"
+                                            );
+                                            err
+                                        })
+                                        .is_ok()
+                                } else {
+                                    match compact_coordinator.append(&OpEnvelope::new(
+                                        envelope_id,
+                                        "now",
+                                        op,
+                                    )) {
+                                        Ok(_) => true,
+                                        Err(err) => {
+                                            eprintln!(
+                                                "wayland-nano: session journal append failed: {err}"
+                                            );
+                                            false
+                                        }
                                     }
                                 };
                                 if let Some(status) = status {
@@ -2679,23 +2873,19 @@ where
                             let envelope_id =
                                 format!("{}-budget-grant-{}", active.id, active.mode_changes);
                             // Journal-first: the op lands durably BEFORE the
-                            // limit cell mutates.
-                            let journaled = JournalWriter::open(&active.journal)
-                                .and_then(|mut w| {
-                                    w.append(&OpEnvelope::new(
-                                        envelope_id,
-                                        "now",
-                                        Op::BudgetGrant {
-                                            grant_id,
-                                            tokens,
-                                            after_limit,
-                                        },
-                                    ))
-                                    .map(|_| w)
-                                })
-                                .and_then(|mut w| w.sync());
+                            // limit cell mutates. P3 §3.3: through the
+                            // session's coordinator, the one append authority.
+                            let journaled = active.coordinator.append(&OpEnvelope::new(
+                                envelope_id,
+                                "now",
+                                Op::BudgetGrant {
+                                    grant_id,
+                                    tokens,
+                                    after_limit,
+                                },
+                            ));
                             match journaled {
-                                Ok(()) => {
+                                Ok(_) => {
                                     let after = meter
                                         .apply_grant(tokens)
                                         .expect("cap presence checked above");
@@ -3131,12 +3321,49 @@ where
 fn session_mcp_registry(
     params: &serde_json::Value,
     env_mcp_specs: &[McpServerSpec],
+    elicitation: Option<nano_agent::mcp::ElicitationHandlerFactory>,
 ) -> Arc<Mutex<McpRegistry>> {
-    let specs = env_mcp_specs
+    let specs: Vec<McpServerSpec> = env_mcp_specs
         .iter()
         .cloned()
-        .chain(crate::mcp_specs::mcp_specs_from_acp_params(params));
-    Arc::new(Mutex::new(crate::mcp_specs::register_all(specs)))
+        .chain(crate::mcp_specs::mcp_specs_from_acp_params(params))
+        .collect();
+    Arc::new(Mutex::new(crate::mcp_specs::register_all_with(
+        specs,
+        elicitation,
+    )))
+}
+
+/// P3 §3.1/§3.4: after a session's registry is built, every deferred-
+/// inventory startup warning is surfaced as a bounded session/update notice
+/// (loud, never silent), and — on load — the journaled hydration state is
+/// re-applied through the canonical digest gate (mismatch ⇒ drop-and-notify;
+/// churn ⇒ pinned Deferred with the typed warning).
+fn mcp_session_notices<W: Write>(
+    out: &Arc<Mutex<W>>,
+    session_id: &str,
+    mcp: &Arc<Mutex<McpRegistry>>,
+    folded: Option<&nano_session::SessionState>,
+) -> std::io::Result<()> {
+    let notices = {
+        let mut registry = mcp.lock().unwrap_or_else(|p| p.into_inner());
+        let mut notices = registry.startup_warnings.clone();
+        if let Some(state) = folded {
+            notices.extend(registry.resume_hydration(
+                &state.mcp_hydrated,
+                &state.mcp_tools_digest,
+                &state.mcp_recent_digests,
+            ));
+        }
+        notices
+    };
+    for notice in &notices {
+        write_out(
+            out,
+            &nano_protocol::acp::mcp_notice(session_id, "mcp", notice),
+        )?;
+    }
+    Ok(())
 }
 
 /// Owns stdin on its own thread: parses each line and forwards it. Client
@@ -3294,6 +3521,142 @@ fn reader_loop<R: BufRead>(
 /// It denies on rejection, malformed responses, disconnect, or cancel
 /// (fail-closed) — and every ambiguity in the mode arms falls THROUGH to
 /// it, never to a silent approve or silent deny.
+/// P3 §5.2: resolve one elicitation card response by OPAQUE ID — never by
+/// label (the bridge's binding is the authority; a duplicate or adversarial
+/// label cannot steer the answer). Every non-answer is a fail-closed Dismiss
+/// (which the bridge maps to a spec-legal decline); an unknown id is NOT a
+/// guessed value.
+fn resolve_elicitation_response(
+    value: &serde_json::Value,
+    known: &std::collections::HashSet<String>,
+    card_id: u64,
+) -> nano_agent::elicitation::ElicitAskOutcome {
+    use nano_agent::elicitation::ElicitAskOutcome;
+    let Some(outcome) = value.get("result").and_then(|r| r.get("outcome")) else {
+        return ElicitAskOutcome::Dismiss;
+    };
+    let option_id = outcome.get("optionId").and_then(|o| o.as_str());
+    match outcome.get("outcome").and_then(|o| o.as_str()) {
+        Some("selected") => match option_id {
+            Some(nano_protocol::acp::QUESTION_DISMISS_ID) => ElicitAskOutcome::Dismiss,
+            Some(id) if known.contains(id) => ElicitAskOutcome::Answered {
+                card_id,
+                option_id: id.to_string(),
+            },
+            // An id the binding never minted: fail closed, never a guess.
+            Some(_) | None => ElicitAskOutcome::Dismiss,
+        },
+        _ => ElicitAskOutcome::Dismiss,
+    }
+}
+
+/// P3 §5.2: the elicitation ask channel — a session-scoped closure the
+/// dispatcher's handler thread drives (never the turn loop). It rides the
+/// SAME PendingMap question machinery as AcpApproval::ask, but the wire
+/// option ids are the bridge's opaque 96-bit ids verbatim and the card is
+/// labeled server-originated ("MCP server '<name>' asks:"). Cancel, the
+/// bounded 300s timeout (the C10 default), and disconnect all fail closed;
+/// the pending entry is removed on EVERY exit, so a late answer lands in the
+/// reader's unknown-id arm and is dropped+logged.
+fn elicitation_ask_channel<W: Write + Send + 'static>(
+    out: Arc<Mutex<W>>,
+    pending: PendingMap,
+    next_id: Arc<std::sync::atomic::AtomicU64>,
+    session_id: String,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) -> Arc<
+    dyn Fn(nano_agent::elicitation::ElicitQuestion) -> nano_agent::elicitation::ElicitAskOutcome
+        + Send
+        + Sync,
+> {
+    Arc::new(move |question: nano_agent::elicitation::ElicitQuestion| {
+        use nano_agent::elicitation::ElicitAskOutcome;
+        let card_id = next_id.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = std::sync::mpsc::channel();
+        pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(card_id, tx);
+        let known: std::collections::HashSet<String> =
+            question.options.iter().map(|(id, _)| id.clone()).collect();
+        let request = nano_protocol::acp::request_elicitation_request(
+            card_id,
+            &session_id,
+            &format!("mcp-elicit-{card_id}"),
+            &question.header,
+            &question.message,
+            &question.options,
+        );
+        if write_out(&out, &request).is_err() {
+            pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&card_id);
+            return ElicitAskOutcome::Unavailable;
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        let outcome = loop {
+            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(response) => {
+                    break resolve_elicitation_response(&response, &known, card_id);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if cancel.load(Ordering::SeqCst) {
+                        break ElicitAskOutcome::Cancel;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        break ElicitAskOutcome::Timeout;
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    break ElicitAskOutcome::Unavailable;
+                }
+            }
+        };
+        // Removal on EVERY exit (answer, timeout, cancel, disconnect).
+        pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&card_id);
+        outcome
+    })
+}
+
+/// P3 §5.2: the per-server bridge factory installed before registration —
+/// the elicitation capability is advertised only because this handler exists
+/// (the handshake honesty rule). The bridge journals through the session's
+/// coordinator and asks through the ACP card channel above.
+fn elicitation_factory<W: Write + Send + 'static>(
+    out: Arc<Mutex<W>>,
+    pending: PendingMap,
+    next_id: Arc<std::sync::atomic::AtomicU64>,
+    session_id: String,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    coordinator: Arc<nano_session::JournalCoordinator>,
+) -> nano_agent::mcp::ElicitationHandlerFactory {
+    Arc::new(
+        move |server_id: &str, interrupted_call: Arc<Mutex<Option<String>>>| {
+            let bridge = Arc::new(nano_agent::elicitation::ElicitationBridge::new(
+                server_id.to_string(),
+                session_id.clone(),
+                coordinator.clone(),
+                interrupted_call,
+                elicitation_ask_channel(
+                    out.clone(),
+                    pending.clone(),
+                    next_id.clone(),
+                    session_id.clone(),
+                    cancel.clone(),
+                ),
+            ));
+            nano_agent::mcp::ElicitationHandlerParts {
+                handler: bridge.clone(),
+                slot_retired_hook: bridge.slot_retired_hook(),
+            }
+        },
+    )
+}
+
 struct AcpApproval<W: Write> {
     session_id: String,
     out: Arc<Mutex<W>>,
@@ -3387,6 +3750,29 @@ impl<W: Write + Send> ApprovalGate for AcpApproval<W> {
         //     permission prompt for the question prompt would be theatre.
         if nano_agent::wiring::SESSION_TOOL_NAMES.contains(&call.name.as_str()) {
             return ApprovalDecision::Approve;
+        }
+        // 1c. P3 §4.3 [r2 claude-F1, r3 claude-N7]: the explicit MCP approval
+        //     classes — AFTER the two fast paths (these names match NEITHER
+        //     by construction, pinned in tests) and BEFORE posture_allows:
+        //     plan-posture enforcement must never decide an MCP surface
+        //     before its class is consulted. DiscoveryLocal is auto-approved
+        //     by deliberate assignment (local index search; mutates only
+        //     journaled session state — the todo rationale), never
+        //     inherited. The server classes deliberately ride the strict
+        //     mode arms: read_only DENIES, default/full_auto PROMPT — a
+        //     resource read never gets a read_only pass and never a
+        //     full_auto pass.
+        if let Some(class) = nano_agent::wiring::mcp_approval_class(&call.name) {
+            return match class {
+                nano_agent::wiring::McpApprovalClass::DiscoveryLocal => ApprovalDecision::Approve,
+                nano_agent::wiring::McpApprovalClass::ServerQuery
+                | nano_agent::wiring::McpApprovalClass::ServerDataRead => {
+                    match self.effective_mode() {
+                        PermissionMode::ReadOnly => ApprovalDecision::Deny,
+                        _ => self.prompt_host(call),
+                    }
+                }
+            };
         }
         // 2. C10 §3 plan posture — enforcement AT THE GATE, before the mode
         //    arms, in every C2 mode including full_auto: fs_write/fs_edit
@@ -4375,6 +4761,134 @@ mod tests {
         );
     }
 
+    /// P3 §4.3 [r2 claude-F1]: the full per-mode decision table for the MCP
+    /// session surfaces, driven through AcpApproval::approve. The round-1
+    /// bypass (resource reads sailing through read_only by name-coupling) is
+    /// the regression pin.
+    #[test]
+    fn p3_mcp_approval_class_decision_table() {
+        let ws = workspace();
+        // tool_search (DiscoveryLocal): approve in EVERY mode, no prompt,
+        // no server contact (the transport-seam no-contact assertion lives
+        // in nano-agent's mcp tests via the fake-server marker file).
+        for mode in PermissionMode::ALL {
+            let rig = TestGate::new(mode, &ws.0, false, None);
+            assert_eq!(
+                rig.gate
+                    .approve(&call("tool_search", serde_json::json!({"query": "x"}))),
+                ApprovalDecision::Approve,
+                "{mode:?} must approve tool_search"
+            );
+            assert_eq!(rig.prompt_count(), 0, "{mode:?}: tool_search never prompts");
+        }
+        // The server classes: read_only DENIES without a prompt; default and
+        // full_auto PROMPT (never a silent approve — full_auto included).
+        for name in ["mcp_list_resources", "mcp_read_resource"] {
+            let rig = TestGate::new(PermissionMode::ReadOnly, &ws.0, true, None);
+            assert_eq!(
+                rig.gate
+                    .approve(&call(name, serde_json::json!({"server": "s"}))),
+                ApprovalDecision::Deny,
+                "read_only must deny {name}"
+            );
+            assert_eq!(rig.prompt_count(), 0, "read_only never prompts for {name}");
+            for mode in [PermissionMode::Default, PermissionMode::FullAuto] {
+                let rig = TestGate::new(mode, &ws.0, true, Some("allow"));
+                assert_eq!(
+                    rig.gate
+                        .approve(&call(name, serde_json::json!({"server": "s"}))),
+                    ApprovalDecision::Approve,
+                    "{mode:?}/{name} resolves through the host prompt"
+                );
+                assert_eq!(
+                    rig.prompt_count(),
+                    1,
+                    "{mode:?}/{name} must PROMPT the host"
+                );
+            }
+        }
+        // The mcp__ catch-all is unchanged: full_auto still PROMPTS (never
+        // auto-approves server calls).
+        let rig = TestGate::new(PermissionMode::FullAuto, &ws.0, true, Some("allow"));
+        assert_eq!(
+            rig.gate
+                .approve(&call("mcp__server__tool", serde_json::json!({}))),
+            ApprovalDecision::Approve
+        );
+        assert_eq!(rig.prompt_count(), 1, "full_auto prompts for mcp__ calls");
+    }
+
+    /// P3 §4.3 [r2 claude-F1]: the MCP session names match NEITHER fast path
+    /// — a future rename cannot silently re-couple them to auto-approval.
+    #[test]
+    fn p3_mcp_session_names_match_neither_fast_path() {
+        for name in nano_agent::wiring::MCP_SESSION_TOOL_NAMES {
+            assert!(
+                !is_read_only_tool(name),
+                "{name} must not be a read-only fast-path name"
+            );
+            assert!(
+                !nano_agent::wiring::SESSION_TOOL_NAMES.contains(&name),
+                "{name} must not join the auto-approve-coupled SESSION_TOOL_NAMES"
+            );
+            assert!(
+                nano_agent::wiring::mcp_approval_class(name).is_some(),
+                "{name} must have an explicit approval class"
+            );
+        }
+        // The mcp__ catch-all has no class (it rides the mode arms).
+        assert!(nano_agent::wiring::mcp_approval_class("mcp__s__t").is_none());
+    }
+
+    /// P3 §4.3 [r3 claude-N7]: the class arm runs BEFORE posture_allows — a
+    /// plan-posture session shows mcp_read_resource in plan+default still
+    /// PROMPTING (posture_allows is never the decider for MCP names).
+    #[test]
+    fn p3_class_arm_precedes_plan_posture() {
+        let ws = workspace();
+        let rig = TestGate::new(PermissionMode::Default, &ws.0, true, Some("allow"));
+        rig.plan.lock().unwrap_or_else(|p| p.into_inner()).active = true;
+        assert_eq!(
+            rig.gate.approve(&call(
+                "mcp_read_resource",
+                serde_json::json!({"server": "s", "uri": "file:///x"})
+            )),
+            ApprovalDecision::Approve,
+            "plan+default: the class arm prompts; posture never preempts"
+        );
+        assert_eq!(rig.prompt_count(), 1);
+        // plan+read_only still denies categorically.
+        let rig = TestGate::new(PermissionMode::ReadOnly, &ws.0, true, None);
+        rig.plan.lock().unwrap_or_else(|p| p.into_inner()).active = true;
+        assert_eq!(
+            rig.gate.approve(&call(
+                "mcp_read_resource",
+                serde_json::json!({"server": "s", "uri": "file:///x"})
+            )),
+            ApprovalDecision::Deny
+        );
+        assert_eq!(rig.prompt_count(), 0);
+        // The posture's own carve-out is untouched: a plan-file write still
+        // approves, an off-plan write still denies.
+        let plan_file = rig
+            .plan
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .plan_file()
+            .to_path_buf();
+        assert_eq!(
+            rig.gate.approve(&call(
+                "fs_write",
+                serde_json::json!({"path": plan_file, "content": "x"})
+            )),
+            ApprovalDecision::Approve
+        );
+        assert_eq!(
+            rig.gate.approve(&contained_write(&ws.0)),
+            ApprovalDecision::Deny
+        );
+    }
+
     #[test]
     fn default_prompts_for_everything_mutating() {
         let ws = workspace();
@@ -4937,7 +5451,7 @@ mod tests {
             &rig.gate,
             todos.clone(),
             rig.plan.clone(),
-            journal.clone(),
+            Arc::new(nano_session::JournalCoordinator::open(&journal).unwrap()),
             "test-session".into(),
         );
         let outcome = rt.block_on(tools.execute(&call("exit_plan_mode", serde_json::json!({}))));
@@ -4963,7 +5477,7 @@ mod tests {
             &rig.gate,
             todos,
             rig.plan.clone(),
-            journal.clone(),
+            Arc::new(nano_session::JournalCoordinator::open(&journal).unwrap()),
             "test-session".into(),
         );
         let outcome = rt.block_on(tools.execute(&call("exit_plan_mode", serde_json::json!({}))));
@@ -5241,6 +5755,7 @@ mod tests {
                     covers_op_ids: covers,
                     changed_files: vec![],
                     image_influenced: influenced,
+                    mcp_hydration: None,
                 },
             )
         };

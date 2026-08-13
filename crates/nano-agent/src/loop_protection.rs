@@ -334,4 +334,21 @@ mod tests {
             Err(BudgetExhausted::WallTime { .. })
         ));
     }
+
+    /// P3 §3.2/§12: the repeat-breaker fires on identical re-searches —
+    /// asserted, not trusted (tool_search is an ordinary tool call to the
+    /// breaker: the LOADED status line says re-searching returns the same
+    /// result, and the breaker is the hard backstop).
+    #[test]
+    fn p3_identical_tool_search_calls_trip_the_breaker() {
+        let mut breaker = RepeatBreaker::default();
+        let key = ToolCallKey::new("tool_search", &serde_json::json!({"query": "fs read"}));
+        assert_eq!(breaker.check(&key), RepeatAction::Allow);
+        assert_eq!(breaker.check(&key), RepeatAction::Allow);
+        assert!(matches!(breaker.check(&key), RepeatAction::Remind(_)));
+        for _ in 4..12 {
+            let _ = breaker.check(&key);
+        }
+        assert!(matches!(breaker.check(&key), RepeatAction::ForceStop(_)));
+    }
 }

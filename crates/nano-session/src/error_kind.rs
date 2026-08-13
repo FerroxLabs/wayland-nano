@@ -58,6 +58,16 @@ pub enum NanoErrorKind {
     McpOutputBounded,
     McpTransport,
     McpTimeout,
+    McpResourceUnsupported,
+    McpResourceDenied,
+    McpContentUnsupported,
+    McpElicitationUnsupported,
+    McpAuthorizationRequired,
+    McpCredstoreUnavailable,
+    // serde's snake_case would render this "mcp_o_auth_failed"; the wire
+    // form is pinned with an explicit rename (the model_server_5xx pattern).
+    #[serde(rename = "mcp_oauth_failed")]
+    McpOAuthFailed,
     UnknownTool,
     MissingArgs,
     ApprovalDenied,

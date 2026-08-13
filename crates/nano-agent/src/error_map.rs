@@ -109,6 +109,13 @@ pub fn kind_of_mcp(err: &nano_mcp::client::McpError) -> NanoErrorKind {
         McpError::Protocol(_) => NanoErrorKind::McpProtocol,
         McpError::Timeout(_) => NanoErrorKind::McpTimeout,
         McpError::OutputBounded(_) => NanoErrorKind::McpOutputBounded,
+        // P3 §2.4: cancel is terminal and surfaces as stopReason, never an
+        // error card.
+        McpError::Cancelled => NanoErrorKind::UserCancelled,
+        // P3 §4.2/§4.3: typed refusals before any wire write / at the
+        // content boundary — the new kinds, not the generic server bucket.
+        McpError::ResourceUnsupported => NanoErrorKind::McpResourceUnsupported,
+        McpError::ContentUnsupported => NanoErrorKind::McpContentUnsupported,
         McpError::Egress(err) => kind_of_egress(err),
     }
 }
@@ -237,6 +244,20 @@ mod tests {
         assert_eq!(
             kind_of_mcp(&McpError::OutputBounded(9)),
             NanoErrorKind::McpOutputBounded
+        );
+        // P3 pins: the three dispatcher variants added with the full-duplex
+        // connection land on their exact kinds.
+        assert_eq!(
+            kind_of_mcp(&McpError::Cancelled),
+            NanoErrorKind::UserCancelled
+        );
+        assert_eq!(
+            kind_of_mcp(&McpError::ResourceUnsupported),
+            NanoErrorKind::McpResourceUnsupported
+        );
+        assert_eq!(
+            kind_of_mcp(&McpError::ContentUnsupported),
+            NanoErrorKind::McpContentUnsupported
         );
     }
 

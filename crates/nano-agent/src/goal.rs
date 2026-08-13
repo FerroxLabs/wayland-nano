@@ -20,7 +20,7 @@ use nano_session::GoalBudgets;
 use nano_session::GoalOutcome;
 use nano_session::GoalReason;
 use nano_session::GoalStatusKind;
-use nano_session::JournalWriter;
+use nano_session::JournalCoordinator;
 use nano_session::MAX_GOAL_OBJECTIVE_LEN;
 use nano_session::MAX_GOAL_SUMMARY_LEN;
 use nano_session::Op;
@@ -112,7 +112,7 @@ pub enum GoalTurnStop {
 /// Journals a goal transition pair, journal-first: `GoalStatus` then (for
 /// terminals) `GoalEnd`, each appended and synced before the next effect.
 pub fn journal_goal_transition(
-    journal: &Mutex<JournalWriter>,
+    journal: &JournalCoordinator,
     session_id: &str,
     sequence: &AtomicU64,
     goal_id: &str,
@@ -135,8 +135,9 @@ pub fn journal_goal_transition(
             sequence.fetch_add(1, Ordering::SeqCst)
         )
     };
-    let mut writer = journal.lock().unwrap_or_else(|p| p.into_inner());
-    writer.append(&OpEnvelope::new(
+    // P3 §3.3: the coordinator's append is fsync-durable per call, so the
+    // explicit sync steps fold into it.
+    journal.append(&OpEnvelope::new(
         next(),
         "now",
         Op::GoalStatus {
@@ -145,9 +146,8 @@ pub fn journal_goal_transition(
             reason,
         },
     ))?;
-    writer.sync()?;
     if let Some(outcome) = terminal {
-        writer.append(&OpEnvelope::new(
+        journal.append(&OpEnvelope::new(
             next(),
             "now",
             Op::GoalEnd {
@@ -155,7 +155,6 @@ pub fn journal_goal_transition(
                 outcome,
             },
         ))?;
-        writer.sync()?;
     }
     Ok(())
 }
@@ -172,7 +171,7 @@ pub fn journal_goal_transition(
 /// injects prompts).
 #[allow(clippy::too_many_arguments)]
 pub async fn drive_goal<F, Fut>(
-    journal: Arc<Mutex<JournalWriter>>,
+    journal: Arc<JournalCoordinator>,
     journal_sequence: &AtomicU64,
     session_id: &str,
     goal_id: &str,
@@ -381,7 +380,7 @@ pub struct GoalToolExecutor<'a, T: crate::turn::ToolExecutor> {
     /// not advertised then, and a stray call is a typed tool error (never a
     /// forged transition).
     control: Option<Arc<GoalControl>>,
-    journal: Arc<Mutex<JournalWriter>>,
+    journal: Arc<JournalCoordinator>,
     session_id: String,
     journal_sequence: Arc<AtomicU64>,
 }
@@ -398,7 +397,7 @@ impl<'a, T: crate::turn::ToolExecutor> GoalToolExecutor<'a, T> {
     pub fn new(
         inner: &'a T,
         control: Option<Arc<GoalControl>>,
-        journal: Arc<Mutex<JournalWriter>>,
+        journal: Arc<JournalCoordinator>,
         session_id: String,
         journal_sequence: Arc<AtomicU64>,
     ) -> Self {
