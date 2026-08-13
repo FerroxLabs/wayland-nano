@@ -68,11 +68,47 @@ pub async fn run(
         .map_err(std::io::Error::other)?;
     let todos: Arc<Mutex<Vec<nano_session::op::TodoItem>>> = Arc::new(Mutex::new(Vec::new()));
     let journal = sessions_dir.join("protocol-host.jsonl");
+    // P3 §3.3: this host's session journal appends route through the one
+    // coordinator, exactly like the ACP host.
+    let coordinator = nano_session::JournalCoordinator::open(&journal)
+        .map(std::sync::Arc::new)
+        .map_err(std::io::Error::other)?;
     let gate = nano_cli::session_tools::PlanAwareApproval::new(plan.clone(), workspace);
 
     // MCP: register configured servers (failures log, never crash the host).
-    let registry = nano_cli::mcp_specs::register_all(nano_cli::mcp_specs::mcp_specs_from_env());
-    let mcp_executor = nano_agent::mcp::McpToolExecutor::new(registry, &executor);
+    // P3 §5.2: the elicitation bridge is installed with an auto-decline ask
+    // (this host's gate declares questions Unavailable); the registry is
+    // shared with the session-tool wrapper so tool_search hydration and
+    // resources are visible to both.
+    let mcp_specs = nano_cli::mcp_specs::mcp_specs_from_env();
+    let elicitation: Option<nano_agent::mcp::ElicitationHandlerFactory> = (!mcp_specs.is_empty())
+        .then(|| {
+            let coordinator = coordinator.clone();
+            std::sync::Arc::new(move |server_id: &str, interrupted_call| {
+                let bridge = std::sync::Arc::new(nano_agent::elicitation::ElicitationBridge::new(
+                    server_id.to_string(),
+                    "protocol-host".to_string(),
+                    coordinator.clone(),
+                    interrupted_call,
+                    std::sync::Arc::new(|_| nano_agent::elicitation::ElicitAskOutcome::Unavailable),
+                ));
+                nano_agent::mcp::ElicitationHandlerParts {
+                    handler: bridge.clone(),
+                    slot_retired_hook: bridge.slot_retired_hook(),
+                }
+            }) as nano_agent::mcp::ElicitationHandlerFactory
+        });
+    let mcp_registry = std::sync::Arc::new(std::sync::Mutex::new(
+        nano_cli::mcp_specs::register_all_with(mcp_specs, elicitation),
+    ));
+    {
+        let registry = mcp_registry.lock().unwrap_or_else(|p| p.into_inner());
+        for warning in &registry.startup_warnings {
+            eprintln!("wayland-nano: {warning}");
+        }
+    }
+    let mcp_executor =
+        nano_agent::mcp::McpToolExecutor::from_shared(mcp_registry.clone(), &executor);
     let mcp_definitions = if executor_has_registry(&mcp_executor) {
         executor_tool_definitions(&mcp_executor)
     } else {
@@ -83,8 +119,15 @@ pub async fn run(
         &gate,
         todos.clone(),
         plan.clone(),
-        journal,
+        coordinator.clone(),
         "protocol-host".into(),
+    );
+    // P3 §3.2/§4.3: the MCP session tools on this host too.
+    let executor = nano_agent::mcp_session_tools::McpSessionToolExecutor::new(
+        Some(mcp_registry.clone()),
+        coordinator,
+        "protocol-host".into(),
+        &executor,
     );
 
     // C5: cross-session memory. The store is <nano_home>/memory; read tools
@@ -106,6 +149,18 @@ pub async fn run(
 
     let mut tool_definitions = v1_tool_definitions(search.is_some(), false);
     tool_definitions.extend(mcp_definitions);
+    {
+        let registry = mcp_registry.lock().unwrap_or_else(|p| p.into_inner());
+        let listing = registry
+            .has_deferred_tools()
+            .then(|| registry.deferred_source_listing());
+        let resources_available = registry.has_resources_capability();
+        drop(registry);
+        tool_definitions.extend(nano_agent::wiring::mcp_session_tool_definitions(
+            listing.as_deref(),
+            resources_available,
+        ));
+    }
     tool_definitions.extend(nano_agent::memory::memory_tool_definitions(memory_write));
 
     let engine = TurnEngine {

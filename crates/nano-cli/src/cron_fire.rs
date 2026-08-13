@@ -10,7 +10,7 @@ use nano_agent::cron::{CronFireError, CronFireExecutor, CronJob};
 use nano_agent::turn::ModelDriver;
 use nano_agent::turn::ToolExecutor;
 use nano_protocol::permission_mode::PermissionMode;
-use nano_session::writer::JournalWriter;
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -108,10 +108,11 @@ where
             .resolve_binding(&self.model_name, &env_reader, now)
             .map_err(|err| fail(format!("provider binding unavailable: {err:?}")))?;
         let driver = (self.make_driver)(&binding);
-        let journal = Arc::new(Mutex::new(
-            JournalWriter::open(&session.journal_path)
+        // P3 §3.3: the fired session's appends route through a coordinator.
+        let journal = Arc::new(
+            nano_session::JournalCoordinator::open(&session.journal_path)
                 .map_err(|err| fail(format!("cannot open session journal: {err}")))?,
-        ));
+        );
         let events = Arc::new(Mutex::new(crate::exec_mode::ExecEvents::new(
             Vec::new(), // a cron fire has no stdout stream; events sink to void
             session.session_id.clone(),

@@ -461,6 +461,7 @@ pub async fn compact_messages(
         covers_op_ids,
         changed_files,
         image_influenced,
+        mcp_hydration: None,
     }) {
         let _ = emit(Op::CompactionCancel {
             compaction_id: compaction_id.to_string(),

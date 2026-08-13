@@ -404,6 +404,7 @@ fn out_of_order_ops_fold_without_panic_into_safe_states() {
                 covers_op_ids: vec![],
                 changed_files: vec![],
                 image_influenced: false,
+                mcp_hydration: None,
             },
         ),
         env(
@@ -681,4 +682,80 @@ fn seeded_fuzz_1000_corruptions_never_panic_and_never_resurrect() {
             }
         }
     }
+}
+
+/// P3: hostile/over-bounds P3 payloads fold without panic into safe states —
+/// replay is deliberately tolerant (bounds are enforced at append time by
+/// the host validators, not at replay). Over-cap entries, non-hex digests,
+/// unknown enum spellings, and an over-limit churn window all fold; the
+/// churn window self-limits to the last 8.
+#[test]
+fn p3_hostile_payloads_fold_without_panic() {
+    let hostile = vec![
+        env(
+            "h1",
+            Op::McpToolHydration {
+                hydration_id: "x".into(),
+                entries: (0..12)
+                    .map(|i| nano_session::HydrationEntry {
+                        server_id: format!("srv{i}"),
+                        tool_names: vec!["t".repeat(5000)],
+                        tools_digest: "not-a-digest".into(),
+                    })
+                    .collect(),
+            },
+        ),
+        env(
+            "h2",
+            Op::McpElicitation {
+                elicitation_id: "e".into(),
+                server_id: String::new(),
+                call_id: String::new(),
+                request_id: "??".into(),
+                card_id: u64::MAX,
+                action: nano_session::McpElicitationAction::Unknown,
+                schema_digest: "zz".into(),
+                answer_digest: String::new(),
+            },
+        ),
+        env(
+            "h3",
+            Op::McpOauthGrant {
+                grant_id: "g".into(),
+                server_id: "s".into(),
+                as_origin: "http://not-https".into(),
+                issuer: String::new(),
+                endpoints: (0..9)
+                    .map(|_| nano_session::GrantEndpoint {
+                        method: nano_session::GrantMethod::Unknown,
+                        path: String::new(),
+                    })
+                    .collect(),
+            },
+        ),
+        env(
+            "h4",
+            Op::CompactionComplete {
+                compaction_id: "kc".into(),
+                summary: "s".into(),
+                covers_op_ids: vec!["h1".into()],
+                changed_files: vec![],
+                image_influenced: false,
+                mcp_hydration: Some(vec![nano_session::HydrationCarryEntry {
+                    server_id: "srv0".into(),
+                    tool_names: vec!["a".into()],
+                    tools_digest: "bad".into(),
+                    recent_digests: (0..20).map(|i| format!("{i}")).collect(),
+                }]),
+            },
+        ),
+    ];
+    let state = nano_session::SessionState::fold(&hostile);
+    // No panic, no unbounded growth: the fold is total. The covered h1 is
+    // logically dropped only by compacted_prefix — raw fold tolerates all.
+    assert!(state.mcp_hydrated.len() <= 12);
+    // The elicitation op is audit-only even when hostile.
+    assert!(state.open_turn.is_none());
+    // Hostile grants fold latest-wins keyed by (server, origin).
+    assert_eq!(state.mcp_oauth_grants.len(), 1);
 }

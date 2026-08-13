@@ -593,6 +593,7 @@ fn fork_of_compacted_journal_replays_identically() {
             covers_op_ids: vec!["p-begin-1".into(), "p-1-tb".into()],
             changed_files: vec!["main.rs".into()],
             image_influenced: false,
+            mcp_hydration: None,
         },
     ));
     envelopes.extend(turn("p-2", "parent-turn-2", "second"));

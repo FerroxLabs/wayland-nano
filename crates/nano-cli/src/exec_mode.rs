@@ -32,8 +32,8 @@ use nano_agent::turn::{ApprovalDecision, ApprovalGate, TurnEngine, TurnState};
 use nano_agent::wiring::v1_tool_definitions;
 use nano_model::types::{ToolCall, Usage};
 use nano_protocol::permission_mode::PermissionMode;
+use nano_session::JournalCoordinator;
 use nano_session::op::{GoalBudgets, Op, OpEnvelope};
-use nano_session::writer::JournalWriter;
 use std::io::Write;
 
 #[derive(Debug)]
@@ -205,6 +205,17 @@ pub fn exec_gate_decision(
     if crate::acp_mode::is_read_only_tool(&call.name) || is_control_tool(&call.name) {
         return ApprovalDecision::Approve;
     }
+    // P3 §4.3: the MCP approval classes on this non-interactive surface —
+    // DiscoveryLocal (tool_search: no server contact) approves; the
+    // server-contact classes would prompt, and exec can never prompt, so
+    // they auto-DENY in every mode (the would-prompt doctrine).
+    if let Some(class) = nano_agent::wiring::mcp_approval_class(&call.name) {
+        return match class {
+            nano_agent::wiring::McpApprovalClass::DiscoveryLocal => ApprovalDecision::Approve,
+            nano_agent::wiring::McpApprovalClass::ServerQuery
+            | nano_agent::wiring::McpApprovalClass::ServerDataRead => ApprovalDecision::Deny,
+        };
+    }
     match mode {
         PermissionMode::ReadOnly => ApprovalDecision::Deny,
         PermissionMode::Default => ApprovalDecision::Deny, // would prompt → auto-deny
@@ -346,7 +357,7 @@ pub async fn run_exec_turn<D, T, W>(
     turn_id: &str,
     input: &str,
     context: Vec<nano_model::types::Message>,
-    journal: Arc<Mutex<JournalWriter>>,
+    journal: Arc<JournalCoordinator>,
     events: Arc<Mutex<ExecEvents<W>>>,
     extra_tool_definitions: &[nano_model::types::ToolDefinition],
     // P1: the advertised surface mirrors the executor's resolved backend
@@ -376,11 +387,7 @@ where
     let mut sink = |envelope: &OpEnvelope| -> bool {
         // Journal first: the durable record leads the live event, never the
         // other way round.
-        let journaled = match journal
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .append(envelope)
-        {
+        let journaled = match journal.append(envelope) {
             Ok(_) => true,
             Err(err) => {
                 eprintln!("wayland-nano: session journal append failed: {err}");
@@ -457,7 +464,7 @@ pub fn goal_turn_stop(state: &TurnState) -> GoalTurnStop {
 /// Journals a new goal's activation (GoalBegin + GoalStatus{active}),
 /// journal-first, fail-closed. Returns the goal id.
 pub fn begin_goal(
-    journal: &Arc<Mutex<JournalWriter>>,
+    journal: &Arc<JournalCoordinator>,
     journal_sequence: &AtomicU64,
     session_id: &str,
     objective: &str,
@@ -471,21 +478,18 @@ pub fn begin_goal(
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let goal_id = format!("{session_id}-goal-{nanos}");
-    {
-        let mut writer = journal.lock().unwrap_or_else(|p| p.into_inner());
-        writer
-            .append(&OpEnvelope::new(
-                format!("{session_id}-goalbegin-{nanos}"),
-                "now",
-                Op::GoalBegin {
-                    goal_id: goal_id.clone(),
-                    objective: objective.to_string(),
-                    budgets: *budgets,
-                },
-            ))
-            .and_then(|_| writer.sync())
-            .map_err(|err| format!("cannot journal goal begin: {err}"))?;
-    }
+    // The coordinator's append is fsync-durable per call (P3 §3.3).
+    journal
+        .append(&OpEnvelope::new(
+            format!("{session_id}-goalbegin-{nanos}"),
+            "now",
+            Op::GoalBegin {
+                goal_id: goal_id.clone(),
+                objective: objective.to_string(),
+                budgets: *budgets,
+            },
+        ))
+        .map_err(|err| format!("cannot journal goal begin: {err}"))?;
     journal_goal_transition(
         journal,
         session_id,
@@ -502,7 +506,7 @@ pub fn begin_goal(
 /// Re-activates a paused goal on explicit resume (a resumed session's goal
 /// normalized to `paused`; `exec --goal` is the explicit resume).
 pub fn resume_goal(
-    journal: &Arc<Mutex<JournalWriter>>,
+    journal: &Arc<JournalCoordinator>,
     journal_sequence: &AtomicU64,
     session_id: &str,
     goal_id: &str,

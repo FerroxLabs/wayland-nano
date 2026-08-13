@@ -13,7 +13,7 @@
 //! reorders user intent.
 
 use nano_session::FileLock;
-use nano_session::JournalWriter;
+use nano_session::JournalCoordinator;
 use nano_session::Op;
 use nano_session::OpEnvelope;
 use nano_session::ReplayError;
@@ -162,7 +162,7 @@ pub fn bootstrap_session(
         SessionSeed::New => {
             let session_id = new_session_id();
             let journal_path = sessions_dir.join(format!("{session_id}.jsonl"));
-            let mut writer = JournalWriter::open(&journal_path)?;
+            let writer = JournalCoordinator::open(&journal_path)?;
             writer.append(&OpEnvelope::new(
                 format!("{session_id}-begin-1"),
                 "now",
@@ -204,7 +204,7 @@ pub fn bootstrap_session(
                 .count();
             // A fresh SessionBegin marks the resume in the journal itself
             // (audit trail; replay treats non-genesis begins as inert).
-            let mut writer = JournalWriter::open(&journal_path)?;
+            let writer = JournalCoordinator::open(&journal_path)?;
             writer.append(&OpEnvelope::new(
                 format!("{id}-begin-{}", begin_count + 1),
                 "now",

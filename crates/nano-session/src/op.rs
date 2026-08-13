@@ -114,6 +114,198 @@ pub enum GoalOutcome {
     Unknown,
 }
 
+/// One server's atomically journaled ToolSearch hydration batch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HydrationEntry {
+    pub server_id: String,
+    pub tool_names: Vec<String>,
+    pub tools_digest: String,
+}
+
+/// Hydration state carried across a covered compaction prefix.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HydrationCarryEntry {
+    pub server_id: String,
+    pub tool_names: Vec<String>,
+    pub tools_digest: String,
+    pub recent_digests: Vec<String>,
+}
+
+/// Audit-safe outcome of a server-initiated elicitation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpElicitationAction {
+    Accept,
+    Decline,
+    Cancel,
+    #[serde(other)]
+    Unknown,
+}
+
+/// HTTP methods admitted by a journaled OAuth endpoint grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum GrantMethod {
+    Get,
+    Post,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GrantEndpoint {
+    pub method: GrantMethod,
+    pub path: String,
+}
+
+// ── P3 journal bounds (P3-mcp-ecosystem-design §3.3/§5.6/§6.3) ───────────
+// The host validates BEFORE the journal append; replay stays tolerant (the
+// adversarial-journal contract: hostile payloads fold without panic). These
+// constants and validators are the single enforcing definitions.
+
+/// A hydration batch covers at most this many servers (the fixed limit-10
+/// search result cannot span more).
+pub const MAX_HYDRATION_ENTRIES: usize = 8;
+/// Per-server journaled tool names per hydration/carry entry.
+pub const MAX_HYDRATION_TOOL_NAMES: usize = 64;
+/// Per-tool-name character cap.
+pub const MAX_HYDRATION_TOOL_NAME_CHARS: usize = 128;
+/// The carried churn window per server.
+pub const MAX_RECENT_DIGESTS: usize = 8;
+/// Canonical digests are sha256 hex: exactly 64 lowercase hex chars.
+pub const DIGEST_HEX_CHARS: usize = 64;
+/// A journaled OAuth grant names at most this many exact endpoint pairs.
+pub const MAX_GRANT_ENDPOINTS: usize = 4;
+/// `as_origin` is an https origin only, capped.
+pub const MAX_AS_ORIGIN_CHARS: usize = 256;
+/// The validated issuer string cap.
+pub const MAX_ISSUER_CHARS: usize = 512;
+
+/// Lowercase 64-hex sha256 shape, the only digest form the journal accepts.
+pub fn is_canonical_digest(value: &str) -> bool {
+    value.len() == DIGEST_HEX_CHARS
+        && value
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
+/// Validates one hydration entry (§3.3 bounds). Returns the violated rule.
+pub fn validate_hydration_entry(entry: &HydrationEntry) -> Result<(), &'static str> {
+    if entry.server_id.is_empty() || entry.server_id.len() > MAX_HYDRATION_TOOL_NAME_CHARS {
+        return Err("server_id empty or over the cap");
+    }
+    if entry.tool_names.len() > MAX_HYDRATION_TOOL_NAMES {
+        return Err("too many tool names");
+    }
+    if entry
+        .tool_names
+        .iter()
+        .any(|name| name.is_empty() || name.chars().count() > MAX_HYDRATION_TOOL_NAME_CHARS)
+    {
+        return Err("tool name empty or over the char cap");
+    }
+    if !is_canonical_digest(&entry.tools_digest) {
+        return Err("tools_digest is not 64-hex");
+    }
+    Ok(())
+}
+
+/// Validates the carry form: the hydration bounds plus the bounded churn
+/// window (§3.3/§3.4).
+pub fn validate_hydration_carry_entry(entry: &HydrationCarryEntry) -> Result<(), &'static str> {
+    validate_hydration_entry(&HydrationEntry {
+        server_id: entry.server_id.clone(),
+        tool_names: entry.tool_names.clone(),
+        tools_digest: entry.tools_digest.clone(),
+    })?;
+    if entry.recent_digests.len() > MAX_RECENT_DIGESTS {
+        return Err("recent_digests over the window cap");
+    }
+    if entry.recent_digests.iter().any(|d| !is_canonical_digest(d)) {
+        return Err("recent_digests entry is not 64-hex");
+    }
+    Ok(())
+}
+
+/// Validates a whole `McpToolHydration` batch (one atomic append, ≤ 8
+/// servers).
+pub fn validate_hydration_batch(entries: &[HydrationEntry]) -> Result<(), &'static str> {
+    if entries.is_empty() || entries.len() > MAX_HYDRATION_ENTRIES {
+        return Err("batch empty or over the server cap");
+    }
+    for entry in entries {
+        validate_hydration_entry(entry)?;
+    }
+    Ok(())
+}
+
+/// The server-influenced elicitation request-id cap (§5.6): the stringified
+/// JSON-RPC id is bounded before it may reach the journal.
+pub const MAX_ELICITATION_REQUEST_ID_CHARS: usize = 64;
+
+/// Validates a `McpElicitation` payload (§5.6 bounds): ids bounded, digests
+/// canonical (`answer_digest` may be empty for decline/cancel).
+pub fn validate_elicitation(
+    elicitation_id: &str,
+    server_id: &str,
+    call_id: &str,
+    request_id: &str,
+    schema_digest: &str,
+    answer_digest: &str,
+) -> Result<(), &'static str> {
+    if elicitation_id.is_empty() || elicitation_id.chars().count() > MAX_AS_ORIGIN_CHARS {
+        return Err("elicitation_id empty or over the cap");
+    }
+    if server_id.is_empty() || server_id.chars().count() > MAX_HYDRATION_TOOL_NAME_CHARS {
+        return Err("server_id empty or over the cap");
+    }
+    // call_id may be empty (attribution unavailable at a race edge); bounded.
+    if call_id.chars().count() > MAX_AS_ORIGIN_CHARS {
+        return Err("call_id over the cap");
+    }
+    if request_id.chars().count() > MAX_ELICITATION_REQUEST_ID_CHARS {
+        return Err("request_id over the cap");
+    }
+    if !is_canonical_digest(schema_digest) {
+        return Err("schema_digest is not 64-hex");
+    }
+    if !answer_digest.is_empty() && !is_canonical_digest(answer_digest) {
+        return Err("answer_digest is not empty-or-64-hex");
+    }
+    Ok(())
+}
+
+/// Validates a `McpOauthGrant` payload (§6.3 bounds). Origin-shape rules
+/// (https-only, host normalization) are enforced by the egress layer's
+/// `host_of`; here only the journal-side caps apply.
+pub fn validate_oauth_grant(
+    as_origin: &str,
+    issuer: &str,
+    endpoints: &[GrantEndpoint],
+) -> Result<(), &'static str> {
+    if as_origin.is_empty() || as_origin.chars().count() > MAX_AS_ORIGIN_CHARS {
+        return Err("as_origin empty or over the cap");
+    }
+    if issuer.is_empty() || issuer.chars().count() > MAX_ISSUER_CHARS {
+        return Err("issuer empty or over the cap");
+    }
+    if endpoints.len() > MAX_GRANT_ENDPOINTS {
+        return Err("too many grant endpoints");
+    }
+    for endpoint in endpoints {
+        if matches!(endpoint.method, GrantMethod::Unknown) {
+            return Err("grant endpoint method unknown");
+        }
+        if endpoint.path.is_empty()
+            || !endpoint.path.starts_with('/')
+            || endpoint.path.chars().count() > MAX_ISSUER_CHARS
+        {
+            return Err("grant endpoint path invalid");
+        }
+    }
+    Ok(())
+}
+
 // ── P1 economy (panel-certified design: P1-search-economy-design.md) ─────
 // JOURNAL-MIGRATION REVIEW FLAG (RC2 coordinated review): the THREE P1
 // journal additions — (a) `usage` on `Op::TurnEnd`, (b) `Op::BudgetGrant`,
@@ -122,6 +314,13 @@ pub enum GoalOutcome {
 // are numbers/bounded-enums-only payloads (digest-only invariant untouched),
 // all serde-defaulted so pre-P1 journals replay unchanged, and old readers
 // skip them via the `Unknown`-op forward tolerance.
+//
+// The SAME flag covers the P3 additions (P3-mcp-ecosystem-design sections
+// 3.3/5.6/6.3, "one flag"): (d) `Op::McpToolHydration`, (e)
+// `Op::McpElicitation`, (f) `Op::McpOauthGrant`, and (g) the serde-defaulted
+// `CompactionComplete.mcp_hydration` carry field. All four carry ids,
+// bounded strings, bounded enums, and digests only — no content payloads —
+// and ride the identical forward-tolerance discipline.
 
 /// Where a usage figure came from (P1 §3.5 provenance): provider-reported
 /// wire usage vs the fail-closed conservative estimate charged when the wire
@@ -468,6 +667,10 @@ pub enum Op {
         /// journals replay unchanged; omitted when false.
         #[serde(default, skip_serializing_if = "is_false")]
         image_influenced: bool,
+        /// P3 §3.3: exact hydration state at the covered watermark, plus
+        /// the bounded digest window that keeps churn detection continuous.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mcp_hydration: Option<Vec<HydrationCarryEntry>>,
     },
     CompactionCancel {
         compaction_id: String,
@@ -622,6 +825,31 @@ pub enum Op {
         outcome: TurnOutcome,
         /// The child's turn-scoped usage sum (§3.4) with §3.5 provenance.
         usage: TurnUsage,
+    },
+    /// P3 §3.3: one atomic, bounded multi-server hydration decision.
+    McpToolHydration {
+        hydration_id: String,
+        entries: Vec<HydrationEntry>,
+    },
+    /// P3 §5.6: audit-only bound elicitation decision. Answer content is
+    /// deliberately absent; only its canonical digest is durable.
+    McpElicitation {
+        elicitation_id: String,
+        server_id: String,
+        call_id: String,
+        request_id: String,
+        card_id: u64,
+        action: McpElicitationAction,
+        schema_digest: String,
+        answer_digest: String,
+    },
+    /// P3 §6.3: exact, replayable OAuth endpoint authority.
+    McpOauthGrant {
+        grant_id: String,
+        server_id: String,
+        as_origin: String,
+        issuer: String,
+        endpoints: Vec<GrantEndpoint>,
     },
     /// Forward tolerance: any Op type this build does not know. Skipped on
     /// replay; the raw line stays in the journal for future readers.

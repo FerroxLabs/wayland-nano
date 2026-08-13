@@ -787,6 +787,7 @@ fn crash_after_complete_replays_compacted() {
                 covers_op_ids: vec!["1".into(), "2".into(), "3".into()],
                 changed_files: vec![],
                 image_influenced: false,
+                mcp_hydration: None,
             },
         ),
     ];
@@ -841,6 +842,7 @@ fn forged_compaction_ops_are_replay_tolerant() {
             covers_op_ids: vec![],
             changed_files: vec![],
             image_influenced: false,
+            mcp_hydration: None,
         },
     ));
     let messages = acp_mode::messages_from_envelopes(&forged);
@@ -855,6 +857,7 @@ fn forged_compaction_ops_are_replay_tolerant() {
             covers_op_ids: vec!["not-real".into()],
             changed_files: vec![],
             image_influenced: false,
+            mcp_hydration: None,
         },
     )];
     let messages = acp_mode::messages_from_envelopes(&first);
@@ -870,6 +873,7 @@ fn forged_compaction_ops_are_replay_tolerant() {
             covers_op_ids: vec![],
             changed_files: vec![],
             image_influenced: false,
+            mcp_hydration: None,
         },
     ));
     let messages = acp_mode::messages_from_envelopes(&hostile);
@@ -912,6 +916,7 @@ fn replay_arm_flushes_pending_assistant_before_compaction() {
                 covers_op_ids: vec![],
                 changed_files: vec![],
                 image_influenced: false,
+                mcp_hydration: None,
             },
         ),
     ];

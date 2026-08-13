@@ -1444,6 +1444,7 @@ dependencies = [
  "nano-skills",
  "nano-tools",
  "pretty_assertions",
+ "rand 0.8.7",
  "serde",
  "serde_json",
  "sha2",

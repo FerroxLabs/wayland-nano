@@ -10,12 +10,12 @@ use crate::goal::{
 use crate::loop_protection::ProgressSignals;
 use crate::turn::{ToolExecutor, ToolOutcome};
 use nano_model::types::{ToolCall, Usage};
+use nano_session::JournalCoordinator;
 use nano_session::op::Op;
 use nano_session::reader::read_journal;
-use nano_session::writer::JournalWriter;
 use nano_session::{GoalBudgets, GoalOutcome, GoalReason, GoalStatusKind, SessionState};
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex};
 
 fn tmpdir(tag: &str) -> std::path::PathBuf {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -46,20 +46,16 @@ fn usage(input: u64, output: u64) -> Usage {
     }
 }
 
-fn driver_config() -> (Arc<Mutex<JournalWriter>>, AtomicU64, std::path::PathBuf) {
+fn driver_config() -> (Arc<JournalCoordinator>, AtomicU64, std::path::PathBuf) {
     let dir = tmpdir("drive");
-    let journal = Arc::new(Mutex::new(
-        JournalWriter::open(&dir.join("s.jsonl")).unwrap(),
-    ));
+    let journal = Arc::new(JournalCoordinator::open(dir.join("s.jsonl")).unwrap());
     (journal, AtomicU64::new(1), dir)
 }
 
 /// Journals the GoalBegin the exec/host layer writes before the driver runs
 /// (drive_goal drives an ACTIVATED goal; activation is the caller's op).
-fn journal_goal_begin(journal: &Arc<Mutex<JournalWriter>>, goal_id: &str) {
+fn journal_goal_begin(journal: &Arc<JournalCoordinator>, goal_id: &str) {
     journal
-        .lock()
-        .unwrap()
         .append(&nano_session::OpEnvelope::new(
             format!("s-goalbegin-{goal_id}"),
             "now",
@@ -261,7 +257,7 @@ async fn model_text_claiming_completion_is_inert() {
 #[tokio::test]
 async fn goal_complete_tool_is_journal_first_and_stops_driver() {
     struct CompletingTools {
-        journal: Arc<Mutex<JournalWriter>>,
+        journal: Arc<JournalCoordinator>,
         sequence: Arc<AtomicU64>,
         control: Arc<GoalControl>,
         session: String,

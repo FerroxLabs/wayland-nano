@@ -58,12 +58,16 @@ pub enum NanoErrorKind {
     McpOutputBounded,
     McpTransport,
     McpTimeout,
-    /// P3 §4.2: resource call against a server whose negotiated
-    /// capabilities lack `resources` — typed refusal BEFORE any wire write.
     McpResourceUnsupported,
-    /// P3 §4.3: resource read returned blob/non-text content; v1 refuses
-    /// it at the MCP layer (P2b owns binary-to-model content).
+    McpResourceDenied,
     McpContentUnsupported,
+    McpElicitationUnsupported,
+    McpAuthorizationRequired,
+    McpCredstoreUnavailable,
+    // serde's snake_case would render this "mcp_o_auth_failed"; the wire
+    // form is pinned with an explicit rename (the model_server_5xx pattern).
+    #[serde(rename = "mcp_oauth_failed")]
+    McpOAuthFailed,
     UnknownTool,
     MissingArgs,
     ApprovalDenied,

@@ -210,10 +210,50 @@
     },
     {
       "hint": "",
+      "kind": "mcp_resource_denied",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "That resource URI wasn't advertised by the server; list resources first.",
+      "wireCode": -32603
+    },
+    {
+      "hint": "",
       "kind": "mcp_content_unsupported",
       "retryable": false,
       "surface": "tool_card",
       "title": "Binary resource content isn't supported yet.",
+      "wireCode": -32603
+    },
+    {
+      "hint": "",
+      "kind": "mcp_elicitation_unsupported",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "This MCP server needs a question flow Nano doesn't support on this transport.",
+      "wireCode": -32603
+    },
+    {
+      "hint": "",
+      "kind": "mcp_authorization_required",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "Login required: nano auth login <server>.",
+      "wireCode": -32603
+    },
+    {
+      "hint": "",
+      "kind": "mcp_credstore_unavailable",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "Secure credential storage is unavailable; provision <VAR>_FILE (0600) or fix the keyring.",
+      "wireCode": -32603
+    },
+    {
+      "hint": "",
+      "kind": "mcp_oauth_failed",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "OAuth login failed (<bounded reason>).",
       "wireCode": -32603
     },
     {

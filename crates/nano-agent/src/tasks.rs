@@ -35,8 +35,8 @@ use crate::turn::{
 };
 use crate::wiring::{RealToolExecutor, v1_tool_definitions};
 use nano_model::types::{ToolCall, ToolDefinition};
+use nano_session::JournalCoordinator;
 use nano_session::op::{Op, OpEnvelope, TurnOutcome, TurnUsage};
-use nano_session::writer::JournalWriter;
 use nano_tools::fs::FsTools;
 use nano_tools::shell::{KillRegistry, ShellTool};
 use std::path::{Component, Path, PathBuf};
@@ -377,8 +377,8 @@ impl TaskRegistry {
         }
         // Fail-closed journaling: a child whose journal can't open is never
         // started (the parent's posture, applied to children).
-        let journaled = JournalWriter::open(&journal_path).and_then(|mut w| {
-            w.append(&OpEnvelope::new(
+        let journaled = JournalCoordinator::open(&journal_path).and_then(|coordinator| {
+            coordinator.append(&OpEnvelope::new(
                 format!("{task_id}-begin-1"),
                 "now",
                 Op::SessionBegin {
@@ -822,8 +822,8 @@ fn run_child(ctx: ChildContext) {
 }
 
 async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
-    let journaled = JournalWriter::open(&ctx.journal_path);
-    let mut writer = match journaled {
+    let journaled = JournalCoordinator::open(&ctx.journal_path);
+    let writer = match journaled {
         Ok(writer) => writer,
         Err(err) => {
             return ChildOutcome {

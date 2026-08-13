@@ -1210,6 +1210,61 @@ pub fn request_question_request(
     }
 }
 
+/// A server-initiated MCP elicitation surfaced as a question card (P3 §5.2):
+/// the SAME session/request_permission method, but the option ids are the
+/// bridge's OPAQUE 96-bit ids (never sequential, never label-adjacent —
+/// [r2 codex-F9]) plus the terminal Dismiss. The card is labeled
+/// server-originated by the caller's title ("MCP server '<name>' asks:").
+pub fn request_elicitation_request(
+    id: u64,
+    session_id: &str,
+    card_ref: &str,
+    title: &str,
+    message: &str,
+    options: &[(String, String)],
+) -> JsonRpcRequest {
+    let mut wire_options: Vec<serde_json::Value> = options
+        .iter()
+        .map(|(option_id, label)| {
+            serde_json::json!({ "optionId": option_id, "kind": "allow_once", "name": label })
+        })
+        .collect();
+    wire_options.push(
+        serde_json::json!({ "optionId": QUESTION_DISMISS_ID, "kind": "reject_once", "name": "Dismiss" }),
+    );
+    JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: serde_json::json!(id),
+        method: "session/request_permission".into(),
+        params: Some(serde_json::json!({
+            "sessionId": session_id,
+            "toolCall": {
+                "toolCallId": card_ref,
+                "title": title,
+                "rawInput": { "message": message }
+            },
+            "options": wire_options
+        })),
+    }
+}
+
+/// An MCP ecosystem notice (P3 §3.1/§3.4/§4.1): bounded, typed kind + bounded
+/// text — startup inventory-cap warnings, hydration drop notices at resume,
+/// churn pins, resource-page truncation. Loud, never silent.
+pub fn mcp_notice(session_id: &str, kind: &str, message: &str) -> JsonRpcNotification {
+    JsonRpcNotification::new(
+        "session/update",
+        serde_json::json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "mcp_notice",
+                "kind": kind,
+                "message": message
+            }
+        }),
+    )
+}
+
 /// A tool_call_update carrying an ACP-standard `diff` content block
 /// (C10 §6): `{ "type": "diff", path, oldText, newText }`. Emitted when a
 /// fs_write/fs_edit produced a diff — live-wire-only (never journaled),

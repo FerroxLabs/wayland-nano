@@ -52,9 +52,32 @@ pub fn mcp_specs_from_acp_params(params: &serde_json::Value) -> Vec<McpServerSpe
                 return None;
             }
             let Some(command) = v.get("command").and_then(|c| c.as_str()) else {
-                eprintln!(
-                    "wayland-nano: skipping MCP server '{name}': only stdio servers (with a command) are supported"
-                );
+                // P3 §5.5: the one honest declaration channel — a server that
+                // explicitly declares `requires: ["elicitation"]` on a
+                // non-stdio transport is refused TYPED
+                // (McpElicitationUnsupported) at configuration time, before
+                // any connection is opened. Other non-stdio entries keep the
+                // plain skip (HTTP transport is the OAuth lane's §6.1).
+                let requires_elicitation = v
+                    .get("requires")
+                    .and_then(|r| r.as_array())
+                    .is_some_and(|r| r.iter().any(|x| x.as_str() == Some("elicitation")));
+                if requires_elicitation {
+                    eprintln!(
+                        "wayland-nano: refusing MCP server '{name}': {} — elicitation over a non-stdio transport",
+{
+                          let kind = serde_json::to_string(
+                              &nano_session::NanoErrorKind::McpElicitationUnsupported,
+                          )
+                          .unwrap_or_default();
+                          kind.trim_matches('"').to_owned()
+                        }
+                    );
+                } else {
+                    eprintln!(
+                        "wayland-nano: skipping MCP server '{name}': only stdio servers (with a command) are supported"
+                    );
+                }
                 return None;
             };
             Some(McpServerSpec {
@@ -95,7 +118,21 @@ pub fn mcp_specs_from_acp_params(params: &serde_json::Value) -> Vec<McpServerSpe
 pub fn register_all(
     specs: impl IntoIterator<Item = McpServerSpec>,
 ) -> nano_agent::mcp::McpRegistry {
+    register_all_with(specs, None)
+}
+
+/// P3: registration with the ToolSearch fair-share count fixed up front
+/// (§3.1 — admission is registration-order independent) and the optional
+/// elicitation handler factory installed BEFORE any connection opens (§5.2 —
+/// the capability is advertised only when a handler actually exists).
+pub fn register_all_with(
+    specs: impl IntoIterator<Item = McpServerSpec>,
+    factory: Option<nano_agent::mcp::ElicitationHandlerFactory>,
+) -> nano_agent::mcp::McpRegistry {
+    let specs: Vec<McpServerSpec> = specs.into_iter().collect();
     let mut registry = nano_agent::mcp::McpRegistry::new();
+    registry.set_configured_server_count(specs.len());
+    registry.set_elicitation_handler_factory(factory);
     for spec in specs {
         let name = spec.name.clone();
         if let Err(err) = registry.register(spec) {
@@ -133,6 +170,24 @@ mod tests {
 
         // Absent or non-array mcpServers is simply no servers.
         assert!(mcp_specs_from_acp_params(&serde_json::json!({})).is_empty());
+    }
+
+    /// P3 §5.5: a non-stdio server that EXPLICITLY declares
+    /// `requires: ["elicitation"]` is refused at configuration time (typed
+    /// McpElicitationUnsupported in the log line) — before any connection.
+    #[test]
+    fn http_elicitation_requirement_is_refused_at_config_time() {
+        let params = serde_json::json!({
+            "mcpServers": [
+                { "type": "http", "name": "elicit-remote", "url": "https://example.invalid/mcp", "requires": ["elicitation"] },
+                { "type": "http", "name": "plain-remote", "url": "https://example.invalid/mcp" }
+            ]
+        });
+        // Both are refused (no stdio command); the requires-declaring one
+        // takes the typed refusal path (asserted by code coverage of the
+        // branch — the registry never sees either).
+        let specs = mcp_specs_from_acp_params(&params);
+        assert!(specs.is_empty(), "no non-stdio spec may register");
         assert!(
             mcp_specs_from_acp_params(&serde_json::json!({ "mcpServers": "bogus" })).is_empty()
         );

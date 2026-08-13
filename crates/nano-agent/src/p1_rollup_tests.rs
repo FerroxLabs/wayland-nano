@@ -5,6 +5,7 @@
 use super::*;
 use nano_model::pricing::PricingCatalog;
 use nano_model::types::{ModelEvent, ModelRequest, ModelResponse};
+use nano_session::JournalWriter;
 
 fn catalog() -> Arc<PricingCatalog> {
     Arc::new(

@@ -7,7 +7,7 @@
 
 use crate::exec_mode::{
     ExecApproval, ExecEvents, ExecParams, atomic_replace_write, exit_code_for_goal,
-    exit_code_for_turn, goal_turn_stop, mcp_executor_for, run_exec_turn,
+    exit_code_for_turn, goal_turn_stop, run_exec_turn,
 };
 use nano_agent::bootstrap::{BootstrappedSession, bootstrap_session, session_guard_registry};
 use nano_agent::goal::{
@@ -16,7 +16,7 @@ use nano_agent::goal::{
 };
 use nano_agent::turn::TurnState;
 use nano_protocol::permission_mode::PermissionMode;
-use nano_session::writer::JournalWriter;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -78,8 +78,9 @@ where
         .unwrap_or_else(|p| p.into_inner())
         .session_started(&workspace.display().to_string(), params.mode, resumed);
 
-    let journal = match JournalWriter::open(&session.journal_path) {
-        Ok(writer) => Arc::new(Mutex::new(writer)),
+    // P3 §3.3: the exec session's appends route through the one coordinator.
+    let journal = match nano_session::JournalCoordinator::open(&session.journal_path) {
+        Ok(coordinator) => Arc::new(coordinator),
         Err(err) => {
             events
                 .lock()
@@ -98,9 +99,79 @@ where
     let cron_store = nano_agent::cron::JsonCronStore::new(nano_home);
     let with_cron =
         nano_agent::cron::CronjobExecutor::new(&tools, &cron_store, session.session_id.clone());
-    let with_mcp = mcp_executor_for(&with_cron, mcp_specs);
+    // P3: the registry is SHARED (executor + session-tool wrapper), the
+    // elicitation bridge auto-declines on this non-interactive surface
+    // (§5.2: would-prompt ⇒ deny), and the journaled hydration state is
+    // re-applied through the §3.4 canonical digest gate (mismatch ⇒
+    // drop-and-notify on stderr; churn ⇒ pinned Deferred for the session).
+    let mcp_registry = {
+        let elicitation: Option<nano_agent::mcp::ElicitationHandlerFactory> =
+            if mcp_specs.is_empty() {
+                None
+            } else {
+                let coordinator = journal.clone();
+                let session_id = session.session_id.clone();
+                Some(std::sync::Arc::new(
+                    move |server_id: &str, interrupted_call| {
+                        let bridge =
+                            std::sync::Arc::new(nano_agent::elicitation::ElicitationBridge::new(
+                                server_id.to_string(),
+                                session_id.clone(),
+                                coordinator.clone(),
+                                interrupted_call,
+                                std::sync::Arc::new(|_| {
+                                    nano_agent::elicitation::ElicitAskOutcome::Unavailable
+                                }),
+                            ));
+                        nano_agent::mcp::ElicitationHandlerParts {
+                            handler: bridge.clone(),
+                            slot_retired_hook: bridge.slot_retired_hook(),
+                        }
+                    },
+                ))
+            };
+        let registry = crate::mcp_specs::register_all_with(mcp_specs.to_vec(), elicitation);
+        Arc::new(Mutex::new(registry))
+    };
+    {
+        let mut registry = mcp_registry.lock().unwrap_or_else(|p| p.into_inner());
+        for warning in registry.startup_warnings.clone() {
+            eprintln!("wayland-nano: {warning}");
+        }
+        for notice in registry.resume_hydration(
+            &session.state.mcp_hydrated,
+            &session.state.mcp_tools_digest,
+            &session.state.mcp_recent_digests,
+        ) {
+            eprintln!("wayland-nano: {notice}");
+        }
+    }
+    let with_mcp = nano_agent::mcp::McpToolExecutor::from_shared(mcp_registry.clone(), &with_cron);
+    let with_mcp = nano_agent::mcp_session_tools::McpSessionToolExecutor::new(
+        (!mcp_specs.is_empty()).then(|| mcp_registry.clone()),
+        journal.clone(),
+        session.session_id.clone(),
+        &with_mcp,
+    );
     let mut extra_definitions = vec![nano_agent::cron::cronjob_tool_definition()];
-    extra_definitions.extend(with_mcp.tool_definitions_from_registry());
+    {
+        let registry = mcp_registry.lock().unwrap_or_else(|p| p.into_inner());
+        extra_definitions.extend(registry.tool_definitions());
+    }
+    // P3 §3.2/§4.3: advertise the MCP session tools only when the live
+    // registry warrants them (deferred inventory / resources capability).
+    {
+        let registry = mcp_registry.lock().unwrap_or_else(|p| p.into_inner());
+        let listing = registry
+            .has_deferred_tools()
+            .then(|| registry.deferred_source_listing());
+        let resources_available = registry.has_resources_capability();
+        drop(registry);
+        extra_definitions.extend(nano_agent::wiring::mcp_session_tool_definitions(
+            listing.as_deref(),
+            resources_available,
+        ));
+    }
 
     let gate = ExecApproval {
         mode: params.mode,
@@ -299,7 +370,7 @@ async fn run_plain_turn<FD, D, T, W>(
     model_name: &str,
     session: &BootstrappedSession,
     context: Vec<nano_model::types::Message>,
-    journal: &Arc<Mutex<JournalWriter>>,
+    journal: &Arc<nano_session::JournalCoordinator>,
     events: &Arc<Mutex<ExecEvents<W>>>,
     extra_definitions: &[nano_model::types::ToolDefinition],
     web_search_backed: bool,
