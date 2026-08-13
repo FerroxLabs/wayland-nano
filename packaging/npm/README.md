@@ -1,52 +1,67 @@
-# waylandnano (npm package)
+# waylandnano
 
-Alpha npm packaging for the Wayland Nano CLI. The package ships prebuilt
-native binaries and a zero-dependency Node shim — no compilation at install
-time, no third-party npm dependencies.
+Wayland Nano is a zero-dependency npm wrapper around prebuilt native CLI
+binaries. Installation performs no compilation and verifies the selected
+binary's byte size and SHA-256 digest before making it executable.
 
-> Alpha: unsigned binaries; published under the `next` dist-tag until stable
-> (parity with getwayland's prerelease rule).
-
-## Install flow (alpha)
-
-From the repo, on the machine/CI lane matching your target platform:
-
-```powershell
-# Build the release binary and stage it into this package
-pwsh packaging/npm/scripts/pack.ps1                 # host platform
-pwsh packaging/npm/scripts/pack.ps1 -Platform all   # full matrix (needs cross toolchains)
-```
-
-Then pack and install the tarball:
+## Install, run, uninstall
 
 ```sh
-cd packaging/npm
-npm pack                          # produces waylandnano-nano-0.1.0-alpha.0.tgz
-npm install -g ./waylandnano-nano-0.1.0-alpha.0.tgz
-wayland-nano --help
+npm install --global waylandnano@next
+wayland-nano --version
+npm uninstall --global waylandnano
 ```
 
-`postinstall` (`bin/install.js`) selects the binary for your platform/arch
-from `binaries/<platform>-<arch>/` and fails the install if none is staged.
-The `wayland-nano` command on your PATH is `bin/wayland-nano.js`, a shim that
-execs the native binary with your arguments and forwards its exit code and
-signals.
+The alpha channel uses npm's `next` dist-tag. Stable releases use `latest`.
+Node.js 18 or newer is required.
 
-Supported at runtime: `win32-x64`, `darwin-x64`, `darwin-arm64`, `linux-x64`,
-`linux-arm64`. `win32-arm64` is compile-gated only — the binary is built to
-keep the target compiling, but the launcher rejects it at runtime with a
-clear error.
+Supported platforms are Windows x64, macOS x64/arm64, and Linux x64/arm64.
+Other platform/architecture pairs fail installation with the typed
+`WAYLAND_NANO_UNSUPPORTED_PLATFORM` diagnostic. A missing or altered binary
+fails closed with an integrity diagnostic; there is no source-build fallback.
 
-## Layout
+## Release staging
 
+Stage a freshly built native host binary from `target/release`:
+
+```powershell
+pwsh packaging/npm/scripts/pack.ps1
 ```
-packaging/npm/
-├── package.json          # private alpha manifest, bin + postinstall wiring
-├── bin/
-│   ├── install.js        # postinstall: resolve + chmod the platform binary
-│   └── wayland-nano.js   # PATH shim: exec binary, argv/exit/signal passthrough
-├── binaries/             # staged by scripts/pack.ps1 (not committed)
-│   └── <platform>-<arch>/wayland-nano[.exe]
-└── scripts/
-    └── pack.ps1          # cargo build --release + stage into binaries/
+
+An explicit cross target is read from `target/<rust-triple>/release`:
+
+```powershell
+pwsh packaging/npm/scripts/pack.ps1 -Platform linux-x64 -SkipBuild
 ```
+
+The release workflow downloads each native build artifact into this layout:
+
+```text
+artifacts/npm-binaries/
+├── win32-x64/wayland-nano.exe
+├── darwin-arm64/wayland-nano
+├── darwin-x64/wayland-nano
+├── linux-x64/wayland-nano
+└── linux-arm64/wayland-nano
+```
+
+It then assembles the complete package without cross-compiling:
+
+```powershell
+pwsh packaging/npm/scripts/pack.ps1 -Platform all -ArtifactRoot artifacts/npm-binaries
+```
+
+`pack.ps1` writes `binaries-manifest.json` with each platform binary's exact
+filename, size, and SHA-256 digest. The staged `binaries/` tree is ignored by
+git and must never be hand-committed.
+
+Publishing is restricted to explicit `v*` tags in `.github/workflows/release.yml`.
+The owner supplies `NPM_TOKEN` as a repository secret at publish time; it is
+never stored in this package or printed by the workflow.
+
+## Package-name readiness
+
+The intended public name is `waylandnano`. Registry ownership/availability is
+external state and must be confirmed by the owner immediately before the first
+publish. The workflow does not claim or reserve the name and performs no
+publish on branch pushes or merges.
