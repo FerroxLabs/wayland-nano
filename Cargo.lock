@@ -1519,6 +1519,7 @@ name = "nano-model"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "jsonschema",
  "nano-egress",
  "pretty_assertions",
@@ -1589,6 +1590,7 @@ name = "nano-session"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "nano-model",
  "pretty_assertions",
  "serde",
  "serde_json",
@@ -1613,6 +1615,7 @@ name = "nano-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "dirs-next",
  "dunce",
  "globset",
  "image",

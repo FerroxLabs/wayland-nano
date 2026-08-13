@@ -268,7 +268,7 @@ impl Harness {
                     },
                     &config,
                     move |_| driver.clone(),
-                    move |_, _, _, _, _| {
+                    move |_, _, _, _, _, _| {
                         (
                             MockTools,
                             nano_core::permissions::PermissionProfile::workspace_write()

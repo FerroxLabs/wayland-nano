@@ -106,6 +106,13 @@ impl OpenAiCompletionsClient {
         api_key: &str,
         hooks: &CallHooks<'_>,
     ) -> Result<ModelResponse, ModelError> {
+        if request.has_tool_result_images() {
+            return Err(ModelError::UnsupportedParam {
+                param: "tool_result_images".into(),
+                surface: "flux-completions".into(),
+                message: "image-bearing tool results require anthropic-messages in RC2".into(),
+            });
+        }
         // Rung-3 rejections (and every param decision) happen HERE — before
         // a single packet: plan first, network second.
         let mut body = build_request_body(request);

@@ -46,6 +46,7 @@ where
             &std::path::Path,
             Option<crate::acp_mode::DiffHook>,
             Option<std::sync::Arc<dyn nano_model::metering::UsageSink>>,
+            Option<std::sync::Arc<dyn nano_tools::image::ImageReadApprover>>,
         ) -> (T, nano_core::permissions::FileSystemSandboxPolicy)
         + Send
         + Sync,
@@ -90,7 +91,7 @@ where
         // P1: cron fires run the unmetered search posture (None — the
         // make_tools fallback handle); session CostMeter wiring is the ACP
         // prompt path's (P1 economy scope).
-        let (tools, policy) = (self.make_tools)(&session_cwd, mode, &plan_file, None, None);
+        let (tools, policy) = (self.make_tools)(&session_cwd, mode, &plan_file, None, None, None);
         let cron_store = nano_agent::cron::JsonCronStore::new(&self.nano_home);
         let executor =
             nano_agent::cron::CronjobExecutor::new(&tools, &cron_store, job.session_id.clone());
@@ -190,6 +191,7 @@ where
             &std::path::Path,
             Option<crate::acp_mode::DiffHook>,
             Option<std::sync::Arc<dyn nano_model::metering::UsageSink>>,
+            Option<std::sync::Arc<dyn nano_tools::image::ImageReadApprover>>,
         ) -> (T, nano_core::permissions::FileSystemSandboxPolicy)
         + Send
         + Sync,

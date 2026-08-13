@@ -17,6 +17,7 @@ pub mod flux_completions;
 pub mod flux_grounding;
 pub mod flux_models;
 pub mod flux_responses;
+pub mod image_result;
 pub mod metering;
 pub mod params;
 pub mod pricing;
@@ -34,6 +35,6 @@ mod fixture_tests;
 mod live_smoke;
 
 pub use types::{
-    ContentBlock, ModelError, ModelEvent, ModelRequest, ModelResponse, Role, ToolCall,
+    ContentBlock, ImageData, ModelError, ModelEvent, ModelRequest, ModelResponse, Role, ToolCall,
     ToolDefinition, Usage,
 };

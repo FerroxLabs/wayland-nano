@@ -353,20 +353,7 @@ pub const MAX_GOAL_SUMMARY_LEN: usize = 2000;
 /// journal needs to reference and rehydrate a blob-store attachment —
 /// digests only, NEVER bytes. `digest` is validated (`^[0-9a-f]{64}$`)
 /// before ANY path use on journal read (§5.3).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImageRef {
-    /// sha256 hex of the re-encoded bytes (the blob-store address).
-    pub digest: String,
-    /// Sniffed mime, closed wire set (never the sender's claim).
-    pub mime: String,
-    /// Re-encoded size in bytes.
-    pub bytes: u64,
-    pub width: u32,
-    pub height: u32,
-    /// Display text, e.g. `[Image #2: /path/x.png]` — display/projection
-    /// only; reconstruction never parses it (§3.1/§5.2).
-    pub placeholder: String,
-}
+pub use nano_model::image_result::ImageRef;
 
 /// One entry of the ordered input-block manifest journaled on
 /// `Op::TurnBegin` (P2a §5.2): the machine contract for reconstructing
@@ -431,6 +418,8 @@ pub enum Op {
         /// so new journals stay byte-minimal.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error_kind: Option<crate::error_kind::NanoErrorKind>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        image_refs: Vec<ImageRef>,
     },
     /// Assistant-visible reply text for a model step. Unlike tool output this
     /// is content the agent itself produced for the user (it is streamed to

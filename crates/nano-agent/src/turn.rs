@@ -106,6 +106,20 @@ pub trait ToolExecutor: Debug + Send + Sync {
         let _ = cancel;
         self.execute(call).await
     }
+
+    fn take_image_result(&self, _call_id: &str) -> Option<LiveImageToolResult> {
+        None
+    }
+
+    fn image_results_backed(&self) -> bool {
+        false
+    }
+}
+
+pub struct LiveImageToolResult {
+    pub parts: nano_model::image_result::ImageToolResultParts,
+    pub provenance: nano_model::image_result::ImageProvenance,
+    pub lease: nano_session::attachment_store::WriteLease,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -269,6 +283,10 @@ pub struct TurnRobustness<'a> {
     /// terminal journaling, so live meter == journaled sum == replay.
     /// `None` = no external attribution.
     pub extra_usage: Option<std::sync::Arc<std::sync::Mutex<TurnUsage>>>,
+    /// P2b §3.6: the session-shared image-influence cell observed by every
+    /// approval gate. Updated from the canonical history walker immediately
+    /// before each model request construction.
+    pub image_influence: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Decides whether a tool call may execute. Production prompts via the host;
@@ -283,6 +301,9 @@ pub trait ApprovalGate: Debug + Send + Sync {
     /// "denied by approval gate" text stands).
     fn denial_reason(&self) -> Option<&'static str> {
         None
+    }
+    fn can_prompt_image_clamp(&self) -> bool {
+        false
     }
     /// Structured mid-turn question channel (C10 §5): `ask_user` calls and
     /// the plan-exit approval round-trip route here — the ONE question
@@ -365,6 +386,25 @@ pub enum AskOutcome {
 pub enum ApprovalDecision {
     Approve,
     Deny,
+}
+
+pub fn is_protected_trust_mutation(call: &ToolCall) -> bool {
+    match call.name.as_str() {
+        "shell" => true,
+        "fs_write" | "fs_edit" => {
+            let Some(path) = call.arguments.get("path").and_then(|value| value.as_str()) else {
+                return false;
+            };
+            let normalized = path.replace('\\', "/").to_lowercase();
+            let file_name = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
+            file_name == "agents.md"
+                || normalized.contains("/.secrets/")
+                || normalized.starts_with(".secrets/")
+                || normalized.contains("/.nano/")
+                || normalized.starts_with(".nano/")
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug)]
@@ -580,16 +620,27 @@ impl<'a> TurnEngine<'a> {
         // (fail-closed). The model id is fixed for the turn and images can
         // only ever be EVICTED mid-turn (compaction), so this is computed
         // once, here.
-        let image_present = messages.iter().any(|message| {
-            message
-                .content
-                .iter()
-                .any(|b| matches!(b, nano_model::types::ContentBlock::Image { .. }))
-        });
+        let image_present = crate::image_influence::history_image_influence(
+            &messages,
+            &crate::image_influence::ReplayManifestState::from_presence(image_influenced_before),
+        );
+        let result_image_present = messages.iter().flat_map(|message| &message.content).any(
+            |block| {
+                matches!(
+                    block,
+                    nano_model::types::ContentBlock::ToolResult { images, .. } if !images.is_empty()
+                )
+            },
+        );
+        let native_result_surface = self
+            .tool_definitions
+            .iter()
+            .any(|definition| definition.name == "view_image");
         let vision_proven = nano_model::vision_catalog::VisionCatalog::vendored()
             .map(|catalog| catalog.image_in(&self.model_name))
             .unwrap_or(false);
-        let rung3_blocked = image_present && !vision_proven;
+        let rung3_blocked =
+            (image_present && !vision_proven) || (result_image_present && !native_result_surface);
         let mut final_text = String::new();
         let mut last_usage = nano_model::types::Usage::default();
         // P1 §3.4: the turn-scoped usage accumulator — sums EVERY response's
@@ -848,6 +899,15 @@ impl<'a> TurnEngine<'a> {
                 }
                 None => None,
             };
+            let current_image_influence = crate::image_influence::history_image_influence(
+                &messages,
+                &crate::image_influence::ReplayManifestState::from_presence(
+                    image_influenced_before,
+                ),
+            );
+            if let Some(cell) = &self.robustness.image_influence {
+                cell.fetch_or(current_image_influence, std::sync::atomic::Ordering::SeqCst);
+            }
             let request = ModelRequest {
                 model: self.model_name.clone(),
                 messages: messages.clone(),
@@ -1224,12 +1284,22 @@ impl<'a> TurnEngine<'a> {
                     break;
                 }
                 if let Some(gate) = self.approval {
-                    if gate.approve(call) == ApprovalDecision::Deny {
+                    let clamp_denial =
+                        self.robustness
+                            .image_influence
+                            .as_ref()
+                            .is_some_and(|cell| {
+                                cell.load(std::sync::atomic::Ordering::SeqCst)
+                                    && is_protected_trust_mutation(call)
+                                    && !gate.can_prompt_image_clamp()
+                            });
+                    if clamp_denial || gate.approve(call) == ApprovalDecision::Deny {
                         // C2: a mode-categorical denial names the mode so the
                         // model stops retrying variants of the forbidden call.
-                        let text = match gate.denial_reason() {
-                            Some(reason) => format!("denied by approval gate: {reason}"),
-                            None => "denied by approval gate".to_string(),
+                        let text = match (clamp_denial, gate.denial_reason()) {
+                            (true, _) => "denied by approval gate: image-influenced protected mutation requires interactive approval".to_string(),
+                            (false, Some(reason)) => format!("denied by approval gate: {reason}"),
+                            (false, None) => "denied by approval gate".to_string(),
                         };
                         // D4: the denial is a journaled, framed failed
                         // ToolResult (kind approval_denied) — and a denial
@@ -1243,6 +1313,7 @@ impl<'a> TurnEngine<'a> {
                                 output_digest: format!("len:{}", text.len()),
                                 changed_files: vec![],
                                 error_kind: Some(NanoErrorKind::ApprovalDenied),
+                                image_refs: vec![],
                             },
                         ) {
                             state = TurnState::Failed(TypedError::new(
@@ -1256,24 +1327,67 @@ impl<'a> TurnEngine<'a> {
                     }
                 }
                 let outcome = self.tools.execute_cancellable(call, cancel).await;
+                let image_result = self.tools.take_image_result(&call.id);
                 step_progress.files_changed |= outcome.progress.files_changed;
                 step_progress.process_outcome_changed |= outcome.progress.process_outcome_changed;
                 step_progress.new_information |= outcome.progress.new_information;
                 // The journaled record carries the KIND and never the raw
                 // error text (D5 — the digest-only invariant holds; the
                 // presentation is re-derivable from the table on replay).
+                let accepted_image = image_result.and_then(|result| {
+                    let live = matches!(
+                        result.provenance.kind(),
+                        nano_model::image_result::ImageProvenanceKind::Live
+                    );
+                    if call.name != "view_image" || !live {
+                        return None;
+                    }
+                    Some(result)
+                });
+                if outcome.ok && call.name == "view_image" && accepted_image.is_none() {
+                    let text = "image result rejected: missing or invalid live provenance";
+                    if !emit(
+                        &mut ops,
+                        Op::ToolResult {
+                            call_id: call.id.clone(),
+                            ok: false,
+                            output_digest: format!("len:{}", text.len()),
+                            changed_files: vec![],
+                            error_kind: Some(NanoErrorKind::ImageInvalid),
+                            image_refs: vec![],
+                        },
+                    ) {
+                        state = TurnState::Failed(TypedError::new(
+                            NanoErrorKind::JournalUnavailable,
+                            "journal append failed for rejected image result",
+                        ));
+                        break;
+                    }
+                    messages.push(Message::tool_result(&call.id, text, true));
+                    continue;
+                }
+                let (output_digest, image_refs) = accepted_image.as_ref().map_or_else(
+                    || (format!("len:{}", outcome.output.len()), vec![]),
+                    |result| {
+                        (
+                            result.parts.output_digest.clone(),
+                            result.parts.image_refs.clone(),
+                        )
+                    },
+                );
                 if !emit(
                     &mut ops,
                     Op::ToolResult {
                         call_id: call.id.clone(),
                         ok: outcome.ok,
-                        output_digest: format!("len:{}", outcome.output.len()),
+                        output_digest,
                         changed_files: if outcome.progress.files_changed {
                             vec![call.name.clone()]
                         } else {
                             vec![]
                         },
                         error_kind: outcome.error_kind,
+                        image_refs,
                     },
                 ) {
                     state = TurnState::Failed(TypedError::new(
@@ -1282,14 +1396,18 @@ impl<'a> TurnEngine<'a> {
                     ));
                     break;
                 }
-                messages.push(Message {
-                    role: nano_model::types::Role::Tool,
-                    content: vec![nano_model::types::ContentBlock::ToolResult {
-                        tool_use_id: call.id.clone(),
-                        content: outcome.output.clone(),
-                        is_error: !outcome.ok,
-                    }],
-                });
+                if let Some(result) = accepted_image {
+                    let _lease = result.lease;
+                    drop(result.provenance);
+                    messages.push(Message::tool_result_with_images(
+                        &call.id,
+                        result.parts.content,
+                        !outcome.ok,
+                        result.parts.images,
+                    ));
+                } else {
+                    messages.push(Message::tool_result(&call.id, &outcome.output, !outcome.ok));
+                }
             }
             if matches!(state, TurnState::Stopped(_) | TurnState::Failed(_)) {
                 emit(

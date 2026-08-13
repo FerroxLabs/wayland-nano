@@ -403,11 +403,15 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     let search_tool = search.as_ref().map(|resolved| resolved.tool.clone());
     let tools_search = search_tool.clone();
     let tools_meter = search_meter.clone();
+    let tools_attachment_home = nano_home.to_path_buf();
     let make_tools = move |workspace: &std::path::Path,
                            mode: PermissionMode,
                            plan_file: &std::path::Path,
                            diff_hook: Option<DiffHook>,
-                           search_meter: Option<Arc<dyn nano_model::metering::UsageSink>>|
+                           search_meter: Option<Arc<dyn nano_model::metering::UsageSink>>,
+                           image_approver: Option<
+        Arc<dyn nano_tools::image::ImageReadApprover>,
+    >|
           -> (
         RealToolExecutor,
         nano_core::permissions::FileSystemSandboxPolicy,
@@ -451,6 +455,19 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         if let Some(tool) = &tools_search {
             let meter = search_meter.unwrap_or_else(|| tools_meter.clone());
             executor = executor.with_web_search(tool.clone(), meter);
+        }
+        if let Some(approver) = image_approver {
+            match AttachmentStore::open(&tools_attachment_home) {
+                Ok(store) => {
+                    executor = executor.with_view_image(
+                        nano_tools::image::ViewImageTool::new(policy.clone(), workspace, approver),
+                        store,
+                    );
+                }
+                Err(error) => {
+                    eprintln!("wayland-nano: view_image attachment store unavailable: {error}")
+                }
+            }
         }
         // C10 §6: live-wire diffs (never journaled).
         if let Some(hook) = diff_hook {
@@ -726,6 +743,7 @@ where
             &std::path::Path,
             Option<DiffHook>,
             Option<Arc<dyn nano_model::metering::UsageSink>>,
+            Option<Arc<dyn nano_tools::image::ImageReadApprover>>,
         ) -> (T, nano_core::permissions::FileSystemSandboxPolicy)
         + Send
         + Sync,
@@ -984,12 +1002,15 @@ where
                                 config.budget_cap,
                                 config.default_model,
                             );
+                            let image_influenced =
+                                Arc::new(std::sync::atomic::AtomicBool::new(false));
                             let mut registry = nano_agent::tasks::TaskRegistry::new(
                                 &task_nano_home,
                                 &cwd,
                                 config.default_model.to_string(),
                                 make_task_driver_factory(config.default_model),
-                            );
+                            )
+                            .with_image_influence(image_influenced.clone());
                             // P1 (D12): children inherit the session search
                             // chain — advertised exactly like the parent
                             // surface and metered by the SESSION CostMeter
@@ -1035,7 +1056,7 @@ where
                                 tasks,
                                 meter,
                                 // P2a §9.1: a fresh session starts clean.
-                                image_influenced: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                                image_influenced,
                             });
                             write_out(
                                 &out,
@@ -1252,12 +1273,18 @@ where
                                 ));
                                 meter.reseed(&usage, folded.budget_granted_tokens);
                             }
+                            let image_influenced = Arc::new(
+                                std::sync::atomic::AtomicBool::new(
+                                    image_influenced_from_envelopes(&report.envelopes),
+                                ),
+                            );
                             let mut registry = nano_agent::tasks::TaskRegistry::new(
                                 &task_nano_home,
                                 &cwd,
                                 config.default_model.to_string(),
                                 make_task_driver_factory(config.default_model),
-                            );
+                            )
+                            .with_image_influence(image_influenced.clone());
                             // P1 (D12): children inherit the session search
                             // chain — advertised exactly like the parent
                             // surface and metered by the SESSION CostMeter
@@ -1315,9 +1342,7 @@ where
                                 // manifest. Never the latest record: a
                                 // false-negative record cannot reopen the
                                 // clamp on resume.
-                                image_influenced: Arc::new(std::sync::atomic::AtomicBool::new(
-                                    image_influenced_from_envelopes(&report.envelopes),
-                                )),
+                                image_influenced,
                             });
                             write_out(
                                 &out,
@@ -1958,11 +1983,12 @@ where
                             // rest of the session; compaction never clears
                             // it (§8 part 2 provenance).
                             if turn_input.has_images()
-                                || prior_context.iter().any(|m| {
-                                    m.content
-                                        .iter()
-                                        .any(|b| matches!(b, ContentBlock::Image { .. }))
-                                })
+                                || nano_agent::image_influence::history_image_influence(
+                                    &prior_context,
+                                    &nano_agent::image_influence::ReplayManifestState::from_presence(
+                                        active.image_influenced.load(Ordering::SeqCst),
+                                    ),
+                                )
                             {
                                 active.image_influenced.store(true, Ordering::SeqCst);
                             }
@@ -2134,19 +2160,35 @@ where
                                     }
                                     _ => None,
                                 };
+                                let vision_backed = binding.wire == WireKind::AnthropicMessages
+                                    && nano_model::vision_catalog::VisionCatalog::vendored()
+                                        .map(|catalog| catalog.image_in(&turn_model))
+                                        .unwrap_or(false);
+                                let image_approver = vision_backed.then(|| {
+                                    Arc::new(AcpImageReadApprover {
+                                        session_id: session_id.clone(),
+                                        out: gate_out.clone(),
+                                        pending: gate_pending.clone(),
+                                        next_id: gate_ids.clone(),
+                                        cancel: cancel.clone(),
+                                    }) as Arc<dyn nano_tools::image::ImageReadApprover>
+                                });
                                 let (tools, turn_policy) = make_tools(
                                     &workspace,
                                     turn_mode,
                                     &plan_file,
                                     Some(diff_hook),
                                     search_sink,
+                                    image_approver,
                                 );
                                 // MCP-merged executor: mcp__ names route to the
                                 // session registry, everything else to the core
                                 // tools; the model sees both tool sets.
                                 let mcp_executor = McpToolExecutor::from_shared(turn_mcp, &tools);
-                                let mut tool_definitions =
-                                    v1_tool_definitions(config.search.is_some());
+                                let mut tool_definitions = v1_tool_definitions(
+                                    config.search.is_some(),
+                                    vision_backed && tools.image_results_backed(),
+                                );
                                 tool_definitions
                                     .extend(mcp_executor.tool_definitions_from_registry());
                                 // C5: the memory family routes through its own
@@ -2292,6 +2334,7 @@ where
                                         // dual-feed cell (r3 codex-F1).
                                         meter: turn_meter.clone(),
                                         extra_usage,
+                                        image_influence: Some(gate_image_influenced.clone()),
                                     },
                                 };
                                 let sink_session = session_id.clone();
@@ -3326,6 +3369,69 @@ struct AcpApproval<W: Write> {
     image_influenced: Arc<std::sync::atomic::AtomicBool>,
 }
 
+struct AcpImageReadApprover<W: Write> {
+    session_id: String,
+    out: Arc<Mutex<W>>,
+    pending: PendingMap,
+    next_id: Arc<std::sync::atomic::AtomicU64>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<W: Write> std::fmt::Debug for AcpImageReadApprover<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AcpImageReadApprover")
+            .field("session_id", &self.session_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<W: Write + Send> nano_tools::image::ImageReadApprover for AcpImageReadApprover<W> {
+    fn request(&self, canonical: &std::path::Path) -> nano_tools::image::ImageReadApproval {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, tx);
+        let arguments = serde_json::json!({"path": canonical.to_string_lossy()});
+        let request = request_permission_request(
+            id,
+            &self.session_id,
+            "view-image-read",
+            "view_image",
+            &arguments,
+        );
+        if write_out(&self.out, &request).is_err() {
+            self.pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&id);
+            return nano_tools::image::ImageReadApproval::Denied;
+        }
+        let decision = loop {
+            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(response) => break decision_from_response(&response),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if self.cancel.load(Ordering::SeqCst) {
+                        break ApprovalDecision::Deny;
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    break ApprovalDecision::Deny;
+                }
+            }
+        };
+        self.pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
+        match decision {
+            ApprovalDecision::Approve => nano_tools::image::ImageReadApproval::Approved,
+            ApprovalDecision::Deny => nano_tools::image::ImageReadApproval::Denied,
+        }
+    }
+}
+
 /// P2a §9.1: the closed protected-class classifier. A call is a protected
 /// trust mutation when it can persistently alter what Nano trusts:
 /// rule files (AGENTS.md), secret/credential subtrees (`.secrets`), or Nano
@@ -3335,24 +3441,7 @@ struct AcpApproval<W: Write> {
 /// denials stay with the tool layer; this classifier only downgrades
 /// auto-approval to the human prompt.
 pub(crate) fn is_protected_trust_mutation(call: &ToolCall) -> bool {
-    match call.name.as_str() {
-        "shell" => true,
-        "fs_write" | "fs_edit" => {
-            let Some(path) = call.arguments.get("path").and_then(|v| v.as_str()) else {
-                // Unparseable: the full_auto arm already prompts on missing
-                // paths; nothing extra to clamp here.
-                return false;
-            };
-            let normalized = path.replace('\\', "/").to_lowercase();
-            let file_name = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
-            file_name == "agents.md"
-                || normalized.contains("/.secrets/")
-                || normalized.starts_with(".secrets/")
-                || normalized.contains("/.nano/")
-                || normalized.starts_with(".nano/")
-        }
-        _ => false,
-    }
+    nano_agent::turn::is_protected_trust_mutation(call)
 }
 
 impl<W: Write> AcpApproval<W> {
@@ -3453,6 +3542,10 @@ impl<W: Write + Send> ApprovalGate for AcpApproval<W> {
                 _ => self.prompt_host(call),
             },
         }
+    }
+
+    fn can_prompt_image_clamp(&self) -> bool {
+        true
     }
 
     fn denial_reason(&self) -> Option<&'static str> {
@@ -3890,23 +3983,26 @@ pub fn image_influenced_from_envelopes(envelopes: &[OpEnvelope]) -> bool {
         return true;
     }
     envelopes.iter().any(|envelope| {
-        matches!(
-            &envelope.op,
-            Op::TurnBegin { input_blocks, .. }
-                if input_blocks.iter().any(|b| matches!(b, InputBlock::ImageRef(_)))
-        ) && !covered.contains(envelope.id.as_str())
+        let present = match &envelope.op {
+            Op::TurnBegin { input_blocks, .. } => input_blocks
+                .iter()
+                .any(|b| matches!(b, InputBlock::ImageRef(_))),
+            Op::ToolResult { image_refs, .. } => !image_refs.is_empty(),
+            _ => false,
+        };
+        present && !covered.contains(envelope.id.as_str())
     })
 }
 
 /// Whether any journaled manifest references an attachment — the store is
 /// opened (with its §5.5 fail-closed audit) only when one does.
 fn journal_has_image_manifests(envelopes: &[OpEnvelope]) -> bool {
-    envelopes.iter().any(|envelope| {
-        matches!(
-            &envelope.op,
-            Op::TurnBegin { input_blocks, .. }
-                if input_blocks.iter().any(|b| matches!(b, InputBlock::ImageRef(_)))
-        )
+    envelopes.iter().any(|envelope| match &envelope.op {
+        Op::TurnBegin { input_blocks, .. } => input_blocks
+            .iter()
+            .any(|b| matches!(b, InputBlock::ImageRef(_))),
+        Op::ToolResult { image_refs, .. } => !image_refs.is_empty(),
+        _ => false,
     })
 }
 
@@ -3948,6 +4044,8 @@ pub fn messages_from_envelopes_rehydrating(
     let mut notices = Vec::new();
     let mut messages = Vec::new();
     let mut assistant: Vec<ContentBlock> = Vec::new();
+    let mut call_names: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
     let mut seen = std::collections::HashSet::new();
     let flush_assistant = |messages: &mut Vec<Message>, assistant: &mut Vec<ContentBlock>| {
         if !assistant.is_empty() {
@@ -4040,6 +4138,15 @@ pub fn messages_from_envelopes_rehydrating(
                 args,
                 ..
             } => {
+                use std::collections::hash_map::Entry;
+                match call_names.entry(call_id.clone()) {
+                    Entry::Vacant(slot) => {
+                        slot.insert(Some(name.clone()));
+                    }
+                    Entry::Occupied(mut slot) => {
+                        slot.insert(None);
+                    }
+                }
                 assistant.push(ContentBlock::ToolUse {
                     id: call_id.clone(),
                     name: name.clone(),
@@ -4051,6 +4158,7 @@ pub fn messages_from_envelopes_rehydrating(
                 ok,
                 output_digest,
                 error_kind,
+                image_refs,
                 ..
             } => {
                 flush_assistant(&mut messages, &mut assistant);
@@ -4059,7 +4167,7 @@ pub fn messages_from_envelopes_rehydrating(
                 // C7/D5: a typed failure resumes as `<presentation> [output
                 // elided]` so the model still sees WHY the call failed; the
                 // kind is journaled, the text re-derives from the table.
-                let content = match (ok, error_kind) {
+                let mut content = match (ok, error_kind) {
                     (false, Some(kind)) => {
                         format!("{} [output elided]", error_presentation(*kind))
                     }
@@ -4067,7 +4175,67 @@ pub fn messages_from_envelopes_rehydrating(
                         "[tool output elided from journal: ok={ok}, digest={output_digest}]"
                     ),
                 };
-                messages.push(Message::tool_result(call_id, content, !ok));
+                if image_refs.is_empty() {
+                    messages.push(Message::tool_result(call_id, content, !ok));
+                    continue;
+                }
+                let tool_name = match call_names.get(call_id).and_then(|name| name.as_deref()) {
+                    Some(name) => name,
+                    None => {
+                        eprintln!(
+                            "wayland-nano: unpaired or duplicate tool call id during image-result replay"
+                        );
+                        "<unavailable: unpaired call>"
+                    }
+                };
+                let mut verified = Vec::new();
+                for (index, reference) in image_refs.iter().enumerate() {
+                    if !content.is_empty() {
+                        content.push('\n');
+                    }
+                    match attachments.and_then(|store| store.read_verified(&reference.digest).ok())
+                    {
+                        Some(bytes) => {
+                            content.push_str(&nano_model::image_result::image_label(
+                                index, tool_name, reference,
+                            ));
+                            verified.push((reference.clone(), bytes));
+                        }
+                        None => {
+                            let prefix = if is_valid_digest(&reference.digest) {
+                                reference.digest.chars().take(12).collect::<String>()
+                            } else {
+                                "malformed-digest".to_string()
+                            };
+                            content.push_str(&format!(
+                                "[Image #{} from tool {tool_name} unavailable: attachment {prefix} missing — do not describe it from memory]",
+                                index + 1
+                            ));
+                            notices.push(AttachmentIssue {
+                                cause: AttachmentIssueCause::Missing,
+                                digest_prefix: prefix,
+                            });
+                        }
+                    }
+                }
+                if verified.len() == image_refs.len() {
+                    match nano_model::image_result::rehydrate_tool_result_images(verified) {
+                        Ok((images, provenance))
+                            if matches!(
+                                provenance.kind(),
+                                nano_model::image_result::ImageProvenanceKind::ReplayVerified { .. }
+                            ) =>
+                        {
+                            drop(provenance);
+                            messages.push(Message::tool_result_with_images(
+                                call_id, content, !ok, images,
+                            ));
+                        }
+                        _ => messages.push(Message::tool_result(call_id, content, !ok)),
+                    }
+                } else {
+                    messages.push(Message::tool_result(call_id, content, !ok));
+                }
             }
             Op::TurnEnd { .. } => flush_assistant(&mut messages, &mut assistant),
             // [R1/R2] The canonical replay arm: fold the SAME

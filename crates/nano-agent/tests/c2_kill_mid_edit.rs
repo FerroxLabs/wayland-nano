@@ -264,6 +264,7 @@ fn resume_context_from(envelopes: &[OpEnvelope]) -> Vec<Message> {
                             "[tool output elided from journal: ok={ok}, digest={output_digest}]"
                         ),
                         is_error: !ok,
+                        images: vec![],
                     }],
                 });
             }
@@ -338,7 +339,7 @@ async fn c2_kill_mid_edit_journal_disk_equivalence_and_resume_no_double_apply() 
         tools: &executor,
         budget: budget.clone(),
         model_name: "scripted".into(),
-        tool_definitions: v1_tool_definitions(false),
+        tool_definitions: v1_tool_definitions(false, false),
         approval: Some(&approve_all),
         compaction: None,
         robustness: Default::default(),
@@ -416,7 +417,7 @@ async fn c2_kill_mid_edit_journal_disk_equivalence_and_resume_no_double_apply() 
         tools: &executor,
         budget,
         model_name: "scripted".into(),
-        tool_definitions: v1_tool_definitions(false),
+        tool_definitions: v1_tool_definitions(false, false),
         approval: Some(&approve_all),
         compaction: None,
         robustness: Default::default(),

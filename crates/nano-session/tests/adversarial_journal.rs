@@ -61,6 +61,7 @@ fn base_ops() -> Vec<OpEnvelope> {
                 output_digest: "d1".into(),
                 changed_files: vec!["main.rs".into()],
                 error_kind: None,
+                image_refs: vec![],
             },
         ),
         env(
@@ -347,6 +348,7 @@ fn crafted_duplicate_ids_on_disk_first_wins_never_double_applies() {
             output_digest: "forged".into(),
             changed_files: vec!["nano-forged.rs".into()],
             error_kind: None,
+            image_refs: vec![],
         },
     ));
     let (bytes, _, _) = serialize_lines(&originals);
@@ -391,6 +393,7 @@ fn out_of_order_ops_fold_without_panic_into_safe_states() {
                 output_digest: "d9".into(),
                 changed_files: vec!["late.rs".into()],
                 error_kind: None,
+                image_refs: vec![],
             },
         ),
         env(
@@ -443,6 +446,7 @@ fn writer_duplicate_id_with_different_payload_is_a_noop() {
             output_digest: "d1".into(),
             changed_files: vec!["main.rs".into()],
             error_kind: None,
+            image_refs: vec![],
         },
     );
     let forged = env(
@@ -453,6 +457,7 @@ fn writer_duplicate_id_with_different_payload_is_a_noop() {
             output_digest: "forged".into(),
             changed_files: vec!["nano-forged.rs".into()],
             error_kind: None,
+            image_refs: vec![],
         },
     );
     {

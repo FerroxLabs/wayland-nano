@@ -11,6 +11,7 @@ pub mod cost;
 pub mod cron;
 pub mod error_map;
 pub mod goal;
+pub mod image_influence;
 pub mod loop_protection;
 pub mod mcp;
 pub mod memory;

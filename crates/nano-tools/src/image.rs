@@ -29,6 +29,8 @@ use std::io::Cursor;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use nano_core::permissions::{FileSystemSandboxKind, FileSystemSandboxPolicy};
+use nano_core::policy_engine::ReadDenyMatcher;
 use nano_session::NanoErrorKind;
 use sha2::{Digest, Sha256};
 
@@ -156,6 +158,140 @@ pub struct LoadedImage {
     pub height: u32,
     /// GIF/WebP carried more than one frame; only the first crossed (§4.4).
     pub frames_dropped: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageRegion {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageReadAuth {
+    AutoApproved,
+    HumanApprovalRequired,
+    Denied,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageReadApproval {
+    Approved,
+    Denied,
+}
+
+pub trait ImageReadApprover: std::fmt::Debug + Send + Sync {
+    fn request(&self, canonical: &std::path::Path) -> ImageReadApproval;
+}
+
+pub fn classify_image_read_target(
+    canonical: &std::path::Path,
+    policy: &FileSystemSandboxPolicy,
+    cwd: &std::path::Path,
+) -> ImageReadAuth {
+    let sanctioned = dirs_next::picture_dir()
+        .and_then(|path| path.canonicalize().ok())
+        .into_iter()
+        .collect::<Vec<_>>();
+    classify_image_read_target_with_roots(canonical, policy, cwd, &sanctioned)
+}
+
+fn classify_image_read_target_with_roots(
+    canonical: &std::path::Path,
+    policy: &FileSystemSandboxPolicy,
+    cwd: &std::path::Path,
+    external_sanctioned_roots: &[std::path::PathBuf],
+) -> ImageReadAuth {
+    let Ok(workspace_root) = cwd.canonicalize() else {
+        return ImageReadAuth::Denied;
+    };
+    let policy_allows = match policy.kind {
+        FileSystemSandboxKind::Unrestricted => true,
+        FileSystemSandboxKind::Restricted => policy.can_read_path_with_cwd(canonical, cwd),
+        FileSystemSandboxKind::ExternalSandbox => false,
+    };
+    if crate::fs::is_sensitive_path(canonical)
+        || ReadDenyMatcher::new(policy, cwd)
+            .is_some_and(|matcher| matcher.is_read_denied(canonical))
+        || !policy_allows
+    {
+        return ImageReadAuth::Denied;
+    }
+    if canonical.starts_with(&workspace_root) {
+        ImageReadAuth::AutoApproved
+    } else if external_sanctioned_roots
+        .iter()
+        .any(|root| canonical.starts_with(root))
+    {
+        ImageReadAuth::HumanApprovalRequired
+    } else {
+        ImageReadAuth::Denied
+    }
+}
+
+#[derive(Debug)]
+pub struct ViewImageTool {
+    policy: FileSystemSandboxPolicy,
+    cwd: std::path::PathBuf,
+    approver: std::sync::Arc<dyn ImageReadApprover>,
+}
+
+impl ViewImageTool {
+    pub fn new(
+        policy: FileSystemSandboxPolicy,
+        cwd: &std::path::Path,
+        approver: std::sync::Arc<dyn ImageReadApprover>,
+    ) -> Self {
+        Self {
+            policy,
+            cwd: cwd.to_path_buf(),
+            approver,
+        }
+    }
+
+    pub async fn read(
+        &self,
+        path: &std::path::Path,
+        region: Option<ImageRegion>,
+    ) -> Result<LoadedImage, ImageError> {
+        let joined = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.cwd.join(path)
+        };
+        let canonical = joined.canonicalize().map_err(|_| ImageError {
+            kind: NanoErrorKind::FsReadDenied,
+            detail: "canonicalize",
+        })?;
+        match classify_image_read_target(&canonical, &self.policy, &self.cwd) {
+            ImageReadAuth::AutoApproved => {}
+            ImageReadAuth::HumanApprovalRequired
+                if self.approver.request(&canonical) == ImageReadApproval::Approved => {}
+            ImageReadAuth::HumanApprovalRequired | ImageReadAuth::Denied => {
+                return Err(ImageError {
+                    kind: NanoErrorKind::FsReadDenied,
+                    detail: "policy",
+                });
+            }
+        }
+        let revalidated = joined.canonicalize().map_err(|_| ImageError {
+            kind: NanoErrorKind::FsReadDenied,
+            detail: "revalidate",
+        })?;
+        if revalidated != canonical {
+            return Err(ImageError {
+                kind: NanoErrorKind::FsReadDenied,
+                detail: "target-swapped",
+            });
+        }
+        let bytes = read_image_file_capped(&canonical)?;
+        let loaded = load_image(&bytes, None).await?;
+        match region {
+            Some(region) => crop_loaded(loaded, region),
+            None => Ok(loaded),
+        }
+    }
 }
 
 impl LoadedImage {
@@ -397,6 +533,55 @@ pub fn read_image_file_capped(path: &std::path::Path) -> Result<Vec<u8>, ImageEr
         return Err(ImageError::too_large("file-bytes"));
     }
     Ok(bytes)
+}
+
+fn crop_loaded(mut loaded: LoadedImage, region: ImageRegion) -> Result<LoadedImage, ImageError> {
+    if region.width == 0 || region.height == 0 {
+        return Err(ImageError::invalid("region-zero"));
+    }
+    let right = region
+        .x
+        .checked_add(region.width)
+        .ok_or_else(|| ImageError::invalid("region-overflow"))?;
+    let bottom = region
+        .y
+        .checked_add(region.height)
+        .ok_or_else(|| ImageError::invalid("region-overflow"))?;
+    if right > loaded.width || bottom > loaded.height {
+        return Err(ImageError::invalid("region-bounds"));
+    }
+    let format = if loaded.wire_mime == WIRE_MIME_PNG {
+        image::ImageFormat::Png
+    } else {
+        image::ImageFormat::Jpeg
+    };
+    let decoded = image::load_from_memory_with_format(&loaded.bytes, format)
+        .map_err(|_| ImageError::invalid("region-decode"))?;
+    let cropped = decoded.crop_imm(region.x, region.y, region.width, region.height);
+    let bytes = if loaded.wire_mime == WIRE_MIME_PNG {
+        let mut bytes = Vec::new();
+        encode_png(&cropped, &mut bytes)?;
+        bytes
+    } else {
+        let mut accepted = None;
+        for quality in JPEG_QUALITY_STEPS {
+            let mut candidate = Vec::new();
+            encode_jpeg(&cropped, &mut candidate, quality)?;
+            if candidate.len() as u64 <= MAX_IMAGE_RAW_PAYLOAD_BYTES {
+                accepted = Some(candidate);
+                break;
+            }
+        }
+        accepted.ok_or_else(|| ImageError::too_large("region-payload"))?
+    };
+    if bytes.len() as u64 > MAX_IMAGE_RAW_PAYLOAD_BYTES {
+        return Err(ImageError::too_large("region-payload"));
+    }
+    loaded.bytes = bytes;
+    loaded.digest = hex_sha256(&loaded.bytes);
+    loaded.width = region.width;
+    loaded.height = region.height;
+    Ok(loaded)
 }
 
 /// §4.3 steps 4–6, running inside the contained blocking closure.
@@ -672,6 +857,93 @@ mod tests {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/images");
         std::fs::create_dir_all(&dir).expect("create fixture dir");
         dir
+    }
+
+    #[test]
+    fn p2b_classifier_is_canonical_root_tiered_and_denials_first() {
+        let workspace = fixture_dir().canonicalize().unwrap();
+        let external = workspace.parent().unwrap().to_path_buf();
+        let policy = FileSystemSandboxPolicy::unrestricted();
+        assert_eq!(
+            classify_image_read_target(&workspace, &policy, &workspace),
+            ImageReadAuth::AutoApproved
+        );
+        assert_eq!(
+            classify_image_read_target_with_roots(
+                &external,
+                &policy,
+                &workspace,
+                std::slice::from_ref(&external),
+            ),
+            ImageReadAuth::HumanApprovalRequired
+        );
+        assert_eq!(
+            classify_image_read_target(&external, &policy, &workspace),
+            ImageReadAuth::Denied
+        );
+        assert_eq!(
+            classify_image_read_target(&workspace.join(".env.png"), &policy, &workspace),
+            ImageReadAuth::Denied
+        );
+    }
+
+    #[test]
+    fn p2b_crop_math_rejects_zero_bounds_and_overflow() {
+        let image = image::DynamicImage::ImageRgb8(rgb_image(8, 8, false));
+        let bytes = encode_png_bytes(&image);
+        let loaded = LoadedImage {
+            digest: hex_sha256(&bytes),
+            bytes,
+            wire_mime: WIRE_MIME_PNG.into(),
+            sniffed_mime: WIRE_MIME_PNG.into(),
+            orig_path: None,
+            placeholder: None,
+            width: 8,
+            height: 8,
+            frames_dropped: false,
+        };
+        assert_eq!(
+            crop_loaded(
+                loaded.clone(),
+                ImageRegion {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 1
+                }
+            )
+            .unwrap_err()
+            .detail,
+            "region-zero"
+        );
+        assert_eq!(
+            crop_loaded(
+                loaded.clone(),
+                ImageRegion {
+                    x: 7,
+                    y: 0,
+                    width: 2,
+                    height: 1
+                }
+            )
+            .unwrap_err()
+            .detail,
+            "region-bounds"
+        );
+        assert_eq!(
+            crop_loaded(
+                loaded,
+                ImageRegion {
+                    x: u32::MAX,
+                    y: 0,
+                    width: 2,
+                    height: 1
+                }
+            )
+            .unwrap_err()
+            .detail,
+            "region-overflow"
+        );
     }
 
     /// Writes the generated bytes to the named fixture when missing

@@ -180,6 +180,7 @@ pub struct TaskRegistry {
     /// exactly when `meter` is (one builder, one invariant).
     rollup_sink: Option<RollupSink>,
     session_id: Option<String>,
+    image_influenced: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl std::fmt::Debug for TaskRegistry {
@@ -214,6 +215,7 @@ impl TaskRegistry {
             meter: None,
             rollup_sink: None,
             session_id: None,
+            image_influenced: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -243,6 +245,11 @@ impl TaskRegistry {
         self.meter = Some(meter);
         self.rollup_sink = Some(rollup_sink);
         self.session_id = Some(session_id.into());
+        self
+    }
+
+    pub fn with_image_influence(mut self, cell: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.image_influenced = cell;
         self
     }
 
@@ -422,6 +429,7 @@ impl TaskRegistry {
             // context beside the steps counter — every child response usage
             // lands in the ONE session meter.
             meter: self.meter.clone(),
+            image_influenced: self.image_influenced.clone(),
             done_tx,
         };
         let join = std::thread::Builder::new()
@@ -781,6 +789,7 @@ struct ChildContext {
     usage_sink: Option<Arc<dyn nano_model::metering::UsageSink>>,
     /// P1 §3.3: the session meter clone (live path).
     meter: Option<crate::cost::CostMeter>,
+    image_influenced: Arc<std::sync::atomic::AtomicBool>,
     done_tx: std::sync::mpsc::Sender<ChildOutcome>,
 }
 
@@ -861,6 +870,7 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
     let gate = TaskApproval {
         policy,
         cwd: ctx.workspace_copy.clone(),
+        image_influenced: ctx.image_influenced.clone(),
     };
     let engine = TurnEngine {
         model: ctx.driver.as_ref(),
@@ -872,7 +882,7 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
         // never write memory). P1 (D12): web_search is advertised exactly
         // when the session resolved a backend — the same backend-aware
         // construction as the parent surface.
-        tool_definitions: v1_tool_definitions(ctx.web_search.is_some()),
+        tool_definitions: v1_tool_definitions(ctx.web_search.is_some(), false),
         approval: Some(&gate),
         compaction: None,
         // Children run the pre-C9 engine posture: no steer queue, no
@@ -1200,10 +1210,14 @@ fn is_reparse_or_link(meta: &std::fs::Metadata) -> bool {
 pub struct TaskApproval {
     policy: nano_core::permissions::FileSystemSandboxPolicy,
     cwd: PathBuf,
+    image_influenced: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ApprovalGate for TaskApproval {
     fn approve(&self, call: &ToolCall) -> ApprovalDecision {
+        if self.image_influenced.load(Ordering::SeqCst) && task_protected_mutation(call) {
+            return ApprovalDecision::Deny;
+        }
         match call.name.as_str() {
             name if is_read_only_tool(name) => ApprovalDecision::Approve,
             "fs_write" | "fs_edit" => {
@@ -1236,6 +1250,10 @@ impl ApprovalGate for TaskApproval {
     fn denial_reason(&self) -> Option<&'static str> {
         Some("background tasks cannot request interactive approval")
     }
+}
+
+fn task_protected_mutation(call: &ToolCall) -> bool {
+    crate::turn::is_protected_trust_mutation(call)
 }
 
 /// The child's read-only set (the host's fast-path, minus memory reads —
@@ -1410,6 +1428,14 @@ impl ToolExecutor for TaskToolExecutor<'_> {
             | "task_apply" => self.execute(call).await,
             _ => self.inner.execute_cancellable(call, cancel).await,
         }
+    }
+
+    fn take_image_result(&self, call_id: &str) -> Option<crate::turn::LiveImageToolResult> {
+        self.inner.take_image_result(call_id)
+    }
+
+    fn image_results_backed(&self) -> bool {
+        self.inner.image_results_backed()
     }
 }
 
@@ -1597,6 +1623,7 @@ mod tests {
             policy: nano_core::permissions::PermissionProfile::workspace_write()
                 .file_system_sandbox_policy(),
             cwd: copy.clone(),
+            image_influenced: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let call = |name: &str, args: serde_json::Value| ToolCall {
             id: "c".into(),

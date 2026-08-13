@@ -151,6 +151,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn p2b_acceptance_seam_rejects_view_image_without_live_provenance() {
+        let model = ScriptedModel::new(vec![
+            tool_response(ToolCall {
+                id: "img1".into(),
+                name: "view_image".into(),
+                arguments: serde_json::json!({"path": "fixture.png"}),
+            }),
+            text_response("continued after typed refusal"),
+        ]);
+        let tools = RecordingTools {
+            calls: Mutex::new(Vec::new()),
+            progress: ProgressSignals::default(),
+        };
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            model_name: "mock".into(),
+            tool_definitions: crate::wiring::v1_tool_definitions(false, true),
+            approval: None,
+            compaction: None,
+            robustness: Default::default(),
+        };
+        let result = engine.run_turn("p2b-seam", "read it").await;
+        assert_eq!(result.state, TurnState::Complete);
+        assert!(result.ops.iter().any(|envelope| matches!(
+            &envelope.op,
+            nano_session::op::Op::ToolResult {
+                call_id,
+                ok: false,
+                error_kind: Some(nano_session::NanoErrorKind::ImageInvalid),
+                image_refs,
+                ..
+            } if call_id == "img1" && image_refs.is_empty()
+        )));
+        let second = &model.requests.lock().unwrap()[1];
+        assert!(second.messages.iter().flat_map(|message| &message.content).any(|block| {
+            matches!(
+                block,
+                nano_model::types::ContentBlock::ToolResult { content, images, .. }
+                    if content.contains("missing or invalid live provenance") && images.is_empty()
+            )
+        }));
+    }
+
+    #[tokio::test]
     async fn repeat_breaker_force_stops_identical_calls() {
         let same_call = ToolCall {
             id: "c1".into(),

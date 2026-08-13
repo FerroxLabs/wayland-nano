@@ -316,12 +316,31 @@ fn message_to_wire(message: &Message) -> serde_json::Value {
                 tool_use_id,
                 content,
                 is_error,
-            } => serde_json::json!({
-                "type": "tool_result",
-                "tool_use_id": tool_use_id,
-                "content": content,
-                "is_error": is_error,
-            }),
+                images,
+            } => {
+                let result_content = if images.is_empty() {
+                    serde_json::json!(content)
+                } else {
+                    let mut parts = vec![serde_json::json!({"type": "text", "text": content})];
+                    parts.extend(images.iter().map(|image| {
+                        serde_json::json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": image.mime,
+                                "data": image.data,
+                            },
+                        })
+                    }));
+                    serde_json::Value::Array(parts)
+                };
+                serde_json::json!({
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": result_content,
+                    "is_error": is_error,
+                })
+            }
             // P2a §2.2: the Anthropic-native base64 image source block.
             ContentBlock::Image { mime, data } => serde_json::json!({
                 "type": "image",

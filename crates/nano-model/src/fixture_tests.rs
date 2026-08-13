@@ -411,6 +411,7 @@ fn anthropic_request_body_uses_native_shape() {
                     tool_use_id: "call_abc".into(),
                     content: "sunny".into(),
                     is_error: false,
+                    images: vec![],
                 }],
             },
         ],
