@@ -217,6 +217,61 @@ pub struct McpToolDescriptor {
     pub input_schema: Option<serde_json::Value>,
 }
 
+pub fn resources_list_params() -> serde_json::Value {
+    serde_json::json!({})
+}
+
+pub fn resources_read_params(uri: &str) -> serde_json::Value {
+    serde_json::json!({
+        "uri": uri,
+    })
+}
+
+/// An MCP resource descriptor from resources/list (design §4.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpResourceDescriptor {
+    pub uri: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(rename = "mimeType", default)]
+    pub mime_type: Option<String>,
+}
+
+/// The typed resources/list result (§4.1). `next_cursor` is RETAINED
+/// (additive later) but NEVER followed in v1 — one `resources/list` call,
+/// one page; its presence marks the served page truncated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpResourceListResult {
+    pub resources: Vec<McpResourceDescriptor>,
+    pub next_cursor: Option<String>,
+}
+
+impl McpResourceListResult {
+    /// Truncation report (§4.1): the server offered a continuation page that
+    /// v1 deliberately does not fetch.
+    pub fn truncated(&self) -> bool {
+        self.next_cursor.is_some()
+    }
+}
+
+/// One content entry of a resources/read result (§4.1). v1 carries TEXT
+/// only — a blob (or any non-text entry) is refused typed by the client
+/// before anything crosses into the agent path (§4.3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpResourceContent {
+    pub uri: String,
+    #[serde(rename = "mimeType", default)]
+    pub mime_type: Option<String>,
+    pub text: String,
+}
+
+/// The typed resources/read result (text contents only; see above).
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpResourceReadResult {
+    pub contents: Vec<McpResourceContent>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +308,53 @@ mod tests {
             }),
         };
         assert!(bad.into_result().is_err());
+    }
+
+    #[test]
+    fn resources_param_shapes() {
+        assert_eq!(resources_list_params(), serde_json::json!({}));
+        assert_eq!(
+            resources_read_params("mem://alpha"),
+            serde_json::json!({"uri": "mem://alpha"})
+        );
+    }
+
+    #[test]
+    fn resource_descriptor_serde_discipline() {
+        let full: McpResourceDescriptor = serde_json::from_value(serde_json::json!({
+            "uri": "mem://alpha",
+            "name": "alpha",
+            "description": "first",
+            "mimeType": "text/plain",
+        }))
+        .unwrap();
+        assert_eq!(full.uri, "mem://alpha");
+        assert_eq!(full.name, "alpha");
+        assert_eq!(full.description.as_deref(), Some("first"));
+        assert_eq!(full.mime_type.as_deref(), Some("text/plain"));
+        assert_eq!(
+            serde_json::to_value(&full).unwrap()["mimeType"],
+            "text/plain"
+        );
+        // Optional fields are genuinely optional.
+        let bare: McpResourceDescriptor =
+            serde_json::from_value(serde_json::json!({"uri": "mem://beta", "name": "beta"}))
+                .unwrap();
+        assert_eq!(bare.description, None);
+        assert_eq!(bare.mime_type, None);
+    }
+
+    #[test]
+    fn resource_list_result_truncation_report() {
+        let page = McpResourceListResult {
+            resources: Vec::new(),
+            next_cursor: None,
+        };
+        assert!(!page.truncated());
+        let truncated = McpResourceListResult {
+            resources: Vec::new(),
+            next_cursor: Some("page-2".into()),
+        };
+        assert!(truncated.truncated());
     }
 }

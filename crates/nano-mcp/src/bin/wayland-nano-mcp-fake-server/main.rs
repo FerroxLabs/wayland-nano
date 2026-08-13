@@ -10,11 +10,12 @@
 //!
 //! Scenarios: echo | threaded | silent | die-on-call | blind | garbage |
 //! bad-envelope | big-line | huge-line | mystery-ids | duplicate |
-//! notify-mid-call | inject-request | inject-bogus | flood
+//! notify-mid-call | inject-request | inject-bogus | flood | resources
 //!
 //! Env knobs: FAKE_CALL_DELAY_MS, FAKE_GARBAGE_N, FAKE_BAD_KIND
 //! (version|both|float|method), FAKE_BIG_BYTES, FAKE_MYSTERY_N,
-//! FAKE_CANCEL (e.g. "srv-5").
+//! FAKE_CANCEL (e.g. "srv-5"), FAKE_NEXT_CURSOR, FAKE_READ_KIND
+//! (text|blob|big).
 
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
@@ -151,17 +152,26 @@ fn main() {
         let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("");
         let id = v.get("id").cloned().unwrap_or(Value::Null);
         match method {
-            "initialize" => write_frame(
-                &out,
-                &result_reply(
-                    &id,
-                    json!({
-                        "protocolVersion": "2025-06-18",
-                        "capabilities": {},
-                        "serverInfo": {"name": "fake", "version": "0"},
-                    }),
-                ),
-            ),
+            "initialize" => {
+                // Only the "resources" scenario advertises the resources
+                // capability (§4.2: the capability gate keys off this).
+                let capabilities = if scenario == "resources" {
+                    json!({"resources": {}})
+                } else {
+                    json!({})
+                };
+                write_frame(
+                    &out,
+                    &result_reply(
+                        &id,
+                        json!({
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": capabilities,
+                            "serverInfo": {"name": "fake", "version": "0"},
+                        }),
+                    ),
+                );
+            }
             "notifications/initialized" => {}
             "tools/list" => write_frame(
                 &out,
@@ -170,6 +180,9 @@ fn main() {
                     json!({"tools": [{"name": "echo", "description": "fake echo"}]}),
                 ),
             ),
+            "resources/list" | "resources/read" => {
+                handle_resource(&scenario, &out, &id, method, &v)
+            }
             "notifications/cancelled" => {
                 let params = v.get("params").cloned().unwrap_or_default();
                 obs(
@@ -219,6 +232,58 @@ fn main() {
             }
             _ => {}
         }
+    }
+}
+
+/// resources/list + resources/read (§4.1). Only the "resources" scenario
+/// serves them; any other scenario REPORTS the request as a fake/obs
+/// notification — the transport-seam probe for the §4.2 capability gate
+/// test (a capability-absent call must produce ZERO wire activity).
+fn handle_resource(scenario: &str, out: &Out, id: &Value, method: &str, request: &Value) {
+    if scenario != "resources" {
+        obs(
+            out,
+            json!({"event": "saw_resources_request", "method": method}),
+        );
+        return;
+    }
+    match method {
+        "resources/list" => {
+            let mut result = json!({
+                "resources": [
+                    {"uri": "mem://alpha", "name": "alpha", "description": "first", "mimeType": "text/plain"},
+                    {"uri": "mem://beta", "name": "beta"},
+                ],
+            });
+            if std::env::var("FAKE_NEXT_CURSOR").is_ok() {
+                result["nextCursor"] = json!("page-2");
+            }
+            write_frame(out, &result_reply(id, result));
+        }
+        "resources/read" => {
+            let uri = request
+                .get("params")
+                .and_then(|p| p.get("uri"))
+                .and_then(|u| u.as_str())
+                .unwrap_or("");
+            let kind = std::env::var("FAKE_READ_KIND").unwrap_or_else(|_| "text".into());
+            let result = match kind.as_str() {
+                // Non-text content: the client must refuse typed (§4.3).
+                "blob" => json!({
+                    "contents": [{"uri": uri, "mimeType": "application/octet-stream", "blob": "aGVsbG8="}],
+                }),
+                // Over MAX_OUTPUT_BYTES once encoded: the client must bound
+                // the read like a tool call (§4.1).
+                "big" => json!({
+                    "contents": [{"uri": uri, "mimeType": "text/plain", "text": "x".repeat(600 * 1024)}],
+                }),
+                _ => json!({
+                    "contents": [{"uri": uri, "mimeType": "text/plain", "text": "resource body"}],
+                }),
+            };
+            write_frame(out, &result_reply(id, result));
+        }
+        _ => {}
     }
 }
 

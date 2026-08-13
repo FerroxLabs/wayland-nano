@@ -564,3 +564,112 @@ fn graceful_shutdown_cancels_pending_and_returns() {
         .wait_for(|v| is_cancel_obs(v, "shutdown"), Duration::from_secs(2))
         .expect("server saw notifications/cancelled with reason=shutdown");
 }
+
+// ---------------------------------------------------------------------------
+// §4 resources v1: list/read over the dispatcher, capability gate, bounds
+// ---------------------------------------------------------------------------
+
+/// §4.1: resources/list + resources/read round-trip through the real
+/// pending-map dispatcher path, typed results.
+#[test]
+fn resources_list_read_round_trip() {
+    let client = connect_default("resources");
+    assert!(client.negotiated().expect("negotiated").resources);
+    let list = client.list_resources().expect("list");
+    assert!(!list.truncated());
+    assert_eq!(list.next_cursor, None);
+    assert_eq!(list.resources.len(), 2);
+    let alpha = &list.resources[0];
+    assert_eq!(alpha.uri, "mem://alpha");
+    assert_eq!(alpha.name, "alpha");
+    assert_eq!(alpha.description.as_deref(), Some("first"));
+    assert_eq!(alpha.mime_type.as_deref(), Some("text/plain"));
+    assert_eq!(list.resources[1].uri, "mem://beta");
+    assert_eq!(list.resources[1].description, None);
+    assert_eq!(list.resources[1].mime_type, None);
+    let read = client.read_resource("mem://alpha").expect("read");
+    assert_eq!(read.contents.len(), 1);
+    assert_eq!(read.contents[0].uri, "mem://alpha");
+    assert_eq!(read.contents[0].mime_type.as_deref(), Some("text/plain"));
+    assert_eq!(read.contents[0].text, "resource body");
+    client.close();
+}
+
+/// §4.2: absent `resources` capability ⇒ typed ResourceUnsupported BEFORE
+/// any wire write. Asserted at the transport seam: the fake server reports
+/// every resources/* request it sees as a fake/obs notification — none may
+/// arrive. The connection itself is untouched by the refusal.
+#[test]
+fn resources_capability_absent_refused_before_wire() {
+    let collect = Collect::default();
+    let options = ConnectionOptions {
+        notification_sink: collect.sink(),
+        ..Default::default()
+    };
+    let client = connect("echo", &[], options);
+    assert!(!client.negotiated().expect("negotiated").resources);
+    let err = client.list_resources().unwrap_err();
+    assert!(matches!(err, McpError::ResourceUnsupported), "got {err}");
+    let err = client.read_resource("mem://alpha").unwrap_err();
+    assert!(matches!(err, McpError::ResourceUnsupported), "got {err}");
+    assert!(
+        collect
+            .wait_for(
+                |v| v["params"]["event"] == "saw_resources_request",
+                Duration::from_millis(500),
+            )
+            .is_none(),
+        "no resources request may reach the wire"
+    );
+    let result = client
+        .call_tool("echo", serde_json::json!({"marker": "still-ok"}))
+        .expect("connection still healthy");
+    assert_eq!(result["marker"], "still-ok");
+    assert!(client.poisoned_reason().is_none());
+    client.close();
+}
+
+/// §4.1: NO pagination in v1 — a `nextCursor` marks the first (bounded)
+/// page truncated; the page is still served and the cursor retained.
+#[test]
+fn resources_list_next_cursor_reports_truncation() {
+    let client = connect(
+        "resources",
+        &[("FAKE_NEXT_CURSOR", "1")],
+        ConnectionOptions::default(),
+    );
+    let list = client.list_resources().expect("list");
+    assert_eq!(list.next_cursor.as_deref(), Some("page-2"));
+    assert!(list.truncated());
+    assert_eq!(list.resources.len(), 2, "first page still served");
+    client.close();
+}
+
+/// §4.3: blob / non-text resource content is a typed ContentUnsupported
+/// refusal — nothing crosses into the agent path; the connection survives.
+#[test]
+fn resources_read_blob_content_refused_typed() {
+    let client = connect(
+        "resources",
+        &[("FAKE_READ_KIND", "blob")],
+        ConnectionOptions::default(),
+    );
+    let err = client.read_resource("mem://alpha").unwrap_err();
+    assert!(matches!(err, McpError::ContentUnsupported), "got {err}");
+    assert!(client.poisoned_reason().is_none());
+    client.close();
+}
+
+/// §4.1: a resource read is bounded at MAX_OUTPUT_BYTES exactly like a
+/// tool call.
+#[test]
+fn resources_read_bounded_at_max_output() {
+    let client = connect(
+        "resources",
+        &[("FAKE_READ_KIND", "big")],
+        ConnectionOptions::default(),
+    );
+    let err = client.read_resource("mem://alpha").unwrap_err();
+    assert!(matches!(err, McpError::OutputBounded(_)), "got {err}");
+    client.close();
+}

@@ -15,9 +15,10 @@ use crate::dispatcher::{
     Connection, ConnectionOptions, DeadlineCell, PendingSlot, ServerRequestHandler,
 };
 use crate::protocol::{
-    JsonRpcNotification, JsonRpcRequest, McpToolDescriptor, NegotiatedCapabilities,
+    JsonRpcNotification, JsonRpcRequest, McpResourceContent, McpResourceDescriptor,
+    McpResourceListResult, McpResourceReadResult, McpToolDescriptor, NegotiatedCapabilities,
     cancelled_notification, initialize_params, initialize_params_with_elicitation,
-    tools_call_params, tools_list_params,
+    resources_list_params, resources_read_params, tools_call_params, tools_list_params,
 };
 use crate::stdio::StdioTransport;
 use std::sync::Arc;
@@ -44,6 +45,14 @@ pub enum McpError {
     /// — the error-map arm lands with the integrator (nano-agent lane).
     #[error("cancelled")]
     Cancelled,
+    /// §4.2: the negotiated capabilities lack `resources` — typed refusal
+    /// BEFORE any wire write.
+    #[error("server does not support resources")]
+    ResourceUnsupported,
+    /// §4.3: blob / non-text resource content is refused at this layer (P2b
+    /// owns binary-to-model content); nothing crosses into the agent path.
+    #[error("non-text resource content refused")]
+    ContentUnsupported,
 }
 
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
@@ -295,6 +304,95 @@ impl McpClient {
             return Err(McpError::OutputBounded(encoded.len()));
         }
         Ok(result)
+    }
+
+    /// §4.2 capability gate: absent `resources` in the negotiated
+    /// capabilities ⇒ typed refusal BEFORE any wire write (fail-closed when
+    /// the handshake record is missing too).
+    fn require_resources(&self) -> Result<(), McpError> {
+        if self.conn.negotiated().is_some_and(|n| n.resources) {
+            Ok(())
+        } else {
+            Err(McpError::ResourceUnsupported)
+        }
+    }
+
+    /// The same MAX_OUTPUT_BYTES bound as `call_tool_inner`, enforced at the
+    /// same layer (§4.1).
+    fn bound_output(result: serde_json::Value) -> Result<serde_json::Value, McpError> {
+        let encoded = serde_json::to_vec(&result)
+            .map_err(|e| McpError::Protocol(format!("encode result: {e}")))?;
+        if encoded.len() > MAX_OUTPUT_BYTES {
+            return Err(McpError::OutputBounded(encoded.len()));
+        }
+        Ok(result)
+    }
+
+    /// resources/list over the dispatcher (§4.1): the same pending-map
+    /// round trip as every request. NO pagination in v1 — one call, one
+    /// page; a `nextCursor` marks the page truncated (retained, reported,
+    /// never followed).
+    pub fn list_resources(&self) -> Result<McpResourceListResult, McpError> {
+        self.require_resources()?;
+        let result = Self::bound_output(self.request(
+            "resources/list",
+            Some(resources_list_params()),
+            None,
+        )?)?;
+        let mut resources = Vec::new();
+        for entry in result
+            .get("resources")
+            .and_then(|r| r.as_array())
+            .cloned()
+            .unwrap_or_default()
+        {
+            resources.push(
+                serde_json::from_value::<McpResourceDescriptor>(entry)
+                    .map_err(|e| McpError::Protocol(format!("bad resource descriptor: {e}")))?,
+            );
+        }
+        let next_cursor = result
+            .get("nextCursor")
+            .and_then(|c| c.as_str())
+            .map(str::to_string);
+        if next_cursor.is_some() {
+            eprintln!(
+                "wayland-nano mcp: resources/list page truncated (nextCursor present; not followed in v1)"
+            );
+        }
+        Ok(McpResourceListResult {
+            resources,
+            next_cursor,
+        })
+    }
+
+    /// resources/read over the dispatcher (§4.1/§4.3): bounded at
+    /// MAX_OUTPUT_BYTES like a tool call; blob / non-text content entries
+    /// are a typed refusal — no resource content crosses into the agent
+    /// path.
+    pub fn read_resource(&self, uri: &str) -> Result<McpResourceReadResult, McpError> {
+        self.require_resources()?;
+        let result = Self::bound_output(self.request(
+            "resources/read",
+            Some(resources_read_params(uri)),
+            None,
+        )?)?;
+        let mut contents = Vec::new();
+        for entry in result
+            .get("contents")
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default()
+        {
+            if entry.get("blob").is_some() || entry.get("text").and_then(|t| t.as_str()).is_none() {
+                return Err(McpError::ContentUnsupported);
+            }
+            contents.push(
+                serde_json::from_value::<McpResourceContent>(entry)
+                    .map_err(|e| McpError::Protocol(format!("bad resource content: {e}")))?,
+            );
+        }
+        Ok(McpResourceReadResult { contents })
     }
 
     /// Graceful shutdown (§2.6): refuse new requests, cancel pending ids on
