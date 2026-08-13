@@ -73,25 +73,21 @@ jobs:
         run: cargo build --release -p nano-cli --target ${{ matrix.target }}
 
       - name: Stage binary
-        shell: bash
+        shell: pwsh
+        run: packaging/npm/scripts/pack.ps1 -Platform ${{ matrix.pkg }} -SkipBuild
+
+      - name: Verify platform package
+        working-directory: packaging/npm
         run: |
-          set -euo pipefail
-          dest="staging/binaries/${{ matrix.pkg }}"
-          mkdir -p "$dest"
-          bin="wayland-nano"
-          [ "${{ matrix.os }}" = "windows-latest" ] && bin="wayland-nano.exe"
-          cp "target/${{ matrix.target }}/release/$bin" "$dest/"
-          # sha256sum is GNU coreutils (linux/windows Git Bash); macOS images
-          # only guarantee shasum.
-          if command -v sha256sum >/dev/null 2>&1; then
-            (cd "$dest" && sha256sum "$bin" > "$bin.sha256")
-          else
-            (cd "$dest" && shasum -a 256 "$bin" > "$bin.sha256")
-          fi
+          node --check bin/install.js
+          node --check bin/wayland-nano.js
+          node bin/install.js
       - uses: actions/upload-artifact@v4
         with:
           name: nano-bin-${{ matrix.pkg }}
-          path: staging/binaries/
+          # Preserve the platform directory so merge-multiple produces the
+          # ArtifactRoot layout consumed by pack.ps1.
+          path: packaging/npm/binaries/
 
   publish:
     needs: build
@@ -107,19 +103,22 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: nano-bin-*
-          # Artifact contents are <pkg>/wayland-nano[.exe]; the package layout
-          # (files: binaries/) and bin/install.js expect binaries/<pkg>/.
-          path: packaging/npm/binaries
+          path: artifacts/npm-binaries
           merge-multiple: true
+
+      - name: Assemble package and integrity manifest
+        shell: pwsh
+        run: packaging/npm/scripts/pack.ps1 -Platform all -ArtifactRoot artifacts/npm-binaries
 
       - name: Verify staged package contents
         working-directory: packaging/npm
         shell: bash
         run: |
           set -euo pipefail
-          count=$(find binaries -type f -name 'wayland-nano*' ! -name '*.sha256' | wc -l)
+          count=$(find binaries -type f -name 'wayland-nano*' | wc -l)
           echo "staged binaries: $count"
-          [ "$count" -ge 5 ] || { echo "ERROR: expected 5 platform binaries, found $count"; exit 1; }
+          [ "$count" -eq 5 ] || { echo "expected 5 platform binaries, found $count"; exit 1; }
+          node bin/install.js
 
       - name: Pack + publish (provenance)
         working-directory: packaging/npm

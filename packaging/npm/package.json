@@ -2,6 +2,7 @@
   "name": "waylandnano",
   "version": "0.1.0-alpha.0",
   "description": "Wayland Nano CLI — prebuilt native binary via npm (alpha)",
+  "homepage": "https://github.com/FerroxLabs/wayland-nano#readme",
   "repository": {
     "type": "git",
     "url": "https://github.com/FerroxLabs/wayland-nano"
@@ -16,6 +17,7 @@
   "files": [
     "bin/",
     "binaries/",
+    "binaries-manifest.json",
     "README.md"
   ],
   "engines": {
