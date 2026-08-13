@@ -413,7 +413,8 @@ promotes/closes entries; builders append only.
 
 ## F-28: P4 repomap merge-review debt (reviewer agent-135, verdict MERGE-OK, 2026-08-13) — OPEN
 
-- **MEDIUM-1 (cost-bound TOCTOU):** `nano-repomap/src/store.rs:321-345`
+- **MEDIUM-1 (cost-bound TOCTOU) — FIXED at 02b538a:**
+  `nano-repomap/src/store.rs:321-345`
   enforces the 5 MB per-file cap via pre-read metadata only; the streaming
   `read_line` loop is unbounded, so a growing or long-line file blows the
   §5.2 cost bound. Fix: `Read::take(max_file_bytes + 1)` + record Oversize.
@@ -422,15 +423,15 @@ promotes/closes entries; builders append only.
   lane MUST land §5.5's read-only registration at all three gates
   (acp_mode.rs, tasks.rs, exec_mode.rs) WITH the three-predicate agreement
   regression test in the same merge that registers the tool.
-- **MEDIUM-3 (perf):** every refresh pass re-walks the whole tree and
+- **MEDIUM-3 (perf) — FIXED at 02b538a:** every refresh pass re-walks the whole tree and
   re-reads hashed files under the tool Mutex with no file-count cap or
   per-pass timeout; one pass on a huge repo stalls all queries. Fix:
   document the total-pass bound or add a cap + `skipped_over_cap` counter.
-- **LOW-4:** `find_rename_source` (store.rs:311) treats any stat failure
+- **LOW-4 — FIXED at 02b538a:** `find_rename_source` (store.rs:311) treats any stat failure
   as disappearance; require `NotFound` via `symlink_metadata`.
-- **LOW-5:** `skipped_denied` (store.rs:208) accumulates per-pass counts
+- **LOW-5 — FIXED at 02b538a:** `skipped_denied` (store.rs:208) accumulates per-pass counts
   forever; report last-pass count or rename to `_total`.
-- **LOW-6:** `query.rs:72` path-token match includes the workspace-root
+- **LOW-6 — FIXED at 02b538a:** `query.rs:72` path-token match includes the workspace-root
   prefix; match root-relative instead.
 - **LOW-7:** Windows battery owes a unicode-name case and (where the
   volume permits) a >MAX_PATH case; the real-D:\ harness remains a §14
