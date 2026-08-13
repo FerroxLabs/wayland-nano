@@ -1,45 +1,162 @@
 {
-  "version": 1,
-  "notes": "P2a §6.3 static vision-capability catalog — fail-closed, EXACT model ids only (no wildcard/prefix matching). Every entry ships image_in:false until the §13 leg-6 live vision probe (randomized multi-digit exact-match + two negative controls + three trials) flips it, with the recorded artifact named in `proven` (a path under shared/fixtures/flux/vision/). Aliases (flux-auto/standard/fast/reasoning) are NEVER blessed in v1: a single probe proves an alias routed to vision ONCE, not routing STABILITY. Excluded families (flux-image generation, flux-voice*, codestral/devstral/qwen-coder/llama/deepseek/sonar/glm/qwen served ids) are unproven ⇒ false; several are listed explicitly for reviewability, the rest are absent ⇒ false.",
-  "entries": {
-    "flux-pinned-claude-opus": { "image_in": false, "proven": null },
-    "flux-pinned-claude-opus-4-6": { "image_in": false, "proven": null },
-    "flux-pinned-claude-opus-4-8": { "image_in": false, "proven": null },
-    "flux-pinned-claude-opus-5": { "image_in": false, "proven": null },
-    "flux-pinned-claude-sonnet": { "image_in": false, "proven": null },
-    "flux-pinned-claude-haiku": { "image_in": false, "proven": null },
-    "flux-pinned-claude-fable-5": { "image_in": false, "proven": null },
-    "flux-pinned-gpt-5": { "image_in": false, "proven": null },
-    "flux-pinned-gpt-5-5": { "image_in": false, "proven": null },
-    "flux-pinned-gpt-5-mini": { "image_in": false, "proven": null },
-    "flux-pinned-gpt-5-6-sol": { "image_in": false, "proven": null },
-    "flux-pinned-gpt-5-6-terra": { "image_in": false, "proven": null },
-    "flux-pinned-gpt-5-6-luna": { "image_in": false, "proven": null },
-    "flux-pinned-gemini-3-1-pro": { "image_in": false, "proven": null },
-    "flux-pinned-gemini-3-flash": { "image_in": false, "proven": null },
-    "flux-pinned-gemini-3-5-flash": { "image_in": false, "proven": null },
-    "flux-pinned-gemini-3-6-flash": { "image_in": false, "proven": null },
-    "flux-pinned-grok-4": { "image_in": false, "proven": null },
-    "flux-pinned-grok-4-3": { "image_in": false, "proven": null },
-    "flux-pinned-grok-4-5": { "image_in": false, "proven": null },
-    "flux-pinned-grok-4-20-reasoning": { "image_in": false, "proven": null },
-    "flux-pinned-kimi-k2-5": { "image_in": false, "proven": null },
-    "flux-pinned-kimi-k2-6": { "image_in": false, "proven": null },
-    "flux-pinned-kimi-k3": { "image_in": false, "proven": null },
-    "flux-pinned-mistral-large": { "image_in": false, "proven": null },
-    "flux-pinned-mistral-medium": { "image_in": false, "proven": null },
-    "flux-pinned-mistral-small": { "image_in": false, "proven": null },
-    "flux-pinned-magistral-medium": { "image_in": false, "proven": null },
-    "flux-pinned-nova-pro": { "image_in": false, "proven": null },
-    "flux-pinned-nova-lite": { "image_in": false, "proven": null },
-    "flux-auto": { "image_in": false, "proven": null },
-    "flux-standard": { "image_in": false, "proven": null },
-    "flux-fast": { "image_in": false, "proven": null },
-    "flux-reasoning": { "image_in": false, "proven": null },
-    "flux-image": { "image_in": false, "proven": null },
-    "flux-pinned-codestral": { "image_in": false, "proven": null },
-    "flux-pinned-devstral-medium": { "image_in": false, "proven": null },
-    "flux-pinned-qwen3-coder-plus": { "image_in": false, "proven": null },
-    "flux-pinned-llama-3-3-70b": { "image_in": false, "proven": null }
+ "version": 1,
+ "notes": "P2a \u00c2\u00a76.3 static vision-capability catalog \u00e2\u20ac\u201d fail-closed, EXACT model ids only (no wildcard/prefix matching). Every entry ships image_in:false until the \u00c2\u00a713 leg-6 live vision probe (randomized multi-digit exact-match + two negative controls + three trials) flips it, with the recorded artifact named in `proven` (a path under shared/fixtures/flux/vision/). Aliases (flux-auto/standard/fast/reasoning) are NEVER blessed in v1: a single probe proves an alias routed to vision ONCE, not routing STABILITY. Excluded families (flux-image generation, flux-voice*, codestral/devstral/qwen-coder/llama/deepseek/sonar/glm/qwen served ids) are unproven \u00e2\u2021\u2019 false; several are listed explicitly for reviewability, the rest are absent \u00e2\u2021\u2019 false.",
+ "entries": {
+  "flux-pinned-claude-opus": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-claude-opus/20260813T071416Z_manifest.json"
+  },
+  "flux-pinned-claude-opus-4-6": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-claude-opus-4-6/20260813T071440Z_manifest.json"
+  },
+  "flux-pinned-claude-opus-4-8": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-claude-opus-4-8/20260813T071506Z_manifest.json"
+  },
+  "flux-pinned-claude-opus-5": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-claude-opus-5/20260813T071526Z_manifest.json"
+  },
+  "flux-pinned-claude-sonnet": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-claude-sonnet/20260813T071555Z_manifest.json"
+  },
+  "flux-pinned-claude-haiku": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-claude-haiku/20260813T071617Z_manifest.json"
+  },
+  "flux-pinned-claude-fable-5": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-claude-fable-5/20260813T071635Z_manifest.json"
+  },
+  "flux-pinned-gpt-5": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-gpt-5/20260813T071717Z_manifest.json"
+  },
+  "flux-pinned-gpt-5-5": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-gpt-5-5/20260813T072755Z_manifest.json"
+  },
+  "flux-pinned-gpt-5-mini": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-gpt-5-mini/20260813T071755Z_manifest.json"
+  },
+  "flux-pinned-gpt-5-6-sol": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-gpt-5-6-sol/20260813T072825Z_manifest.json"
+  },
+  "flux-pinned-gpt-5-6-terra": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-gpt-5-6-terra/20260813T072849Z_manifest.json"
+  },
+  "flux-pinned-gpt-5-6-luna": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-gpt-5-6-luna/20260813T072910Z_manifest.json"
+  },
+  "flux-pinned-gemini-3-1-pro": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-gemini-3-1-pro/20260813T072934Z_manifest.json"
+  },
+  "flux-pinned-gemini-3-flash": {
+   "image_in": false,
+   "proven": null
+  },
+  "flux-pinned-gemini-3-5-flash": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-gemini-3-5-flash/20260813T073045Z_manifest.json"
+  },
+  "flux-pinned-gemini-3-6-flash": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-gemini-3-6-flash/20260813T073114Z_manifest.json"
+  },
+  "flux-pinned-grok-4": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-grok-4/20260813T072044Z_manifest.json"
+  },
+  "flux-pinned-grok-4-3": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-grok-4-3/20260813T072119Z_manifest.json"
+  },
+  "flux-pinned-grok-4-5": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-grok-4-5/20260813T073146Z_manifest.json"
+  },
+  "flux-pinned-grok-4-20-reasoning": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-grok-4-20-reasoning/20260813T073219Z_manifest.json"
+  },
+  "flux-pinned-kimi-k2-5": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-kimi-k2-5/20260813T073251Z_manifest.json"
+  },
+  "flux-pinned-kimi-k2-6": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-kimi-k2-6/20260813T073402Z_manifest.json"
+  },
+  "flux-pinned-kimi-k3": {
+   "image_in": false,
+   "proven": null
+  },
+  "flux-pinned-mistral-large": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-mistral-large/20260813T073705Z_manifest.json"
+  },
+  "flux-pinned-mistral-medium": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-mistral-medium/20260813T073721Z_manifest.json"
+  },
+  "flux-pinned-mistral-small": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-mistral-small/20260813T073736Z_manifest.json"
+  },
+  "flux-pinned-magistral-medium": {
+   "image_in": false,
+   "proven": null
+  },
+  "flux-pinned-nova-pro": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-nova-pro/20260813T073805Z_manifest.json"
+  },
+  "flux-pinned-nova-lite": {
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-pinned-nova-lite/20260813T073822Z_manifest.json"
+  },
+  "flux-auto": {
+   "image_in": false,
+   "proven": null
+  },
+  "flux-standard": {
+   "image_in": false,
+   "proven": null
+  },
+  "flux-fast": {
+   "image_in": false,
+   "proven": null
+  },
+  "flux-reasoning": {
+   "image_in": false,
+   "proven": null
+  },
+  "flux-image": {
+   "image_in": false,
+   "proven": null
+  },
+  "flux-pinned-codestral": {
+   "image_in": false,
+   "proven": null
+  },
+  "flux-pinned-devstral-medium": {
+   "image_in": false,
+   "proven": null
+  },
+  "flux-pinned-qwen3-coder-plus": {
+   "image_in": false,
+   "proven": null
+  },
+  "flux-pinned-llama-3-3-70b": {
+   "image_in": false,
+   "proven": null
   }
+ }
 }

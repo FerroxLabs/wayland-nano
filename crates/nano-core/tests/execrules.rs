@@ -694,10 +694,18 @@ fn rule_path_override_cannot_escape_nano_home() {
     let outside = temp.path().join("outside");
     fs::create_dir_all(&inside).unwrap();
     fs::create_dir_all(&outside).unwrap();
-    assert_eq!(rules_path(&home, None).unwrap(), home.join("rules.toml"));
+    // rules_path returns canonicalized paths (dunce expands 8.3 short
+    // names — CI profiles alias e.g. RUNNER~1), so compare canonical to
+    // canonical; the escape denial below is the actual security content.
+    let canon_home = dunce::canonicalize(&home).unwrap();
+    let canon_inside = dunce::canonicalize(&inside).unwrap();
+    assert_eq!(
+        rules_path(&home, None).unwrap(),
+        canon_home.join("rules.toml")
+    );
     assert_eq!(
         rules_path(&home, Some(&inside.join("custom.toml"))).unwrap(),
-        inside.join("custom.toml")
+        canon_inside.join("custom.toml")
     );
     assert!(matches!(
         rules_path(&home, Some(&outside.join("rules.toml"))),
@@ -710,7 +718,13 @@ fn configured_rules_path_uses_the_environment_override() {
     const CHILD: &str = "NANO_RULES_ENV_TEST_CHILD";
     if std::env::var_os(CHILD).is_some() {
         let home = std::path::PathBuf::from(std::env::var_os("NANO_TEST_HOME").unwrap());
-        let expected = std::path::PathBuf::from(std::env::var_os("NANO_TEST_RULES").unwrap());
+        // configured_rules_path canonicalizes; compare against the
+        // canonicalized expectation (CI profiles use 8.3 aliases). The
+        // file itself need not exist — canonicalize the parent + join.
+        let raw = std::path::PathBuf::from(std::env::var_os("NANO_TEST_RULES").unwrap());
+        let expected = dunce::canonicalize(raw.parent().unwrap())
+            .unwrap()
+            .join(raw.file_name().unwrap());
         assert_eq!(configured_rules_path(&home).unwrap(), expected);
         return;
     }

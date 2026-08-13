@@ -28,7 +28,7 @@ metadata is not copied; the immutable donor snapshot lives at
 |---|---|---|
 | `crates/nano-sandbox/src/lib.rs` | `codex-rs/windows-sandbox-rs/src/lib.rs` | module map reduced to ported subset; public API re-exports deferred until their modules land |
 | `crates/nano-sandbox/src/telemetry.rs` | (seam only — `codex-rs/otel` NOT ported) | original Nano code replacing the `Option<&StatsigMetricsSettings>` hook with a `MetricsSink` trait |
-| `crates/nano-sandbox/src/path_normalization.rs` | `codex-rs/windows-sandbox-rs/src/path_normalization.rs` | verbatim except module path |
+| `crates/nano-sandbox/src/path_normalization.rs` | `codex-rs/windows-sandbox-rs/src/path_normalization.rs` | verbatim except module path; integrator deviation (12123fc): module ungated from cfg(windows) to all platforms for nano-repomap, with the key's case-fold now Windows-only (unix preserves case — folding would alias case-distinct files) |
 | `crates/nano-sandbox/src/winutil.rs` | `codex-rs/windows-sandbox-rs/src/winutil.rs` | verbatim except module path + windows-sys 0.59 pin; donor tests retained; localization-safe SID note carried forward |
 | `crates/nano-sandbox/src/token.rs` | `codex-rs/windows-sandbox-rs/src/token.rs` | verbatim except module path, windows-sys 0.52 pin, 2 added `# Safety` doc sections (clippy `missing_safety_doc`) |
 | `crates/nano-sandbox/src/token_tests.rs` | `codex-rs/windows-sandbox-rs/src/token_tests.rs` | verbatim except module path |

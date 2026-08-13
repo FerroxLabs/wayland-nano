@@ -381,12 +381,24 @@ fn language_other_records_first_meaningful_line() {
 #[test]
 fn case_and_separator_spellings_collapse_to_one_key() {
     // §14 leg 4 (cross-platform half): case and separator variants of
-    // the same file are ONE canonical entry.
+    // the same file are ONE canonical entry — on Windows (case-insensitive
+    // NTFS). On unix the filesystem is case-sensitive, so a case variant
+    // is a DIFFERENT (here: nonexistent) file and must NOT alias.
     let (_tmp, ws, map) = fixture(true);
     let canonical = map.entry(&ws.join("src/lib.rs")).expect("indexed");
     let spelled = ws.join("src").join("LIB.RS");
-    let via_case = map.entry(&spelled).expect("case variant resolves");
-    assert!(std::ptr::eq(canonical, via_case));
+    #[cfg(target_os = "windows")]
+    {
+        let via_case = map.entry(&spelled).expect("case variant resolves");
+        assert!(std::ptr::eq(canonical, via_case));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        assert!(
+            map.entry(&spelled).is_none(),
+            "unix: case variant must not alias a case-distinct file"
+        );
+    }
     // Forward-slash spelling of the same path.
     let slash = PathBuf::from(ws.join("src/lib.rs").to_string_lossy().replace('\\', "/"));
     let via_slash = map.entry(&slash).expect("slash variant resolves");
