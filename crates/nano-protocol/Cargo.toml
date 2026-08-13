@@ -25,6 +25,19 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 
+[target.'cfg(unix)'.dependencies]
+# P2a audit H-2: O_NOFOLLOW for the confined image_path open.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# P2a audit H-2: the reparse-safe CreateFileW + handle final-path
+# verification for the confined image_path open (the nano-session
+# attachment-store pattern; windows-sys stays pinned at 0.52).
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+
 [dev-dependencies]
 pretty_assertions = "1"
 nano-egress = { version = "0.1.0", path = "../nano-egress" }

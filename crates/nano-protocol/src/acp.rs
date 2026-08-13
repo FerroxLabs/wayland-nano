@@ -273,7 +273,12 @@ impl BlockRejection {
 /// style names and `.photoslibrary`-style bundles are all dot-prefixed);
 /// symlink/junction escape from every allowed root fails the prefix check
 /// on the CANONICAL path. The read is bounded at `MAX_IMAGE_FILE_BYTES`
-/// before any decoder runs. Returns the bytes and the canonical display
+/// before any decoder runs. The open is handle-verified (P2a audit H-2):
+/// unix opens O_NOFOLLOW and proves the opened handle is the authorized
+/// file (dev/ino identity); Windows opens reparse-safe and proves the
+/// handle's final path is still the authorized canonical path — a
+/// workspace-controlled swap between authorization and open fails closed.
+/// Returns the bytes and the canonical display
 /// path (for the placeholder/provenance — the TUI never sees bytes).
 fn confined_image_read(
     raw_path: &str,
@@ -300,7 +305,13 @@ fn confined_image_read(
     // allowed root fails the prefix check below.
     let canonical = std::fs::canonicalize(raw_path)
         .map_err(|_| BlockRejection::fs_read_denied("image_path: cannot resolve the path"))?;
-    if !canonical.is_file() {
+    // The authorized file's identity, captured NOW: the confined open below
+    // must prove from the OPENED HANDLE (never the path) that it landed on
+    // this same file — a symlink/junction swapped between authorization and
+    // open fails closed (P2a audit H-2).
+    let authorized_meta = std::fs::metadata(&canonical)
+        .map_err(|_| BlockRejection::fs_read_denied("image_path: cannot resolve the path"))?;
+    if !authorized_meta.is_file() {
         return Err(BlockRejection::fs_read_denied(
             "image_path: not a regular file",
         ));
@@ -331,11 +342,19 @@ fn confined_image_read(
             message: "image_path: sensitive subtree (dot-path under an allowed root)".into(),
         });
     }
-    // Bounded read: at most MAX_IMAGE_FILE_BYTES + 1 so an oversize file is
-    // a typed ImageTooLarge with ZERO decode work.
+    // Audit-H2 hook point: the authorize→open window a workspace-controlled
+    // symlink/junction swap races. Test-only; compiled out otherwise.
+    #[cfg(test)]
+    PRE_OPEN_HOOK.with(|hook| {
+        if let Some(fire) = hook.borrow_mut().take() {
+            fire();
+        }
+    });
+    // Handle-relative no-follow confined open (audit H-2), then the bounded
+    // read: at most MAX_IMAGE_FILE_BYTES + 1 so an oversize file is a typed
+    // ImageTooLarge with ZERO decode work.
     use std::io::Read as _;
-    let file = std::fs::File::open(&canonical)
-        .map_err(|_| BlockRejection::fs_read_denied("image_path: cannot open the file"))?;
+    let file = open_confined(&canonical, &authorized_meta)?;
     let mut bytes = Vec::new();
     file.take(MAX_IMAGE_FILE_BYTES + 1)
         .read_to_end(&mut bytes)
@@ -347,6 +366,188 @@ fn confined_image_read(
         });
     }
     Ok((bytes, canonical.display().to_string()))
+}
+
+// Audit-H2 regression hook: fires in the authorize→open window of
+// `confined_image_read` so a test can deterministically swap in a
+// symlink/junction. Test-only; never compiled into production builds.
+#[cfg(test)]
+thread_local! {
+    static PRE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Unix (audit H-2): O_NOFOLLOW confines the final component; the OPENED
+/// handle's dev/ino must equal the authorized file's identity — a swapped
+/// intermediate symlink resolves to a DIFFERENT file and fails closed on
+/// the identity mismatch.
+#[cfg(unix)]
+fn open_confined(
+    canonical: &std::path::Path,
+    authorized: &std::fs::Metadata,
+) -> Result<std::fs::File, BlockRejection> {
+    use std::os::unix::fs::MetadataExt as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(canonical)
+        .map_err(|_| BlockRejection::fs_read_denied("image_path: cannot open the file"))?;
+    let meta = file
+        .metadata()
+        .map_err(|_| BlockRejection::fs_read_denied("image_path: cannot stat the opened file"))?;
+    if meta.dev() != authorized.dev() || meta.ino() != authorized.ino() {
+        return Err(BlockRejection::fs_read_denied(
+            "image_path: path swapped between authorization and open",
+        ));
+    }
+    Ok(file)
+}
+
+/// Windows (audit H-2): reparse-safe CreateFileW + handle-side reparse and
+/// final-path verification against the authorized canonical path (the
+/// nano-session attachment-store pattern).
+#[cfg(windows)]
+fn open_confined(
+    canonical: &std::path::Path,
+    _authorized: &std::fs::Metadata,
+) -> Result<std::fs::File, BlockRejection> {
+    windows_confined_open::open_verified(canonical)
+}
+
+#[cfg(windows)]
+mod windows_confined_open {
+    use super::BlockRejection;
+    use std::path::Path;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
+    use windows_sys::Win32::Storage::FileSystem::CreateFileW;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
+    use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+    use windows_sys::Win32::Storage::FileSystem::OPEN_EXISTING;
+
+    fn to_wide(path: &Path) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    /// Open the authorized `canonical` path without following a
+    /// final-component reparse point, then prove from the OPENED HANDLE
+    /// (never the path) that it is a plain non-reparse file whose final
+    /// path is still `canonical`. Every failure fails closed as a read
+    /// denial.
+    pub fn open_verified(canonical: &Path) -> Result<std::fs::File, BlockRejection> {
+        let wide = to_wide(canonical);
+        // Safety: `wide` is NUL-terminated and outlives the call; the
+        // returned handle is either invalid (the error path) or ownership
+        // moves into the `File` below (closed on drop).
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                FILE_GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                0,
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(BlockRejection::fs_read_denied(
+                "image_path: cannot open the file",
+            ));
+        }
+        if let Err(err) = verify_handle(handle, canonical) {
+            // Safety: the handle is valid and not yet owned by a File.
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Err(err);
+        }
+        // Safety: the handle is a valid, verified open file handle; the
+        // File takes ownership and closes it on drop.
+        use std::os::windows::io::FromRawHandle as _;
+        Ok(unsafe { std::fs::File::from_raw_handle(handle as *mut std::ffi::c_void) })
+    }
+
+    /// Handle-side verification: a reparse point swapped in after
+    /// authorization was opened AS a reparse point (the open flag never
+    /// follows one) and is rejected here; a swapped INTERMEDIATE component
+    /// (e.g. a junctioned directory under the workspace) moves the handle's
+    /// final path away from the authorized canonical path and is rejected
+    /// here.
+    fn verify_handle(handle: HANDLE, canonical: &Path) -> Result<(), BlockRejection> {
+        // Safety: `handle` is a valid open file handle; `info` is a plain
+        // out struct.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+            return Err(BlockRejection::fs_read_denied(
+                "image_path: cannot stat the opened file",
+            ));
+        }
+        if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(BlockRejection::fs_read_denied(
+                "image_path: reparse point swapped in before open",
+            ));
+        }
+        let final_path = final_path_for_handle(handle)?;
+        if !same_path(&final_path, canonical) {
+            return Err(BlockRejection::fs_read_denied(
+                "image_path: path swapped between authorization and open",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The handle's final path (the nano-sandbox acl.rs:1158 pattern).
+    fn final_path_for_handle(handle: HANDLE) -> Result<std::path::PathBuf, BlockRejection> {
+        // Safety: `handle` is valid; the sizing call writes nothing.
+        let needed = unsafe { GetFinalPathNameByHandleW(handle, std::ptr::null_mut(), 0, 0) };
+        if needed == 0 {
+            return Err(BlockRejection::fs_read_denied(
+                "image_path: cannot query the opened file",
+            ));
+        }
+        let mut buffer = vec![0u16; needed as usize + 1];
+        // Safety: `buffer` is `needed + 1` wide chars, writable.
+        let written = unsafe {
+            GetFinalPathNameByHandleW(handle, buffer.as_mut_ptr(), buffer.len() as u32, 0)
+        };
+        if written == 0 || written as usize >= buffer.len() {
+            return Err(BlockRejection::fs_read_denied(
+                "image_path: cannot query the opened file",
+            ));
+        }
+        use std::os::windows::ffi::OsStringExt as _;
+        Ok(std::path::PathBuf::from(std::ffi::OsString::from_wide(
+            &buffer[..written as usize],
+        )))
+    }
+
+    /// Case-insensitive equality on two `\\?\`-style absolute paths (both
+    /// GetFinalPathNameByHandleW and canonicalize produce them); separators
+    /// are normalized first.
+    fn same_path(left: &Path, right: &Path) -> bool {
+        fn normalize(path: &Path) -> String {
+            path.as_os_str()
+                .to_string_lossy()
+                .replace('/', "\\")
+                .trim_end_matches('\\')
+                .to_lowercase()
+        }
+        normalize(left) == normalize(right)
+    }
 }
 
 /// P2a §2.3 — converts the ACP `session/prompt` `prompt` block array into
@@ -1142,6 +1343,120 @@ mod tests {
                 .await
                 .expect_err("malformed base64 must reject");
         assert_eq!(err.kind, NanoErrorKind::InvalidParams);
+    }
+
+    // ── P2a audit H-2: the confined image_path open ──────────────────────
+
+    fn h2_temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nano-p2a-acp-h2-{}-{}-{}",
+            std::process::id(),
+            tag,
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Directory link helper (the attachment_store.rs precedent): NTFS
+    /// junction on Windows (no privilege required), symlink elsewhere.
+    /// Returns false when the host refuses — the caller then skips LOUDLY.
+    fn make_dir_link(link: &std::path::Path, target: &std::path::Path) -> bool {
+        #[cfg(windows)]
+        {
+            return std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .expect("spawn mklink")
+                .status
+                .success();
+        }
+        #[cfg(unix)]
+        {
+            return std::os::unix::fs::symlink(target, link).is_ok();
+        }
+        #[allow(unreachable_code)]
+        false
+    }
+
+    /// The legitimate workspace path still reads through the
+    /// handle-verified open.
+    #[test]
+    fn confined_image_read_legitimate_workspace_file() {
+        let root = h2_temp_dir("legit");
+        let workspace = root.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let image = workspace.join("pic.png");
+        std::fs::write(&image, b"workspace-image-bytes").unwrap();
+        let (bytes, display) =
+            confined_image_read(image.to_str().unwrap(), &workspace).expect("legitimate read");
+        assert_eq!(bytes, b"workspace-image-bytes");
+        assert!(display.contains("pic.png"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Audit H-2 regression: a workspace-controlled link is swapped in
+    /// BETWEEN authorization and open (the test hook fires in exactly that
+    /// window). The read must fail closed from the OPENED HANDLE's evidence
+    /// — never return the outside bytes:
+    /// - unix: the swapped intermediate symlink resolves to a different
+    ///   file; the opened handle's dev/ino mismatches the authorized
+    ///   identity;
+    /// - Windows: the swapped intermediate junction moves the handle's
+    ///   final path away from the authorized canonical path.
+    #[test]
+    fn confined_image_read_swap_between_authorize_and_open_fails_closed() {
+        let root = h2_temp_dir("toctou");
+        let workspace = root.join("ws");
+        let sub = workspace.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let image = sub.join("pic.png");
+        std::fs::write(&image, b"workspace-image-bytes").unwrap();
+        // The outside payload a successful swap would smuggle in.
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("pic.png"), b"outside-secret-bytes").unwrap();
+
+        // The hook fires BETWEEN authorization and open: the authorized
+        // subdir is swapped for a junction/symlink to the outside dir.
+        let saved = workspace.join("sub-saved");
+        let linked = std::rc::Rc::new(std::cell::Cell::new(true));
+        let linked_hook = linked.clone();
+        let sub_hook = sub.clone();
+        let saved_hook = saved.clone();
+        let outside_hook = outside.clone();
+        PRE_OPEN_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                std::fs::rename(&sub_hook, &saved_hook).unwrap();
+                if !make_dir_link(&sub_hook, &outside_hook) {
+                    linked_hook.set(false);
+                }
+            }));
+        });
+        let result = confined_image_read(image.to_str().unwrap(), &workspace);
+        if !linked.get() {
+            eprintln!(
+                "LOUD SKIP: host refused link creation (no developer mode/admin) — \
+                 swap-between-authorize-and-open scenario cannot run here"
+            );
+            return;
+        }
+        let err = result.expect_err("a swapped-in link must fail closed");
+        assert_eq!(err.kind, NanoErrorKind::FsReadDenied, "{err:?}");
+        // Restore the layout: the legitimate path still works.
+        #[cfg(windows)]
+        std::fs::remove_dir(&sub).unwrap(); // junctions are removed as directories
+        #[cfg(unix)]
+        std::fs::remove_file(&sub).unwrap(); // a symlink is removed as a file
+        std::fs::rename(&saved, &sub).unwrap();
+        let (bytes, _) = confined_image_read(image.to_str().unwrap(), &workspace).unwrap();
+        assert_eq!(bytes, b"workspace-image-bytes");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

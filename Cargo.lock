@@ -1541,6 +1541,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "dirs-next",
+ "libc",
  "nano-agent",
  "nano-egress",
  "nano-model",
@@ -1551,6 +1552,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

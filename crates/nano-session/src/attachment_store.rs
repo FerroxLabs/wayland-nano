@@ -21,7 +21,11 @@
 //! - reads (the §5.3 kill-resume rehydration path) validate the digest
 //!   against `^[0-9a-f]{64}$` BEFORE any path construction, reject
 //!   symlink/junction/reparse store entries, and verify the sha256 over the
-//!   bytes — tampering fails CLOSED;
+//!   bytes — tampering fails CLOSED. The open itself is handle-verified
+//!   (P2a audit H-1): unix opens O_NOFOLLOW; Windows opens reparse-safe
+//!   (FILE_FLAG_OPEN_REPARSE_POINT), rejects reparse metadata from the
+//!   OPENED handle, and proves the handle's final path stays beneath the
+//!   canonical store root — a swap between validation and open fails closed;
 //! - GC (§5.4) sweeps only under the EXCLUSIVE `.gc.lock` plus a 60 s
 //!   mtime grace (defense-in-depth); there is NO referenced-blob LRU
 //!   (Q4 RULED).
@@ -291,9 +295,10 @@ impl AttachmentStore {
         }
         let fanout = self.blobs_dir().join(&digest[..2]);
         let path = fanout.join(digest);
-        // Reparse rejection BEFORE open (on Windows this is the documented
-        // open-after-check discipline; on unix the open is additionally
-        // O_NOFOLLOW). A missing fanout dir is simply a missing blob.
+        // Reparse rejection BEFORE open (path-level, defense-in-depth — the
+        // open below is itself reparse-safe and handle-verified, so a swap
+        // in this window still fails closed). A missing fanout dir is
+        // simply a missing blob.
         reject_reparse(&self.blobs_dir(), "blobs-dir")?;
         match fs::symlink_metadata(&fanout) {
             Ok(meta) => {
@@ -326,7 +331,15 @@ impl AttachmentStore {
         if !canonical.starts_with(&self.root) {
             return Err(AttachmentStoreError::ReparsePoint("blob-escapes-store").into());
         }
-        let bytes = read_no_follow(&path, MAX_BLOB_READ_BYTES)?;
+        // Audit-H1 hook point: the validate→open window a same-user process
+        // races with a junction/symlink swap. Test-only; compiled out.
+        #[cfg(test)]
+        PRE_OPEN_HOOK.with(|hook| {
+            if let Some(fire) = hook.borrow_mut().take() {
+                fire();
+            }
+        });
+        let bytes = read_no_follow(&path, MAX_BLOB_READ_BYTES, &self.root)?;
         if hex_sha256(&bytes) != digest {
             return Err(BlobReadError::Tampered);
         }
@@ -624,9 +637,20 @@ fn is_reparse_point(_meta: &fs::Metadata) -> bool {
     false
 }
 
-/// Read a blob with no-follow semantics and a byte ceiling.
+// Audit-H1 regression hook: fires in the validate→open window of
+// `read_verified` so a test can deterministically swap in a
+// junction/symlink. Test-only; never compiled into production builds.
+#[cfg(test)]
+thread_local! {
+    static PRE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Read a blob with no-follow semantics and a byte ceiling. Unix opens
+/// O_NOFOLLOW (the existing discipline, unchanged); the root is unused —
+/// the content-address digest check is the integrity backstop.
 #[cfg(unix)]
-fn read_no_follow(path: &Path, ceiling: u64) -> Result<Vec<u8>, BlobReadError> {
+fn read_no_follow(path: &Path, ceiling: u64, _root: &Path) -> Result<Vec<u8>, BlobReadError> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = fs::OpenOptions::new()
         .read(true)
@@ -636,11 +660,15 @@ fn read_no_follow(path: &Path, ceiling: u64) -> Result<Vec<u8>, BlobReadError> {
     read_capped(file, ceiling)
 }
 
-/// Windows: opened AFTER the reparse-point check (the documented §5.3
-/// discipline — the check is the guard, the open follows it).
+/// Windows (P2a audit H-1): the open is reparse-safe AND handle-verified —
+/// `CreateFileW` with `FILE_FLAG_OPEN_REPARSE_POINT` never FOLLOWS a reparse
+/// point swapped in after the path validation, the OPENED handle's metadata
+/// and final path are verified against the canonical store root before a
+/// single byte is read. A path-only check cannot close that TOCTOU; the
+/// handle verification does.
 #[cfg(windows)]
-fn read_no_follow(path: &Path, ceiling: u64) -> Result<Vec<u8>, BlobReadError> {
-    let file = fs::File::open(path).map_err(|e| AttachmentStoreError::io("open-blob")(e))?;
+fn read_no_follow(path: &Path, ceiling: u64, root: &Path) -> Result<Vec<u8>, BlobReadError> {
+    let file = windows_safe_open::open_verified_file(path, root)?;
     read_capped(file, ceiling)
 }
 
@@ -657,6 +685,149 @@ fn read_capped(file: fs::File, ceiling: u64) -> Result<Vec<u8>, BlobReadError> {
         return Err(BlobReadError::Tampered);
     }
     Ok(bytes)
+}
+
+// ── Windows reparse-safe open (audit H-1): CreateFileW with
+// FILE_FLAG_OPEN_REPARSE_POINT + handle-side reparse/final-path
+// verification, the nano-sandbox acl.rs pinned-handle pattern. ─────────────
+
+#[cfg(windows)]
+mod windows_safe_open {
+    use super::AttachmentStoreError;
+    use super::BlobReadError;
+    use std::fs;
+    use std::path::Path;
+    use std::path::PathBuf;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
+    use windows_sys::Win32::Storage::FileSystem::CreateFileW;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
+    use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+    use windows_sys::Win32::Storage::FileSystem::OPEN_EXISTING;
+
+    fn to_wide(path: &Path) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    /// Open `path` without following a final-component reparse point, then
+    /// prove from the OPENED HANDLE (never the path) that it is a plain
+    /// non-reparse file whose final path stays beneath the canonical store
+    /// `root`. Every failure fails closed.
+    pub fn open_verified_file(path: &Path, root: &Path) -> Result<fs::File, BlobReadError> {
+        let wide = to_wide(path);
+        // Safety: `wide` is NUL-terminated and outlives the call; the
+        // returned handle is either invalid (the error path) or ownership
+        // moves into the `File` below (closed on drop).
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                FILE_GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                0,
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(
+                AttachmentStoreError::io("open-blob")(std::io::Error::last_os_error()).into(),
+            );
+        }
+        if let Err(err) = verify_handle(handle, root) {
+            // Safety: the handle is valid and not yet owned by a File.
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Err(err);
+        }
+        // Safety: the handle is a valid, verified open file handle; the
+        // File takes ownership and closes it on drop.
+        use std::os::windows::io::FromRawHandle as _;
+        Ok(unsafe { fs::File::from_raw_handle(handle as *mut std::ffi::c_void) })
+    }
+
+    /// Handle-side verification: reparse metadata is read from the OPENED
+    /// handle (a junction/symlink swapped in after validation was opened AS
+    /// a reparse point — the open flag never follows one — and is rejected
+    /// here), and the handle's final path must stay beneath the canonical
+    /// root (a swapped INTERMEDIATE component — e.g. a junctioned fanout
+    /// dir, which the open flag does not cover — lands the handle outside
+    /// the store and is rejected here).
+    fn verify_handle(handle: HANDLE, root: &Path) -> Result<(), BlobReadError> {
+        // Safety: `handle` is a valid open file handle; `info` is a plain
+        // out struct.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+            return Err(AttachmentStoreError::io("stat-opened-blob")(
+                std::io::Error::last_os_error(),
+            )
+            .into());
+        }
+        if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(AttachmentStoreError::ReparsePoint("blob-opened").into());
+        }
+        let final_path = final_path_for_handle(handle)?;
+        if !beneath_root(&final_path, root) {
+            return Err(AttachmentStoreError::ReparsePoint("blob-escapes-store").into());
+        }
+        Ok(())
+    }
+
+    /// The handle's final path (the nano-sandbox acl.rs:1158 pattern).
+    fn final_path_for_handle(handle: HANDLE) -> Result<PathBuf, BlobReadError> {
+        // Safety: `handle` is valid; the sizing call writes nothing.
+        let needed = unsafe { GetFinalPathNameByHandleW(handle, std::ptr::null_mut(), 0, 0) };
+        if needed == 0 {
+            return Err(AttachmentStoreError::io("final-path-blob")(
+                std::io::Error::last_os_error(),
+            )
+            .into());
+        }
+        let mut buffer = vec![0u16; needed as usize + 1];
+        // Safety: `buffer` is `needed + 1` wide chars, writable.
+        let written = unsafe {
+            GetFinalPathNameByHandleW(handle, buffer.as_mut_ptr(), buffer.len() as u32, 0)
+        };
+        if written == 0 || written as usize >= buffer.len() {
+            return Err(AttachmentStoreError::io("final-path-blob")(
+                std::io::Error::last_os_error(),
+            )
+            .into());
+        }
+        use std::os::windows::ffi::OsStringExt as _;
+        Ok(PathBuf::from(std::ffi::OsString::from_wide(
+            &buffer[..written as usize],
+        )))
+    }
+
+    /// Case-insensitive beneath-root check on two `\\?\`-style absolute
+    /// paths (both GetFinalPathNameByHandleW and canonicalize produce
+    /// them). The separator-boundary check makes `root-evil` a non-match.
+    fn beneath_root(final_path: &Path, root: &Path) -> bool {
+        fn normalize(path: &Path) -> String {
+            path.as_os_str()
+                .to_string_lossy()
+                .replace('/', "\\")
+                .trim_end_matches('\\')
+                .to_lowercase()
+        }
+        let final_norm = normalize(final_path);
+        let root_norm = normalize(root);
+        final_norm == root_norm || final_norm.starts_with(&format!("{root_norm}\\"))
+    }
 }
 
 // ── Windows ACL (§5.5): explicit current-user-only ACL at creation +
@@ -1080,6 +1251,89 @@ mod tests {
         fs::remove_file(&fanout).unwrap(); // a symlink is removed as a file
         fs::rename(&saved, &fanout).unwrap();
         assert_eq!(store.read_verified(&digest).unwrap(), b"payload");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Audit H-1 regression: a same-user process swaps a store component
+    /// BETWEEN validation and open (the test hook fires in exactly that
+    /// window). The read must fail closed from the OPENED HANDLE's
+    /// evidence, never return the outside bytes:
+    /// - Windows: the fanout dir is swapped for a junction; the handle's
+    ///   final path lands outside the canonical store root → ReparsePoint;
+    /// - unix: the blob itself is swapped for a symlink; the O_NOFOLLOW
+    ///   open refuses it.
+    #[test]
+    fn swap_between_validate_and_open_fails_closed() {
+        let home = test_home("toctou");
+        let store = AttachmentStore::open(&home).unwrap();
+        let lease = store.acquire_write_lease().unwrap();
+        let digest = store.put(&lease, b"payload").unwrap();
+        drop(lease);
+        let outside = home.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join(&digest), b"outside-bytes").unwrap();
+
+        #[cfg(windows)]
+        {
+            let fanout = store.root().join("blobs").join(&digest[..2]);
+            let saved = home.join("fanout-saved");
+            let saved_hook = saved.clone();
+            let linked = std::rc::Rc::new(std::cell::Cell::new(true));
+            let linked_hook = linked.clone();
+            let outside_hook = outside.clone();
+            let fanout_hook = fanout.clone();
+            PRE_OPEN_HOOK.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    fs::rename(&fanout_hook, &saved_hook).unwrap();
+                    if !make_dir_link(&fanout_hook, &outside_hook) {
+                        linked_hook.set(false);
+                    }
+                }));
+            });
+            let result = store.read_verified(&digest);
+            if !linked.get() {
+                eprintln!(
+                    "LOUD SKIP: host refused junction creation (no developer mode/admin) — \
+                     swap-between-validate-and-open scenario cannot run here"
+                );
+                return;
+            }
+            let err = result.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    BlobReadError::Store(AttachmentStoreError::ReparsePoint(_))
+                ),
+                "a fanout junction swapped in after validation must be rejected \
+                 from the opened handle, got {err:?}"
+            );
+            assert_eq!(err.kind(), NanoErrorKind::AttachmentStoreError);
+            // Restore the layout: the legitimate path still works.
+            fs::remove_dir(&fanout).unwrap(); // junctions are removed as directories
+            fs::rename(&saved, &fanout).unwrap();
+            assert_eq!(store.read_verified(&digest).unwrap(), b"payload");
+        }
+        #[cfg(unix)]
+        {
+            let blob = store.root().join("blobs").join(&digest[..2]).join(&digest);
+            let outside_blob = outside.join(&digest);
+            let blob_hook = blob.clone();
+            PRE_OPEN_HOOK.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    fs::remove_file(&blob_hook).unwrap();
+                    std::os::unix::fs::symlink(&outside_blob, &blob_hook).unwrap();
+                }));
+            });
+            let err = store.read_verified(&digest).unwrap_err();
+            assert!(
+                matches!(err, BlobReadError::Store(AttachmentStoreError::Io { .. })),
+                "a blob swapped for a symlink must fail the O_NOFOLLOW open, got {err:?}"
+            );
+            // Restore the legitimate blob: the honest path still works.
+            fs::remove_file(&blob).unwrap();
+            fs::write(&blob, b"payload").unwrap();
+            assert_eq!(store.read_verified(&digest).unwrap(), b"payload");
+        }
         let _ = fs::remove_dir_all(&home);
     }
 
