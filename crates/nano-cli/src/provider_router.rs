@@ -28,6 +28,16 @@ pub const KIND_PROVIDER_KEY_MISSING: &str = "provider_key_missing";
 pub const KIND_PROVIDER_UNPROVEN: &str = "provider_unproven";
 pub const KIND_OAUTH_EXPIRED: &str = "oauth_expired";
 pub const KIND_PAYLOAD_INVALID: &str = "payload_invalid";
+/// P5 §1 step 5: NOTHING routable resolves a credential — distinct from the
+/// §5 capability-empty refusal (different kind, different remedy: configure
+/// a credential). The integrator folds this constant into C7's
+/// `nano-protocol/src/error_codes.rs` at merge, like the rows above.
+pub const KIND_NO_CREDENTIAL: &str = "no_credential";
+/// P5 §5: capability filtering left NO admissible candidate (unknown
+/// capability equals false) — distinct from `no_credential` (the remedy is
+/// changing the turn's requirements or proving a leaf, not configuring a
+/// credential). Same integrator-fold rule as `KIND_NO_CREDENTIAL`.
+pub const KIND_CAPABILITY_EMPTY: &str = "capability_empty";
 
 /// Payload limits (§5 invariants; Desktop bounds its emission identically).
 pub const MAX_PAYLOAD_BYTES: usize = 32 * 1024;
@@ -98,6 +108,33 @@ impl ProviderError {
         }
     }
 
+    /// P5 §1 step 5: the typed no-credential failure — env-var NAMES only,
+    /// never values (the startup `no_credential_message` discipline).
+    pub fn no_credential(env_names: &str) -> Self {
+        Self {
+            kind: KIND_NO_CREDENTIAL,
+            message: format!(
+                "no_credential: no routable provider resolves a usable credential — set one of: {env_names}"
+            ),
+            retryable: false,
+            hint: None,
+        }
+    }
+
+    /// P5 §5: the capability-empty refusal — filtering left no admissible
+    /// candidate for the turn's requirements. Names the requirement CLASS
+    /// (images/tools), never content.
+    pub fn capability_empty(requirement: &'static str) -> Self {
+        Self {
+            kind: KIND_CAPABILITY_EMPTY,
+            message: format!(
+                "capability_empty: no admitted candidate can prove {requirement} support (unknown capability is false; nothing was dispatched)"
+            ),
+            retryable: false,
+            hint: None,
+        }
+    }
+
     /// Serialize as the ACP error frame: -32602 + `error.data` per C7 D2.
     pub fn acp_response(&self, id: serde_json::Value) -> JsonRpcResponse {
         let mut data = serde_json::json!({
@@ -149,6 +186,12 @@ impl ProviderRouter {
 
     fn is_proven(&self, spec: &ProviderSpec) -> bool {
         spec.proven || self.proven_overrides.contains(spec.id)
+    }
+
+    /// P5 §3: the live-proof gate by provider id (candidate construction
+    /// gates proven-ness at selection time). Unknown ids are unproven.
+    pub fn is_provider_proven(&self, provider: &str) -> bool {
+        provider_by_id(provider).is_some_and(|spec| self.is_proven(spec))
     }
 
     /// Parse + validate the raw `WAYLAND_NANO_PROVIDERS` value. `None` (env
@@ -353,6 +396,7 @@ impl ProviderRouter {
                             base_url: spec.base_url.to_string(),
                             api_path: spec.api_path.to_string(),
                             credential: Credential::Key(key),
+                            retry: None,
                         })
                     }
                     None => Err(ProviderError::provider_key_missing(spec)),
@@ -378,6 +422,7 @@ impl ProviderRouter {
                         base_url: spec.base_url.to_string(),
                         api_path: spec.api_path.to_string(),
                         credential,
+                        retry: None,
                     }),
                     CredentialResolution::ExpiredBearer => Err(ProviderError::oauth_expired(spec)),
                     CredentialResolution::Absent => Err(ProviderError::provider_key_missing(spec)),
@@ -408,15 +453,33 @@ impl ProviderRouter {
             .collect()
     }
 
+    /// P5 §1 step 4 / §3: the credential bootstrap PLUS the live-proof gate
+    /// at SELECTION time — the corrected startup fallback and the Auto
+    /// candidate constructor both exclude advertised, credentialed but
+    /// unproven providers HERE, never after selection (today's
+    /// `credentialed_providers` omits the gate and defers the unproven
+    /// rejection to binding time; P5 fixes that rather than inheriting it).
+    pub fn credentialed_proven_providers(
+        &self,
+        get_env: &dyn Fn(&str) -> Option<String>,
+        now_unix_secs: u64,
+    ) -> Vec<&PayloadProvider> {
+        self.credentialed_providers(get_env, now_unix_secs)
+            .into_iter()
+            .filter(|p| self.is_proven(p.spec))
+            .collect()
+    }
+
     /// The deterministic initial binding when Flux has no credential: the
-    /// first credentialed provider in catalog-table order, bound to its
-    /// first advertised model in payload order (B2).
+    /// first credentialed AND live-proven provider in catalog-table order,
+    /// bound to its first advertised model in payload order (B2 + the P5
+    /// §1 step-4 proven gate).
     pub fn initial_non_flux_model(
         &self,
         get_env: &dyn Fn(&str) -> Option<String>,
         now_unix_secs: u64,
     ) -> Option<String> {
-        self.credentialed_providers(get_env, now_unix_secs)
+        self.credentialed_proven_providers(get_env, now_unix_secs)
             .first()
             .map(|p| format!("{}:{}", p.spec.id, p.models[0]))
     }
@@ -442,14 +505,20 @@ impl ProviderRouter {
     /// only, never values. Returned when NO advertised provider — Flux
     /// included — resolves a credential.
     pub fn no_credential_message(&self) -> String {
+        format!(
+            "no usable provider credential: set FLUX_API_KEY (or FLUX_API_KEY_FILE), or have the host inject one of: {}",
+            self.no_credential_env_names().join(", ")
+        )
+    }
+
+    /// P5 §1 step 5: the env-var NAMES for the typed `no_credential` error
+    /// (names only, never values).
+    pub fn no_credential_env_names(&self) -> Vec<String> {
         let mut names = vec!["FLUX_API_KEY".to_string(), "FLUX_API_KEY_FILE".to_string()];
         for provider in &self.providers {
             names.push(provider.spec.env_var.to_string());
         }
-        format!(
-            "no usable provider credential: set FLUX_API_KEY (or FLUX_API_KEY_FILE), or have the host inject one of: {}",
-            names.join(", ")
-        )
+        names
     }
 }
 
@@ -473,6 +542,19 @@ pub struct ProviderBinding {
     pub base_url: String,
     pub api_path: String,
     pub credential: Credential,
+    /// P5 §4: Auto-ladder candidates dispatch with a single physical
+    /// attempt (`RetryConfig::single_attempt`) so every attempt is visible
+    /// to the ladder's global budget. `None` = the client's default retry
+    /// posture (pins and implicit passthrough turns, unchanged).
+    pub retry: Option<nano_model::retry::RetryConfig>,
+}
+
+impl ProviderBinding {
+    /// P5: the ladder-candidate posture (single physical attempt).
+    pub fn with_single_attempt(mut self) -> Self {
+        self.retry = Some(nano_model::retry::RetryConfig::single_attempt());
+        self
+    }
 }
 
 impl ProviderBinding {

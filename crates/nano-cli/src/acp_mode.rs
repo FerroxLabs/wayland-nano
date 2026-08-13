@@ -135,6 +135,16 @@ struct Session {
     /// against the advertised catalog). The next turn's model request carries
     /// exactly this id.
     model: String,
+    /// P5 §1: how the current model reference came to be — true only after
+    /// an explicit `session/set_model` pin in THIS process (the journal does
+    /// not persist the pick, so a loaded session restarts on the default:
+    /// implicit or configured). Pins are terminal and never enter the Auto
+    /// ladder; precedence lives in `auto_routing::resolve_routing`.
+    model_explicit: bool,
+    /// P5 §4.1: a kill-interrupted Auto turn's replayed ladder state
+    /// (journaled snapshot + remaining budget), consumed by the next
+    /// prompt's routing — resume replays, never rediscovers.
+    pending_auto_resume: Option<crate::auto_routing::ResumedLadder>,
     /// The session's permission mode (C2) — a SHARED cell, not a plain
     /// field, so a mid-turn session/set_mode de-escalation is observed by
     /// the running turn's very next approval check (the gate computes
@@ -463,11 +473,17 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         eprintln!("wayland-nano: {diag}");
     }
     let credentialed = router.credentialed_providers(&env_reader, now);
+    // P5 §1 step 4 / §3: the startup gate and the deterministic fallback
+    // count only LIVE-PROVEN credentialed providers (the proven gate moves
+    // from binding time to selection time). A host whose only credentialed
+    // providers are unproven fails loudly with the no-credential message
+    // instead of starting on an undispatchable default.
+    let routable = router.credentialed_proven_providers(&env_reader, now);
     // B2 startup semantics (replaces the Flux-only exit-2 gate): start iff
     // AT LEAST ONE advertised provider has a usable credential. Per-provider
     // credential failures NEVER abort startup — they surface at set_model /
     // dispatch as typed errors.
-    if flux_key.is_none() && credentialed.is_empty() {
+    if flux_key.is_none() && routable.is_empty() {
         eprintln!("wayland-nano: {}", router.no_credential_message());
         return Ok(2);
     }
@@ -529,13 +545,55 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     // Q2, human-friendly display names).
     let mut available = available;
     available.extend(router.advertised_models());
-    // B2: the deterministic initial binding. Flux when its credential
-    // resolves (back-compat with every existing flow); otherwise the first
-    // credentialed provider in catalog-table order, bound to its first
-    // advertised model in payload order.
-    let default_model: String = router
-        .initial_model(flux_key.as_deref(), &env_reader, now)
-        .expect("B2 gate passed: a credentialed advertised provider exists");
+    // P5 §1: the routing control surface — the explicit Auto opt-in
+    // (NANO_ROUTING_AUTO, absent = false) and the configured default pin
+    // (NANO_DEFAULT_MODEL). Malformed values are typed config errors, never
+    // silent defaults (the parse_env_u64 discipline below).
+    let auto_opt_in = match crate::auto_routing::parse_auto_opt_in(
+        std::env::var(crate::auto_routing::AUTO_ROUTING_ENV).ok(),
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("wayland-nano: {err}");
+            return Ok(2);
+        }
+    };
+    let configured_default = match crate::auto_routing::parse_configured_default(
+        std::env::var(crate::auto_routing::DEFAULT_MODEL_ENV).ok(),
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("wayland-nano: {err}");
+            return Ok(2);
+        }
+    };
+    // A configured default is a PIN (§1 step 2): validate it against the
+    // advertised set at startup — a misconfigured default fails loudly here,
+    // never silently reroutes to `flux-auto` or the fallback.
+    if let Some(default) = &configured_default
+        && !available.iter().any(|m| m.id == *default)
+    {
+        eprintln!(
+            "wayland-nano: {}: {default} is not in the advertised catalog",
+            crate::auto_routing::DEFAULT_MODEL_ENV
+        );
+        return Ok(2);
+    }
+    let routing_config = crate::auto_routing::RoutingConfig {
+        auto_opt_in,
+        configured_default,
+    };
+    // B2: the deterministic initial binding. A configured default PIN wins
+    // (P5 §1 step 2); otherwise Flux when its credential resolves
+    // (back-compat with every existing flow); otherwise the first
+    // credentialed AND proven provider in catalog-table order, bound to its
+    // first advertised model in payload order.
+    let default_model: String = match &routing_config.configured_default {
+        Some(default) => default.clone(),
+        None => router
+            .initial_model(flux_key.as_deref(), &env_reader, now)
+            .expect("B2 gate passed: a credentialed proven provider exists"),
+    };
     // C1 config overrides (env is the only config channel that exists).
     // Both are DOWNWARD-ONLY; a non-numeric value is a typed config error,
     // not a silent ignore.
@@ -578,19 +636,31 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     let driver_policy = policy.clone();
     let make_driver = move |binding: &crate::provider_router::ProviderBinding| {
         let egress = EgressClient::new(driver_policy.clone());
+        // P5 §4: Auto-ladder candidates carry `RetryConfig::single_attempt`
+        // on the binding so every physical attempt counts against the
+        // ladder's global budget; pins/implicit turns keep the default
+        // retry posture (`binding.retry == None`).
         match binding.wire {
-            WireKind::OpenAiCompletions => ProviderDriver::openai(
-                FluxCompletionsClient::new(egress)
+            WireKind::OpenAiCompletions => {
+                let client = FluxCompletionsClient::new(egress)
                     .with_base_url(binding.base_url.clone())
-                    .with_api_path(binding.api_path.clone()),
-                binding.credential.secret().to_string(),
-            ),
-            WireKind::AnthropicMessages => ProviderDriver::anthropic(
-                AnthropicMessagesClient::new(egress)
+                    .with_api_path(binding.api_path.clone());
+                let client = match &binding.retry {
+                    Some(retry) => client.with_retry_config(retry.clone()),
+                    None => client,
+                };
+                ProviderDriver::openai(client, binding.credential.secret().to_string())
+            }
+            WireKind::AnthropicMessages => {
+                let client = AnthropicMessagesClient::new(egress)
                     .with_base_url(binding.base_url.clone())
-                    .with_api_path(binding.api_path.clone()),
-                binding.credential.secret().to_string(),
-            ),
+                    .with_api_path(binding.api_path.clone());
+                let client = match &binding.retry {
+                    Some(retry) => client.with_retry_config(retry.clone()),
+                    None => client,
+                };
+                ProviderDriver::anthropic(client, binding.credential.secret().to_string())
+            }
         }
     };
     // P1: web_search — the key-gated ladder, resolved ONCE at host start
@@ -782,6 +852,7 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         budget_cap,
         vision_catalog: &vision_catalog,
         attachment_home: nano_home,
+        routing: &routing_config,
     };
     serve(reader, writer, &config, make_driver, make_tools).await
 }
@@ -937,6 +1008,11 @@ pub struct ServeConfig<'a> {
     /// A's `AttachmentStore::open`). Opened lazily at intake/resume — open
     /// carries the §5.5 permission audit, fail-closed.
     pub attachment_home: &'a std::path::Path,
+    /// P5 §1: the routing control surface — the explicit Auto opt-in
+    /// (`NANO_ROUTING_AUTO`, absent = false) and the configured default pin
+    /// (`NANO_DEFAULT_MODEL`). Production parses both with typed config
+    /// errors; tests default to the fail-closed posture.
+    pub routing: &'a crate::auto_routing::RoutingConfig,
 }
 
 /// C5 memory wiring for the ACP host.
@@ -1339,6 +1415,10 @@ where
                                 turn_counter: 0,
                                 context,
                                 model: config.default_model.to_string(),
+                                // P5: a fresh session starts on the default
+                                // (implicit or configured) — never a pin.
+                                model_explicit: false,
+                                pending_auto_resume: None,
                                 mode: mode_cell,
                                 plan,
                                 todos,
@@ -1568,6 +1648,42 @@ where
                             // re-injected as a bounded block on rebuild. P1:
                             // ONE fold also feeds the meter reseed below.
                             let folded = SessionState::fold(&report.envelopes);
+                            // P5 §4.1: reconcile a kill-interrupted routed
+                            // turn BEFORE anything else — every in-flight
+                            // attempt is consumed against the budget and
+                            // charged the §3.5 estimate (journaled
+                            // ConsumedInflight receipts; never free),
+                            // fail-closed on append error. The replayed
+                            // ladder state feeds the next prompt's resume —
+                            // replay, never rediscovery.
+                            let mut pending_auto_resume = None;
+                            if let Some(open) = &folded.open_turn
+                                && let Some(turn_routing) = folded.routing.get(&open.turn_id)
+                                && turn_routing.snapshot.is_some()
+                            {
+                                let sink = crate::auto_routing::CoordinatorRoutingSink(
+                                    coordinator.clone(),
+                                );
+                                if let Err(err) = crate::auto_routing::reconcile_interrupted(
+                                    &sink,
+                                    &open.turn_id,
+                                    turn_routing,
+                                    &open.input,
+                                ) {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            NanoErrorKind::JournalUnavailable,
+                                            format!("cannot reconcile interrupted routing: {err}"),
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                                pending_auto_resume =
+                                    crate::auto_routing::plan_resume(turn_routing);
+                            }
                             // P3 §3.4: the reconnect digest gate — hydrated
                             // sets re-apply only on a canonical-digest match;
                             // mismatches drop with a typed notice, and the
@@ -1659,6 +1775,11 @@ where
                                 // Follow-up: journal an Op::SetModel so a resume
                                 // restores the user's choice.
                                 model: config.default_model.to_string(),
+                                // P5: a loaded session restarts on the
+                                // default (implicit or configured) — a prior
+                                // set_model pin does not survive a reload.
+                                model_explicit: false,
+                                pending_auto_resume,
                                 // C2 (panel ruling Q5): the mode is NEVER
                                 // restored from the journal — a resumed
                                 // session starts in `default`; ModeSet ops
@@ -1760,6 +1881,10 @@ where
                                 continue;
                             }
                             active.model = model_id.to_string();
+                            // P5 §1: an explicit session pin (terminal; never
+                            // enters the Auto ladder, even when the pin names
+                            // `flux-auto` and the Auto opt-in is set).
+                            active.model_explicit = true;
                             write_out(
                                 &out,
                                 &JsonRpcResponse::ok(
@@ -2321,29 +2446,459 @@ where
                             // The session's current model (set via
                             // session/set_model) is captured NOW: the whole
                             // turn runs on it, and a later switch only takes
-                            // effect on the next prompt. C8: resolve the
-                            // provider binding (credential re-resolution +
-                            // bearer freshness) BEFORE the turn starts — a
-                            // vanished key or an expired bearer fails the
-                            // prompt with the typed error, never a
-                            // half-authed turn.
+                            // effect on the next prompt.
+                            // P5 §1: resolve the routing mode for this turn —
+                            // explicit session pin > configured default pin >
+                            // explicit Auto opt-in > implicit alias
+                            // passthrough. Pins are TERMINAL: typed binding
+                            // failures never fall through to `flux-auto`, the
+                            // fallback, or the ladder.
                             let turn_model = active.model.clone();
                             let env_reader = |name: &str| std::env::var(name).ok();
-                            let binding = match config.router.resolve_binding(
+                            let routing_sink =
+                                crate::auto_routing::CoordinatorRoutingSink(
+                                    turn_coordinator.clone(),
+                                );
+                            // P5 §4.1: a kill-interrupted Auto turn's replayed
+                            // ladder state is consumed by THIS prompt (resume
+                            // replays, never rediscovers; a non-Auto turn
+                            // discards it — the journaled record remains).
+                            let pending_resume = active.pending_auto_resume.take();
+                            let model_source = if active.model_explicit {
+                                crate::auto_routing::ModelSource::ExplicitPin
+                            } else if config.routing.configured_default.is_some() {
+                                crate::auto_routing::ModelSource::ConfiguredDefault
+                            } else {
+                                crate::auto_routing::ModelSource::ImplicitDefault
+                            };
+                            let routing = crate::auto_routing::resolve_routing(
+                                model_source,
                                 &turn_model,
-                                &env_reader,
-                                unix_now_secs(),
-                            ) {
-                                Ok(binding) => binding,
-                                Err(err) => {
+                                config.routing.auto_opt_in,
+                            );
+                            // (driver, wire model id, pricing provider,
+                            // anthropic-wire flag) — computed per mode.
+                            let (prompt_driver, turn_wire_model, meter_provider, anthropic_wire): (
+                                crate::auto_routing::PromptDriver<D>,
+                                String,
+                                String,
+                                bool,
+                            ) = if routing.mode != nano_session::RoutingMode::AutoClientSide {
+                                // P5 §3/§8.1: the routing snapshot (with
+                                // `routing_mode`) is durable BEFORE the
+                                // binding is even resolved — a terminal pin
+                                // failure leaves the audit trail, and no
+                                // dispatch ever precedes the journal.
+                                if !crate::auto_routing::journal_snapshot(
+                                    &routing_sink,
+                                    &turn_id,
+                                    routing.mode,
+                                    &routing.reference,
+                                    crate::auto_routing::pin_snapshot_candidates(
+                                        &routing.reference,
+                                    ),
+                                    crate::auto_routing::pin_snapshot_digest(
+                                        config.router,
+                                        &routing.reference,
+                                    ),
+                                ) {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            NanoErrorKind::JournalUnavailable,
+                                            "cannot journal the routing snapshot",
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                                // C8: resolve the provider binding
+                                // (credential re-resolution + bearer
+                                // freshness) BEFORE the turn starts — a
+                                // vanished key or an expired bearer fails
+                                // the prompt with the typed error, never a
+                                // half-authed turn. P5: the failure is
+                                // TERMINAL — no fall-through to flux-auto,
+                                // the fallback, or the ladder.
+                                let binding = match config.router.resolve_binding(
+                                    &turn_model,
+                                    &env_reader,
+                                    unix_now_secs(),
+                                ) {
+                                    Ok(binding) => binding,
+                                    Err(err) => {
+                                        write_out(&out, &err.acp_response(id))?;
+                                        continue;
+                                    }
+                                };
+                                if let Err(err) = binding.check_fresh(unix_now_secs()) {
                                     write_out(&out, &err.acp_response(id))?;
                                     continue;
                                 }
+                                let anthropic_wire = binding.wire == WireKind::AnthropicMessages;
+                                (
+                                    crate::auto_routing::PromptDriver::Pinned(make_driver(
+                                        &binding,
+                                    )),
+                                    binding.model.clone(),
+                                    binding.provider_id.clone(),
+                                    anthropic_wire,
+                                )
+                            } else {
+                                // §4.1: a resumed turn replays the JOURNALED
+                                // snapshot and remaining budget — never
+                                // re-derived from current state.
+                                let resume_plan = match &pending_resume {
+                                    Some(resume)
+                                        if resume.configured_reference == routing.reference =>
+                                    {
+                                        Some(resume.clone())
+                                    }
+                                    _ => None,
+                                };
+                                // P5 §5/§3: requirements BEFORE selection.
+                                // The ACP turn ALWAYS advertises the v1 tool
+                                // surface (+ memory/tasks/MCP), so every ACP
+                                // turn is tool-bearing; images come from the
+                                // prompt blocks + the assembled context.
+                                let mut requirements = crate::auto_routing::requirements_of(
+                                    turn_input.content_blocks().as_slice(),
+                                    &prior_context,
+                                    &[],
+                                );
+                                requirements.tools = true;
+                                let flux_credentialed =
+                                    crate::flux_key::flux_api_key().is_some();
+                                let (
+                                    snapshot_candidates,
+                                    mut admitted,
+                                    budget,
+                                    resume_exhaustion,
+                                    digest,
+                                ) = match &resume_plan {
+                                    Some(resume) => (
+                                        resume.snapshot_candidates.clone(),
+                                        resume.remaining.clone(),
+                                        resume.budget,
+                                        resume.exhaustion,
+                                        // The REPLAYED digest, never a fresh
+                                        // one (§4.1/§7).
+                                        resume.catalog_digest.clone(),
+                                    ),
+                                    None => {
+                                        let flux_advertised: Vec<String> = config
+                                            .catalog
+                                            .iter()
+                                            .map(|m| m.id.clone())
+                                            .collect();
+                                        let tool_catalog =
+                                            crate::auto_routing::EmptyToolCapabilityCatalog;
+                                        let candidate_inputs =
+                                            crate::auto_routing::CandidateInputs {
+                                                router: config.router,
+                                                get_env: &env_reader,
+                                                now_unix_secs: unix_now_secs(),
+                                                flux_credentialed,
+                                                flux_advertised: &flux_advertised,
+                                                vision: config.vision_catalog,
+                                                tools: &tool_catalog,
+                                                // Q3 (panel, open): no approved-leaf
+                                                // manifest channel exists in v1.
+                                                approved_leaves: &[],
+                                                requirements,
+                                            };
+                                        let plan = crate::auto_routing::construct_candidates(
+                                            &candidate_inputs,
+                                        );
+                                        let digest = crate::auto_routing::snapshot_digest(
+                                            &candidate_inputs,
+                                            &plan,
+                                        );
+                                        (
+                                            plan.candidates.clone(),
+                                            plan.admitted.clone(),
+                                            crate::auto_routing::ATTEMPT_BUDGET,
+                                            None,
+                                            digest,
+                                        )
+                                    }
+                                };
+                                // Resume TIGHTENING (fail-closed, not
+                                // discovery): candidates admitted under the
+                                // killed turn's requirements are re-checked
+                                // against THIS turn's requirements; newly
+                                // inadmissible ones drop with journaled
+                                // rejections.
+                                let mut journal_failed = false;
+                                if resume_plan.is_some() {
+                                    let vision = config.vision_catalog;
+                                    let tools = crate::auto_routing::EmptyToolCapabilityCatalog;
+                                    let mut kept = Vec::new();
+                                    let mut dropped = Vec::new();
+                                    for candidate in admitted {
+                                        let vision_key = match candidate.kind {
+                                            nano_session::CandidateKind::Leaf
+                                                if candidate.provider_id != "flux-router" =>
+                                            {
+                                                format!(
+                                                    "{}:{}",
+                                                    candidate.provider_id, candidate.candidate
+                                                )
+                                            }
+                                            _ => candidate.candidate.clone(),
+                                        };
+                                        let unproven = (requirements.images
+                                            && !vision.image_in(&vision_key))
+                                            || (requirements.tools
+                                                && !crate::auto_routing::ToolCapabilityCatalog::tool_use_proven(
+                                                    &tools,
+                                                    &candidate.provider_id,
+                                                    &candidate.candidate,
+                                                ));
+                                        if unproven {
+                                            dropped.push(candidate);
+                                        } else {
+                                            kept.push(candidate);
+                                        }
+                                    }
+                                    admitted = kept;
+                                    for candidate in dropped {
+                                        let journaled = crate::auto_routing::RoutingSink::append(
+                                            &routing_sink,
+                                            &OpEnvelope::new(
+                                                format!(
+                                                    "{turn_id}-routing-rejected-{}",
+                                                    candidate.ordinal
+                                                ),
+                                                "now",
+                                                Op::RoutingReceipt {
+                                                    turn_id: turn_id.clone(),
+                                                    ordinal: candidate.ordinal,
+                                                    routing_mode: routing.mode,
+                                                    provider: candidate.provider_id.clone(),
+                                                    configured_reference: routing.reference.clone(),
+                                                    candidate: candidate.candidate.clone(),
+                                                    outcome: nano_session::RoutingOutcome::Rejected,
+                                                    failure: None,
+                                                    status: None,
+                                                    attempts_consumed: 0,
+                                                    selected: false,
+                                                    response_model: None,
+                                                    leaf_identity:
+                                                        nano_session::LeafProvenance::Absent,
+                                                    usage: None,
+                                                    exhaustion: None,
+                                                    rejection: Some(
+                                                        nano_session::CandidateRejection::CapabilityUnproven,
+                                                    ),
+                                                },
+                                            ),
+                                        );
+                                        if !journaled {
+                                            journal_failed = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if journal_failed {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            NanoErrorKind::JournalUnavailable,
+                                            "cannot journal the routing receipt",
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                                if !crate::auto_routing::journal_snapshot(
+                                    &routing_sink,
+                                    &turn_id,
+                                    routing.mode,
+                                    &routing.reference,
+                                    snapshot_candidates,
+                                    digest,
+                                ) {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            NanoErrorKind::JournalUnavailable,
+                                            "cannot journal the routing snapshot",
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                                if let Some((_kind, failure, status)) = resume_exhaustion {
+                                    // The ladder had spent itself at kill
+                                    // time: report the JOURNALED exhaustion
+                                    // outcome — no dispatch, no rediscovery.
+                                    let class = failure
+                                        .unwrap_or(nano_session::RoutingFailureClass::Unknown);
+                                    let model_error =
+                                        crate::auto_routing::model_error_of_failure_class(
+                                            class, status,
+                                        );
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            nano_agent::error_map::kind_of_model(&model_error),
+                                            "auto routing: the interrupted turn's attempt budget is exhausted (journaled)",
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                                if admitted.is_empty() {
+                                    // §5/§3: capability filtering left no
+                                    // admissible candidate — the typed
+                                    // capability-empty refusal (DISTINCT from
+                                    // no_credential) before any transmission.
+                                    let err = if flux_credentialed {
+                                        crate::provider_router::ProviderError::capability_empty(
+                                            if requirements.tools {
+                                                "tool-use"
+                                            } else {
+                                                "image_in"
+                                            },
+                                        )
+                                    } else {
+                                        crate::provider_router::ProviderError::no_credential(
+                                            &config.router.no_credential_env_names().join(", "),
+                                        )
+                                    };
+                                    write_out(&out, &err.acp_response(id))?;
+                                    continue;
+                                }
+                                // Bind the admitted candidates: credentials
+                                // re-resolved per candidate, bearers freshness-
+                                // checked, single-attempt retry posture (§4).
+                                // A candidate whose binding fails is REJECTED
+                                // (journaled), never silently substituted.
+                                let mut ladder_candidates = Vec::new();
+                                let mut journal_failed = false;
+                                for admitted_candidate in &admitted {
+                                    let bound = config
+                                        .router
+                                        .resolve_binding(
+                                            &admitted_candidate.reference,
+                                            &env_reader,
+                                            unix_now_secs(),
+                                        )
+                                        .and_then(|binding| {
+                                            binding.check_fresh(unix_now_secs())?;
+                                            Ok(binding)
+                                        });
+                                    match bound {
+                                        Ok(binding) => {
+                                            let driver =
+                                                make_driver(&binding.with_single_attempt());
+                                            ladder_candidates.push(
+                                                crate::auto_routing::LadderCandidate {
+                                                    plan: admitted_candidate.clone(),
+                                                    transport:
+                                                        crate::auto_routing::DriverTransport(
+                                                            driver,
+                                                        ),
+                                                },
+                                            );
+                                        }
+                                        Err(err) => {
+                                            let rejection = if err.kind
+                                                == crate::provider_router::KIND_PROVIDER_UNPROVEN
+                                            {
+                                                nano_session::CandidateRejection::ProviderUnproven
+                                            } else {
+                                                nano_session::CandidateRejection::ProviderUncredentialed
+                                            };
+                                            let journaled = crate::auto_routing::RoutingSink::append(
+                                                &routing_sink,
+                                                &OpEnvelope::new(
+                                                format!(
+                                                    "{turn_id}-routing-rejected-{}",
+                                                    admitted_candidate.ordinal
+                                                ),
+                                                "now",
+                                                Op::RoutingReceipt {
+                                                    turn_id: turn_id.clone(),
+                                                    ordinal: admitted_candidate.ordinal,
+                                                    routing_mode: routing.mode,
+                                                    provider: admitted_candidate
+                                                        .provider_id
+                                                        .clone(),
+                                                    configured_reference: routing
+                                                        .reference
+                                                        .clone(),
+                                                    candidate: admitted_candidate
+                                                        .candidate
+                                                        .clone(),
+                                                    outcome: nano_session::RoutingOutcome::Rejected,
+                                                    failure: None,
+                                                    status: None,
+                                                    attempts_consumed: 0,
+                                                    selected: false,
+                                                    response_model: None,
+                                                    leaf_identity:
+                                                        nano_session::LeafProvenance::Absent,
+                                                    usage: None,
+                                                    exhaustion: None,
+                                                    rejection: Some(rejection),
+                                                },
+                                            ),
+                                        );
+                                            if !journaled {
+                                                journal_failed = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                if journal_failed {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            NanoErrorKind::JournalUnavailable,
+                                            "cannot journal the routing receipt",
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                                if ladder_candidates.is_empty() {
+                                    let err =
+                                        crate::provider_router::ProviderError::no_credential(
+                                            &config.router.no_credential_env_names().join(", "),
+                                        );
+                                    write_out(&out, &err.acp_response(id))?;
+                                    continue;
+                                }
+                                let ladder = crate::auto_routing::Ladder::new(
+                                    &turn_id,
+                                    routing.mode,
+                                    &routing.reference,
+                                    ladder_candidates,
+                                    Arc::new(routing_sink),
+                                    config.pricing.clone(),
+                                    // §6: the alias-identity evidence path is
+                                    // NOT established in v1 (§8.2 leg 1).
+                                    false,
+                                    budget,
+                                    0,
+                                );
+                                (
+                                    crate::auto_routing::PromptDriver::Auto(
+                                        crate::auto_routing::AutoDriver::new(ladder),
+                                    ),
+                                    routing.reference.clone(),
+                                    nano_model::provider_catalog::flux_router().id.to_string(),
+                                    false,
+                                )
                             };
-                            if let Err(err) = binding.check_fresh(unix_now_secs()) {
-                                write_out(&out, &err.acp_response(id))?;
-                                continue;
-                            }
                             // The session's MCP registry: the turn executor
                             // routes mcp__ calls through it (and advertises
                             // its tools to the model) without taking ownership.
@@ -2378,11 +2933,14 @@ where
                             // P1 §3.2/§4.2: the session meter, rebound per
                             // turn to the resolved binding's pricing
                             // provider (an absent row prices unpriced —
-                            // honest, never a wrong price).
+                            // honest, never a wrong price). P5: Auto turns
+                            // rebind to the configured reference's provider
+                            // (`flux-router` — the alias rung is unpriced
+                            // per §6 until the leg-1 evidence path holds).
                             let turn_meter = active
                                 .meter
                                 .clone()
-                                .map(|meter| meter.with_provider(&binding.provider_id));
+                                .map(|meter| meter.with_provider(&meter_provider));
                             // C9 §3.2/§3.3: the turn's steer queue, bound to
                             // THIS turn id. The drop closure translates each
                             // still-queued steer at close into exactly one
@@ -2421,7 +2979,6 @@ where
                             let sandbox_probe = config.sandbox_probe;
                             let memory_dir = config.memory.dir.clone();
                             let memory_write = config.memory.write_enabled;
-                            let make_driver = make_driver.clone();
                             let make_tools = &make_tools;
                             // P2a: move the §5.4 GC lease guard (held until
                             // TurnBegin is durably journaled), the §9.1 flag
@@ -2433,11 +2990,15 @@ where
                                 // Held for the turn's lifetime (C11): forks
                                 // and cron fires see typed busy.
                                 let _guard = turn_guard;
-                                // The binding's bare model id goes on the
+                                // P5: the routing arm pre-built the driver —
+                                // a pin/implicit binding's driver or the
+                                // Auto ladder. The bare model id goes on the
                                 // wire (the namespace is a Nano-side routing
-                                // concern, never sent to the provider).
-                                let turn_model = binding.model.clone();
-                                let driver = make_driver(&binding);
+                                // concern, never sent to the provider); the
+                                // ladder rewrites `request.model` per
+                                // candidate (§7: only the selected wire id).
+                                let turn_model = turn_wire_model;
+                                let driver = prompt_driver;
                                 // C10 §6: the live-wire diff hook — a
                                 // successful fs_write/fs_edit forwards its
                                 // structured before/after pair as an ACP
@@ -2486,7 +3047,7 @@ where
                                     }
                                     _ => None,
                                 };
-                                let vision_backed = binding.wire == WireKind::AnthropicMessages
+                                let vision_backed = anthropic_wire
                                     && nano_model::vision_catalog::VisionCatalog::vendored()
                                         .map(|catalog| catalog.image_in(&turn_model))
                                         .unwrap_or(false);

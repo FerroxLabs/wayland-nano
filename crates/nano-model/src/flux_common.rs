@@ -77,6 +77,13 @@ pub fn classify_status(status: u16, body: String) -> ModelError {
         402 => ModelError::Entitlement(message),
         // Kept for spec compliance; live Flux never sends 429 (burst load
         // saturates the edge with bare 503 nginx HTML, no Retry-After).
+        // P5 §4 classifier precedence (conservative wins): a 429 whose body
+        // carries the auth_error marker is an auth failure — terminal, never
+        // rate-limited (same live-wire fold as the 500 arm above).
+        429 if error_type == Some("auth_error") => ModelError::Auth {
+            message,
+            status: Some(429),
+        },
         429 => ModelError::RateLimited {
             retry_after_ms: None,
         },

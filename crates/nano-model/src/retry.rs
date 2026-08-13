@@ -193,6 +193,28 @@ pub struct RetryConfig {
     pub reconnect: ReconnectPolicy,
 }
 
+impl RetryConfig {
+    /// P5 §4: exactly ONE physical attempt, no in-candidate retry — the Auto
+    /// failover ladder's per-candidate posture, so every physical attempt is
+    /// visible to (and countable against) the global three-attempt budget.
+    /// `max_attempts = 0` makes the fast class give up after the first
+    /// failure (the initial attempt always runs; the policy gates RETRIES —
+    /// `decide(0, …)` yields `GiveUp`); `max_retries = 0` makes the
+    /// reconnect class give up before any retry sleep.
+    pub fn single_attempt() -> Self {
+        Self {
+            fast: RetryPolicy {
+                max_attempts: 0,
+                ..RetryPolicy::default()
+            },
+            reconnect: ReconnectPolicy {
+                max_retries: 0,
+                ..ReconnectPolicy::default()
+            },
+        }
+    }
+}
+
 /// A cancel-selectable sleep: returns true when the cancel flag fired
 /// mid-sleep (cancel preempts sleeps — Q2 mandatory). Polls the flag in
 /// small chunks so a fired flag aborts promptly even out of a long wait.
@@ -552,6 +574,7 @@ mod tests {
                         events: Vec::new(),
                         usage: Default::default(),
                         stop_reason: "stop".into(),
+                        model: None,
                     })
                 }
             }
@@ -750,6 +773,7 @@ mod tests {
                         events: Vec::new(),
                         usage: Default::default(),
                         stop_reason: "stop".into(),
+                        model: None,
                     })
                 }
             }

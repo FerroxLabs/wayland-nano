@@ -158,6 +158,10 @@ where
             // P1: cron executors carry no search wiring — the scheduled
             // surface stays the pre-P1 set (fail-closed registration).
             false,
+            // P5: cron fires run the session's resolved model as an implicit
+            // passthrough (the Auto opt-in is a prompt/exec-flag surface; a
+            // scheduled fire never enters the client-side ladder).
+            nano_session::RoutingMode::ImplicitAliasPassthrough,
         )
         .await;
         match outcome.state {

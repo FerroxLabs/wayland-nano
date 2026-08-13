@@ -434,10 +434,18 @@ pub fn parse_message_body(text: &str) -> Result<ModelResponse, ModelError> {
     let usage = parse_usage(value.get("usage"));
     events.push(ModelEvent::Usage(usage.clone()));
 
+    // P5 §6: the provider-reported model id from the terminal frame —
+    // actual-leaf evidence for routing metering, never a client prediction.
+    let model = value
+        .get("model")
+        .and_then(|m| m.as_str())
+        .map(str::to_string);
+
     Ok(ModelResponse {
         events,
         usage,
         stop_reason,
+        model,
     })
 }
 
@@ -483,6 +491,9 @@ pub fn parse_sse_message_stream(text: &str) -> Result<ModelResponse, ModelError>
     let mut output_tokens = 0u64;
     let mut cached_tokens = 0u64;
     let mut stop_reason = "end_turn".to_string();
+    // P5 §6: the provider-reported model id (the message_start shell carries
+    // it) — actual-leaf evidence for routing metering.
+    let mut model: Option<String> = None;
 
     let frames = {
         let mut all = parser.feed(text).map_err(sse_integrity_error)?;
@@ -501,6 +512,13 @@ pub fn parse_sse_message_stream(text: &str) -> Result<ModelResponse, ModelError>
         match event.get("type").and_then(|t| t.as_str()).unwrap_or("") {
             "message_start" => {
                 // Message shell: carries the input token count up front.
+                if let Some(shell_model) = event
+                    .get("message")
+                    .and_then(|m| m.get("model"))
+                    .and_then(|m| m.as_str())
+                {
+                    model = Some(shell_model.to_string());
+                }
                 if let Some(usage) = event.get("message").and_then(|m| m.get("usage")) {
                     input_tokens = usage
                         .get("input_tokens")
@@ -619,5 +637,6 @@ pub fn parse_sse_message_stream(text: &str) -> Result<ModelResponse, ModelError>
         events,
         usage,
         stop_reason,
+        model,
     })
 }

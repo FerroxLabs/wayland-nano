@@ -38,6 +38,9 @@ pub async fn run_exec_with<W, FD, FT, D, T>(
     web_search_backed: bool,
     sandbox_available: bool,
     mcp_specs: &[nano_agent::mcp::McpServerSpec],
+    // P5 §1: the resolved routing decision (journaled per turn; the
+    // auto_client_side fail-closed refusal is handled before any turn runs).
+    routing: &crate::exec_mode::ExecRouting,
     out: W,
 ) -> i32
 where
@@ -91,6 +94,93 @@ where
     };
     let journal_sequence = Arc::new(AtomicU64::new(1));
     let context = crate::acp_mode::messages_from_envelopes(&session.envelopes);
+
+    // P5 §4.1: reconcile a kill-interrupted routed turn — journal the §3.5
+    // estimate receipts for in-flight attempts (a consumed attempt is never
+    // free). Fail-closed: a journal that cannot take the reconciliation
+    // receipt gets no run.
+    if let Some(open) = &session.state.open_turn
+        && let Some(turn_routing) = session.state.routing.get(&open.turn_id)
+        && turn_routing.snapshot.is_some()
+    {
+        let sink = crate::auto_routing::CoordinatorRoutingSink(journal.clone());
+        if let Err(err) = crate::auto_routing::reconcile_interrupted(
+            &sink,
+            &open.turn_id,
+            turn_routing,
+            &open.input,
+        ) {
+            events
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .error(&format!("cannot reconcile interrupted routing: {err}"));
+            return 2;
+        }
+    }
+
+    // P5 §5/§3: the auto_client_side fail-closed refusal. Exec turns always
+    // advertise the v1 tool surface, and the exact-leaf tool-capability
+    // catalog does not exist yet — so no admissible candidates exist and the
+    // turn fails with the typed capability-empty refusal BEFORE any
+    // transmission (journaled: the snapshot carries the rejected rungs).
+    if routing.mode == nano_session::RoutingMode::AutoClientSide {
+        let requirements = crate::auto_routing::requirements_of(
+            &[],
+            &context,
+            &[nano_model::types::ToolDefinition {
+                name: "exec_tool_surface".to_string(),
+                description: "exec always advertises the v1 tool surface".to_string(),
+                input_schema: serde_json::Value::Null,
+            }],
+        );
+        let vision = match nano_model::vision_catalog::VisionCatalog::vendored() {
+            Ok(catalog) => catalog,
+            Err(err) => {
+                eprintln!("wayland-nano: vision catalog unavailable: {err}");
+                return 2;
+            }
+        };
+        let router = crate::provider_router::ProviderRouter::default();
+        let candidate_inputs = crate::auto_routing::CandidateInputs {
+            router: &router,
+            get_env: &|_| None,
+            now_unix_secs: 0,
+            flux_credentialed: true, // run() resolved the Flux key
+            flux_advertised: &[],
+            vision: &vision,
+            tools: &crate::auto_routing::EmptyToolCapabilityCatalog,
+            approved_leaves: &[],
+            requirements,
+        };
+        let plan = crate::auto_routing::construct_candidates(&candidate_inputs);
+        let turn_id = format!("{}-turn-{}", session.session_id, session.turn_counter + 1);
+        let routing_sink = crate::auto_routing::CoordinatorRoutingSink(journal.clone());
+        if !crate::auto_routing::journal_snapshot(
+            &routing_sink,
+            &turn_id,
+            routing.mode,
+            &routing.reference,
+            plan.candidates.clone(),
+            crate::auto_routing::snapshot_digest(&candidate_inputs, &plan),
+        ) {
+            events
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .error("cannot journal the routing snapshot");
+            return 2;
+        }
+        let err = crate::provider_router::ProviderError::capability_empty(if requirements.tools {
+            "tool-use"
+        } else {
+            "image_in"
+        });
+        events
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .error(&nano_egress::redact::sanitize_text(&err.message));
+        // A pre-dispatch routing refusal is a model-class failure (exit 1).
+        return finish_exec(1, &params.output_last_message, "", &events);
+    }
 
     // 3. Executor stack: core tools → cronjob store tool → MCP merge.
     //    (The goal control channel wraps this per-goal below; without a
@@ -206,6 +296,7 @@ where
             &extra_definitions,
             web_search_backed,
             &params.prompt,
+            routing.mode,
         )
         .await;
         let exit = exit_code_for_turn(&outcome.state);
@@ -280,6 +371,7 @@ where
 
     let mut turn_counter = session.turn_counter;
     let clock = crate::exec_mode::system_clock();
+    let routing_mode = routing.mode;
     let drive = drive_goal(
         journal.clone(),
         &journal_sequence,
@@ -328,6 +420,7 @@ where
                     events_now,
                     &defs_now,
                     web_search_backed,
+                    routing_mode,
                 )
                 .await;
                 GoalTurnOutcome {
@@ -375,6 +468,7 @@ async fn run_plain_turn<FD, D, T, W>(
     extra_definitions: &[nano_model::types::ToolDefinition],
     web_search_backed: bool,
     prompt: &str,
+    routing_mode: nano_session::RoutingMode,
 ) -> crate::exec_mode::ExecTurnOutcome
 where
     FD: Fn() -> D,
@@ -397,6 +491,7 @@ where
         events.clone(),
         extra_definitions,
         web_search_backed,
+        routing_mode,
     )
     .await
 }
@@ -429,6 +524,59 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
     let Some(api_key) = crate::flux_key::flux_api_key() else {
         eprintln!("wayland-nano: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for exec mode");
         return 2;
+    };
+    // P5 §1: exec routing — explicit `--model` pin > configured
+    // NANO_DEFAULT_MODEL pin > explicit Auto opt-in (`--auto` /
+    // NANO_ROUTING_AUTO) > implicit `flux-auto` passthrough. Malformed env
+    // values are typed config errors (exit 2), never silent defaults. Exec
+    // dispatches on the Flux wire only: namespaced references are a typed
+    // usage error here (the acp-host owns the C8 namespaced surface).
+    let bare_only = |value: &str, flag: &str| -> Result<String, i32> {
+        match crate::provider_router::ProviderRouter::parse_model_id(value) {
+            Ok(crate::provider_router::ModelRef::Flux(_)) => Ok(value.to_string()),
+            _ => {
+                eprintln!(
+                    "wayland-nano: {flag} accepts bare Flux model ids only in exec mode, got {value:?}"
+                );
+                Err(2)
+            }
+        }
+    };
+    let auto_opt_in = match crate::auto_routing::parse_auto_opt_in(
+        std::env::var(crate::auto_routing::AUTO_ROUTING_ENV).ok(),
+    ) {
+        Ok(env_value) => params.auto || env_value,
+        Err(err) => {
+            eprintln!("wayland-nano: {err}");
+            return 2;
+        }
+    };
+    let configured_default = match crate::auto_routing::parse_configured_default(
+        std::env::var(crate::auto_routing::DEFAULT_MODEL_ENV).ok(),
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("wayland-nano: {err}");
+            return 2;
+        }
+    };
+    let (source, reference) = match (&params.model, &configured_default) {
+        (Some(model), _) => match bare_only(model, "--model") {
+            Ok(model) => (crate::auto_routing::ModelSource::ExplicitPin, model),
+            Err(code) => return code,
+        },
+        (None, Some(default)) => match bare_only(default, crate::auto_routing::DEFAULT_MODEL_ENV) {
+            Ok(default) => (crate::auto_routing::ModelSource::ConfiguredDefault, default),
+            Err(code) => return code,
+        },
+        (None, None) => (
+            crate::auto_routing::ModelSource::ImplicitDefault,
+            crate::auto_routing::FLUX_AUTO.to_string(),
+        ),
+    };
+    let routing = crate::exec_mode::ExecRouting {
+        mode: crate::auto_routing::resolve_routing(source, &reference, auto_opt_in).mode,
+        reference: reference.clone(),
     };
     let sessions_dir = nano_home.join("sessions");
     let home = nano_home.to_path_buf();
@@ -490,12 +638,13 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
         nano_home,
         workspace,
         params,
-        "flux-auto",
+        &routing.reference,
         make_driver,
         make_tools,
         search_tool.is_some(),
         sandbox_available,
         &crate::mcp_specs::mcp_specs_from_env(),
+        &routing,
         std::io::stdout(),
     )
     .await

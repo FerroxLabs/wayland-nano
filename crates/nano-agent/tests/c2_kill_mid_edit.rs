@@ -85,6 +85,7 @@ fn text_response(text: &str) -> ModelResponse {
         ],
         usage: Usage::default(),
         stop_reason: "stop".into(),
+        model: None,
     }
 }
 
@@ -98,6 +99,7 @@ fn tool_response(call: ToolCall) -> ModelResponse {
         ],
         usage: Usage::default(),
         stop_reason: "tool_calls".into(),
+        model: None,
     }
 }
 

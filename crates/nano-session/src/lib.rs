@@ -34,18 +34,22 @@ pub use error_kind::NanoErrorKind;
 pub use fork::{ForkError, ForkOutcome, ForkPoint, fork_journal};
 pub use lock::{FileLock, LockError, LockMode};
 pub use op::{
-    CompactionCancelReason, DIGEST_HEX_CHARS, ESTIMATION_METHOD_VERSION, GoalBudgets, GoalOutcome,
-    GoalReason, GoalStatusKind, GrantEndpoint, GrantMethod, HydrationCarryEntry, HydrationEntry,
-    ImageRef, InputBlock, MAX_AS_ORIGIN_CHARS, MAX_ELICITATION_REQUEST_ID_CHARS,
-    MAX_GOAL_OBJECTIVE_LEN, MAX_GOAL_SUMMARY_LEN, MAX_GRANT_ENDPOINTS, MAX_HYDRATION_ENTRIES,
+    CandidateKind, CandidateRejection, CompactionCancelReason, DIGEST_HEX_CHARS,
+    ESTIMATION_METHOD_VERSION, GoalBudgets, GoalOutcome, GoalReason, GoalStatusKind, GrantEndpoint,
+    GrantMethod, HydrationCarryEntry, HydrationEntry, ImageRef, InputBlock, LeafProvenance,
+    MAX_AS_ORIGIN_CHARS, MAX_ELICITATION_REQUEST_ID_CHARS, MAX_GOAL_OBJECTIVE_LEN,
+    MAX_GOAL_SUMMARY_LEN, MAX_GRANT_ENDPOINTS, MAX_HYDRATION_ENTRIES,
     MAX_HYDRATION_TOOL_NAME_CHARS, MAX_HYDRATION_TOOL_NAMES, MAX_ISSUER_CHARS, MAX_RECENT_DIGESTS,
-    McpElicitationAction, Op, OpEnvelope, SCHEMA_VERSION, TurnOutcome, TurnUsage, UsageSource,
+    McpElicitationAction, Op, OpEnvelope, RoutingCandidate, RoutingExhaustion, RoutingFailureClass,
+    RoutingMode, RoutingOutcome, RoutingUsage, SCHEMA_VERSION, TurnOutcome, TurnUsage, UsageSource,
     is_canonical_digest, validate_elicitation, validate_hydration_batch,
     validate_hydration_carry_entry, validate_hydration_entry, validate_oauth_grant,
 };
 pub use reader::{JournalReport, read_journal};
 pub use redaction::{RedactionError, SecretKind, scan_for_secrets};
-pub use replay::{CompactionPhase, GoalLive, McpOauthGrantState, ReplayError, SessionState};
+pub use replay::{
+    CompactionPhase, GoalLive, McpOauthGrantState, ReplayError, SessionState, TurnRouting,
+};
 pub use writer::JournalWriter;
 
 #[cfg(test)]

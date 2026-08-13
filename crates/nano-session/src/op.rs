@@ -573,6 +573,258 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
+// ── P5 Flux Auto routing (panel-certified design: P5-auto-routing-design.md) ─
+// JOURNAL-MIGRATION REVIEW FLAG (RC2 coordinated review, the SAME review the
+// P1/P2a/P3 additions above ride): the THREE P5 journal additions —
+// (a) `Op::RoutingSnapshot`, (b) `Op::RoutingAttemptBegin`, (c)
+// `Op::RoutingReceipt` — are additive ops carrying ids, numbers, bounded
+// strings, and bounded enums ONLY (the digest-only journal invariant is
+// untouched: never credentials, headers, bodies, or raw provider errors).
+// Pre-P5 journals replay unchanged; old readers skip the new ops via the
+// `Unknown`-op forward tolerance. `SCHEMA_VERSION` stays 1.
+
+/// How a turn's model reference was resolved (P5 §1): the journaled
+/// consent/mode record. Only `AutoClientSide` admits the client-side
+/// candidate ladder; the other three are pins or provider-side passthrough
+/// and NEVER route client-side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingMode {
+    /// No explicit/configured model: the resolved default (`flux-auto` when
+    /// a Flux credential resolves, else the deterministic proven fallback) —
+    /// alias passthrough to the provider ONLY, never client-side routing.
+    ImplicitAliasPassthrough,
+    /// An explicit session/CLI pin (`--model` / `session/set_model`).
+    ExplicitAliasPin,
+    /// The configured default model pin (`NANO_DEFAULT_MODEL`).
+    ConfiguredDefaultAlias,
+    /// The explicit Auto opt-in (`NANO_ROUTING_AUTO` / `--auto`) with the
+    /// resolved reference `flux-auto` — the ONLY mode with a ladder.
+    AutoClientSide,
+    /// A mode written by a newer build this one does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Whether a candidate is a provider-routed alias (the leaf is chosen
+/// provider-side) or a concrete pinned leaf (P5 §2/§3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateKind {
+    /// A Flux router alias (`flux-auto` &co): provider-side leaf selection.
+    Alias,
+    /// A concrete leaf: a pinned Flux leaf or a namespaced `provider:model`.
+    Leaf,
+    #[serde(other)]
+    Unknown,
+}
+
+/// Bounded admission-rejection reasons for a filtered candidate (P5 §3/§5).
+/// Never free text — the reason must never carry payload detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateRejection {
+    /// Not in the validated advertisement set.
+    NotAdvertised,
+    /// Advertised and credentialed but not live-proven (`is_proven` gate at
+    /// selection time, not binding time).
+    ProviderUnproven,
+    /// No usable credential resolved at construction (or lost by resume).
+    ProviderUncredentialed,
+    /// The turn's required capability (image_in / tool-use) is not proven
+    /// for this exact provider/surface/leaf. Unknown equals false.
+    CapabilityUnproven,
+    #[serde(other)]
+    Unknown,
+}
+
+/// One candidate entry of the journaled snapshot (P5 §3/§4): the receipt for
+/// FILTERED candidates lives here (`admitted: false` + `rejection`); admitted
+/// candidates produce `RoutingAttemptBegin`/`RoutingReceipt` ops when run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoutingCandidate {
+    pub provider: String,
+    /// The bare candidate id (leaf or alias) — never namespaced on the wire.
+    pub candidate: String,
+    pub kind: CandidateKind,
+    pub admitted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection: Option<CandidateRejection>,
+}
+
+/// The P5 §4 classifier output, journaled per failed attempt. Bounded enum,
+/// never free text. `cascades()` is the ONE cascade authority: exactly the
+/// §4 cascade classes (408/429/5xx, typed rate-limit/overload, pre-commit
+/// transport) return true; every other class — and every unknown — is
+/// terminal (fail-closed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingFailureClass {
+    // ── Cascading classes (§4 "Cascade to the next admitted candidate only
+    // on") ──
+    /// HTTP 408 request timeout.
+    RequestTimeout,
+    /// HTTP 429 or a typed SDK rate-limit.
+    RateLimited,
+    /// A typed SDK overload signal.
+    Overloaded,
+    /// HTTP 5xx server error.
+    ServerError,
+    /// Connection/DNS/TLS/timeout/response-stream transport failure BEFORE
+    /// the commit boundary (no response byte observed).
+    TransportPreCommit,
+    // ── Terminal classes (§4 "Never cascade on") ──
+    /// HTTP 400/422 format or parameter rejection.
+    FormatRejected,
+    /// HTTP 401/403 authentication/authorization (incl. a 5xx/429 whose
+    /// body evidence narrows it to auth — conservative precedence).
+    Auth,
+    /// HTTP 402 billing/entitlement.
+    Billing,
+    /// HTTP 404 model-not-found: the advertised snapshot is stale; fail
+    /// closed, never cascade.
+    ModelNotFound,
+    /// Context overflow.
+    ContextOverflow,
+    /// Any failure AFTER the commit boundary: partial SSE frames, partial
+    /// tool-call arguments, failure after tool dispatch.
+    PostCommit,
+    /// Parse/protocol error, malformed or truncated response (including
+    /// malformed success bodies).
+    Protocol,
+    /// Policy/egress denial.
+    PolicyDenied,
+    /// Pre-dispatch capability rejection (unverified/unsupported param).
+    CapabilityRejected,
+    /// Cancellation, user interruption, deadline expiry.
+    Cancelled,
+    /// Unclassifiable — terminal (ambiguous wire states fail closed).
+    #[serde(other)]
+    Unknown,
+}
+
+impl RoutingFailureClass {
+    /// The §4 cascade rule. Conservative by construction: only the five
+    /// listed classes cascade.
+    pub fn cascades(self) -> bool {
+        matches!(
+            self,
+            RoutingFailureClass::RequestTimeout
+                | RoutingFailureClass::RateLimited
+                | RoutingFailureClass::Overloaded
+                | RoutingFailureClass::ServerError
+                | RoutingFailureClass::TransportPreCommit
+        )
+    }
+}
+
+/// The per-candidate disposition journaled on a receipt (P5 §4/§4.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingOutcome {
+    /// The attempt emitted (commit boundary crossed) and succeeded; this
+    /// candidate is the turn's selected leaf.
+    Committed,
+    /// The attempt failed with a cascading class; the ladder moved on.
+    CascadeFailure,
+    /// The attempt failed with a terminal class; the ladder closed.
+    TerminalFailure,
+    /// Kill-resume reconciliation (§4.1): the attempt was in flight at kill
+    /// time — indeterminate, consumed against the budget, NEVER auto-
+    /// replayed, and charged the §3.5 conservative estimate (never free).
+    ConsumedInflight,
+    /// Never dispatched: filtered at construction (see the snapshot) or
+    /// rejected at resume (credential lost) — `rejection` carries the reason.
+    Rejected,
+    #[serde(other)]
+    Unknown,
+}
+
+/// Provenance of a response-reported actual-leaf identity (P5 §6): receipts
+/// record WHERE leaf identity came from so pricing decisions are auditable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeafProvenance {
+    /// The wire carried no usable leaf identity (absent or alias-valued).
+    Absent,
+    /// A concrete leaf was reported by the successful terminal completion
+    /// frame of the bound endpoint (for ALIAS candidates this is
+    /// provenance-only evidence — never a mismatch, never priced without
+    /// the §6 evidence path).
+    ProviderReported,
+    /// LEAF candidate only: the reported leaf matched no admitted candidate
+    /// in the journaled snapshot — journaled as a mismatch, metered
+    /// unknown/unpriced.
+    Mismatch,
+    #[serde(other)]
+    Unknown,
+}
+
+/// Per-attempt usage summary journaled on a receipt (P5 §6): numbers and
+/// flags only. `reported: false` marks the §3.5 conservative estimate (the
+/// killed-attempt charge) — never zero, never provider-attributed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoutingUsage {
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    /// Catalog-priced cost in integer microcents against the ACTUAL leaf —
+    /// meaningful only when `priced` (unpriced is never a fake $0).
+    #[serde(default)]
+    pub microcents: u64,
+    /// False when no trustworthy actual-leaf price exists (absent/alias/
+    /// mismatched identity, missing pricing row, or the alias evidence path
+    /// not established) — the P1 honesty flag, AND-accumulated on rollup.
+    #[serde(default = "default_priced")]
+    pub priced: bool,
+    /// True = provider-reported on the wire; false = §3.5 estimate.
+    #[serde(default)]
+    pub reported: bool,
+}
+
+impl RoutingUsage {
+    /// Fold into the turn/session usage sum (P5 §6 rollup): provider-reported
+    /// usage keeps its provenance; the §3.5 estimate charge is marked
+    /// `estimated` with the pinned formula version, never zero.
+    pub fn to_turn_usage(&self) -> TurnUsage {
+        let mut sum = TurnUsage::default();
+        if self.reported {
+            sum.add_provider_reported(
+                self.input_tokens,
+                self.output_tokens,
+                0,
+                0,
+                self.microcents,
+                self.priced,
+            );
+        } else {
+            sum.add_estimated(
+                self.input_tokens,
+                self.output_tokens,
+                self.microcents,
+                self.priced,
+                ESTIMATION_METHOD_VERSION,
+                self.input_tokens.saturating_add(self.output_tokens),
+            );
+        }
+        sum
+    }
+}
+
+/// Why a routed turn stopped cascading (P5 §4): journaled on the FINAL
+/// receipt of an exhausted ladder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingExhaustion {
+    /// The global three-attempt budget ran out with candidates remaining.
+    BudgetExhausted,
+    /// Every admitted candidate was attempted (or the ladder had none).
+    CandidatesExhausted,
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Op {
@@ -850,6 +1102,77 @@ pub enum Op {
         as_origin: String,
         issuer: String,
         endpoints: Vec<GrantEndpoint>,
+    },
+    /// P5 §3/§4.1 — JOURNAL-MIGRATION REVIEW FLAG (addition (a) above): the
+    /// immutable candidate snapshot for one turn, journaled BEFORE the first
+    /// dispatch so replay and kill-resume explain (and replay) the choice
+    /// without re-running discovery. Every turn journals exactly one —
+    /// pins/implicit passthrough carry a single admitted candidate;
+    /// `auto_client_side` carries the ordered ladder. `catalog_digest` is
+    /// the sha256 of the catalog/proof inputs the snapshot derived from
+    /// (§7: identifiers/digests, never secrets or remote payloads).
+    RoutingSnapshot {
+        turn_id: String,
+        routing_mode: RoutingMode,
+        /// The model reference as configured/resolved (e.g. `flux-auto`,
+        /// `openai:gpt-5`) — distinct from any response-reported leaf.
+        configured_reference: String,
+        /// The global physical-attempt budget for the ladder (§4: 3).
+        attempt_budget: u32,
+        candidates: Vec<RoutingCandidate>,
+        catalog_digest: String,
+    },
+    /// P5 §4.1 — JOURNAL-MIGRATION REVIEW FLAG (addition (b)): the durable
+    /// attempt-start marker, journaled per rung BEFORE the dispatch. A begin
+    /// without a matching receipt after a kill is the indeterminate
+    /// in-flight attempt: consumed against the budget, never auto-replayed.
+    RoutingAttemptBegin {
+        turn_id: String,
+        ordinal: u32,
+        routing_mode: RoutingMode,
+        provider: String,
+        candidate: String,
+    },
+    /// P5 §4/§6 — JOURNAL-MIGRATION REVIEW FLAG (addition (c)): the
+    /// per-candidate receipt at attempt end (or at kill-resume
+    /// reconciliation for a consumed in-flight attempt, or at resume-time
+    /// credential loss). Ids, numbers, bounded enums, and the
+    /// provider-reported leaf id only — never credentials, headers, bodies,
+    /// or raw provider errors.
+    RoutingReceipt {
+        turn_id: String,
+        ordinal: u32,
+        routing_mode: RoutingMode,
+        provider: String,
+        configured_reference: String,
+        candidate: String,
+        outcome: RoutingOutcome,
+        /// The §4 classified failure for failure outcomes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure: Option<RoutingFailureClass>,
+        /// HTTP status where nonsecret.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<u16>,
+        /// Physical attempts this candidate consumed from the global budget
+        /// (>1 only when same-candidate transport retry is retained, §4).
+        attempts_consumed: u32,
+        /// True on the receipt of the turn's selected (committed) candidate.
+        selected: bool,
+        /// The provider-reported response model when supplied by the wire —
+        /// provenance per `leaf_identity` (§6), never a client prediction.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_model: Option<String>,
+        leaf_identity: LeafProvenance,
+        /// Per-attempt usage when the provider reported it (or the §3.5
+        /// estimate for a consumed in-flight attempt).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<RoutingUsage>,
+        /// Set on the final receipt of an exhausted ladder.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exhaustion: Option<RoutingExhaustion>,
+        /// The bounded rejection reason for `Rejected` outcomes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rejection: Option<CandidateRejection>,
     },
     /// Forward tolerance: any Op type this build does not know. Skipped on
     /// replay; the raw line stays in the journal for future readers.

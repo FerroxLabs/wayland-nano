@@ -31,6 +31,7 @@ mod tests {
             ],
             usage: Usage::default(),
             stop_reason: "stop".into(),
+            model: None,
         }
     }
 
@@ -337,6 +338,7 @@ mod tests {
                 ],
                 usage: Usage::default(),
                 stop_reason: "tool_calls".into(),
+                model: None,
             }),
             Ok(text_response("batch done, steer seen")),
         ]);

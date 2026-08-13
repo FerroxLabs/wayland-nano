@@ -132,6 +132,7 @@ mod tests {
             events: vec![ModelEvent::TextDelta(text.into())],
             usage: Usage::default(),
             stop_reason: "stop".into(),
+            model: None,
         }
     }
 
@@ -184,6 +185,7 @@ mod tests {
             ],
             usage: Usage::default(),
             stop_reason: "tool_use".into(),
+            model: None,
         };
         let value =
             extract_and_validate(Surface::Anthropic, &request(true), &mut response).unwrap();
@@ -215,6 +217,7 @@ mod tests {
             })],
             usage: Usage::default(),
             stop_reason: "tool_use".into(),
+            model: None,
         };
         let err =
             extract_and_validate(Surface::Anthropic, &request(true), &mut response).unwrap_err();
