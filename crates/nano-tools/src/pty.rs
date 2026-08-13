@@ -11,7 +11,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const BUFFER_CAPACITY: usize = 512 * 1024;
 const MAX_LIVE_SESSIONS: usize = 8;
-const MAX_WRITE_BYTES: usize = 16 * 1024;
+/// `pty_write.chars` cap in Unicode code points, matching the schema's
+/// `maxLength` unit (JSON Schema `maxLength` counts code points, not bytes).
+const MAX_WRITE_CHARS: usize = 16 * 1024;
 const DEFAULT_READ_BYTES: usize = 32 * 1024;
 const MAX_READ_BYTES: usize = 256 * 1024;
 const DEFAULT_YIELD_MS: u64 = 1_000;
@@ -127,6 +129,19 @@ impl RollingBuffer {
             self.bytes.drain(..overflow);
             self.bytes.extend(bytes.iter().copied());
         }
+        // Snap the retained window's leading edge to a UTF-8 character
+        // boundary: continuation bytes orphaned at the front (by eviction, or
+        // by a stream that began mid-scalar) are unservable, so drop them and
+        // account them in `oldest`. Every byte before `oldest` is then
+        // recorded as dropped and every byte in `[oldest, next)` is retained
+        // — eviction never silently loses bytes outside `dropped_before`.
+        let leading = self
+            .bytes
+            .iter()
+            .take(4)
+            .position(|byte| (*byte & 0b1100_0000) != 0b1000_0000)
+            .unwrap_or(self.bytes.len().min(4));
+        self.bytes.drain(..leading);
         self.oldest = self.next - self.bytes.len() as u64;
     }
 
@@ -148,8 +163,10 @@ impl RollingBuffer {
             .copied()
             .collect();
 
-        // Eviction or a caller-supplied cursor may land in UTF-8 continuation
-        // bytes. Snap forward by at most three bytes to a character boundary.
+        // A caller-supplied cursor may land in UTF-8 continuation bytes.
+        // Snap forward by at most three bytes to a character boundary.
+        // (Eviction cannot trigger this: `push` already snapped the retained
+        // window's leading edge and accounted the drop in `oldest`.)
         let leading = bytes
             .iter()
             .take(4)
@@ -342,9 +359,9 @@ impl PtySessionManager {
     }
 
     pub fn write(&self, request: PtyWriteRequest) -> Result<EmptyResponse, PtyError> {
-        if request.chars.len() > MAX_WRITE_BYTES {
+        if request.chars.chars().count() > MAX_WRITE_CHARS {
             return Err(PtyError::InvalidParams(format!(
-                "chars exceeds {MAX_WRITE_BYTES} bytes"
+                "chars exceeds {MAX_WRITE_CHARS} code points"
             )));
         }
         let session = self.session(&request.session_id)?;
@@ -423,6 +440,7 @@ impl PtySessionManager {
     }
 
     pub fn list(&self) -> Vec<PtyListEntry> {
+        self.prune_exited();
         let mut entries: Vec<_> = self
             .sessions
             .lock()
@@ -624,7 +642,7 @@ fn spawn_platform(
 
     let profile =
         PermissionProfile::workspace_write_with(&[], NetworkSandboxPolicy::Restricted, true, true);
-    let argv = unix_sandbox_argv(command, cwd, workspace, &profile)?;
+    let argv = unix_pty_guard_argv(unix_sandbox_argv(command, cwd, workspace, &profile)?)?;
     let (program, args) = argv
         .split_first()
         .ok_or_else(|| PtyError::SandboxUnavailable("empty sandbox transform".into()))?;
@@ -666,6 +684,39 @@ fn spawn_platform(
         writer,
         teardown: Teardown::Unix { process_group },
     })
+}
+
+/// Basename of the PTY host-death sentinel exec'd as the unix PTY child
+/// (resolved next to the running executable, or via `NANO_PTY_GUARD_EXE`).
+#[cfg(unix)]
+const NANO_PTY_GUARD_ARG0: &str = "wayland-nano-pty-guard";
+
+/// Wraps the sandboxed argv in the host-death guard. portable-pty `setsid()`s
+/// the PTY child into its own session with no pre-exec hook, so the sandbox
+/// helper alone would survive a host `kill -9` (§14 leg 3(b)). The guard
+/// becomes the session leader, watches the host, and SIGKILLs its process
+/// group when the host dies. Fail closed when the guard is absent: an
+/// unwatched PTY is never spawned.
+#[cfg(unix)]
+fn unix_pty_guard_argv(inner: Vec<String>) -> Result<Vec<String>, PtyError> {
+    let guard = std::env::var_os("NANO_PTY_GUARD_EXE")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            let directory = std::env::current_exe().ok()?.parent()?.to_path_buf();
+            [directory.clone(), directory.join("..")]
+                .into_iter()
+                .map(|dir| dir.join(NANO_PTY_GUARD_ARG0))
+                .find(|path| path.is_file())
+        })
+        .ok_or_else(|| {
+            PtyError::SandboxUnavailable(format!(
+                "`{NANO_PTY_GUARD_ARG0}` helper not found; refusing unwatched PTY"
+            ))
+        })?;
+    let mut argv = vec![guard.to_string_lossy().into_owned()];
+    argv.extend(inner);
+    Ok(argv)
 }
 
 #[cfg(target_os = "linux")]
@@ -831,6 +882,39 @@ mod tests {
     }
 
     #[test]
+    fn multibyte_flood_accounts_every_byte_exactly() {
+        let mut buffer = RollingBuffer::new();
+        // 3-byte scalars flooded past capacity so eviction lands mid-scalar.
+        let flood = "€".repeat(BUFFER_CAPACITY / 3 + 7).into_bytes();
+        buffer.push(&flood[..BUFFER_CAPACITY - 5]);
+        buffer.push(&flood[BUFFER_CAPACITY - 5..]);
+        assert_eq!(buffer.next, flood.len() as u64);
+        // The leading edge snapped to a char boundary and the skipped
+        // continuation bytes are accounted in `oldest`, not silently lost.
+        assert_eq!(buffer.oldest, buffer.next - buffer.bytes.len() as u64);
+        assert!(buffer.bytes.len() <= BUFFER_CAPACITY);
+        assert_ne!(buffer.bytes[0] & 0b1100_0000, 0b1000_0000);
+
+        let first = buffer.read(0, MAX_READ_BYTES).unwrap();
+        assert!(first.resynced);
+        assert_eq!(first.start, buffer.oldest);
+        assert_eq!(first.dropped_before, buffer.oldest);
+        assert!(!first.chunk.contains('\u{fffd}'));
+
+        let second = buffer.read(first.next, MAX_READ_BYTES).unwrap();
+        assert!(!second.resynced);
+        assert_eq!(second.start, first.next);
+        assert_eq!(second.next, buffer.next);
+        assert!(!second.chunk.contains('\u{fffd}'));
+
+        // Exactness: dropped + served == produced; no byte is lost,
+        // duplicated, or left unaccounted.
+        let served = (first.chunk.len() + second.chunk.len()) as u64;
+        assert_eq!(served, buffer.next - buffer.oldest);
+        assert_eq!(first.dropped_before + served, buffer.next);
+    }
+
+    #[test]
     fn independent_reader_cursors_each_observe_the_stream() {
         let mut buffer = RollingBuffer::new();
         buffer.push(b"first second");
@@ -883,7 +967,24 @@ mod tests {
         assert!(matches!(
             manager.write(PtyWriteRequest {
                 session_id: "missing".into(),
-                chars: "x".repeat(MAX_WRITE_BYTES + 1),
+                chars: "x".repeat(MAX_WRITE_CHARS + 1),
+            }),
+            Err(PtyError::InvalidParams(_))
+        ));
+        // The cap counts code points, matching the schema's `maxLength` unit:
+        // 16384 three-byte characters (48 KiB) pass the bound — the
+        // missing-session error proves the cap check accepted the length.
+        assert!(matches!(
+            manager.write(PtyWriteRequest {
+                session_id: "missing".into(),
+                chars: "€".repeat(MAX_WRITE_CHARS),
+            }),
+            Err(PtyError::PtySessionGone { .. })
+        ));
+        assert!(matches!(
+            manager.write(PtyWriteRequest {
+                session_id: "missing".into(),
+                chars: "€".repeat(MAX_WRITE_CHARS + 1),
             }),
             Err(PtyError::InvalidParams(_))
         ));
@@ -1097,13 +1198,16 @@ mod tests {
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            if manager
+            // list() prunes at capacity, and prune only removes EXITED
+            // sessions — so the killed session being absent from the listing
+            // proves the exit just as observing `exited` does.
+            let entry = manager
                 .list()
                 .into_iter()
-                .find(|entry| entry.session_id == ids[0])
-                .is_some_and(|entry| entry.exited)
-            {
-                break;
+                .find(|entry| entry.session_id == ids[0]);
+            match entry {
+                Some(entry) if !entry.exited => {}
+                Some(_) | None => break,
             }
             assert!(Instant::now() < deadline, "killed PTY did not exit");
             std::thread::sleep(Duration::from_millis(10));
@@ -1121,6 +1225,36 @@ mod tests {
             }),
             Err(PtyError::PtySessionGone { exit_code: None })
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn list_prunes_oldest_exited_at_capacity() {
+        let workspace = tempfile::tempdir().unwrap();
+        let manager = PtySessionManager::new(workspace.path());
+        for _ in 0..MAX_LIVE_SESSIONS {
+            manager
+                .spawn(PtySpawnRequest {
+                    command: "exit 0".into(),
+                    cwd: None,
+                })
+                .unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let entries = manager.list();
+            if !entries.is_empty() && entries.iter().all(|entry| entry.exited) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "quick-exit sessions never exited"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        // prune_exited runs at list() entry: at capacity the oldest exited
+        // session is dropped, leaving MAX_LIVE_SESSIONS - 1 entries.
+        assert_eq!(manager.list().len(), MAX_LIVE_SESSIONS - 1);
     }
 
     #[cfg(unix)]

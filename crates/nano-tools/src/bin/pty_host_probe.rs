@@ -44,5 +44,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use nano_tools::pty::{PtySessionManager, PtySpawnRequest};
+
+    let workspace = std::env::current_dir()?;
+    let manager = PtySessionManager::new(&workspace);
+    // A long-sleep session: the guard (this process's direct descendant) and
+    // the sleep in its process group must not survive an abrupt host death.
+    // The test performs the process inventory externally (pgrep/ps), so this
+    // probe only needs to keep the session alive and signal readiness.
+    manager.spawn(PtySpawnRequest {
+        command: "sleep 600".into(),
+        cwd: None,
+    })?;
+    println!("READY");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    std::thread::sleep(std::time::Duration::from_secs(120));
+    Ok(())
+}
+
+#[cfg(not(any(windows, unix)))]
 fn main() {}
