@@ -281,6 +281,14 @@
       "wireCode": -32603
     },
     {
+      "hint": "",
+      "kind": "pty_session_gone",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "That terminal session has exited",
+      "wireCode": -32603
+    },
+    {
       "hint": "Start a new session or narrow the task",
       "kind": "budget_exhausted",
       "retryable": false,

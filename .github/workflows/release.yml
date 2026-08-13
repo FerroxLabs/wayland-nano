@@ -72,6 +72,13 @@ jobs:
       - name: Release build
         run: cargo build --release -p nano-cli --target ${{ matrix.target }}
 
+      # P4 PTY: the unix PTY host-death sentinel ships beside the host
+      # binary (pack.ps1 stages it; Windows uses ConPTY + Job Objects and
+      # needs no guard).
+      - name: Release build (unix PTY guard)
+        if: runner.os != 'Windows'
+        run: cargo build --release -p nano-tools --bin wayland-nano-pty-guard --target ${{ matrix.target }}
+
       - name: Stage binary
         shell: pwsh
         run: packaging/npm/scripts/pack.ps1 -Platform ${{ matrix.pkg }} -SkipBuild
@@ -117,7 +124,8 @@ jobs:
           set -euo pipefail
           count=$(find binaries -type f -name 'wayland-nano*' | wc -l)
           echo "staged binaries: $count"
-          [ "$count" -eq 5 ] || { echo "expected 5 platform binaries, found $count"; exit 1; }
+          # 5 platform hosts + the unix PTY guard on the 4 unix packages.
+          [ "$count" -eq 9 ] || { echo "expected 9 platform binaries (5 hosts + 4 pty guards), found $count"; exit 1; }
           node bin/install.js
 
       - name: "Guard: tag must match package.json version"

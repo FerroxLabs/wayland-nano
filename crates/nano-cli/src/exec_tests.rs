@@ -220,6 +220,40 @@ async fn jsonl_v1_schema_fixture() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// P4 §4.3/§13: exec can never prompt, and the PTY spawn's authorization IS
+/// the prompt — all five pty_* names auto-DENY in every mode (headless PTY
+/// is out of scope, §16). repo_map (§5.5) is read-only and approves in
+/// every mode.
+#[test]
+fn p4_exec_gate_pty_denied_repo_map_read_only() {
+    let dir = tmpdir("gate-pty");
+    let policy = fake_policy();
+    let call = |name: &str| ToolCall {
+        id: "c".into(),
+        name: name.into(),
+        arguments: serde_json::json!({}),
+    };
+    for mode in [
+        PermissionMode::ReadOnly,
+        PermissionMode::Default,
+        PermissionMode::FullAuto,
+    ] {
+        for name in nano_agent::wiring::PTY_TOOL_NAMES {
+            assert_eq!(
+                exec_gate_decision(&call(name), mode, &policy, &dir, true),
+                ApprovalDecision::Deny,
+                "{mode:?}: {name} auto-denies in exec"
+            );
+        }
+        assert_eq!(
+            exec_gate_decision(&call("repo_map"), mode, &policy, &dir, false),
+            ApprovalDecision::Approve,
+            "{mode:?}: repo_map is read-only in exec"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// P3 §4.3: exec is non-interactive — DiscoveryLocal (tool_search, no server
 /// contact) approves in every mode; the server-contact classes would prompt,
 /// so they auto-DENY in every mode, full_auto included.

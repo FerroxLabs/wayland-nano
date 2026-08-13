@@ -105,3 +105,110 @@ fn corrupt_session_load_keeps_existing_journal_unavailable_kind() {
     drop(stdin);
     assert!(child.wait().unwrap().success());
 }
+
+/// RC2 wiring (P4 session browser §4): `_wayland/session/list` is served
+/// with or without an active session (the listing is global), advertised
+/// in nanoExtensions, and io failures map to the typed
+/// journal_unavailable kind.
+#[test]
+fn session_list_extension_round_trip_without_an_active_session() {
+    let home = tempfile::tempdir().unwrap();
+    let sessions = home.path().join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    write_journal(&sessions.join("s1.jsonl"), "s1", "C:/workspace");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wayland-nano"))
+        .arg("acp-host")
+        .env("NANO_HOME", home.path())
+        // Startup needs SOME resolvable credential (B2 gate); this dummy
+        // never leaves the process (no model call is made).
+        .env("FLUX_API_KEY", "sk-test-fixture-never-networked")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({
+            "jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{"protocolVersion":1,"clientCapabilities":{}}
+        })
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let initialize: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        initialize["result"]["agentCapabilities"]["nanoExtensions"]["_wayland/session/list"]["version"],
+        1,
+        "advertised: {initialize}"
+    );
+
+    // No session/new — the listing is global and must still answer.
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({
+            "jsonrpc":"2.0","id":2,"method":"_wayland/session/list","params":{}
+        })
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    line.clear();
+    stdout.read_line(&mut line).unwrap();
+    let list: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(list["result"]["sessions"][0]["sessionId"], "s1", "{list}");
+    assert_eq!(list["result"]["sessions"][0]["status"], "closed", "{list}");
+    assert!(
+        list["result"]["liveStatusCaveat"]
+            .as_str()
+            .unwrap()
+            .contains("point-in-time"),
+        "{list}"
+    );
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+
+    // io failure (sessions dir replaced by a regular file) ⇒ typed
+    // journal_unavailable, never a panic or an empty ok.
+    std::fs::remove_dir_all(&sessions).unwrap();
+    std::fs::write(&sessions, "not a dir").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wayland-nano"))
+        .arg("acp-host")
+        .env("NANO_HOME", home.path())
+        // Startup needs SOME resolvable credential (B2 gate); this dummy
+        // never leaves the process (no model call is made).
+        .env("FLUX_API_KEY", "sk-test-fixture-never-networked")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({
+            "jsonrpc":"2.0","id":1,"method":"_wayland/session/list","params":{}
+        })
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    line.clear();
+    stdout.read_line(&mut line).unwrap();
+    let list: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        list["error"]["data"]["nanoError"]["kind"], "journal_unavailable",
+        "{list}"
+    );
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}

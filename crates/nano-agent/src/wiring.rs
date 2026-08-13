@@ -315,6 +315,18 @@ pub fn v1_tool_definitions(web_search_backed: bool, vision_backed: bool) -> Vec<
             }),
         });
     }
+    // P4 §5.5 (F-28 MEDIUM-2 wiring): repo_map is a BASE tool — read-only
+    // at every gate, serviced by RealToolExecutor itself (never
+    // session-owned), so it belongs in the v1 surface children inherit.
+    let repo_map = nano_tools::repomap::repo_map_tool_definition();
+    definitions.push(ToolDefinition {
+        name: repo_map["name"].as_str().expect("repo_map name").into(),
+        description: repo_map["description"]
+            .as_str()
+            .expect("repo_map description")
+            .into(),
+        input_schema: repo_map["input_schema"].clone(),
+    });
     definitions
 }
 
@@ -354,6 +366,18 @@ pub const SESSION_TOOL_NAMES: [&str; 4] = ["todo", "ask_user", "enter_plan_mode"
 /// by the explicit filter below, never by the auto-approve list.
 pub const MCP_SESSION_TOOL_NAMES: [&str; 3] =
     ["tool_search", "mcp_list_resources", "mcp_read_resource"];
+
+/// P4 §4.3/§4.4: the five PTY tools. SESSION-owned like
+/// [`SESSION_TOOL_NAMES`] but deliberately NOT in it — that list is
+/// name-coupled to an auto-approval arm (AcpApproval::approve step 1b), and
+/// PTY approval behavior comes ONLY from the explicit `pty_spawn` /
+/// follow-up gate arms (design §4.3). Registered on the host session
+/// surface only (the acp_mode per-turn build), NEVER in
+/// [`v1_tool_definitions`]: children consume that set directly and
+/// `TaskApproval` default-denies unknown names. Reaching the base executor
+/// is the loud mis-wiring error.
+pub const PTY_TOOL_NAMES: [&str; 5] =
+    ["pty_spawn", "pty_write", "pty_read", "pty_kill", "pty_list"];
 
 /// P3 §4.3: the explicit approval class of every new MCP surface. Hydrated
 /// or direct `mcp__*` calls keep the unchanged catch-all arms (None here).
@@ -482,6 +506,10 @@ pub struct RealToolExecutor {
     web_search: Option<WebSearchTool>,
     view_image: Option<nano_tools::image::ViewImageTool>,
     attachment_store: Option<nano_session::attachment_store::AttachmentStore>,
+    /// P4 §5.5 (F-28 wiring): the session-workspace lexical repo map. None
+    /// = construction failed at host build (typed denial on call, never a
+    /// silent skip — the web_fetch inert posture).
+    repo_map: Option<nano_tools::repomap::RepoMapTool>,
     pending_image_result: std::sync::Mutex<Option<(String, crate::turn::LiveImageToolResult)>>,
     /// P1 §2.5 (r2 claude-F2): the session meter/`UsageSink` handle,
     /// threaded beside the search slot by [`Self::with_web_search`]. The
@@ -515,6 +543,7 @@ impl std::fmt::Debug for RealToolExecutor {
             .field("web_fetch", &self.web_fetch.is_some())
             .field("web_search", &self.web_search.is_some())
             .field("view_image", &self.view_image.is_some())
+            .field("repo_map", &self.repo_map.is_some())
             .field("usage_sink", &self.usage_sink.is_some())
             .field("diff_hook", &self.diff_hook.is_some())
             .finish_non_exhaustive()
@@ -535,6 +564,7 @@ impl RealToolExecutor {
             web_search: None,
             view_image: None,
             attachment_store: None,
+            repo_map: None,
             pending_image_result: std::sync::Mutex::new(None),
             usage_sink: None,
             task_kill: None,
@@ -583,6 +613,12 @@ impl RealToolExecutor {
     ) -> Self {
         self.view_image = Some(tool);
         self.attachment_store = Some(store);
+        self
+    }
+
+    /// Attach the session-workspace repo map (P4 §5.5).
+    pub fn with_repo_map(mut self, tool: nano_tools::repomap::RepoMapTool) -> Self {
+        self.repo_map = Some(tool);
         self
     }
 
@@ -1084,6 +1120,21 @@ impl RealToolExecutor {
                     Err(err) => Self::fail(err.to_string(), crate::error_map::kind_of_shell(&err)),
                 }
             }
+            "repo_map" => {
+                // §5.5: read-only, policy-filtered; an unattached index
+                // (construction failure at host build) is a typed denial,
+                // never a silent empty result.
+                let Some(tool) = &self.repo_map else {
+                    return Self::fail(
+                        "repo_map unavailable: the workspace index failed to initialize",
+                        nano_session::NanoErrorKind::FsIo,
+                    );
+                };
+                match tool.execute(&call.arguments) {
+                    Ok(rendered) => Self::ok(rendered, ProgressSignals::default()),
+                    Err(err) => Self::fail(err.to_string(), crate::error_map::kind_of_tool(&err)),
+                }
+            }
             // C10: session-owned tools must never reach the base executor.
             // A host that skipped its session wrapper gets the loud
             // mis-wiring error, never a silent empty or "unknown" result.
@@ -1092,6 +1143,9 @@ impl RealToolExecutor {
             // wrapper too; reaching the base executor is the same loud
             // mis-wiring error.
             name if MCP_SESSION_TOOL_NAMES.contains(&name) => miswired_session_tool(name),
+            // P4: the PTY tools are session-owned (the session's
+            // PtySessionManager); the base executor must never see them.
+            name if PTY_TOOL_NAMES.contains(&name) => miswired_session_tool(name),
             other => Self::fail(
                 format!("unknown tool: {other}"),
                 nano_session::NanoErrorKind::UnknownTool,
@@ -1619,6 +1673,99 @@ mod tests {
                 outcome.output
             );
         }
+    }
+
+    /// P4 §4.3: the PTY tools are session-owned — one reaching the BASE
+    /// executor (the host skipped its PTY session layer) fails loud.
+    #[tokio::test]
+    async fn pty_tools_at_the_base_executor_fail_loud() {
+        let (_tmp, executor, _ws) = executor_fixture();
+        for name in PTY_TOOL_NAMES {
+            let outcome = executor.execute(&call(name, serde_json::json!({}))).await;
+            assert!(!outcome.ok);
+            assert!(
+                outcome.output.contains("reached the base executor"),
+                "{name}: {}",
+                outcome.output
+            );
+            assert_eq!(
+                outcome.error_kind,
+                Some(nano_session::NanoErrorKind::UnknownTool),
+                "{name} miswiring is typed"
+            );
+        }
+    }
+
+    /// P4 §4.3 [r3 claude-F3] two-layer child exclusion, wiring half: the
+    /// PTY names are in NEITHER tool-definition production set (the
+    /// in-crate pin in nano-tools' pty.rs scans the v1 builder's source;
+    /// this asserts the runtime sets directly). The gate half —
+    /// TaskApproval's default-deny — is pinned in tasks.rs.
+    #[test]
+    fn pty_tools_are_absent_from_every_child_surface() {
+        for name in PTY_TOOL_NAMES {
+            assert!(
+                !v1_tool_definitions(true, true)
+                    .iter()
+                    .any(|d| d.name == name),
+                "{name} must never enter v1_tool_definitions"
+            );
+            assert!(
+                !child_tool_definitions(true, true)
+                    .iter()
+                    .any(|d| d.name == name),
+                "{name} must be absent from the child tool surface"
+            );
+            // No approval fast path may name-couple to them either (the
+            // MCP-session-tools discipline).
+            assert!(!SESSION_TOOL_NAMES.contains(&name), "{name} decoupled");
+            assert!(mcp_approval_class(name).is_none(), "{name} has no class");
+        }
+    }
+
+    /// P4 §5.5 (F-28 MEDIUM-2): repo_map is a BASE tool — advertised in the
+    /// v1 surface (children inherit it), serviced by the base executor.
+    #[tokio::test]
+    async fn repo_map_is_advertised_and_dispatched() {
+        let (_tmp, executor, ws) = executor_fixture();
+        for defs in [
+            v1_tool_definitions(false, false),
+            child_tool_definitions(false, false),
+        ] {
+            assert!(
+                defs.iter().any(|d| d.name == "repo_map"),
+                "repo_map advertised"
+            );
+        }
+        std::fs::write(ws.join("lib.rs"), "pub fn wired_symbol() {}\n").unwrap();
+        let policy = nano_core::permissions::PermissionProfile::workspace_write()
+            .file_system_sandbox_policy();
+        let executor = executor.with_repo_map(
+            nano_tools::repomap::RepoMapTool::new(&policy, &ws).expect("repo map constructs"),
+        );
+        let outcome = executor
+            .execute(&call(
+                "repo_map",
+                serde_json::json!({"query": "wired_symbol"}),
+            ))
+            .await;
+        assert!(outcome.ok, "{}", outcome.output);
+        assert!(
+            outcome.output.contains("wired_symbol"),
+            "{}",
+            outcome.output
+        );
+        // The unattached posture fails typed, never silently empty.
+        let (_t2, bare, _w2) = executor_fixture();
+        let outcome = bare
+            .execute(&call("repo_map", serde_json::json!({"query": "x"})))
+            .await;
+        assert!(!outcome.ok);
+        assert_eq!(
+            outcome.error_kind,
+            Some(nano_session::NanoErrorKind::FsIo),
+            "unattached repo_map is a typed denial"
+        );
     }
 
     /// C10 §6: write/edit diffs flow through the hook — whole-file add

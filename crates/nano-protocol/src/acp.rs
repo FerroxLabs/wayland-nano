@@ -214,7 +214,11 @@ pub fn agent_capabilities(
             // that sends an unknown method gets the standard JSON-RPC
             // -32601 fallback.
             "nanoExtensions": {
-                "session/steer": { "version": 1 }
+                "session/steer": { "version": 1 },
+                // P4 session browser: the bounded derived listing (dispatch
+                // in acp_mode, implementation in nano-cli's
+                // session_browser). Discovered, never probed.
+                "_wayland/session/list": { "version": 1 }
             }
         },
         "agentInfo": {

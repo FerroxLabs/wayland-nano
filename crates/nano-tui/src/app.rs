@@ -773,10 +773,14 @@ impl App {
                         response.live_status_caveat
                     ));
                 }
-                Some(_) => self.load_selected_session(conn, &resume_id),
-                None => self
-                    .transcript
-                    .push_note("session is not present in the bounded session list"),
+                // F-37 MEDIUM-1 (§6.2): an explicit id is NEVER gated on
+                // membership in the BOUNDED 200-entry list — a session older
+                // than the truncation window must still resume. The row's
+                // presence matters only for the Live refusal; otherwise
+                // session/load goes out directly and the HOST re-validates
+                // (unknown ⇒ typed session_not_found, corrupt ⇒
+                // journal_unavailable).
+                _ => self.load_selected_session(conn, &resume_id),
             }
             return;
         }
@@ -1570,5 +1574,23 @@ mod p4_session_browser_tests {
         app.composer.insert_paste("/resume ../outside");
         app.submit(&mut conn);
         assert!(conn.sent.is_empty());
+    }
+
+    /// F-37 MEDIUM-1: an explicit id ABSENT from the bounded list (older
+    /// than the 200-row truncation window) still sends session/load — the
+    /// host re-validates. Only a present AND live row refuses.
+    #[test]
+    fn resume_id_absent_from_the_bounded_list_still_loads() {
+        let mut app = test_app();
+        let mut conn = RecordingConn::default();
+        app.composer.insert_paste("/resume ancient");
+        app.submit(&mut conn);
+        assert_eq!(conn.sent[0]["method"], acp_client::SESSION_LIST_METHOD);
+        let id = conn.sent[0]["id"].as_u64().unwrap();
+        // The list contains a DIFFERENT session only.
+        app.handle_conn_event(&mut conn, ConnEvent::Frame(response(id, "closed")));
+        assert_eq!(conn.sent.len(), 2);
+        assert_eq!(conn.sent[1]["method"], "session/load");
+        assert_eq!(conn.sent[1]["params"]["sessionId"], "ancient");
     }
 }

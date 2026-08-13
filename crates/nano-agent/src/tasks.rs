@@ -867,6 +867,17 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
         (Some(tool), Some(meter)) => executor.with_web_search(tool.clone(), meter.clone()),
         _ => executor,
     };
+    // P4 §5.5: the child's repo_map is re-anchored to the workspace COPY
+    // root (the same policy the child's reads are bounded by). A
+    // construction failure leaves the slot empty — calls then fail typed,
+    // never silently.
+    let executor = match nano_tools::repomap::RepoMapTool::new(&policy, &ctx.workspace_copy) {
+        Ok(tool) => executor.with_repo_map(tool),
+        Err(err) => {
+            eprintln!("wayland-nano: child repo_map index unavailable: {err}");
+            executor
+        }
+    };
     let gate = TaskApproval {
         policy,
         cwd: ctx.workspace_copy.clone(),
@@ -1257,9 +1268,15 @@ fn task_protected_mutation(call: &ToolCall) -> bool {
 }
 
 /// The child's read-only set (the host's fast-path, minus memory reads —
-/// children get no memory tools at all).
+/// children get no memory tools at all). P4 §5.5: `repo_map` is read-only
+/// here too — children may query the (copy-rooted) workspace index; their
+/// sandbox bounds the reads. The RC2 wiring pass pins the three-predicate
+/// agreement (this fn, acp_mode's, exec's) in tests below.
 fn is_read_only_tool(name: &str) -> bool {
-    name.starts_with("fs_read") || name.starts_with("search") || name.starts_with("glob")
+    name.starts_with("fs_read")
+        || name.starts_with("search")
+        || name.starts_with("glob")
+        || name.starts_with("repo_map")
 }
 
 // ── tool surface (C6 §8) ────────────────────────────────────────────────
@@ -1654,6 +1671,23 @@ mod tests {
             gate.approve(&call("web_search", serde_json::json!({"query": "x"}))),
             ApprovalDecision::Approve
         );
+        // P4 §5.5: repo_map is read-only for children too (their sandbox
+        // bounds the reads). One half of the three-predicate agreement pin
+        // (the acp/exec halves live in nano-cli's acp_mode tests).
+        assert!(is_read_only_tool("repo_map"));
+        assert_eq!(
+            gate.approve(&call("repo_map", serde_json::json!({"query": "x"}))),
+            ApprovalDecision::Approve
+        );
+        // P4 §4.3 [r3 claude-F3]: the PTY tools are session-surface-only —
+        // a forced child invocation dies at this gate's default-deny arm.
+        for pty in crate::wiring::PTY_TOOL_NAMES {
+            assert_eq!(
+                gate.approve(&call(pty, serde_json::json!({}))),
+                ApprovalDecision::Deny,
+                "{pty} must be denied for children"
+            );
+        }
         // Everything interactive: immediate typed denial. The uncontained
         // write anchors at the FILESYSTEM ROOT, not a tempdir sibling: the
         // workspace_write policy includes the tmp roots, so a `..` escape

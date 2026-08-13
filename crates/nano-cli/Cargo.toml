@@ -27,6 +27,9 @@ dirs-next = "2"
 nano-agent = { version = "0.1.0", path = "../nano-agent" }
 nano-core = { version = "0.1.0", path = "../nano-core" }
 nano-egress = { version = "0.1.0", path = "../nano-egress" }
+# F-36 (P3 §6.3): the OAuth record_grant producer converts
+# nano-mcp's flow::GrantRecord into the journaled Op::McpOauthGrant.
+nano-mcp = { version = "0.1.0", path = "../nano-mcp" }
 nano-model = { version = "0.1.0", path = "../nano-model" }
 nano-protocol = { version = "0.1.0", path = "../nano-protocol" }
 nano-sandbox = { version = "0.1.0", path = "../nano-sandbox" }

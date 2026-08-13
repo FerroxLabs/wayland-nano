@@ -221,6 +221,9 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
         NanoErrorKind::UnknownTool => card("Unknown tool", ""),
         NanoErrorKind::MissingArgs => card("Bad tool arguments", ""),
         NanoErrorKind::ApprovalDenied => card("Denied by user", ""),
+        // P4 §8: tool-card surface (a failed pty_* call), never retryable —
+        // the session is gone; re-sending the identical call cannot succeed.
+        NanoErrorKind::PtySessionGone => card("That terminal session has exited", ""),
         NanoErrorKind::BudgetExhausted => response(
             -32603,
             false,
@@ -378,6 +381,7 @@ pub const ALL_KINDS: &[NanoErrorKind] = &[
     NanoErrorKind::UnknownTool,
     NanoErrorKind::MissingArgs,
     NanoErrorKind::ApprovalDenied,
+    NanoErrorKind::PtySessionGone,
     NanoErrorKind::BudgetExhausted,
     NanoErrorKind::BudgetExceeded,
     NanoErrorKind::NoProgress,
@@ -514,10 +518,11 @@ mod tests {
     /// Pinned count: adding a kind without updating ALL_KINDS fails here;
     /// adding one without a spec fails to compile (exhaustive match above).
     /// P2a §7 added the seven vision-intake kinds (41 → 48); P3 §7 added the
-    /// seven MCP-ecosystem kinds (48 → 55).
+    /// seven MCP-ecosystem kinds (48 → 55); the RC2 wiring pass added P4's
+    /// PtySessionGone (55 → 56).
     #[test]
     fn all_kinds_count_is_pinned() {
-        assert_eq!(ALL_KINDS.len(), 55);
+        assert_eq!(ALL_KINDS.len(), 56);
     }
 
     /// P3 §12 [r2 codex-F16]: symbolic wire names are the compatibility
@@ -595,6 +600,25 @@ mod tests {
             assert!(!spec.retryable, "{kind:?} must not be retryable");
             assert_eq!(spec.surface, ErrorSurface::ToolCard, "{kind:?} surface");
         }
+    }
+
+    /// P4 §8 (RC2 wiring pass): the PtySessionGone wire form and spec are
+    /// pinned — a non-retryable tool card named `pty_session_gone`.
+    #[test]
+    fn p4_pty_session_gone_is_pinned() {
+        let wire = serde_json::to_value(NanoErrorKind::PtySessionGone)
+            .expect("kind serializes")
+            .as_str()
+            .expect("kind is a string")
+            .to_string();
+        assert_eq!(wire, "pty_session_gone");
+        assert_eq!(
+            serde_json::from_str::<NanoErrorKind>("\"pty_session_gone\"").unwrap(),
+            NanoErrorKind::PtySessionGone
+        );
+        let spec = spec(NanoErrorKind::PtySessionGone);
+        assert!(!spec.retryable);
+        assert_eq!(spec.surface, ErrorSurface::ToolCard);
     }
 
     /// The drift alarm: the committed JSON artifact must be byte-identical

@@ -82,6 +82,13 @@ function main() {
     verifyNanoBinary(resolved);
     if (process.platform !== 'win32') {
       fs.chmodSync(resolved.binaryPath, 0o755);
+      // P4 PTY: the unix host-death sentinel ships beside the host binary
+      // and needs the same exec bit (npm only preserves it for `bin`
+      // entries). Absent ⇒ PTY fails closed at spawn (never unwatched).
+      const guard = path.join(path.dirname(resolved.binaryPath), 'wayland-nano-pty-guard');
+      if (fs.existsSync(guard)) {
+        fs.chmodSync(guard, 0o755);
+      }
     }
     console.log(`wayland-nano: verified prebuilt binary for ${resolved.key}`);
   } catch (error) {

@@ -180,6 +180,10 @@ struct Session {
     /// trust mutations always take the human prompt while set, in EVERY
     /// mode including full_auto.
     image_influenced: Arc<std::sync::atomic::AtomicBool>,
+    /// P4 §4.4: the session-owned PTY registry. Its Drop terminates every
+    /// live session's direct-descendant tree; session replacement calls
+    /// `terminate_all` explicitly (the tasks-registry discipline).
+    pty: Arc<nano_tools::pty::PtySessionManager>,
 }
 
 /// P1 §3.3: the parent-journal rollup sink — appends
@@ -201,6 +205,73 @@ fn child_rollup_sink(
             }
         }
     })
+}
+
+/// F-36 (P3 §6.3) — THE OAuth `record_grant` producer. Without this hook the
+/// login flow journals nothing and the replay surface
+/// (`SessionState.mcp_oauth_grants`) is dead. The chain, in order:
+///
+/// 1. CHECKED conversion `flow::GrantEndpoint{HttpMethod}` →
+///    `op::GrantEndpoint{GrantMethod}`: the journal vocabulary admits GET
+///    and POST only; every other method converts to `GrantMethod::Unknown`
+///    so the §6.3 validator REJECTS it (never silently journals an
+///    unenforceable grant).
+/// 2. `validate_oauth_grant` (the journal-side §6.3 bounds).
+/// 3. Append `Op::McpOauthGrant` through the session's JournalCoordinator —
+///    the single append authority. The envelope id IS the grant's
+///    idempotence key, so a retried login's re-append is the coordinator's
+///    `Ok(false)` (already durable), never a duplicate.
+///
+/// Any failure aborts the login BEFORE the scoped client is built (the
+/// flow's journal-first ordering): validation rejections surface as
+/// `grant_rejected`, append failures as `journal_unavailable`.
+pub fn oauth_grant_recorder(
+    coordinator: Arc<nano_session::JournalCoordinator>,
+) -> impl Fn(&nano_mcp::oauth::flow::GrantRecord) -> Result<(), nano_mcp::oauth::OAuthError> {
+    move |record| {
+        use nano_mcp::oauth::{FailReason, OAuthError};
+        let endpoints: Vec<nano_session::op::GrantEndpoint> = record
+            .endpoints
+            .iter()
+            .map(|endpoint| nano_session::op::GrantEndpoint {
+                method: match endpoint.method {
+                    nano_egress::grant::HttpMethod::Get => nano_session::op::GrantMethod::Get,
+                    nano_egress::grant::HttpMethod::Post => nano_session::op::GrantMethod::Post,
+                    // Checked conversion: anything outside the journal's
+                    // method vocabulary becomes Unknown, which
+                    // validate_oauth_grant rejects below.
+                    _ => nano_session::op::GrantMethod::Unknown,
+                },
+                path: endpoint.path.clone(),
+            })
+            .collect();
+        nano_session::op::validate_oauth_grant(&record.as_origin, &record.issuer, &endpoints)
+            .map_err(|rule| {
+                eprintln!("wayland-nano: OAuth grant rejected ({rule})");
+                OAuthError::Failed {
+                    reason: FailReason::GrantRejected,
+                }
+            })?;
+        coordinator
+            .append(&OpEnvelope::new(
+                record.grant_id.clone(),
+                "now",
+                Op::McpOauthGrant {
+                    grant_id: record.grant_id.clone(),
+                    server_id: record.server_id.clone(),
+                    as_origin: record.as_origin.clone(),
+                    issuer: record.issuer.clone(),
+                    endpoints,
+                },
+            ))
+            .map_err(|err| {
+                eprintln!("wayland-nano: OAuth grant journal append failed: {err}");
+                OAuthError::Failed {
+                    reason: FailReason::JournalUnavailable,
+                }
+            })?;
+        Ok(())
+    }
 }
 
 /// P1 §3.2: build the session meter when the host carries a pricing
@@ -474,6 +545,13 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
                 }
             }
         }
+        // P4 §5.5 (F-28 wiring): the session-workspace repo map, built from
+        // the SAME policy + cwd as the fs tools. A construction failure
+        // leaves the slot empty — calls then fail typed, never silently.
+        match nano_tools::repomap::RepoMapTool::new(&policy, workspace) {
+            Ok(tool) => executor = executor.with_repo_map(tool),
+            Err(error) => eprintln!("wayland-nano: repo_map index unavailable: {error}"),
+        }
         // C10 §6: live-wire diffs (never journaled).
         if let Some(hook) = diff_hook {
             executor = executor.with_diff_hook(hook);
@@ -552,6 +630,11 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
+    // P2a §5.4 (F-34): the host-startup attachment-store GC sweep. Hygiene
+    // only — a store/scan/sweep failure logs and defers to the next start,
+    // NEVER blocks the host; the sweep never runs on a partial reference
+    // set (scan failure ⇒ skip).
+    startup_attachment_sweep(nano_home, &sessions);
     let config = ServeConfig {
         sessions_dir: &sessions,
         default_model: &default_model,
@@ -575,6 +658,43 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         attachment_home: nano_home,
     };
     serve(reader, writer, &config, make_driver, make_tools).await
+}
+
+/// P2a §5.4 (F-34): the host-startup attachment-store GC sweep. Hygiene
+/// only — every failure mode logs and defers to the next startup, NEVER
+/// blocks the host. The sweep runs ONLY on a complete reference set: a
+/// scan failure (unreadable journal) skips the sweep entirely (a partial
+/// set would reap live references).
+fn startup_attachment_sweep(nano_home: &std::path::Path, sessions_dir: &std::path::Path) {
+    let store = match AttachmentStore::open(nano_home) {
+        Ok(store) => store,
+        Err(err) => {
+            eprintln!("wayland-nano: attachment GC skipped (store unavailable): {err}");
+            return;
+        }
+    };
+    let referenced = match nano_session::attachment_store::referenced_blob_digests(sessions_dir) {
+        Ok(referenced) => referenced,
+        Err(err) => {
+            eprintln!("wayland-nano: attachment GC skipped (journal reference scan failed: {err})");
+            return;
+        }
+    };
+    match store.sweep(&referenced) {
+        Ok(report) if report.lock_skipped => {
+            // A writer holds the lease: the typed skip is the §5.4
+            // discipline, not an error.
+        }
+        Ok(report) => {
+            if report.removed_blobs > 0 || report.removed_staging > 0 {
+                eprintln!(
+                    "wayland-nano: attachment GC reclaimed {} bytes ({} blobs, {} staging files)",
+                    report.reclaimed_bytes, report.removed_blobs, report.removed_staging
+                );
+            }
+        }
+        Err(err) => eprintln!("wayland-nano: attachment GC failed: {err}"),
+    }
 }
 
 /// C2 §4: is a platform sandbox backend available RIGHT NOW? Unix probes
@@ -1031,6 +1151,9 @@ where
                             // down first (bounded, then detach).
                             if let Some(old) = session.take() {
                                 old.tasks.teardown_all();
+                                // P4 §4.4: and its PTY sessions (explicit;
+                                // Drop is the backstop).
+                                old.pty.terminate_all();
                             }
                             // P1 §3.2/§4.1: the session cost meter (None
                             // when the host carries no pricing catalog).
@@ -1077,6 +1200,10 @@ where
                             });
                             *current_tasks.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(tasks.clone());
+                            // P4 §4.4: the session-owned PTY registry (fresh
+                            // per session; never shared across sessions).
+                            let pty =
+                                Arc::new(nano_tools::pty::PtySessionManager::new(&cwd));
                             session = Some(Session {
                                 id: session_id.clone(),
                                 workspace: cwd,
@@ -1095,6 +1222,7 @@ where
                                 meter,
                                 // P2a §9.1: a fresh session starts clean.
                                 image_influenced,
+                                pty,
                             });
                             write_out(
                                 &out,
@@ -1327,6 +1455,9 @@ where
                             // down first (bounded, then detach).
                             if let Some(old) = session.take() {
                                 old.tasks.teardown_all();
+                                // P4 §4.4: and its PTY sessions (explicit;
+                                // Drop is the backstop).
+                                old.pty.terminate_all();
                             }
                             // P1 §3.3/§4.3: reconstruct the exact budget
                             // position — meter totals from TurnEnd.usage +
@@ -1384,6 +1515,11 @@ where
                             });
                             *current_tasks.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(tasks.clone());
+                            // P4 §4.4: the session-owned PTY registry (a
+                            // resumed session starts with NO live PTYs —
+                            // processes never survive the owning host).
+                            let pty =
+                                Arc::new(nano_tools::pty::PtySessionManager::new(&cwd));
                             session = Some(Session {
                                 id: session_id.to_string(),
                                 workspace: cwd,
@@ -1417,6 +1553,7 @@ where
                                 // false-negative record cannot reopen the
                                 // clamp on resume.
                                 image_influenced,
+                                pty,
                             });
                             write_out(
                                 &out,
@@ -2085,6 +2222,10 @@ where
                             // routes mcp__ calls through it (and advertises
                             // its tools to the model) without taking ownership.
                             let turn_mcp = active.mcp.clone();
+                            // P4 §4.4: the session's PTY registry — the
+                            // turn's executor routes pty_* calls through it
+                            // without taking ownership.
+                            let turn_pty = active.pty.clone();
                             // C2 §3 asymmetric application: the turn captures
                             // a mode SNAPSHOT (its tool-layer profile and its
                             // escalation ceiling) AND a clone of the shared
@@ -2327,6 +2468,19 @@ where
                                     turn_coordinator.clone(),
                                     session_id.clone(),
                                 );
+                                // P4 §4.3/§4.4: the session-owned PTY tools
+                                // route to the session's PtySessionManager
+                                // (ownership by construction). The gate's
+                                // explicit pty_spawn arm is the
+                                // authorization; this layer NEVER sees a
+                                // child surface (children are built from
+                                // v1_tool_definitions, which never carries
+                                // the pty names).
+                                let executor = crate::session_tools::PtyToolExecutor::new(
+                                    &executor, turn_pty,
+                                );
+                                tool_definitions
+                                    .extend(nano_tools::pty::pty_tool_definitions());
                                 // P3 §3.2/§4.3: the MCP session tools
                                 // (tool_search / mcp_list_resources /
                                 // mcp_read_resource) ride the shared registry
@@ -2969,6 +3123,32 @@ where
                         // ── C11 (Q1 RULED): ACP extension methods, thin
                         // adapters over the nano-session/nano-agent library
                         // APIs — no business logic in the ACP layer. ──
+                        "_wayland/session/list" => {
+                            // P4 session browser: the listing is GLOBAL and
+                            // read-only — served with or without an active
+                            // session, and never gated on a running turn
+                            // (the fork discipline below does not apply: no
+                            // journal is written here).
+                            match crate::session_browser::handle_list_request(
+                                config.sessions_dir,
+                            ) {
+                                Ok(result) => {
+                                    write_out(&out, &JsonRpcResponse::ok(id, result))?
+                                }
+                                Err(err) => {
+                                    eprintln!("wayland-nano: session list failed: {err}");
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            NanoErrorKind::JournalUnavailable,
+                                            format!("session listing unavailable: {err}"),
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                }
+                            }
+                        }
                         "_wayland/session/fork" => {
                             if turn.is_some() {
                                 write_out(
@@ -3863,6 +4043,31 @@ impl<W: Write + Send> ApprovalGate for AcpApproval<W> {
                 }
             };
         }
+        // 1d. P4 §4.3 (V2's cross-audit ruling, mechanized): `pty_spawn`
+        //     ALWAYS prompts outside read_only — no sandbox-available fast
+        //     path (an unsandboxed interactive PTY is a sandbox-off
+        //     capability by another name; the prompt is the AUTHORIZATION),
+        //     no rule-DSL interaction (the rules surface matches only the
+        //     literal `shell` name). read_only denies categorically.
+        if call.name == "pty_spawn" {
+            return match self.effective_mode() {
+                PermissionMode::ReadOnly => ApprovalDecision::Deny,
+                _ => self.prompt_host(call),
+            };
+        }
+        // 1e. P4 §4.3: the four follow-ups on an EXISTING session are not
+        //     re-gated (the spawn was the gated action — codex's model);
+        //     ownership is enforced by the session-scoped PtySessionManager
+        //     (a foreign id is unknown ⇒ typed PtySessionGone). read_only
+        //     still denies categorically — fail-closed: under read_only no
+        //     spawn was ever authorized, so a live session cannot
+        //     legitimately exist.
+        if nano_agent::wiring::PTY_TOOL_NAMES.contains(&call.name.as_str()) {
+            return match self.effective_mode() {
+                PermissionMode::ReadOnly => ApprovalDecision::Deny,
+                _ => ApprovalDecision::Approve,
+            };
+        }
         // 2. C10 §3 plan posture — enforcement AT THE GATE, before the mode
         //    arms, in every C2 mode including full_auto: fs_write/fs_edit
         //    pass ONLY for the session's plan file (a creation-safe
@@ -4081,12 +4286,17 @@ impl<W: Write> AcpApproval<W> {
 /// mutate the user-managed store and always ask (under read_only they are
 /// categorically denied, like every other mutation). C6: task polls
 /// (`task_status`/`task_result`/`task_list`) are read-only; task_spawn,
-/// task_cancel, and task_apply change live state and always ask.
+/// task_cancel, and task_apply change live state and always ask. P4 §5.5:
+/// `repo_map` is a read-only lexical query (policy-filtered; denied-read
+/// paths are never indexed or returned). The `pty_*` names are deliberately
+/// ABSENT — their approval comes from the explicit §4.3 arms, never a
+/// prefix fast path.
 /// (pub: the C11 cron fire path reuses this exact predicate.)
 pub fn is_read_only_tool(name: &str) -> bool {
     name.starts_with("fs_read")
         || name.starts_with("search")
         || name.starts_with("glob")
+        || name.starts_with("repo_map")
         || name.starts_with("memory_list")
         || name.starts_with("memory_read")
         || name.starts_with("task_status")
@@ -5068,6 +5278,199 @@ mod tests {
             rig.gate.approve(&contained_write(&ws.0)),
             ApprovalDecision::Deny
         );
+    }
+
+    /// P4 §13 spawn-gating matrix (the legs that could not exist
+    /// pre-wiring): `pty_spawn` — read_only DENIES without a prompt;
+    /// default PROMPTS; full_auto PROMPTS even with a probed sandbox (the
+    /// always-prompt arm is the regression pin — no fast path).
+    #[test]
+    fn p4_pty_spawn_gate_matrix() {
+        let ws = workspace();
+        let spawn = || call("pty_spawn", serde_json::json!({"command": "cmd"}));
+        // read_only: categorical deny, never a prompt.
+        let rig = TestGate::new(PermissionMode::ReadOnly, &ws.0, true, None);
+        assert_eq!(rig.gate.approve(&spawn()), ApprovalDecision::Deny);
+        assert_eq!(
+            rig.prompt_count(),
+            0,
+            "read_only never prompts for pty_spawn"
+        );
+        // default: ALWAYS the host prompt.
+        let rig = TestGate::new(PermissionMode::Default, &ws.0, true, Some("allow"));
+        assert_eq!(rig.gate.approve(&spawn()), ApprovalDecision::Approve);
+        assert_eq!(rig.prompt_count(), 1, "default prompts for pty_spawn");
+        // full_auto: PROMPTS — sandbox availability is NOT a fast path, in
+        // either probe state.
+        for sandbox in [true, false] {
+            let rig = TestGate::new(PermissionMode::FullAuto, &ws.0, sandbox, Some("allow"));
+            assert_eq!(
+                rig.gate.approve(&spawn()),
+                ApprovalDecision::Approve,
+                "full_auto (sandbox_available={sandbox}) resolves through the prompt"
+            );
+            assert_eq!(
+                rig.prompt_count(),
+                1,
+                "full_auto (sandbox_available={sandbox}) must PROMPT for pty_spawn"
+            );
+        }
+        // A denied prompt denies the spawn.
+        let rig = TestGate::new(PermissionMode::FullAuto, &ws.0, true, Some("reject"));
+        assert_eq!(rig.gate.approve(&spawn()), ApprovalDecision::Deny);
+        assert_eq!(rig.prompt_count(), 1);
+    }
+
+    /// P4 §4.3/§13: the four follow-ups are NOT re-gated outside read_only
+    /// (the spawn was the gated action — codex's model); read_only denies
+    /// them categorically (no spawn was ever authorized under it). They
+    /// match NEITHER fast path by construction (the MCP-names pin's pty
+    /// analogue).
+    #[test]
+    fn p4_pty_followups_gate_matrix() {
+        let ws = workspace();
+        for name in ["pty_write", "pty_read", "pty_kill", "pty_list"] {
+            assert!(
+                !is_read_only_tool(name),
+                "{name} must not join the read-only fast path"
+            );
+            assert!(
+                !nano_agent::wiring::SESSION_TOOL_NAMES.contains(&name),
+                "{name} must not join the auto-approve-coupled SESSION_TOOL_NAMES"
+            );
+            let rig = TestGate::new(PermissionMode::ReadOnly, &ws.0, true, None);
+            assert_eq!(
+                rig.gate
+                    .approve(&call(name, serde_json::json!({"session_id": "pty_1"}))),
+                ApprovalDecision::Deny,
+                "read_only must deny {name}"
+            );
+            assert_eq!(rig.prompt_count(), 0, "read_only never prompts for {name}");
+            for mode in [PermissionMode::Default, PermissionMode::FullAuto] {
+                let rig = TestGate::new(mode, &ws.0, true, None);
+                assert_eq!(
+                    rig.gate
+                        .approve(&call(name, serde_json::json!({"session_id": "pty_1"}))),
+                    ApprovalDecision::Approve,
+                    "{mode:?}/{name} is not re-gated"
+                );
+                assert_eq!(rig.prompt_count(), 0, "{mode:?}/{name} never prompts");
+            }
+        }
+    }
+
+    /// F-28 MEDIUM-2 (P4 §5.5): the three read-only predicates agree on
+    /// `repo_map` — the acp fast path (this module) and the exec gate's
+    /// decision core (which rides it). The child-gate half (tasks.rs's
+    /// private predicate) is pinned in nano-agent's tasks tests; a single
+    /// test cannot span the crate boundary, so the agreement is pinned by
+    /// this pair landing together.
+    #[test]
+    fn repo_map_read_only_predicates_agree_acp_and_exec() {
+        assert!(is_read_only_tool("repo_map"), "acp fast path");
+        for mode in PermissionMode::ALL {
+            let decision = crate::exec_mode::exec_gate_decision(
+                &call("repo_map", serde_json::json!({"query": "x"})),
+                mode,
+                &PermissionProfile::workspace_write().file_system_sandbox_policy(),
+                std::path::Path::new("."),
+                false,
+            );
+            assert_eq!(
+                decision,
+                ApprovalDecision::Approve,
+                "exec gate must approve repo_map in {mode:?} (read-only)"
+            );
+        }
+        // And the PTY names agree the OTHER way: no predicate may call
+        // them read-only (§4.3's arms own their approval).
+        for name in nano_agent::wiring::PTY_TOOL_NAMES {
+            assert!(
+                !is_read_only_tool(name),
+                "{name} must never be a read-only fast-path name"
+            );
+        }
+    }
+
+    /// F-36 (P3 §6.3): the OAuth grant producer — checked conversion,
+    /// journal-side validation, append through the session coordinator.
+    #[test]
+    fn oauth_grant_recorder_journals_validated_grants() {
+        use nano_mcp::oauth::flow::{GrantEndpoint as FlowEndpoint, GrantRecord};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let journal = tmp.path().join("s.jsonl");
+        let coordinator = Arc::new(nano_session::JournalCoordinator::open(&journal).unwrap());
+        let record = |method: nano_egress::grant::HttpMethod, grant_id: &str| GrantRecord {
+            grant_id: grant_id.into(),
+            server_id: "srv".into(),
+            as_origin: "https://as.example".into(),
+            issuer: "https://as.example".into(),
+            endpoints: vec![FlowEndpoint {
+                method,
+                path: "/oauth/token".into(),
+            }],
+        };
+
+        let recorder = oauth_grant_recorder(coordinator.clone());
+        // GET and POST journal; the op lands and replays.
+        recorder(&record(nano_egress::grant::HttpMethod::Get, "g-1")).unwrap();
+        let report = read_journal(&journal).unwrap();
+        let grants: Vec<_> = report
+            .envelopes
+            .iter()
+            .filter_map(|e| match &e.op {
+                Op::McpOauthGrant {
+                    grant_id,
+                    endpoints,
+                    ..
+                } => Some((grant_id.clone(), endpoints.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].0, "g-1");
+        assert_eq!(grants[0].1[0].method, nano_session::op::GrantMethod::Get);
+        // Idempotence: the same grant id re-appends as already-durable.
+        recorder(&record(nano_egress::grant::HttpMethod::Get, "g-1")).unwrap();
+        let report = read_journal(&journal).unwrap();
+        assert_eq!(report.envelopes.len(), 1, "grant_id is the op id");
+
+        // Checked conversion: a method outside the journal vocabulary
+        // (PUT/DELETE/PATCH/HEAD/OPTIONS) is REJECTED — never journaled as
+        // an unenforceable grant.
+        let err = recorder(&record(nano_egress::grant::HttpMethod::Put, "g-2"))
+            .expect_err("PUT must be rejected");
+        assert!(matches!(
+            err,
+            nano_mcp::oauth::OAuthError::Failed {
+                reason: nano_mcp::oauth::FailReason::GrantRejected
+            }
+        ));
+        let report = read_journal(&journal).unwrap();
+        assert_eq!(report.envelopes.len(), 1, "rejected grant never journals");
+
+        // Journal-bounds violations reject the same way.
+        let mut oversized = record(nano_egress::grant::HttpMethod::Post, "g-3");
+        oversized.as_origin = "https://x".repeat(200);
+        assert!(recorder(&oversized).is_err());
+
+        // Append failure (journal path replaced by a directory mid-flight)
+        // surfaces the typed journal_unavailable reason.
+        drop(recorder);
+        drop(coordinator);
+        let coordinator = Arc::new(nano_session::JournalCoordinator::open(&journal).unwrap());
+        let recorder = oauth_grant_recorder(coordinator);
+        std::fs::remove_file(&journal).unwrap();
+        std::fs::create_dir(&journal).unwrap();
+        let err = recorder(&record(nano_egress::grant::HttpMethod::Get, "g-4"))
+            .expect_err("append must fail");
+        assert!(matches!(
+            err,
+            nano_mcp::oauth::OAuthError::Failed {
+                reason: nano_mcp::oauth::FailReason::JournalUnavailable
+            }
+        ));
     }
 
     #[test]

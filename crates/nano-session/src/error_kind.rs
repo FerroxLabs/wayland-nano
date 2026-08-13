@@ -71,6 +71,10 @@ pub enum NanoErrorKind {
     UnknownTool,
     MissingArgs,
     ApprovalDenied,
+    /// P4 §8: write/read/kill against an unknown or exited PTY session
+    /// (§4.4). The exit code rides the tool-card detail when known; the
+    /// presentation stays static.
+    PtySessionGone,
     // ── engine stops (turn-fatal, NOT user cancels) ─────────────────────
     BudgetExhausted,
     /// P1 §4.1: the session token cap stopped the turn (a zero output

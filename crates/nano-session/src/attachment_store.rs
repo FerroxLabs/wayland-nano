@@ -372,6 +372,36 @@ impl AttachmentStore {
         Ok(total)
     }
 
+    /// Live blob count (the `/doctor` store report, §5.4). Only entries
+    /// whose names are valid digests count — staging/unknown entries are
+    /// not blobs.
+    pub fn blob_count(&self) -> Result<u64, AttachmentStoreError> {
+        let mut count = 0u64;
+        let blobs = self.blobs_dir();
+        for fanout in read_dir(&blobs)? {
+            let fanout = fanout.map_err(AttachmentStoreError::io("read-dir"))?;
+            if !fanout
+                .file_type()
+                .map_err(AttachmentStoreError::io("stat"))?
+                .is_dir()
+            {
+                continue;
+            }
+            for entry in read_dir(&fanout.path())? {
+                let entry = entry.map_err(AttachmentStoreError::io("read-dir"))?;
+                let is_blob = entry
+                    .file_name()
+                    .to_str()
+                    .map(is_valid_digest)
+                    .unwrap_or(false);
+                if is_blob {
+                    count = count.saturating_add(1);
+                }
+            }
+        }
+        Ok(count)
+    }
+
     /// §5.4 GC sweep. Deletes: unreferenced blobs past the grace, stale
     /// `.tmp` staging files, empty fanout dirs. NEVER deletes under a
     /// writer lease (exclusive-lock acquisition fails → typed skip), never
@@ -379,8 +409,11 @@ impl AttachmentStore {
     /// future-timestamped entries (clock anomaly ⇒ fail-closed).
     ///
     /// `referenced` is the digest reference set scanned from the journals
-    /// by the host (§5.4: every digest named by any `input_blocks`
-    /// manifest; compaction does NOT release the reference).
+    /// by the host (§5.4): every digest named by any `input_blocks`
+    /// manifest OR any `ToolResult.image_refs` entry (F-32 LOW-7 — §3.2
+    /// requires both; tool-result references keep their blobs live too).
+    /// Compaction does NOT release the reference. Build it with
+    /// [`referenced_blob_digests`].
     pub fn sweep(&self, referenced: &HashSet<String>) -> Result<SweepReport, AttachmentStoreError> {
         let lock = match FileLock::try_acquire(&self.lock_path()) {
             Ok(lock) => lock,
@@ -486,6 +519,57 @@ enum AgeClass {
     Stale,
 }
 
+/// §5.4 host-side reference scan (wired by F-34): every blob digest any
+/// journal in `sessions_dir` still references — `TurnBegin.input_blocks`
+/// image manifests AND `ToolResult.image_refs` (F-32 LOW-7; §3.2). Only
+/// canonical digest strings collect (a malformed entry references nothing
+/// that exists in the store). FAIL-CLOSED: any unreadable journal aborts
+/// the scan with Err — the caller must NOT sweep on a partial set (a
+/// skipped journal's references would otherwise be reaped live).
+pub fn referenced_blob_digests(sessions_dir: &Path) -> io::Result<HashSet<String>> {
+    use crate::op::{InputBlock, Op};
+
+    let mut referenced = HashSet::new();
+    let entries = match fs::read_dir(sessions_dir) {
+        Ok(entries) => entries,
+        // No sessions directory yet ⇒ no journals ⇒ no references.
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(referenced),
+        Err(err) => return Err(err),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(stem) = name.to_str() else {
+            continue; // non-UTF-8 name: not a journal we wrote
+        };
+        if !stem.ends_with(".jsonl") {
+            continue;
+        }
+        let report = crate::reader::read_journal(&entry.path())?;
+        for envelope in &report.envelopes {
+            match &envelope.op {
+                Op::TurnBegin { input_blocks, .. } => {
+                    for block in input_blocks {
+                        if let InputBlock::ImageRef(reference) = block {
+                            if is_valid_digest(&reference.digest) {
+                                referenced.insert(reference.digest.clone());
+                            }
+                        }
+                    }
+                }
+                Op::ToolResult { image_refs, .. } => {
+                    for reference in image_refs {
+                        if is_valid_digest(&reference.digest) {
+                            referenced.insert(reference.digest.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(referenced)
+}
 /// Age classification: future timestamps and unknown mtimes fail CLOSED
 /// (skip), young entries are kept, only entries provably older than the
 /// grace are stale.
@@ -1494,5 +1578,79 @@ mod tests {
         assert!(!young_tmp.exists());
         assert!(fanout.join("not-a-digest").exists());
         let _ = fs::remove_dir_all(&home);
+    }
+
+    /// F-34 wiring + F-32 LOW-7: the reference scan covers BOTH journal
+    /// reference surfaces — TurnBegin input_blocks manifests AND
+    /// ToolResult.image_refs — and aborts (never returns a partial set) on
+    /// an unreadable journal.
+    #[test]
+    fn referenced_digests_cover_prompts_and_tool_results() {
+        use crate::op::{ImageRef, InputBlock, Op, OpEnvelope};
+
+        let dir = std::env::temp_dir().join(format!("nano-gc-scan-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let digest_a = "aa".repeat(32);
+        let digest_b = "bb".repeat(32);
+        let image = |digest: String| ImageRef {
+            digest,
+            mime: "image/png".into(),
+            bytes: 4,
+            width: 1,
+            height: 1,
+            normalized_from: None,
+            placeholder: "[Image #1]".into(),
+        };
+        let envelopes = [
+            OpEnvelope::new(
+                "op-1",
+                "now",
+                Op::TurnBegin {
+                    turn_id: "t1".into(),
+                    input: "look".into(),
+                    input_blocks: vec![InputBlock::ImageRef(image(digest_a.clone()))],
+                },
+            ),
+            OpEnvelope::new(
+                "op-2",
+                "now",
+                Op::ToolResult {
+                    call_id: "c1".into(),
+                    ok: true,
+                    output_digest: "cc".repeat(32),
+                    changed_files: vec![],
+                    error_kind: None,
+                    image_refs: vec![image(digest_b.clone())],
+                },
+            ),
+        ];
+        let mut body = String::new();
+        for envelope in &envelopes {
+            body.push_str(&serde_json::to_string(envelope).unwrap());
+            body.push('\n');
+        }
+        fs::write(dir.join("s1.jsonl"), body).unwrap();
+        // Non-journal entries never participate.
+        fs::write(dir.join("notes.txt"), "not a journal").unwrap();
+
+        let referenced = referenced_blob_digests(&dir).unwrap();
+        assert!(referenced.contains(&digest_a), "prompt manifest digest");
+        assert!(
+            referenced.contains(&digest_b),
+            "tool-result image_refs digest"
+        );
+        assert_eq!(referenced.len(), 2);
+
+        // Fail-closed: an unreadable journal aborts the scan (the caller
+        // must not sweep on a partial set). The bad line must be NON-final
+        // — a final bad line is the reader's tolerated crash-torn tail.
+        fs::write(dir.join("corrupt.jsonl"), "not json\n{}\n").unwrap();
+        assert!(referenced_blob_digests(&dir).is_err());
+
+        // A missing sessions dir scans empty (fresh profile).
+        let missing = dir.join("nope");
+        assert!(referenced_blob_digests(&missing).unwrap().is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

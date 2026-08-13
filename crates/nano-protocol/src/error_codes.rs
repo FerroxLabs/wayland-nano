@@ -155,10 +155,11 @@ mod tests {
     }
 
     /// The shim must not drift from the canonical module. P3 §7: the seven
-    /// MCP-ecosystem kinds moved the pin 48 → 55 (post-P2a-rebase rule).
+    /// MCP-ecosystem kinds moved the pin 48 → 55 (post-P2a-rebase rule);
+    /// the RC2 wiring pass added P4's PtySessionGone (55 → 56).
     #[test]
     fn shim_re_exports_the_canonical_table() {
-        assert_eq!(ALL_KINDS.len(), 55);
+        assert_eq!(ALL_KINDS.len(), 56);
         assert_eq!(
             spec(NanoErrorKind::ModelRateLimited).title,
             nano_session::error_codes::spec(NanoErrorKind::ModelRateLimited).title

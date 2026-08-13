@@ -475,6 +475,13 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
         if let Some(tool) = &tools_search {
             executor = executor.with_web_search(tool.clone(), tools_meter.clone());
         }
+        // P4 §5.5: the repo_map index rides the same policy + cwd; a
+        // construction failure leaves the slot empty (typed denial on
+        // call, never a silent skip).
+        match nano_tools::repomap::RepoMapTool::new(&policy, workspace) {
+            Ok(tool) => executor = executor.with_repo_map(tool),
+            Err(error) => eprintln!("wayland-nano: repo_map index unavailable: {error}"),
+        }
         (executor, policy)
     };
     let sandbox_available = platform_sandbox_available(nano_home);

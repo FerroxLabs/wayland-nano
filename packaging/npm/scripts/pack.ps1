@@ -58,8 +58,14 @@ $ManifestPlatforms = [ordered]@{}
 foreach ($Key in $Targets) {
     $Triple = $Matrix[$Key]
     $File = if ($Key -eq 'win32-x64') { 'wayland-nano.exe' } else { 'wayland-nano' }
+    # P4 PTY (RC2 wiring pass): the unix PTY host-death sentinel ships next
+    # to the host binary (pty.rs resolves it beside current_exe; the
+    # NANO_PTY_GUARD_EXE override is the documented escape hatch). Windows
+    # needs no guard — ConPTY + Job Objects carry the teardown there.
+    $Helpers = if ($Key -eq 'win32-x64') { @() } else { @('wayland-nano-pty-guard') }
     if ($ArtifactRoot) {
         $Source = Join-Path $ArtifactRoot "$Key\$File"
+        $HelperSources = @($Helpers | ForEach-Object { Join-Path $ArtifactRoot "$Key\$_" })
     } else {
         if (-not $SkipBuild) {
             $CargoArgs = @('build', '--release', '-p', 'nano-cli')
@@ -67,24 +73,52 @@ foreach ($Key in $Targets) {
             Write-Host "==> cargo $($CargoArgs -join ' ')"
             & cargo @CargoArgs
             if ($LASTEXITCODE -ne 0) { throw "cargo build failed for $Key (exit $LASTEXITCODE)" }
+            if ($Helpers.Count -gt 0) {
+                # The guard binary is a nano-tools bin target.
+                $GuardArgs = @('build', '--release', '-p', 'nano-tools', '--bin', 'wayland-nano-pty-guard')
+                if ($Platform -ne 'host') { $GuardArgs += @('--target', $Triple) }
+                Write-Host "==> cargo $($GuardArgs -join ' ')"
+                & cargo @GuardArgs
+                if ($LASTEXITCODE -ne 0) { throw "guard build failed for $Key (exit $LASTEXITCODE)" }
+            }
         }
         $Source = if ($Platform -eq 'host') {
             Join-Path $RepoRoot "target\release\$File"
         } else {
             Join-Path $RepoRoot "target\$Triple\release\$File"
         }
+        $HelperSources = @($Helpers | ForEach-Object {
+            if ($Platform -eq 'host') { Join-Path $RepoRoot "target\release\$_" }
+            else { Join-Path $RepoRoot "target\$Triple\release\$_" }
+        })
     }
     if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) { throw "expected binary not found: $Source" }
+    foreach ($HelperSource in $HelperSources) {
+        if (-not (Test-Path -LiteralPath $HelperSource -PathType Leaf)) { throw "expected helper binary not found: $HelperSource" }
+    }
 
     $DestinationDir = Join-Path $PackageRoot "binaries\$Key"
     New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
     $Destination = Join-Path $DestinationDir $File
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
     $Info = Get-Item -LiteralPath $Destination
+    $HelperManifest = @()
+    for ($i = 0; $i -lt $Helpers.Count; $i++) {
+        $HelperDestination = Join-Path $DestinationDir $Helpers[$i]
+        Copy-Item -LiteralPath $HelperSources[$i] -Destination $HelperDestination -Force
+        $HelperInfo = Get-Item -LiteralPath $HelperDestination
+        $HelperManifest += [ordered]@{
+            file = $Helpers[$i]
+            size = $HelperInfo.Length
+            sha256 = (Get-FileHash -LiteralPath $HelperDestination -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        Write-Host "==> staged $Key helper $($Helpers[$i]) ($($HelperInfo.Length) bytes)"
+    }
     $ManifestPlatforms[$Key] = [ordered]@{
         file = $File
         size = $Info.Length
         sha256 = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
+        helpers = $HelperManifest
     }
     Write-Host "==> staged $Key ($($Info.Length) bytes)"
 }

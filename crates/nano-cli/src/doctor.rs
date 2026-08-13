@@ -91,6 +91,47 @@ pub fn run(nano_home: &std::path::Path, out: &mut dyn std::io::Write) -> std::io
         detail: journal_probe.1,
     });
 
+    // P4 session browser (RC2 wiring): report-only sessions-directory ACL
+    // line — failure is reported, never blocks normal session use.
+    let sessions_report =
+        nano_cli::session_browser::sessions_dir_permission_report(&nano_home.join("sessions"));
+    checks.push(Check {
+        name: "sessions-dir-permissions",
+        status: if sessions_report.private {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Warn
+        },
+        detail: sessions_report.detail,
+    });
+
+    // P2a §5.4 (F-34): the attachment-store report (size, blob count). The
+    // store's open carries the fail-closed §5.5 permission audit, so an
+    // insecurely configured store reports Fail, never a silent pass.
+    match nano_session::attachment_store::AttachmentStore::open(nano_home) {
+        Ok(store) => {
+            let bytes = store.total_bytes();
+            let blobs = store.blob_count();
+            match (bytes, blobs) {
+                (Ok(bytes), Ok(blobs)) => checks.push(Check {
+                    name: "attachment-store",
+                    status: CheckStatus::Pass,
+                    detail: format!("{blobs} blobs, {bytes} bytes"),
+                }),
+                (Err(err), _) | (_, Err(err)) => checks.push(Check {
+                    name: "attachment-store",
+                    status: CheckStatus::Fail,
+                    detail: format!("store stats failed: {err}"),
+                }),
+            }
+        }
+        Err(err) => checks.push(Check {
+            name: "attachment-store",
+            status: CheckStatus::Fail,
+            detail: format!("store unavailable or insecurely configured: {err}"),
+        }),
+    }
+
     let sensitive_ok = nano_tools::fs::is_sensitive_path(std::path::Path::new(".env"))
         && !nano_tools::fs::is_sensitive_path(std::path::Path::new("notes.txt"));
     checks.push(Check {

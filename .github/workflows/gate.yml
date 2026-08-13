@@ -76,6 +76,12 @@ jobs:
         if: runner.os == 'Linux'
         run: test -x target/debug/wayland-nano-linux-sandbox
 
+      # P4 PTY: the unix PTY host-death sentinel must prebuild too — the
+      # unix pty tests exec it via the beside-current_exe resolution.
+      - name: Verify wayland-nano-pty-guard helper built
+        if: runner.os != 'Windows'
+        run: test -x target/debug/wayland-nano-pty-guard
+
       # The helper's modern path shells out to bubblewrap; hosted Ubuntu
       # images don't ship it. (Legacy landlock fallback stays tested by the
       # builder tests; runtime tests exercise the default bwrap path.)

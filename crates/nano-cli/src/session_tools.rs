@@ -535,6 +535,123 @@ impl ToolExecutor for SessionTools<'_> {
     }
 }
 
+/// The session-owned PTY executor (P4 §4.3/§4.4): routes the five `pty_*`
+/// tools to the session's [`PtySessionManager`] and defers everything else
+/// (the TaskToolExecutor wrapper pattern). Approval is the GATE's job —
+/// `pty_spawn` always prompts there; the four follow-ups are not re-gated
+/// (the spawn was the gated action). Ownership is by construction: the
+/// manager is session-scoped, so a foreign/child session id is simply
+/// unknown here (typed `PtySessionGone`).
+pub struct PtyToolExecutor<'a> {
+    inner: &'a dyn ToolExecutor,
+    pty: Arc<nano_tools::pty::PtySessionManager>,
+}
+
+impl std::fmt::Debug for PtyToolExecutor<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PtyToolExecutor").finish_non_exhaustive()
+    }
+}
+
+/// P4 §8: the tool-result-boundary kind mapping. `PtySessionGone` gets its
+/// dedicated kind; spawn/sandbox unavailability and invalid params ride the
+/// existing kinds. Capacity is deliberately UNTYPED — the §4.4 capacity
+/// refusal follows the `TaskError::FanOutCap` precedent (a bounded
+/// tool-level message, not a table entry).
+fn kind_of_pty(err: &nano_tools::pty::PtyError) -> Option<nano_session::NanoErrorKind> {
+    use nano_session::NanoErrorKind;
+    match err {
+        nano_tools::pty::PtyError::PtySessionGone { .. } => Some(NanoErrorKind::PtySessionGone),
+        nano_tools::pty::PtyError::SandboxUnavailable(_) | nano_tools::pty::PtyError::Spawn(_) => {
+            Some(NanoErrorKind::SandboxUnavailable)
+        }
+        nano_tools::pty::PtyError::InvalidParams(_) => Some(NanoErrorKind::InvalidParams),
+        nano_tools::pty::PtyError::Capacity => None,
+    }
+}
+
+impl<'a> PtyToolExecutor<'a> {
+    pub fn new(inner: &'a dyn ToolExecutor, pty: Arc<nano_tools::pty::PtySessionManager>) -> Self {
+        Self { inner, pty }
+    }
+
+    fn parse<T: serde::de::DeserializeOwned>(call: &ToolCall) -> Result<T, ToolOutcome> {
+        serde_json::from_value(call.arguments.clone()).map_err(|err| ToolOutcome {
+            ok: false,
+            output: format!("bad pty arguments: {err}"),
+            progress: ProgressSignals::default(),
+            error_kind: Some(nano_session::NanoErrorKind::MissingArgs),
+        })
+    }
+
+    fn outcome(result: Result<impl serde::Serialize, nano_tools::pty::PtyError>) -> ToolOutcome {
+        match result {
+            Ok(response) => ToolOutcome {
+                ok: true,
+                output: serde_json::to_string(&response)
+                    .unwrap_or_else(|_| "pty response serialization failed".into()),
+                progress: ProgressSignals::default(),
+                error_kind: None,
+            },
+            Err(err) => ToolOutcome {
+                ok: false,
+                output: err.to_string(),
+                progress: ProgressSignals::default(),
+                error_kind: kind_of_pty(&err),
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor for PtyToolExecutor<'_> {
+    async fn execute(&self, call: &ToolCall) -> ToolOutcome {
+        use nano_tools::pty::{PtyKillRequest, PtyReadRequest, PtySpawnRequest, PtyWriteRequest};
+        match call.name.as_str() {
+            "pty_spawn" => match Self::parse::<PtySpawnRequest>(call) {
+                Ok(request) => Self::outcome(self.pty.spawn(request)),
+                Err(outcome) => outcome,
+            },
+            "pty_write" => match Self::parse::<PtyWriteRequest>(call) {
+                Ok(request) => Self::outcome(self.pty.write(request)),
+                Err(outcome) => outcome,
+            },
+            "pty_read" => match Self::parse::<PtyReadRequest>(call) {
+                Ok(request) => Self::outcome(self.pty.read(request)),
+                Err(outcome) => outcome,
+            },
+            "pty_kill" => match Self::parse::<PtyKillRequest>(call) {
+                Ok(request) => Self::outcome(self.pty.kill(request)),
+                Err(outcome) => outcome,
+            },
+            "pty_list" => Self::outcome(Ok::<_, nano_tools::pty::PtyError>(self.pty.list())),
+            _ => self.inner.execute(call).await,
+        }
+    }
+
+    /// The pty arms are synchronous manager operations (pty_read's wait is
+    /// the bounded yield, not a cancellable stream); everything else
+    /// threads the turn's cancel flag through (the web_search discipline).
+    async fn execute_cancellable(
+        &self,
+        call: &ToolCall,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ToolOutcome {
+        match call.name.as_str() {
+            name if nano_agent::wiring::PTY_TOOL_NAMES.contains(&name) => self.execute(call).await,
+            _ => self.inner.execute_cancellable(call, cancel).await,
+        }
+    }
+
+    fn take_image_result(&self, call_id: &str) -> Option<nano_agent::turn::LiveImageToolResult> {
+        self.inner.take_image_result(call_id)
+    }
+
+    fn image_results_backed(&self) -> bool {
+        self.inner.image_results_backed()
+    }
+}
+
 /// The protocol-host approval gate (C10 §3): the historical host gate is
 /// ApproveAll (the protocol host is a trust-all dev surface with no C2
 /// modes), but the plan posture is NOT theatre — while it is active,
@@ -893,5 +1010,100 @@ mod tests {
         assert!(capped.contains("…[elided 2000 chars]…"));
         let small = "small plan";
         assert_eq!(cap_plan_text(small), small);
+    }
+
+    /// P4 §4.4/§8: the session-PTY executor routes the five names to the
+    /// session's manager with the design's kind mapping; non-pty names
+    /// delegate. No real PTY is spawned here — the platform spawn legs live
+    /// in nano-tools' pty.rs tests.
+    #[test]
+    fn pty_executor_dispatch_and_kind_mapping() {
+        use nano_agent::turn::{ToolExecutor, ToolOutcome};
+
+        #[derive(Debug)]
+        struct RecordingExec;
+        #[async_trait::async_trait]
+        impl ToolExecutor for RecordingExec {
+            async fn execute(&self, _call: &nano_model::types::ToolCall) -> ToolOutcome {
+                ToolOutcome {
+                    ok: true,
+                    output: "delegated".into(),
+                    progress: ProgressSignals::default(),
+                    error_kind: None,
+                }
+            }
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let manager = Arc::new(nano_tools::pty::PtySessionManager::new(workspace.path()));
+        let inner = RecordingExec;
+        let executor = PtyToolExecutor::new(&inner, manager);
+        let call = |name: &str, args: serde_json::Value| nano_model::types::ToolCall {
+            id: "c".into(),
+            name: name.into(),
+            arguments: args,
+        };
+
+        // Unknown session: typed PtySessionGone (never retryable).
+        let outcome = rt.block_on(executor.execute(&call(
+            "pty_write",
+            serde_json::json!({"session_id": "pty_9", "chars": "x"}),
+        )));
+        assert!(!outcome.ok);
+        assert_eq!(
+            outcome.error_kind,
+            Some(nano_session::NanoErrorKind::PtySessionGone)
+        );
+        let outcome = rt.block_on(executor.execute(&call(
+            "pty_read",
+            serde_json::json!({"session_id": "pty_9"}),
+        )));
+        assert_eq!(
+            outcome.error_kind,
+            Some(nano_session::NanoErrorKind::PtySessionGone)
+        );
+        let outcome = rt.block_on(executor.execute(&call(
+            "pty_kill",
+            serde_json::json!({"session_id": "pty_9"}),
+        )));
+        assert_eq!(
+            outcome.error_kind,
+            Some(nano_session::NanoErrorKind::PtySessionGone)
+        );
+
+        // Malformed arguments: MissingArgs; schema-valid but bounded-out
+        // values: InvalidParams.
+        let outcome = rt.block_on(executor.execute(&call("pty_spawn", serde_json::json!({}))));
+        assert_eq!(
+            outcome.error_kind,
+            Some(nano_session::NanoErrorKind::MissingArgs)
+        );
+        let outcome = rt.block_on(executor.execute(&call(
+            "pty_read",
+            serde_json::json!({"session_id": "pty_9", "max_bytes": 0}),
+        )));
+        assert_eq!(
+            outcome.error_kind,
+            Some(nano_session::NanoErrorKind::InvalidParams)
+        );
+
+        // pty_list on the empty manager succeeds with a JSON payload.
+        let outcome = rt.block_on(executor.execute(&call("pty_list", serde_json::json!({}))));
+        assert!(outcome.ok, "{}", outcome.output);
+        assert_eq!(outcome.output, "[]");
+
+        // Other names delegate untouched.
+        let outcome =
+            rt.block_on(executor.execute(&call("fs_read", serde_json::json!({"path": "a"}))));
+        assert!(outcome.ok);
+        assert_eq!(outcome.output, "delegated");
+
+        // The §4.4 capacity refusal is a bounded tool-level error with NO
+        // table kind (the TaskError::FanOutCap precedent).
+        assert_eq!(kind_of_pty(&nano_tools::pty::PtyError::Capacity), None);
     }
 }

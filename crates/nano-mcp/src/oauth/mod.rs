@@ -87,6 +87,12 @@ pub enum FailReason {
     ProviderError(String),
     /// Dynamic client registration failed (bounded code only).
     RegistrationFailed(String),
+    /// The validated grant failed journal-side validation (§6.3 bounds) —
+    /// the login aborts BEFORE any endpoint grant exists in a live policy.
+    GrantRejected,
+    /// The grant journal append failed (F-36 producer): journal-first means
+    /// the login aborts and no scoped client is built.
+    JournalUnavailable,
 }
 
 impl FailReason {
@@ -105,6 +111,8 @@ impl FailReason {
             FailReason::MetadataInvalid => "metadata_invalid",
             FailReason::ProviderError(_) => "provider_error",
             FailReason::RegistrationFailed(_) => "registration_failed",
+            FailReason::GrantRejected => "grant_rejected",
+            FailReason::JournalUnavailable => "journal_unavailable",
         }
     }
 }

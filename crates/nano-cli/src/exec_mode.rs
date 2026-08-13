@@ -216,6 +216,14 @@ pub fn exec_gate_decision(
             | nano_agent::wiring::McpApprovalClass::ServerDataRead => ApprovalDecision::Deny,
         };
     }
+    // P4 §4.3: PTY is interactive-only (the spawn's authorization IS the
+    // host prompt, which exec can never show; headless PTY is out of
+    // scope, §16). All five names auto-deny in EVERY mode — pinned
+    // explicitly so a future read-only/fast-path change can never leak a
+    // pty name onto this surface.
+    if nano_agent::wiring::PTY_TOOL_NAMES.contains(&call.name.as_str()) {
+        return ApprovalDecision::Deny;
+    }
     match mode {
         PermissionMode::ReadOnly => ApprovalDecision::Deny,
         PermissionMode::Default => ApprovalDecision::Deny, // would prompt → auto-deny

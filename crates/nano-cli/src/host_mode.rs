@@ -37,13 +37,19 @@ pub async fn run(
 
     let policy =
         nano_core::permissions::PermissionProfile::workspace_write().file_system_sandbox_policy();
-    let fs = FsTools::new(policy, workspace);
+    let fs = FsTools::new(policy.clone(), workspace);
     let shell = ShellTool::new(nano_home, workspace);
     let mut executor = RealToolExecutor::new(fs, shell, workspace);
     // C4: web_fetch is inert (typed denial) unless NANO_WEB_FETCH_HOSTS
     // configures the second egress policy domain.
     if let Some(fetch) = nano_cli::fetch_specs::web_fetch_tool_from_env() {
         executor = executor.with_web_fetch(fetch);
+    }
+    // P4 §5.5: the repo_map index rides the same policy + workspace; a
+    // construction failure leaves the slot empty (typed denial on call).
+    match nano_tools::repomap::RepoMapTool::new(&policy, workspace) {
+        Ok(tool) => executor = executor.with_repo_map(tool),
+        Err(error) => eprintln!("wayland-nano: repo_map index unavailable: {error}"),
     }
     // P1: web_search — the key-gated ladder, resolved ONCE at host start.
     // The meter handle is Lane B's session CostMeter; the stub stands the

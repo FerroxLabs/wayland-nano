@@ -1463,6 +1463,7 @@ dependencies = [
  "nano-agent",
  "nano-core",
  "nano-egress",
+ "nano-mcp",
  "nano-model",
  "nano-protocol",
  "nano-sandbox",
