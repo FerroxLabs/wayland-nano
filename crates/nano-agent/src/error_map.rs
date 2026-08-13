@@ -120,9 +120,6 @@ pub fn kind_of_mcp(err: &nano_mcp::client::McpError) -> NanoErrorKind {
         McpError::ResourceUnsupported => NanoErrorKind::McpResourceUnsupported,
         McpError::ContentUnsupported => NanoErrorKind::McpContentUnsupported,
         McpError::Egress(err) => kind_of_egress(err),
-        McpError::Cancelled => NanoErrorKind::UserCancelled,
-        McpError::ResourceUnsupported => NanoErrorKind::McpResourceUnsupported,
-        McpError::ContentUnsupported => NanoErrorKind::McpContentUnsupported,
     }
 }
 

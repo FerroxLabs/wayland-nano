@@ -6417,6 +6417,7 @@ mod tests {
                 covers_op_ids: vec!["t-1".into(), "t-2".into()],
                 changed_files: vec![],
                 image_influenced: true,
+                mcp_hydration: None,
             },
         ));
         let (replayed, notices) =
@@ -6481,6 +6482,7 @@ mod tests {
                     covers_op_ids: covers,
                     changed_files: vec![],
                     image_influenced: influenced,
+                    mcp_hydration: None,
                 },
             )
         };

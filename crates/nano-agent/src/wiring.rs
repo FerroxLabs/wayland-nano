@@ -1539,7 +1539,7 @@ mod tests {
     /// parent-only), by the EXPLICIT filter, not the auto-approve list.
     #[test]
     fn mcp_session_tools_conditional_and_child_excluded() {
-        let v1 = v1_tool_definitions(false);
+        let v1 = v1_tool_definitions(false, false);
         for name in MCP_SESSION_TOOL_NAMES {
             assert!(
                 !v1.iter().any(|d| d.name == name),
@@ -1579,7 +1579,7 @@ mod tests {
         assert_eq!(mcp_approval_class("todo"), None);
         assert_eq!(mcp_approval_class("mcp__s__t"), None);
 
-        let child = child_tool_definitions(false);
+        let child = child_tool_definitions(false, false);
         for name in MCP_SESSION_TOOL_NAMES {
             assert!(
                 !child.iter().any(|d| d.name == name),
