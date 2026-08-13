@@ -347,3 +347,24 @@ promotes/closes entries; builders append only.
   backend-naming string, so a later turn cannot learn WHICH backend failed.
 - **Close means:** include the backend name in the C7 wire-card presentation
   payload (or the elided journal rebuild) for backend-typed tool errors.
+
+## F-25: Blob-store GC cross-process battery is single-process theater (P2a code audit, codex MEDIUM-3) — OPEN
+
+- **Filed:** 2026-08-13, from the P2a merged-code panel audit (codex lens,
+  finding MEDIUM-3). The certified §12 cross-process GC race battery is not
+  present: `sweep_skips_under_a_writer_lease`
+  (crates/nano-session/src/attachment_store.rs:1109) uses the same store
+  handle in one process and merely asserts that this represents process B.
+- **Close means:** a real helper-process test where process A holds the
+  shared lease across publish/journal pause and process B attempts the
+  exclusive sweep; repeat without the lease to exercise the grace guard.
+
+## F-26: `WriteLease` is not bound to store identity (P2a code audit, codex MEDIUM-4) — OPEN
+
+- **Filed:** 2026-08-13, from the P2a merged-code panel audit (codex lens,
+  finding MEDIUM-4). `put` (crates/nano-session/src/attachment_store.rs:237)
+  accepts any `WriteLease` without proving it protects this store; a lease
+  acquired from store A can authorize publication into store B while B's GC
+  runs.
+- **Close means:** bind `WriteLease` to the canonical store/lock identity
+  and reject mismatches in `put`, with a two-store regression test.
