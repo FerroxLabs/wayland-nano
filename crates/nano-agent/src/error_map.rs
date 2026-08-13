@@ -90,6 +90,9 @@ pub fn kind_of_tool(err: &nano_tools::fs::ToolError) -> NanoErrorKind {
         ToolError::Edit(_) => NanoErrorKind::FsEdit,
         // A bad read window is a model-correctable argument error.
         ToolError::InvalidWindow(_) => NanoErrorKind::MissingArgs,
+        // P4 (§5.5): malformed non-window arguments (e.g. repo_map's
+        // path_glob) are typed InvalidParams, model-correctable.
+        ToolError::InvalidParams(_) => NanoErrorKind::InvalidParams,
     }
 }
 
@@ -207,6 +210,10 @@ mod tests {
         assert_eq!(
             kind_of_tool(&ToolError::InvalidWindow("x".into())),
             NanoErrorKind::MissingArgs
+        );
+        assert_eq!(
+            kind_of_tool(&ToolError::InvalidParams("x".into())),
+            NanoErrorKind::InvalidParams
         );
 
         assert_eq!(

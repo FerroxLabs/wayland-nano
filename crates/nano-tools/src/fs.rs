@@ -16,6 +16,10 @@ use nano_core::policy_engine::ReadDenyMatcher;
 use std::path::Path;
 use std::path::PathBuf;
 
+// Single definition lives in nano-core (moved for the P4 repomap, design
+// §5.3); re-exported here so existing callers keep compiling unchanged.
+pub use nano_core::sensitive_path::is_sensitive_path;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
     #[error("read denied by policy: {0}")]
@@ -30,6 +34,11 @@ pub enum ToolError {
     Edit(String),
     #[error("invalid read window: {0}")]
     InvalidWindow(String),
+    /// P4 (design §5.5): malformed tool arguments that are not a read
+    /// window — e.g. an unparseable `path_glob` for `repo_map`. Maps to
+    /// `NanoErrorKind::InvalidParams` (model-correctable).
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
 }
 
 /// Read bounds matching the harness contract.
@@ -139,26 +148,6 @@ impl ReadPage {
     pub fn is_truncated(&self) -> bool {
         !matches!(self.cursor, PageCursor::Eof { .. })
     }
-}
-
-const SENSITIVE_BASENAMES: &[&str] = &[".env", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"];
-const SENSITIVE_EXTENSIONS: &[&str] = &[".pem", ".key", ".pfx", ".p12", ".kdbx"];
-
-pub fn is_sensitive_path(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    if SENSITIVE_BASENAMES
-        .iter()
-        .any(|b| name.eq_ignore_ascii_case(b))
-    {
-        return true;
-    }
-    if name.starts_with(".env.") {
-        return true;
-    }
-    let lower = name.to_ascii_lowercase();
-    SENSITIVE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
 }
 
 #[derive(Debug)]

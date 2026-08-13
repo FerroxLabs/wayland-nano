@@ -1556,6 +1556,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nano-repomap"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "globset",
+ "nano-core",
+ "nano-sandbox",
+ "pretty_assertions",
+ "regex",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.20",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "nano-sandbox"
 version = "0.1.0"
 dependencies = [
@@ -1622,6 +1638,7 @@ dependencies = [
  "nano-core",
  "nano-egress",
  "nano-model",
+ "nano-repomap",
  "nano-sandbox",
  "nano-session",
  "pretty_assertions",

@@ -9,3 +9,4 @@ pub mod budget;
 pub mod permissions;
 pub mod policy_engine;
 pub mod search;
+pub mod sensitive_path;

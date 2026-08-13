@@ -5,6 +5,7 @@
 
 pub mod fs;
 pub mod image;
+pub mod repomap;
 pub mod search;
 pub mod shell;
 pub mod web;
