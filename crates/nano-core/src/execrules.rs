@@ -408,6 +408,11 @@ impl RuleSet {
             if let Some(nested) = nested_command(command, segment, shell) {
                 match nested {
                     Nested::Static { raw, grammar } => {
+                        // Minting only persists outer-segment rules, so a
+                        // command with a recognized inner layer can never be
+                        // authorized by an amendment; refuse it fail-closed
+                        // instead of minting a rule that silently never fires.
+                        evaluation.amendable = false;
                         let inner = self.evaluate_layer(raw, grammar, depth + 1, budget);
                         merge_evaluation(&mut evaluation, inner);
                     }
@@ -467,18 +472,30 @@ fn nested_command<'a>(
     let is_pipe_stdin = segment.get(1).is_some_and(|token| token.value == "-");
     let basename = program.rsplit(['/', '\\']).next().unwrap_or(&program);
     let is_pathed = basename.len() != program.len();
-    if matches!(basename, "pwsh" | "iex" | "invoke-expression")
+    // Windows-suffixed names (`bash.exe`, `sh.exe`, `pwsh.exe`) are the same
+    // interpreters as their bare counterparts and must get identical handling;
+    // a suffix blind spot would skip inner-layer analysis entirely.
+    if matches!(basename, "pwsh" | "pwsh.exe" | "iex" | "invoke-expression")
         || (is_pathed
             && matches!(
                 basename,
-                "powershell" | "powershell.exe" | "cmd" | "cmd.exe" | "bash" | "sh"
+                "powershell"
+                    | "powershell.exe"
+                    | "cmd"
+                    | "cmd.exe"
+                    | "bash"
+                    | "bash.exe"
+                    | "sh"
+                    | "sh.exe"
             ))
     {
         return Some(Nested::Opaque(ComplexReason::NestedOpaque));
     }
     let grammar = match program.as_str() {
         "cmd" | "cmd.exe" if flag.as_deref() == Some("/c") => ShellGrammar::CmdExe,
-        "bash" | "sh" if flag.as_deref() == Some("-c") => ShellGrammar::PosixSh,
+        "bash" | "sh" | "bash.exe" | "sh.exe" if flag.as_deref() == Some("-c") => {
+            ShellGrammar::PosixSh
+        }
         "powershell" | "powershell.exe" => {
             return Some(Nested::Opaque(
                 if matches!(flag.as_deref(), Some("-enc" | "-encodedcommand")) {
@@ -488,10 +505,10 @@ fn nested_command<'a>(
                 },
             ));
         }
-        "cmd" | "cmd.exe" | "bash" | "sh" if is_pipe_stdin => {
+        "cmd" | "cmd.exe" | "bash" | "bash.exe" | "sh" | "sh.exe" if is_pipe_stdin => {
             return Some(Nested::Opaque(ComplexReason::NestedOpaque));
         }
-        "cmd" | "cmd.exe" | "bash" | "sh" => {
+        "cmd" | "cmd.exe" | "bash" | "bash.exe" | "sh" | "sh.exe" => {
             return Some(Nested::Opaque(ComplexReason::NestedOpaque));
         }
         _ => return None,

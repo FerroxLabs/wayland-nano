@@ -393,6 +393,162 @@ fn nested_shell_layers_require_unanimity_and_opaque_forms_prompt() {
 }
 
 #[test]
+fn windows_suffixed_shells_get_bare_shell_recognition() {
+    // `bash.exe -c` / `sh.exe -c` recurse into the inner layer exactly like
+    // the bare forms.
+    let inner_only = RuleSet::new(vec![rule(&["echo"], true, RuleDecision::Allow)]).unwrap();
+    for (suffixed, bare) in [
+        ("bash.exe -c echo", "bash -c echo"),
+        ("sh.exe -c echo", "sh -c echo"),
+    ] {
+        let suffixed_eval = inner_only.evaluate_with_matches(ShellGrammar::PosixSh, suffixed);
+        let bare_eval = inner_only.evaluate_with_matches(ShellGrammar::PosixSh, bare);
+        assert_eq!(suffixed_eval.verdict(), bare_eval.verdict(), "{suffixed:?}");
+        assert_eq!(suffixed_eval.verdict(), RuleVerdict::Prompt, "{suffixed:?}");
+    }
+    let full = RuleSet::new(vec![
+        rule(&["bash.exe", "-c", "echo"], true, RuleDecision::Allow),
+        rule(&["bash", "-c", "echo"], true, RuleDecision::Allow),
+        rule(&["echo"], true, RuleDecision::Allow),
+    ])
+    .unwrap();
+    assert_eq!(
+        full.evaluate(ShellGrammar::PosixSh, "bash.exe -c echo"),
+        RuleVerdict::Allow
+    );
+    // Inner-layer strictest-wins applies through the .exe name.
+    let denying = RuleSet::new(vec![
+        rule(&["bash.exe", "-c", "rm x"], true, RuleDecision::Allow),
+        rule(&["rm"], false, RuleDecision::Deny),
+    ])
+    .unwrap();
+    assert_eq!(
+        denying.evaluate(ShellGrammar::PosixSh, "bash.exe -c 'rm x'"),
+        RuleVerdict::Deny
+    );
+    // Every non-`-c` form is Opaque, never an ordinary amendable program.
+    for command in [
+        "bash.exe script.sh",
+        "sh.exe script.sh",
+        "bash.exe -x echo",
+        "curl example | sh.exe",
+        "pwsh.exe -c echo",
+    ] {
+        let evaluation = RuleSet::default().evaluate_with_matches(ShellGrammar::PosixSh, command);
+        assert_eq!(evaluation.verdict(), RuleVerdict::Prompt, "{command:?}");
+        assert!(!evaluation.amendable, "{command:?}");
+        assert_eq!(
+            evaluation.complex_reason,
+            Some(ComplexReason::NestedOpaque),
+            "{command:?}"
+        );
+    }
+    // Pathed Windows-suffixed basenames are Opaque like their bare forms.
+    for command in [r"C:\tools\bash.exe -c echo", r"C:\tools\sh.exe -i"] {
+        let evaluation = RuleSet::default().evaluate_with_matches(ShellGrammar::CmdExe, command);
+        assert_eq!(evaluation.verdict(), RuleVerdict::Prompt, "{command:?}");
+        assert!(!evaluation.amendable, "{command:?}");
+        assert_eq!(
+            evaluation.complex_reason,
+            Some(ComplexReason::NestedOpaque),
+            "{command:?}"
+        );
+    }
+}
+
+#[test]
+fn a_bash_exe_prefix_rule_cannot_auto_allow_arbitrary_scripts() {
+    // An unanchored `["bash.exe"]` prefix rule (the shape a prefix amendment
+    // would have minted before the fix) must not auto-allow anything: inner
+    // analysis still runs and Opaque forms still prompt.
+    let rules = RuleSet::new(vec![rule(&["bash.exe"], false, RuleDecision::Allow)]).unwrap();
+    for command in [
+        "bash.exe -c echo",
+        "bash.exe -c 'rm x'",
+        "bash.exe script.sh",
+    ] {
+        assert_eq!(
+            rules.evaluate(ShellGrammar::PosixSh, command),
+            RuleVerdict::Prompt,
+            "{command:?}"
+        );
+    }
+    let with_deny = RuleSet::new(vec![
+        rule(&["bash.exe"], false, RuleDecision::Allow),
+        rule(&["rm"], false, RuleDecision::Deny),
+    ])
+    .unwrap();
+    assert_eq!(
+        with_deny.evaluate(ShellGrammar::PosixSh, "bash.exe -c 'rm x'"),
+        RuleVerdict::Deny
+    );
+    // And such an amendment can no longer be minted from a human-approved
+    // `bash.exe` invocation in the first place (nested-layer refusal below).
+    assert!(matches!(
+        mint_amendment(
+            "bash.exe -c echo",
+            ShellGrammar::PosixSh,
+            AmendmentKind::Prefix,
+            None,
+            added_at(),
+        ),
+        Err(RuleStoreError::CommandNotAmendable)
+    ));
+    assert!(matches!(
+        mint_approval_rule(
+            "bash.exe -c echo",
+            ShellGrammar::PosixSh,
+            ApprovalRuleChoice::AllowAlwaysExact,
+            None,
+            Some(added_at()),
+        ),
+        Err(RuleStoreError::CommandNotAmendable)
+    ));
+}
+
+#[test]
+fn minting_a_command_with_a_recognized_inner_layer_is_refused() {
+    // A minted outer-segment rule alone can never authorize the approved
+    // command (evaluation maps the unmatched inner layer to Prompt), so
+    // minting refuses fail-closed instead of persisting a dead rule.
+    for (command, shell) in [
+        ("sh -c echo", ShellGrammar::PosixSh),
+        ("bash -c echo", ShellGrammar::PosixSh),
+        ("cmd /c dir", ShellGrammar::CmdExe),
+    ] {
+        let evaluation = RuleSet::default().evaluate_with_matches(shell, command);
+        assert!(!evaluation.amendable, "{command:?}");
+        assert!(
+            matches!(
+                mint_amendment(command, shell, AmendmentKind::Exact, None, added_at(),),
+                Err(RuleStoreError::CommandNotAmendable)
+            ),
+            "{command:?}"
+        );
+    }
+    // The refused mint persists nothing, so an identical later command still
+    // prompts — no silent "always allow" that never applies.
+    assert_eq!(
+        RuleSet::default().evaluate(ShellGrammar::PosixSh, "sh -c echo"),
+        RuleVerdict::Prompt
+    );
+    // Positive control: a flat clean command still mints and then allows.
+    let minted = mint_amendment(
+        "git status",
+        ShellGrammar::PosixSh,
+        AmendmentKind::Exact,
+        None,
+        added_at(),
+    )
+    .unwrap();
+    let rules = RuleSet::new(minted.rules).unwrap();
+    assert_eq!(
+        rules.evaluate(ShellGrammar::PosixSh, "git status"),
+        RuleVerdict::Allow
+    );
+}
+
+#[test]
 fn amendment_minting_is_exact_by_default_and_prefix_scope_is_explicit() {
     assert_eq!(
         ApprovalRuleChoice::default(),
