@@ -1354,6 +1354,7 @@ fn fake_mcp_server_spec() -> nano_agent::mcp::McpServerSpec {
         command,
         args,
         env: vec![],
+        source: nano_agent::mcp::SpecSource::Config,
     }
 }
 

@@ -359,9 +359,17 @@ fn p3_bounds_validators_reject_over_cap_payloads() {
     bad_window.recent_digests = vec!["zz".into()];
     assert!(validate_hydration_carry_entry(&bad_window).is_err());
 
-    assert!(validate_oauth_grant("https://as.example", "https://as.example", &[]).is_ok());
-    assert!(validate_oauth_grant(&"https://h".repeat(40), "i", &[]).is_err());
-    assert!(validate_oauth_grant("https://as.example", &"i".repeat(513), &[]).is_err());
+    // §2.7 (F-P3-3): the grant's server_id must be a stable instance id —
+    // it keys credential storage; a display name is refused fail-closed.
+    const SRV: &str = "srv_0123456789abcdef";
+    assert!(is_mcp_instance_id(SRV));
+    assert!(!is_mcp_instance_id("fs"));
+    assert!(!is_mcp_instance_id("srv_0123456789ABCDEF")); // uppercase hex
+    assert!(!is_mcp_instance_id("srv_0123456789abcde")); // short
+    assert!(validate_oauth_grant(SRV, "https://as.example", "https://as.example", &[]).is_ok());
+    assert!(validate_oauth_grant("fs", "https://as.example", "https://as.example", &[]).is_err());
+    assert!(validate_oauth_grant(SRV, &"https://h".repeat(40), "i", &[]).is_err());
+    assert!(validate_oauth_grant(SRV, "https://as.example", &"i".repeat(513), &[]).is_err());
     let endpoints = vec![
         GrantEndpoint {
             method: GrantMethod::Get,
@@ -369,17 +377,17 @@ fn p3_bounds_validators_reject_over_cap_payloads() {
         };
         5
     ];
-    assert!(validate_oauth_grant("https://as.example", "i", &endpoints).is_err());
+    assert!(validate_oauth_grant(SRV, "https://as.example", "i", &endpoints).is_err());
     let bad_method = vec![GrantEndpoint {
         method: GrantMethod::Unknown,
         path: "/m".into(),
     }];
-    assert!(validate_oauth_grant("https://as.example", "i", &bad_method).is_err());
+    assert!(validate_oauth_grant(SRV, "https://as.example", "i", &bad_method).is_err());
     let bad_path = vec![GrantEndpoint {
         method: GrantMethod::Get,
         path: "relative".into(),
     }];
-    assert!(validate_oauth_grant("https://as.example", "i", &bad_path).is_err());
+    assert!(validate_oauth_grant(SRV, "https://as.example", "i", &bad_path).is_err());
 }
 
 /// §5.6 elicitation bounds (LOW-9): the server-influenced request_id is

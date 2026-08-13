@@ -3,10 +3,11 @@
 //! param (Desktop-published connectors). Both host modes honor both sources;
 //! registration failures are logged by the caller, never fatal.
 
-use nano_agent::mcp::McpServerSpec;
+use nano_agent::mcp::{McpServerSpec, SpecSource};
 
 /// MCP server specs from NANO_MCP_SERVERS: a JSON array of
-/// {"name": str, "command": str, "args": [str]} entries.
+/// {"name": str, "command": str, "args": [str]} entries. Provenance is
+/// `SpecSource::Config` (§2.7 — it rides the instance-id hash).
 pub fn mcp_specs_from_env() -> Vec<McpServerSpec> {
     let Ok(raw) = std::env::var("NANO_MCP_SERVERS") else {
         return Vec::new();
@@ -28,6 +29,7 @@ pub fn mcp_specs_from_env() -> Vec<McpServerSpec> {
                     })
                     .unwrap_or_default(),
                 env: vec![],
+                source: SpecSource::Config,
             })
         })
         .collect()
@@ -106,6 +108,8 @@ pub fn mcp_specs_from_acp_params(params: &serde_json::Value) -> Vec<McpServerSpe
                             .collect()
                     })
                     .unwrap_or_default(),
+                // §2.7: Desktop-published connector provenance.
+                source: SpecSource::Desktop,
             })
         })
         .collect()
@@ -167,6 +171,8 @@ mod tests {
         assert_eq!(specs[0].command, "powershell.exe");
         assert_eq!(specs[0].args, vec!["-NoProfile", "-Command", "script"]);
         assert_eq!(specs[0].env, vec![("A".to_string(), "1".to_string())]);
+        // §2.7 provenance: ACP params are Desktop-published connectors.
+        assert_eq!(specs[0].source, SpecSource::Desktop);
 
         // Absent or non-array mcpServers is simply no servers.
         assert!(mcp_specs_from_acp_params(&serde_json::json!({})).is_empty());

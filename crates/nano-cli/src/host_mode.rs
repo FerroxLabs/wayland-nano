@@ -90,19 +90,26 @@ pub async fn run(
     let elicitation: Option<nano_agent::mcp::ElicitationHandlerFactory> = (!mcp_specs.is_empty())
         .then(|| {
             let coordinator = coordinator.clone();
-            std::sync::Arc::new(move |server_id: &str, interrupted_call| {
-                let bridge = std::sync::Arc::new(nano_agent::elicitation::ElicitationBridge::new(
-                    server_id.to_string(),
-                    "protocol-host".to_string(),
-                    coordinator.clone(),
-                    interrupted_call,
-                    std::sync::Arc::new(|_| nano_agent::elicitation::ElicitAskOutcome::Unavailable),
-                ));
-                nano_agent::mcp::ElicitationHandlerParts {
-                    handler: bridge.clone(),
-                    slot_retired_hook: bridge.slot_retired_hook(),
-                }
-            }) as nano_agent::mcp::ElicitationHandlerFactory
+            std::sync::Arc::new(
+                move |server_id: &str, display_name: &str, interrupted_call| {
+                    // §2.7 (F-P3-3): server_id is the instance id.
+                    let bridge =
+                        std::sync::Arc::new(nano_agent::elicitation::ElicitationBridge::new(
+                            server_id.to_string(),
+                            display_name.to_string(),
+                            "protocol-host".to_string(),
+                            coordinator.clone(),
+                            interrupted_call,
+                            std::sync::Arc::new(|_| {
+                                nano_agent::elicitation::ElicitAskOutcome::Unavailable
+                            }),
+                        ));
+                    nano_agent::mcp::ElicitationHandlerParts {
+                        handler: bridge.clone(),
+                        slot_retired_hook: bridge.slot_retired_hook(),
+                    }
+                },
+            ) as nano_agent::mcp::ElicitationHandlerFactory
         });
     let mcp_registry = std::sync::Arc::new(std::sync::Mutex::new(
         nano_cli::mcp_specs::register_all_with(mcp_specs, elicitation),

@@ -112,10 +112,12 @@ where
                 let coordinator = journal.clone();
                 let session_id = session.session_id.clone();
                 Some(std::sync::Arc::new(
-                    move |server_id: &str, interrupted_call| {
+                    move |server_id: &str, display_name: &str, interrupted_call| {
+                        // §2.7 (F-P3-3): server_id is the instance id.
                         let bridge =
                             std::sync::Arc::new(nano_agent::elicitation::ElicitationBridge::new(
                                 server_id.to_string(),
+                                display_name.to_string(),
                                 session_id.clone(),
                                 coordinator.clone(),
                                 interrupted_call,

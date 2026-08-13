@@ -689,6 +689,7 @@ while ($true) {
             .replace("@PIDFILE@", &pid_file.display().to_string()),
         ],
         env: vec![],
+        source: nano_agent::mcp::SpecSource::Config,
     };
     #[cfg(unix)]
     let spec = nano_agent::mcp::McpServerSpec {
@@ -712,6 +713,7 @@ done
             .replace("@PIDFILE@", &pid_file.display().to_string()),
         ],
         env: vec![],
+        source: nano_agent::mcp::SpecSource::Config,
     };
 
     let shared = std::sync::Arc::new(Mutex::new(Vec::<u8>::new()));

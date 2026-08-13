@@ -216,7 +216,8 @@ fn child_rollup_sink(
 ///    and POST only; every other method converts to `GrantMethod::Unknown`
 ///    so the §6.3 validator REJECTS it (never silently journals an
 ///    unenforceable grant).
-/// 2. `validate_oauth_grant` (the journal-side §6.3 bounds).
+/// 2. `validate_oauth_grant` (the journal-side §6.3 bounds + the §2.7
+///    instance-id shape on `server_id`, F-P3-3).
 /// 3. Append `Op::McpOauthGrant` through the session's JournalCoordinator —
 ///    the single append authority. The envelope id IS the grant's
 ///    idempotence key, so a retried login's re-append is the coordinator's
@@ -245,13 +246,23 @@ pub fn oauth_grant_recorder(
                 path: endpoint.path.clone(),
             })
             .collect();
-        nano_session::op::validate_oauth_grant(&record.as_origin, &record.issuer, &endpoints)
-            .map_err(|rule| {
-                eprintln!("wayland-nano: OAuth grant rejected ({rule})");
-                OAuthError::Failed {
-                    reason: FailReason::GrantRejected,
-                }
-            })?;
+        nano_session::op::validate_oauth_grant(
+            // §2.7 (F-P3-3): the grant's server_id MUST be the
+            // registry-minted instance id — it keys credential storage
+            // (§6: keyring account = instance id). The §6.1 CLI login
+            // wiring (a separate finding) passes the receipt's
+            // instance_id; a display-name key is refused fail-closed here.
+            &record.server_id,
+            &record.as_origin,
+            &record.issuer,
+            &endpoints,
+        )
+        .map_err(|rule| {
+            eprintln!("wayland-nano: OAuth grant rejected ({rule})");
+            OAuthError::Failed {
+                reason: FailReason::GrantRejected,
+            }
+        })?;
         coordinator
             .append(&OpEnvelope::new(
                 record.grant_id.clone(),
@@ -3746,9 +3757,10 @@ fn reader_loop<R: BufRead>(
 /// it, never to a silent approve or silent deny.
 /// P3 §5.2: resolve one elicitation card response by OPAQUE ID — never by
 /// label (the bridge's binding is the authority; a duplicate or adversarial
-/// label cannot steer the answer). Every non-answer is a fail-closed Dismiss
-/// (which the bridge maps to a spec-legal decline); an unknown id is NOT a
-/// guessed value.
+/// label cannot steer the answer). Every non-answer is fail-closed; §5.4
+/// pins the mapping: a wire `cancelled` outcome is `Cancel` (journaled/sent
+/// as the spec-legal `cancel`), a dismiss or any malformed shape is
+/// `Dismiss` (→ decline); an unknown id is NOT a guessed value.
 fn resolve_elicitation_response(
     value: &serde_json::Value,
     known: &std::collections::HashSet<String>,
@@ -3769,7 +3781,71 @@ fn resolve_elicitation_response(
             // An id the binding never minted: fail closed, never a guess.
             Some(_) | None => ElicitAskOutcome::Dismiss,
         },
+        // F-P3-7: user-cancel is the pinned `cancel`, not a decline (§5.4).
+        Some("cancelled") => ElicitAskOutcome::Cancel,
         _ => ElicitAskOutcome::Dismiss,
+    }
+}
+
+#[cfg(test)]
+mod elicitation_resolve_tests {
+    //! P3 §5.4 pinned outcome mapping at the ACP wire boundary (F-P3-7):
+    /// user-cancel ⇒ `Cancel` (journaled/sent as the spec-legal `cancel`),
+    /// dismiss/unknown/malformed ⇒ fail-closed `Dismiss` (→ decline).
+    use super::resolve_elicitation_response;
+    use nano_agent::elicitation::ElicitAskOutcome;
+
+    fn known() -> std::collections::HashSet<String> {
+        std::collections::HashSet::from(["a".repeat(24)])
+    }
+
+    #[test]
+    fn wire_cancelled_maps_to_pinned_cancel_not_decline() {
+        let outcome = resolve_elicitation_response(
+            &serde_json::json!({"result": {"outcome": {"outcome": "cancelled"}}}),
+            &known(),
+            7,
+        );
+        assert_eq!(outcome, ElicitAskOutcome::Cancel);
+    }
+
+    #[test]
+    fn dismiss_and_malformed_stay_fail_closed_dismiss() {
+        // Desktop's Dismiss mapping: a selected `reject` id.
+        let dismissed = resolve_elicitation_response(
+            &serde_json::json!({"result": {"outcome": {"outcome": "selected", "optionId": "reject"}}}),
+            &known(),
+            7,
+        );
+        assert_eq!(dismissed, ElicitAskOutcome::Dismiss);
+        // A selected id the binding never minted: never a guessed value.
+        let forged = resolve_elicitation_response(
+            &serde_json::json!({"result": {"outcome": {"outcome": "selected", "optionId": "b".repeat(24)}}}),
+            &known(),
+            7,
+        );
+        assert_eq!(forged, ElicitAskOutcome::Dismiss);
+        // No outcome at all.
+        let malformed =
+            resolve_elicitation_response(&serde_json::json!({"result": {}}), &known(), 7);
+        assert_eq!(malformed, ElicitAskOutcome::Dismiss);
+    }
+
+    #[test]
+    fn selected_known_id_answers() {
+        let id = "a".repeat(24);
+        let outcome = resolve_elicitation_response(
+            &serde_json::json!({"result": {"outcome": {"outcome": "selected", "optionId": id}}}),
+            &known(),
+            7,
+        );
+        assert_eq!(
+            outcome,
+            ElicitAskOutcome::Answered {
+                card_id: 7,
+                option_id: id
+            }
+        );
     }
 }
 
@@ -3858,9 +3934,12 @@ fn elicitation_factory<W: Write + Send + 'static>(
     coordinator: Arc<nano_session::JournalCoordinator>,
 ) -> nano_agent::mcp::ElicitationHandlerFactory {
     Arc::new(
-        move |server_id: &str, interrupted_call: Arc<Mutex<Option<String>>>| {
+        move |server_id: &str, display_name: &str, interrupted_call: Arc<Mutex<Option<String>>>| {
+            // §2.7 (F-P3-3): `server_id` is the registry-minted instance id
+            // (the journaled key); `display_name` labels the ask card only.
             let bridge = Arc::new(nano_agent::elicitation::ElicitationBridge::new(
                 server_id.to_string(),
+                display_name.to_string(),
                 session_id.clone(),
                 coordinator.clone(),
                 interrupted_call,
@@ -5403,7 +5482,8 @@ mod tests {
         let coordinator = Arc::new(nano_session::JournalCoordinator::open(&journal).unwrap());
         let record = |method: nano_egress::grant::HttpMethod, grant_id: &str| GrantRecord {
             grant_id: grant_id.into(),
-            server_id: "srv".into(),
+            // §2.7 (F-P3-3): the grant keys on the stable instance id.
+            server_id: "srv_0123456789abcdef".into(),
             as_origin: "https://as.example".into(),
             issuer: "https://as.example".into(),
             endpoints: vec![FlowEndpoint {
@@ -5454,6 +5534,20 @@ mod tests {
         let mut oversized = record(nano_egress::grant::HttpMethod::Post, "g-3");
         oversized.as_origin = "https://x".repeat(200);
         assert!(recorder(&oversized).is_err());
+
+        // §2.7 (F-P3-3): a display-name server_id is NOT an instance id —
+        // the grant is refused (GrantRejected) and never journaled.
+        let mut named = record(nano_egress::grant::HttpMethod::Post, "g-3b");
+        named.server_id = "fs".into();
+        let err = recorder(&named).expect_err("display-name server_id refused");
+        assert!(matches!(
+            err,
+            nano_mcp::oauth::OAuthError::Failed {
+                reason: nano_mcp::oauth::FailReason::GrantRejected
+            }
+        ));
+        let report = read_journal(&journal).unwrap();
+        assert_eq!(report.envelopes.len(), 1, "refused grants never journal");
 
         // Append failure (journal path replaced by a directory mid-flight)
         // surfaces the typed journal_unavailable reason.
