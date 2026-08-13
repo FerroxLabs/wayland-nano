@@ -410,3 +410,66 @@ promotes/closes entries; builders append only.
      process-inventory oracle deferred to §13 leg-1b.
 - **Close means:** each item fixed or explicitly waived with the reason
   recorded here.
+
+## F-28: P4 repomap merge-review debt (reviewer agent-135, verdict MERGE-OK, 2026-08-13) — OPEN
+
+- **MEDIUM-1 (cost-bound TOCTOU):** `nano-repomap/src/store.rs:321-345`
+  enforces the 5 MB per-file cap via pre-read metadata only; the streaming
+  `read_line` loop is unbounded, so a growing or long-line file blows the
+  §5.2 cost bound. Fix: `Read::take(max_file_bytes + 1)` + record Oversize.
+- **MEDIUM-2 (integration obligation, NOT optional):** `repo_map` ships
+  unwired by lane split (`nano-tools/src/repomap.rs:9-21`). The wiring
+  lane MUST land §5.5's read-only registration at all three gates
+  (acp_mode.rs, tasks.rs, exec_mode.rs) WITH the three-predicate agreement
+  regression test in the same merge that registers the tool.
+- **MEDIUM-3 (perf):** every refresh pass re-walks the whole tree and
+  re-reads hashed files under the tool Mutex with no file-count cap or
+  per-pass timeout; one pass on a huge repo stalls all queries. Fix:
+  document the total-pass bound or add a cap + `skipped_over_cap` counter.
+- **LOW-4:** `find_rename_source` (store.rs:311) treats any stat failure
+  as disappearance; require `NotFound` via `symlink_metadata`.
+- **LOW-5:** `skipped_denied` (store.rs:208) accumulates per-pass counts
+  forever; report last-pass count or rename to `_total`.
+- **LOW-6:** `query.rs:72` path-token match includes the workspace-root
+  prefix; match root-relative instead.
+- **LOW-7:** Windows battery owes a unicode-name case and (where the
+  volume permits) a >MAX_PATH case; the real-D:\ harness remains a §14
+  leg-4 proof obligation outside the branch.
+- **LOW-8 (pre-existing, relocated by this branch):**
+  `nano-core/src/sensitive_path.rs:25` `.env.` prefix check is
+  case-sensitive; `.ENV.PRODUCTION` slips on case-insensitive filesystems.
+
+## F-29: P4 rules merge-review LOW debt (reviewer agent-133, 2026-08-13) — OPEN
+
+- LOW-3: parse-disagreement check (execrules.rs:506-510) inspects only the
+  span's leading char; sound today only via positive-grammar side effect.
+  Fix: tokenize the raw span under both grammars and compare boundaries,
+  or delete the vestigial check + document the argument.
+- LOW-4: differential suite sorts segment lists (order-blind) and corpora
+  are thin (no cmd position-0 `=` leg, no mixed &&/||, no sh
+  backslash-path). Fix: assert order for deterministic connectors;
+  multiset only for &/| cases; extend corpora.
+- LOW-6: `nano-session/src/lock.rs` mechanism re-implemented in
+  nano-core/execrules.rs:1013-1090 (layering forced it; recorded in
+  UPSTREAM.md). Optional: extract the lock primitive to a shared leaf.
+
+## F-30: P3 oauth merge-review LOW debt (reviewer agent-132, 2026-08-13) — OPEN
+
+- LOW-5: duplicate Host headers pass if any one matches
+  (oauth/loopback.rs:199-202, `.any()`); RFC 7230 wants 400. Cheap fix.
+- LOW-6: wincred `write()` leaves a torn chunk prefix on mid-chunk
+  failure (reads still fail closed via serde parse). Optional: clean up
+  chunks 0..n on failure.
+
+## F-31: P4 PTY merge-review LOW debt (reviewer agent-134, 2026-08-13) — OPEN
+
+- LOW-5: default `after_offset` cursor is `state.output.oldest`
+  (pty.rs:380), not the note-letter per-reader resume; document the
+  default in the tool schema or track a per-session last-served offset.
+- LOW-7: no ConPTY-path CREATE_BREAKAWAY_FROM_JOB rejection test (property
+  rests transitively on job.rs's spawn_contained test); broker-escape
+  record is a string-constant self-test; §14 leg 3(c) owes the
+  schtasks/WMI survivor count at integration.
+- LOW-8: `unix_sandbox_argv` defined only for linux/macos — other
+  cfg(unix) targets fail to compile (fail-closed direction, at least);
+  session-cap test is Windows-only.
