@@ -13,6 +13,9 @@
 
 pub mod telemetry;
 
+#[cfg(unix)]
+pub use portable_pty;
+
 // Unix containment backends. The policy/argv builders are pure string
 // construction, so they also compile in test builds on every host — and in
 // downstream crates' test builds via the `unix-argv-builders` feature — to
@@ -78,6 +81,8 @@ pub mod audit;
 pub mod cap;
 #[cfg(target_os = "windows")]
 pub mod capture;
+#[cfg(target_os = "windows")]
+pub mod conpty;
 #[cfg(target_os = "windows")]
 pub mod deny_read_acl;
 #[cfg(target_os = "windows")]

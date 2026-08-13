@@ -1454,6 +1454,7 @@ dependencies = [
  "landlock",
  "libc",
  "nano-core",
+ "portable-pty",
  "pretty_assertions",
  "rand 0.8.7",
  "regex-lite",
@@ -1509,10 +1510,12 @@ dependencies = [
  "pretty_assertions",
  "regex",
  "reqwest",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
