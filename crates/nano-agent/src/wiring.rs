@@ -713,7 +713,7 @@ impl RealToolExecutor {
                     digest,
                     width: loaded.width,
                     height: loaded.height,
-                    normalized_from: None,
+                    normalized_from: loaded.normalized_from,
                 };
                 let (parts, provenance) = match nano_model::image_result::build_image_tool_result(
                     &call.id,

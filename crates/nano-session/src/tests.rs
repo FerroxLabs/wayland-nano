@@ -747,6 +747,7 @@ fn p2a_image_ref() -> crate::op::ImageRef {
         bytes: 1234,
         width: 640,
         height: 480,
+        normalized_from: None,
         placeholder: "[Image #1: /tmp/x.png]".into(),
     }
 }
@@ -871,6 +872,7 @@ fn p2b_tool_result_image_refs_are_additive_optional_and_digest_only() {
             bytes: 3,
             width: 1,
             height: 1,
+            normalized_from: None,
             placeholder: "[Image #1 from tool view_image — 1x1 png]".into(),
         }],
     };

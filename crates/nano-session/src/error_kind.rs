@@ -58,6 +58,12 @@ pub enum NanoErrorKind {
     McpOutputBounded,
     McpTransport,
     McpTimeout,
+    /// P3 §4.2: resource call against a server whose negotiated
+    /// capabilities lack `resources` — typed refusal BEFORE any wire write.
+    McpResourceUnsupported,
+    /// P3 §4.3: resource read returned blob/non-text content; v1 refuses
+    /// it at the MCP layer (P2b owns binary-to-model content).
+    McpContentUnsupported,
     UnknownTool,
     MissingArgs,
     ApprovalDenied,

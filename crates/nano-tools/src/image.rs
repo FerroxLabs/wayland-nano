@@ -156,6 +156,11 @@ pub struct LoadedImage {
     /// Final (post-orientation, post-downscale) pixel dimensions.
     pub width: u32,
     pub height: u32,
+    /// P2b §3.7/Q3: the source pixel dimensions BEFORE the §4.5 downscale,
+    /// when one happened — the `(normalized from WxH)` geometry the label
+    /// contract surfaces so first-call region coordinates are usable.
+    /// `None` when the source already fit the normalization targets.
+    pub normalized_from: Option<(u32, u32)>,
     /// GIF/WebP carried more than one frame; only the first crossed (§4.4).
     pub frames_dropped: bool,
 }
@@ -235,6 +240,10 @@ pub struct ViewImageTool {
     policy: FileSystemSandboxPolicy,
     cwd: std::path::PathBuf,
     approver: std::sync::Arc<dyn ImageReadApprover>,
+    /// External sanctioned roots (the OS pictures dir, canonicalized),
+    /// resolved ONCE at construction so classification and revalidation
+    /// judge the same root set.
+    sanctioned: Vec<std::path::PathBuf>,
 }
 
 impl ViewImageTool {
@@ -243,10 +252,33 @@ impl ViewImageTool {
         cwd: &std::path::Path,
         approver: std::sync::Arc<dyn ImageReadApprover>,
     ) -> Self {
+        let sanctioned = dirs_next::picture_dir()
+            .and_then(|path| path.canonicalize().ok())
+            .into_iter()
+            .collect();
         Self {
             policy,
             cwd: cwd.to_path_buf(),
             approver,
+            sanctioned,
+        }
+    }
+
+    /// Test seam: the sanctioned-root set injected explicitly so the
+    /// HumanApprovalRequired branch is exercisable without touching the
+    /// host's real pictures dir.
+    #[cfg(test)]
+    fn new_with_roots(
+        policy: FileSystemSandboxPolicy,
+        cwd: &std::path::Path,
+        approver: std::sync::Arc<dyn ImageReadApprover>,
+        sanctioned: Vec<std::path::PathBuf>,
+    ) -> Self {
+        Self {
+            policy,
+            cwd: cwd.to_path_buf(),
+            approver,
+            sanctioned,
         }
     }
 
@@ -264,7 +296,26 @@ impl ViewImageTool {
             kind: NanoErrorKind::FsReadDenied,
             detail: "canonicalize",
         })?;
-        match classify_image_read_target(&canonical, &self.policy, &self.cwd) {
+        // The authorized file's identity, captured NOW: the confined open
+        // below must prove from the OPENED HANDLE (never the path) that it
+        // landed on this same file — a symlink/junction swapped between
+        // approval and open fails closed (the P2a-audit H-2 discipline).
+        let authorized_meta = std::fs::metadata(&canonical).map_err(|_| ImageError {
+            kind: NanoErrorKind::FsReadDenied,
+            detail: "stat",
+        })?;
+        if !authorized_meta.is_file() {
+            return Err(ImageError {
+                kind: NanoErrorKind::FsReadDenied,
+                detail: "not-file",
+            });
+        }
+        match classify_image_read_target_with_roots(
+            &canonical,
+            &self.policy,
+            &self.cwd,
+            &self.sanctioned,
+        ) {
             ImageReadAuth::AutoApproved => {}
             ImageReadAuth::HumanApprovalRequired
                 if self.approver.request(&canonical) == ImageReadApproval::Approved => {}
@@ -275,6 +326,10 @@ impl ViewImageTool {
                 });
             }
         }
+        // §3.7(c): the SAME canonical target is revalidated immediately
+        // before open (re-canonicalize and compare) — path-level
+        // defense-in-depth; the handle-verified open below is the actual
+        // TOCTOU closure.
         let revalidated = joined.canonicalize().map_err(|_| ImageError {
             kind: NanoErrorKind::FsReadDenied,
             detail: "revalidate",
@@ -285,12 +340,200 @@ impl ViewImageTool {
                 detail: "target-swapped",
             });
         }
-        let bytes = read_image_file_capped(&canonical)?;
+        // Audit-H2-style hook point: the approve→open window a
+        // workspace-controlled symlink/junction swap races. Test-only;
+        // compiled out otherwise.
+        #[cfg(test)]
+        PRE_OPEN_HOOK.with(|hook| {
+            if let Some(fire) = hook.borrow_mut().take() {
+                fire();
+            }
+        });
+        let file = open_image_confined(&canonical, &authorized_meta)?;
+        let bytes = read_capped_file(file)?;
         let loaded = load_image(&bytes, None).await?;
         match region {
             Some(region) => crop_loaded(loaded, region),
             None => Ok(loaded),
         }
+    }
+}
+
+// Swap-race regression hook: fires in the approve→open window of
+// `ViewImageTool::read` so a test can deterministically swap in a
+// symlink/junction. Test-only; never compiled into production builds.
+#[cfg(test)]
+thread_local! {
+    static PRE_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Unix (the P2a-audit H-2 discipline, mirroring nano-protocol's confined
+/// intake open): O_NOFOLLOW confines the final component; the OPENED
+/// handle's dev/ino must equal the authorized file's identity — a swapped
+/// intermediate symlink resolves to a DIFFERENT file and fails closed on
+/// the identity mismatch.
+#[cfg(unix)]
+fn open_image_confined(
+    canonical: &std::path::Path,
+    authorized: &std::fs::Metadata,
+) -> Result<std::fs::File, ImageError> {
+    use std::os::unix::fs::MetadataExt as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let denied = |detail: &'static str| ImageError {
+        kind: NanoErrorKind::FsReadDenied,
+        detail,
+    };
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(canonical)
+        .map_err(|_| denied("open"))?;
+    let meta = file.metadata().map_err(|_| denied("stat-opened"))?;
+    if meta.dev() != authorized.dev() || meta.ino() != authorized.ino() {
+        return Err(denied("target-swapped"));
+    }
+    Ok(file)
+}
+
+/// Windows (the P2a-audit H-2 discipline, the nano-session attachment-store
+/// pinned-handle pattern): reparse-safe CreateFileW + handle-side reparse
+/// and final-path verification against the authorized canonical path.
+#[cfg(windows)]
+fn open_image_confined(
+    canonical: &std::path::Path,
+    _authorized: &std::fs::Metadata,
+) -> Result<std::fs::File, ImageError> {
+    windows_confined_open::open_verified(canonical)
+}
+
+#[cfg(windows)]
+mod windows_confined_open {
+    use super::ImageError;
+    use nano_session::NanoErrorKind;
+    use std::path::Path;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
+    use windows_sys::Win32::Storage::FileSystem::CreateFileW;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
+    use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+    use windows_sys::Win32::Storage::FileSystem::OPEN_EXISTING;
+
+    fn denied(detail: &'static str) -> ImageError {
+        ImageError {
+            kind: NanoErrorKind::FsReadDenied,
+            detail,
+        }
+    }
+
+    fn to_wide(path: &Path) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    /// Open the authorized `canonical` path without following a
+    /// final-component reparse point, then prove from the OPENED HANDLE
+    /// (never the path) that it is a plain non-reparse file whose final
+    /// path is still `canonical`. Every failure fails closed as a read
+    /// denial.
+    pub fn open_verified(canonical: &Path) -> Result<std::fs::File, ImageError> {
+        let wide = to_wide(canonical);
+        // Safety: `wide` is NUL-terminated and outlives the call; the
+        // returned handle is either invalid (the error path) or ownership
+        // moves into the `File` below (closed on drop).
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                FILE_GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                0,
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(denied("open"));
+        }
+        if let Err(err) = verify_handle(handle, canonical) {
+            // Safety: the handle is valid and not yet owned by a File.
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Err(err);
+        }
+        // Safety: the handle is a valid, verified open file handle; the
+        // File takes ownership and closes it on drop.
+        use std::os::windows::io::FromRawHandle as _;
+        Ok(unsafe { std::fs::File::from_raw_handle(handle as *mut std::ffi::c_void) })
+    }
+
+    /// Handle-side verification: a reparse point swapped in after
+    /// authorization was opened AS a reparse point (the open flag never
+    /// follows one) and is rejected here; a swapped INTERMEDIATE component
+    /// (e.g. a junctioned directory under the workspace) moves the handle's
+    /// final path away from the authorized canonical path and is rejected
+    /// here.
+    fn verify_handle(handle: HANDLE, canonical: &Path) -> Result<(), ImageError> {
+        // Safety: `handle` is a valid open file handle; `info` is a plain
+        // out struct.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+            return Err(denied("stat-opened"));
+        }
+        if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(denied("reparse-swapped"));
+        }
+        let final_path = final_path_for_handle(handle)?;
+        if !same_path(&final_path, canonical) {
+            return Err(denied("target-swapped"));
+        }
+        Ok(())
+    }
+
+    /// The handle's final path (the nano-sandbox acl.rs:1158 pattern).
+    fn final_path_for_handle(handle: HANDLE) -> Result<std::path::PathBuf, ImageError> {
+        // Safety: `handle` is valid; the sizing call writes nothing.
+        let needed = unsafe { GetFinalPathNameByHandleW(handle, std::ptr::null_mut(), 0, 0) };
+        if needed == 0 {
+            return Err(denied("final-path"));
+        }
+        let mut buffer = vec![0u16; needed as usize + 1];
+        // Safety: `buffer` is `needed + 1` wide chars, writable.
+        let written = unsafe {
+            GetFinalPathNameByHandleW(handle, buffer.as_mut_ptr(), buffer.len() as u32, 0)
+        };
+        if written == 0 || written as usize >= buffer.len() {
+            return Err(denied("final-path"));
+        }
+        use std::os::windows::ffi::OsStringExt as _;
+        Ok(std::path::PathBuf::from(std::ffi::OsString::from_wide(
+            &buffer[..written as usize],
+        )))
+    }
+
+    /// Case-insensitive path equality on two `\\?\`-style absolute paths
+    /// (both GetFinalPathNameByHandleW and canonicalize produce them).
+    fn same_path(a: &Path, b: &Path) -> bool {
+        fn normalize(path: &Path) -> String {
+            path.as_os_str()
+                .to_string_lossy()
+                .replace('/', "\\")
+                .trim_end_matches('\\')
+                .to_lowercase()
+        }
+        normalize(a) == normalize(b)
     }
 }
 
@@ -333,6 +576,17 @@ static TOTAL_DECODES: AtomicUsize = AtomicUsize::new(0);
 /// shim). Length-targeted so parallel tests never steal each other's poison.
 #[cfg(test)]
 static POISON_DECODE_LEN: AtomicUsize = AtomicUsize::new(0);
+
+/// Test hook for the §12 decode-count proofs: when non-zero, the decode
+/// body bumps `DECODES_FOR_LEN` for the input whose length matches. The
+/// same length-targeted discipline as `POISON_DECODE_LEN` — TOTAL_DECODES
+/// is process-global and the harness runs tests on parallel threads, so an
+/// absolute counter read races any concurrent test's decode; a
+/// length-targeted count is attributable to exactly one fixture.
+#[cfg(test)]
+static COUNT_DECODE_LEN: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static DECODES_FOR_LEN: AtomicUsize = AtomicUsize::new(0);
 
 /// The §4.3 pipeline, steps 1–6. `claimed_mime` is the sender's ACP
 /// `mimeType` hint — a HINT ONLY; a claim-vs-sniff mismatch is a typed
@@ -518,11 +772,19 @@ pub fn check_prompt_limits(sizes: impl IntoIterator<Item = u64>) -> Result<(), I
 /// with ZERO decode. Path POLICY (canonicalize/allowlist/sensitive-subtree)
 /// is the host's policy layer, not this module's.
 pub fn read_image_file_capped(path: &std::path::Path) -> Result<Vec<u8>, ImageError> {
-    use std::io::Read;
     let file = std::fs::File::open(path).map_err(|_| ImageError {
         kind: NanoErrorKind::FsIo,
         detail: "open",
     })?;
+    read_capped_file(file)
+}
+
+/// The bounded read shared by the TUI/path intake helper and
+/// `ViewImageTool`'s handle-verified confined open: at most
+/// `MAX_IMAGE_FILE_BYTES` + 1 so an oversize file is a typed ImageTooLarge
+/// with ZERO decode work.
+fn read_capped_file(file: std::fs::File) -> Result<Vec<u8>, ImageError> {
+    use std::io::Read;
     let mut limited = file.take(MAX_IMAGE_FILE_BYTES.saturating_add(1));
     let mut bytes = Vec::new();
     limited.read_to_end(&mut bytes).map_err(|_| ImageError {
@@ -592,6 +854,13 @@ fn decode_normalize_reencode(
     let active = ACTIVE_DECODES.fetch_add(1, Ordering::SeqCst) + 1;
     MAX_OBSERVED_ACTIVE_DECODES.fetch_max(active, Ordering::SeqCst);
     TOTAL_DECODES.fetch_add(1, Ordering::SeqCst);
+    #[cfg(test)]
+    {
+        let target = COUNT_DECODE_LEN.load(Ordering::SeqCst);
+        if target != 0 && target == bytes.len() {
+            DECODES_FOR_LEN.fetch_add(1, Ordering::SeqCst);
+        }
+    }
     let guard = scopeguard_decode_counter();
     let out = decode_inner(bytes, format);
     drop(guard);
@@ -745,6 +1014,9 @@ fn decode_inner(bytes: &[u8], format: SniffedFormat) -> Result<LoadedImage, Imag
         placeholder: None,
         width: fw,
         height: fh,
+        // §4.5: a resize is the only step that changes pixel dimensions
+        // here — record the pre-downscale geometry for the P2b label.
+        normalized_from: ((fw, fh) != (w, h)).then_some((w, h)),
         frames_dropped,
     })
 }
@@ -900,6 +1172,7 @@ mod tests {
             placeholder: None,
             width: 8,
             height: 8,
+            normalized_from: None,
             frames_dropped: false,
         };
         assert_eq!(
@@ -1397,33 +1670,78 @@ mod tests {
         assert_eq!(err.kind, NanoErrorKind::ImageUnsupportedFormat, "{err}");
     }
 
+    // ── §12 decode-count proofs ─────────────────────────────────────────
+    //
+    // TOTAL_DECODES is process-global and the harness runs tests on
+    // parallel threads, so an ABSOLUTE counter read races any concurrent
+    // test's decode (the macOS CI failure: 21 == 20 in the 1000-frame GIF
+    // proof). The counter-dependent proofs are folded into ONE serialized
+    // body (the flux_key.rs / e863a2b convention for parallel-unsafe
+    // clusters) and every measurement is LENGTH-TARGETED (the
+    // POISON_DECODE_LEN discipline): only a decode of the fixture's unique
+    // padded length bumps DECODES_FOR_LEN, so a parallel test's decode can
+    // never steal or inflate the count. The invariants keep their full
+    // strength: ZERO decodes for rejected input, exactly ONE decode body
+    // for a 1000-frame GIF.
+
+    /// Arm the length-targeted counter for exactly `bytes`' length.
+    fn begin_count_for(bytes: &[u8]) {
+        DECODES_FOR_LEN.store(0, Ordering::SeqCst);
+        COUNT_DECODE_LEN.store(bytes.len(), Ordering::SeqCst);
+    }
+
+    /// Disarm and assert the targeted count.
+    fn assert_counted_decodes(expected: usize, msg: &str) {
+        COUNT_DECODE_LEN.store(0, Ordering::SeqCst);
+        assert_eq!(DECODES_FOR_LEN.load(Ordering::SeqCst), expected, "{msg}");
+    }
+
+    /// Pad with trailing zero bytes (tolerated past the container end —
+    /// the §4.1 polyglot battery proves the decoders stop at the
+    /// terminator) to a length no other fixture uses, so the
+    /// length-targeted counter attributes unambiguously (the poison
+    /// battery's 40_001 precedent). Applied AFTER `materialize` so the
+    /// on-disk fixtures stay unpadded.
+    fn pad_to_unique_len(bytes: &mut Vec<u8>) {
+        bytes.resize(bytes.len() + 31_000_001, 0);
+    }
+
+    /// The serialized decode-count cluster: the former
+    /// `oversize_file_is_too_large_with_zero_decode`,
+    /// `bomb_header_rejected_before_allocation`, and
+    /// `thousand_frame_gif_decodes_first_frame_only` bodies, every
+    /// assertion preserved, the counter reads length-targeted.
     #[tokio::test]
-    async fn oversize_file_is_too_large_with_zero_decode() {
-        let before = TOTAL_DECODES.load(Ordering::SeqCst);
+    async fn decode_count_invariants_are_length_targeted_and_serialized() {
+        // Oversize file: the intake byte ceiling rejects with ZERO decodes.
         let bytes = vec![0u8; (MAX_IMAGE_FILE_BYTES + 1) as usize];
+        begin_count_for(&bytes);
         let err = load_image(&bytes, None).await.unwrap_err();
         assert_eq!(err.kind, NanoErrorKind::ImageTooLarge);
         assert_eq!(err.detail, "file-bytes");
-        assert_eq!(
-            TOTAL_DECODES.load(Ordering::SeqCst),
-            before,
-            "oversize rejection runs ZERO decodes"
-        );
-    }
+        assert_counted_decodes(0, "oversize rejection runs ZERO decodes");
 
-    #[tokio::test]
-    async fn bomb_header_rejected_before_allocation() {
-        // 40,000 × 40,000 = 1.6 Gpx declared over a ~100 B file.
-        let bomb = materialize("bomb-header.png", &png_with_declared_dims(40_000, 40_000));
-        let before = TOTAL_DECODES.load(Ordering::SeqCst);
+        // Bomb header: 40,000 × 40,000 = 1.6 Gpx declared over a ~100 B
+        // file — the header probe rejects BEFORE the decoder allocates.
+        let mut bomb = materialize("bomb-header.png", &png_with_declared_dims(40_000, 40_000));
+        pad_to_unique_len(&mut bomb);
+        begin_count_for(&bomb);
         let err = load_image(&bomb, None).await.unwrap_err();
         assert_eq!(err.kind, NanoErrorKind::ImageTooLarge);
         assert_eq!(err.detail, "decode-pixels");
-        assert_eq!(
-            TOTAL_DECODES.load(Ordering::SeqCst),
-            before,
-            "the header probe rejects BEFORE the decoder allocates"
-        );
+        assert_counted_decodes(0, "the header probe rejects BEFORE the decoder allocates");
+
+        // 1000-frame GIF: exactly ONE decode body runs (no per-frame
+        // decode explosion); the first frame wins.
+        let mut gif = materialize("anim-1000f.gif", &gif_frames(1000));
+        pad_to_unique_len(&mut gif);
+        begin_count_for(&gif);
+        let loaded = load_image(&gif, None).await.expect("gif loads");
+        assert!(loaded.frames_dropped, "999 frames were dropped");
+        assert_eq!(loaded.wire_mime, "image/png");
+        assert_eq!((loaded.width, loaded.height), (1, 1));
+        assert_counted_decodes(1, "ONE decode body ran (no per-frame decode explosion)");
+        assert!(loaded.receipt_line().contains("frames: N -> 1"));
     }
 
     #[tokio::test]
@@ -1619,19 +1937,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn thousand_frame_gif_decodes_first_frame_only() {
-        let gif = materialize("anim-1000f.gif", &gif_frames(1000));
-        let before = TOTAL_DECODES.load(Ordering::SeqCst);
-        let loaded = load_image(&gif, None).await.expect("gif loads");
-        assert!(loaded.frames_dropped, "999 frames were dropped");
-        assert_eq!(loaded.wire_mime, "image/png");
-        assert_eq!((loaded.width, loaded.height), (1, 1));
-        // ONE decode body ran (no per-frame decode explosion).
-        assert_eq!(TOTAL_DECODES.load(Ordering::SeqCst), before + 1);
-        assert!(loaded.receipt_line().contains("frames: N -> 1"));
-    }
-
-    #[tokio::test]
     async fn animated_webp_decodes_first_frame_only() {
         let frame1 = still_webp(0); // red-dominant noise
         let frame2 = still_webp(1); // blue-dominant noise
@@ -1802,5 +2107,230 @@ mod tests {
             local.contains("image.workspace = true"),
             "nano-tools consumes the workspace-pinned image only"
         );
+    }
+
+    // ── P2b §3.7 tool battery: authorization flow, link-judged-on-target,
+    // and the approve→open swap race (the P2a-audit H-2 discipline) ────────
+
+    #[derive(Debug)]
+    struct ApproveAllReads;
+    impl ImageReadApprover for ApproveAllReads {
+        fn request(&self, _canonical: &std::path::Path) -> ImageReadApproval {
+            ImageReadApproval::Approved
+        }
+    }
+
+    /// The headless analogue of DenyImageReadApprover: always Denied, never
+    /// a silent approve.
+    #[derive(Debug)]
+    struct DenyAllReads;
+    impl ImageReadApprover for DenyAllReads {
+        fn request(&self, _canonical: &std::path::Path) -> ImageReadApproval {
+            ImageReadApproval::Denied
+        }
+    }
+
+    fn write_valid_png(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let bytes = encode_png_bytes(&image::DynamicImage::ImageRgb8(rgb_image(8, 8, false)));
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).expect("write png");
+        path
+    }
+
+    fn workspace_write_policy() -> FileSystemSandboxPolicy {
+        nano_core::permissions::PermissionProfile::workspace_write().file_system_sandbox_policy()
+    }
+
+    /// §3.7 happy path: a workspace-approved read auto-approves, loads, and
+    /// normalizes — zero approver round-trips.
+    #[tokio::test]
+    async fn p2b_view_image_workspace_read_auto_approves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let png = write_valid_png(&ws, "shot.png");
+        let tool = ViewImageTool::new(
+            workspace_write_policy(),
+            &ws,
+            std::sync::Arc::new(DenyAllReads), // never consulted for workspace targets
+        );
+        let loaded = tool.read(&png, None).await.expect("workspace read");
+        assert_eq!((loaded.width, loaded.height), (8, 8));
+        // An alpha-less source rides the JPEG ladder (§4.5) — the wire mime
+        // is the closed set, never the claimed one.
+        assert_eq!(loaded.wire_mime, WIRE_MIME_JPEG);
+        assert_eq!(loaded.digest, hex_sha256(&loaded.bytes));
+    }
+
+    /// §3.7 authorization battery: an external SANCTIONED root requires the
+    /// human-approval round-trip (approved → reads; denied — the headless
+    /// degrade — → typed Fs* denial, never a silent approve), and an
+    /// unsanctioned external target is denied with zero reads past
+    /// canonicalization.
+    #[tokio::test]
+    async fn p2b_view_image_external_sanctioned_requires_approval_elsewhere_denied() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        let sanctioned = tmp.path().join("pictures");
+        let elsewhere = tmp.path().join("elsewhere");
+        for dir in [&ws, &sanctioned, &elsewhere] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let external_png = write_valid_png(&sanctioned, "ext.png");
+        let elsewhere_png = write_valid_png(&elsewhere, "off.png");
+        let sanctioned_canonical = sanctioned.canonicalize().unwrap();
+
+        let approved = ViewImageTool::new_with_roots(
+            workspace_write_policy(),
+            &ws,
+            std::sync::Arc::new(ApproveAllReads),
+            vec![sanctioned_canonical.clone()],
+        );
+        let loaded = approved
+            .read(&external_png, None)
+            .await
+            .expect("approved external read");
+        assert_eq!((loaded.width, loaded.height), (8, 8));
+
+        // Headless degrade: HumanApprovalRequired + always-Deny approver →
+        // typed denial, never a silent approve.
+        let headless = ViewImageTool::new_with_roots(
+            workspace_write_policy(),
+            &ws,
+            std::sync::Arc::new(DenyAllReads),
+            vec![sanctioned_canonical],
+        );
+        let err = headless.read(&external_png, None).await.unwrap_err();
+        assert_eq!(err.kind, NanoErrorKind::FsReadDenied);
+        assert_eq!(err.detail, "policy");
+
+        let denied = ViewImageTool::new_with_roots(
+            workspace_write_policy(),
+            &ws,
+            std::sync::Arc::new(ApproveAllReads),
+            vec![],
+        );
+        let err = denied.read(&elsewhere_png, None).await.unwrap_err();
+        assert_eq!(err.kind, NanoErrorKind::FsReadDenied);
+        assert_eq!(err.detail, "policy");
+    }
+
+    /// §3.7: a symlink/junction pointing OUT of an approved root is judged
+    /// on its RESOLVED target — canonicalization resolves the link before
+    /// classification, so the escape reads as Denied, never as the
+    /// workspace-local name.
+    #[tokio::test]
+    async fn p2b_view_image_link_escape_is_judged_on_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        write_valid_png(&outside, "secret.png");
+        let link = ws.join("linked.png");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(outside.join("secret.png"), &link).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(outside.join("secret.png"), &link).is_ok();
+        if !linked {
+            eprintln!(
+                "LOUD SKIP: host refused link creation (no developer mode/admin) — \
+                 link-judged-on-target scenario cannot run here"
+            );
+            return;
+        }
+        let tool = ViewImageTool::new(
+            workspace_write_policy(),
+            &ws,
+            std::sync::Arc::new(ApproveAllReads),
+        );
+        let err = tool.read(&link, None).await.unwrap_err();
+        assert_eq!(err.kind, NanoErrorKind::FsReadDenied);
+    }
+
+    /// §3.7(c) + the P2a-audit H-2 discipline: a symlink/junction swapped in
+    /// BETWEEN approval and open fails CLOSED from the opened handle — typed
+    /// denial, zero bytes of the swapped target read. The legitimate path is
+    /// restored afterwards and still reads.
+    #[tokio::test]
+    async fn p2b_view_image_swap_between_approval_and_open_fails_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        let sub = ws.join("sub");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        write_valid_png(&sub, "shot.png");
+        let outside_png = write_valid_png(&outside, "shot.png");
+        let tool = ViewImageTool::new(
+            workspace_write_policy(),
+            &ws,
+            std::sync::Arc::new(ApproveAllReads),
+        );
+
+        #[cfg(windows)]
+        {
+            let saved = ws.join("sub.saved");
+            let linked = std::rc::Rc::new(std::cell::Cell::new(true));
+            let (sub_hook, saved_hook, outside_hook, linked_hook) =
+                (sub.clone(), saved.clone(), outside.clone(), linked.clone());
+            PRE_OPEN_HOOK.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    std::fs::rename(&sub_hook, &saved_hook).unwrap();
+                    let ok = std::process::Command::new("cmd")
+                        .args(["/c", "mklink", "/J"])
+                        .arg(&sub_hook)
+                        .arg(&outside_hook)
+                        .output()
+                        .expect("spawn mklink")
+                        .status
+                        .success();
+                    linked_hook.set(ok);
+                }));
+            });
+            let result = tool.read(&sub.join("shot.png"), None).await;
+            if !linked.get() {
+                eprintln!(
+                    "LOUD SKIP: host refused junction creation (no developer mode/admin) — \
+                     swap-between-approval-and-open scenario cannot run here"
+                );
+                return;
+            }
+            let err = result.unwrap_err();
+            assert_eq!(
+                (err.kind, err.detail),
+                (NanoErrorKind::FsReadDenied, "target-swapped"),
+                "a junctioned directory swapped in after approval must be \
+                 rejected from the opened handle, got {err:?}"
+            );
+            // Restore the layout: the legitimate path still works.
+            std::fs::remove_dir(&sub).unwrap(); // junctions are removed as directories
+            std::fs::rename(&saved, &sub).unwrap();
+            let loaded = tool.read(&sub.join("shot.png"), None).await.unwrap();
+            assert_eq!(loaded.width, 8);
+        }
+        #[cfg(unix)]
+        {
+            let target = sub.join("shot.png");
+            let target_hook = target.clone();
+            let outside_hook = outside_png.clone();
+            PRE_OPEN_HOOK.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    std::fs::remove_file(&target_hook).unwrap();
+                    std::os::unix::fs::symlink(&outside_hook, &target_hook).unwrap();
+                }));
+            });
+            let err = tool.read(&target, None).await.unwrap_err();
+            assert_eq!(
+                err.kind,
+                NanoErrorKind::FsReadDenied,
+                "a blob swapped for a symlink must fail the O_NOFOLLOW open, got {err:?}"
+            );
+            // Restore the legitimate file: the honest path still works.
+            std::fs::remove_file(&target).unwrap();
+            std::fs::write(&target, std::fs::read(&outside_png).unwrap()).unwrap();
+            let loaded = tool.read(&target, None).await.unwrap();
+            assert_eq!(loaded.width, 8);
+        }
     }
 }

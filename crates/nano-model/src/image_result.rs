@@ -18,6 +18,12 @@ pub struct ImageRef {
     pub bytes: u64,
     pub width: u32,
     pub height: u32,
+    /// §3.7/Q3: source pixel dimensions before the loader's normalization
+    /// downscale, when one happened. Journaled so the replayed label
+    /// re-derives byte-identically (§3.3); serde-defaulted so pre-P2b
+    /// journals parse unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normalized_from: Option<(u32, u32)>,
     pub placeholder: String,
 }
 
@@ -85,8 +91,14 @@ fn mint_replay(digest: String) -> ImageProvenance {
 
 pub fn image_label(index: usize, tool_name: &str, image: &ImageRef) -> String {
     let format = image.mime.strip_prefix("image/").unwrap_or("image");
+    let normalized = match image.normalized_from {
+        // §3.7/Q3: surface the source geometry so first-call region
+        // coordinates against the normalized raster are usable.
+        Some((w, h)) => format!(" (normalized from {w}x{h})"),
+        None => String::new(),
+    };
     format!(
-        "[Image #{} from tool {tool_name} — {}x{} {format}]",
+        "[Image #{} from tool {tool_name} — {}x{} {format}{normalized}]",
         index + 1,
         image.width,
         image.height
@@ -109,6 +121,7 @@ pub fn build_image_tool_result(
             bytes: image.bytes.len() as u64,
             width: image.width,
             height: image.height,
+            normalized_from: image.normalized_from,
             placeholder: String::new(),
         });
         images.push(ImageData {
@@ -255,5 +268,84 @@ mod tests {
         .unwrap();
         assert_ne!(a.content, b.content);
         assert_ne!(a.image_refs, b.image_refs);
+    }
+
+    /// §3.7/Q3: the label surfaces the `(normalized from WxH)` geometry iff
+    /// the loader downscaled; the field is serde-defaulted in both
+    /// directions so pre-P2b journals parse byte-identically and unscaled
+    /// images serialize byte-minimally.
+    #[test]
+    fn p2b_label_surfaces_normalized_geometry_and_serde_defaults() {
+        let reference = |normalized_from: Option<(u32, u32)>| ImageRef {
+            digest: "a".repeat(64),
+            mime: "image/png".into(),
+            bytes: 3,
+            width: 1024,
+            height: 768,
+            normalized_from,
+            placeholder: String::new(),
+        };
+        assert_eq!(
+            image_label(0, "view_image", &reference(Some((3000, 3000)))),
+            "[Image #1 from tool view_image — 1024x768 png (normalized from 3000x3000)]"
+        );
+        assert_eq!(
+            image_label(1, "view_image", &reference(None)),
+            "[Image #2 from tool view_image — 1024x768 png]"
+        );
+        // Pre-P2b journal row (no normalized_from key) parses as None.
+        let old = r#"{"digest":"aaaa","mime":"image/png","bytes":1,"width":1,"height":1,"placeholder":"p"}"#;
+        let parsed: ImageRef = serde_json::from_str(old).expect("old journal parses");
+        assert_eq!(parsed.normalized_from, None);
+        let unscaled = serde_json::to_string(&reference(None)).expect("serialize");
+        assert!(
+            !unscaled.contains("normalized_from"),
+            "None stays byte-minimal"
+        );
+        let scaled = serde_json::to_string(&reference(Some((3000, 3000)))).expect("serialize");
+        assert!(scaled.contains(r#""normalized_from":[3000,3000]"#));
+        // The builder carries the geometry into the journaled ref, so the
+        // replayed label re-derives byte-identically (§3.3).
+        let mut scaled_image = ordered(b"one", 1024);
+        scaled_image.height = 768;
+        scaled_image.normalized_from = Some((3000, 3000));
+        let (parts, _) = build_image_tool_result("c", "view_image", vec![scaled_image]).unwrap();
+        assert_eq!(parts.image_refs[0].normalized_from, Some((3000, 3000)));
+        assert_eq!(
+            parts.content,
+            "[Image #1 from tool view_image — 1024x768 png (normalized from 3000x3000)]"
+        );
+    }
+
+    /// §3.2 sealed builder: mismatched MIME/dims/count each reject BEFORE
+    /// anything is journaled or dispatched (digest and order arms are pinned
+    /// by the test above).
+    #[test]
+    fn p2b_builder_rejects_mime_dims_and_count_mismatches() {
+        let mut bad_mime = ordered(b"one", 1);
+        bad_mime.mime = "image/gif".into();
+        assert_eq!(
+            build_image_tool_result("c", "view_image", vec![bad_mime])
+                .unwrap_err()
+                .detail,
+            "mime"
+        );
+        let mut bad_dims = ordered(b"one", 1);
+        bad_dims.width = 0;
+        assert_eq!(
+            build_image_tool_result("c", "view_image", vec![bad_dims])
+                .unwrap_err()
+                .detail,
+            "dimensions"
+        );
+        let too_many = (0..17)
+            .map(|i| ordered(format!("n{i}").as_bytes(), 1))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            build_image_tool_result("c", "view_image", too_many)
+                .unwrap_err()
+                .detail,
+            "image-count"
+        );
     }
 }

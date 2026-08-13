@@ -550,6 +550,7 @@ mod tests {
                     bytes: 5,
                     width: 1,
                     height: 1,
+                    normalized_from: None,
                     placeholder: "[Image #1: /tmp/x.png]".into(),
                 },
                 data: "aGVsbG8".into(),
@@ -589,5 +590,391 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ── P2b §3.6/§7: end-to-end injection-clamp legs ────────────────────────
+    //
+    // The screenshot-of-instructions threat end-to-end: a real view_image
+    // result lands in history (fresh / post-compaction / post-kill-resume)
+    // and a subsequent protected trust mutation hits the clamp — the
+    // unpromptable gates DENY with the named reason; a prompt-capable gate
+    // is consulted with the influence cell SET (the ACP prompt round-trip
+    // itself is pinned by p2a_image_influenced_clamp_forces_human_approval).
+
+    #[derive(Debug)]
+    struct ApproveImageReads;
+    impl nano_tools::image::ImageReadApprover for ApproveImageReads {
+        fn request(&self, _canonical: &std::path::Path) -> nano_tools::image::ImageReadApproval {
+            nano_tools::image::ImageReadApproval::Approved
+        }
+    }
+
+    /// A recording gate: prompt-capable gates get the call (and observe the
+    /// cell); the clamp short-circuits unpromptable gates before approve().
+    #[derive(Debug)]
+    struct ClampGate {
+        can_prompt: bool,
+        cell: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        seen: Mutex<Vec<(String, bool)>>,
+    }
+
+    impl crate::turn::ApprovalGate for ClampGate {
+        fn approve(&self, call: &ToolCall) -> crate::turn::ApprovalDecision {
+            self.seen.lock().unwrap().push((
+                call.name.clone(),
+                self.cell.load(std::sync::atomic::Ordering::SeqCst),
+            ));
+            crate::turn::ApprovalDecision::Approve
+        }
+        fn can_prompt_image_clamp(&self) -> bool {
+            self.can_prompt
+        }
+    }
+
+    /// A scripted model that can also serve typed errors (the reactive
+    /// ContextOverflow compaction trigger).
+    #[derive(Debug)]
+    struct FallibleModel {
+        responses: Mutex<Vec<Result<ModelResponse, ModelError>>>,
+        pub requests: Mutex<Vec<ModelRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ModelDriver for FallibleModel {
+        async fn complete(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError> {
+            self.requests.lock().unwrap().push(request.clone());
+            self.responses.lock().unwrap().remove(0)
+        }
+    }
+
+    /// A workspace with a real decodable PNG plus a RealToolExecutor with
+    /// view_image wired against a temp attachment store.
+    fn view_image_fixture() -> (
+        tempfile::TempDir,
+        crate::wiring::RealToolExecutor,
+        std::path::PathBuf,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("ws");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nano-tools/fixtures/images/valid.png");
+        std::fs::copy(fixture, ws.join("shot.png")).expect("copy fixture");
+        let policy = nano_core::permissions::PermissionProfile::workspace_write()
+            .file_system_sandbox_policy();
+        let fs = nano_tools::fs::FsTools::new(policy.clone(), &ws);
+        let shell = nano_tools::shell::ShellTool::new(&home, &ws);
+        let store =
+            nano_session::attachment_store::AttachmentStore::open(&home).expect("attachment store");
+        let view = nano_tools::image::ViewImageTool::new(
+            policy,
+            &ws,
+            std::sync::Arc::new(ApproveImageReads),
+        );
+        let executor =
+            crate::wiring::RealToolExecutor::new(fs, shell, &ws).with_view_image(view, store);
+        (tmp, executor, ws)
+    }
+
+    /// §7 leg 1: a FRESH, non-evicted view_image result forces the clamp —
+    /// the unpromptable gate's protected mutation is DENIED with the named
+    /// reason, the journaled result carries image_refs + a real sha256
+    /// output digest, and the walker observed the live images (cell set).
+    #[tokio::test]
+    async fn p2b_fresh_result_image_forces_clamp_in_full_auto() {
+        let (_tmp, tools, ws) = view_image_fixture();
+        let model = ScriptedModel::new(vec![
+            tool_response(ToolCall {
+                id: "img1".into(),
+                name: "view_image".into(),
+                arguments: serde_json::json!({"path": "shot.png"}),
+            }),
+            tool_response(ToolCall {
+                id: "w1".into(),
+                name: "fs_write".into(),
+                arguments: serde_json::json!({"path": ws.join("AGENTS.md"), "content": "x"}),
+            }),
+            text_response("done"),
+        ]);
+        let cell = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gate = ClampGate {
+            can_prompt: false,
+            cell: cell.clone(),
+            seen: Mutex::new(Vec::new()),
+        };
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            model_name: "mock".into(),
+            tool_definitions: crate::wiring::v1_tool_definitions(false, true),
+            approval: Some(&gate),
+            compaction: None,
+            robustness: crate::turn::TurnRobustness {
+                image_influence: Some(cell.clone()),
+                ..Default::default()
+            },
+        };
+        let result = engine.run_turn("p2b-clamp", "look then write").await;
+        assert_eq!(result.state, TurnState::Complete);
+        // The image result landed journaled: image_refs + a REAL sha256
+        // (never the len: pseudo-digest).
+        assert!(result.ops.iter().any(|envelope| matches!(
+            &envelope.op,
+            nano_session::op::Op::ToolResult {
+                call_id, ok: true, output_digest, image_refs, ..
+            } if call_id == "img1"
+                && !image_refs.is_empty()
+                && output_digest.len() == 64
+                && output_digest.chars().all(|c| c.is_ascii_hexdigit())
+        )));
+        // The walker's input: the SECOND request carried the live images.
+        let requests = model.requests.lock().unwrap();
+        let second = &requests[1];
+        assert!(second.messages.iter().flat_map(|m| &m.content).any(|block| {
+            matches!(
+                block,
+                nano_model::types::ContentBlock::ToolResult { images, .. } if !images.is_empty()
+            )
+        }));
+        assert!(
+            cell.load(std::sync::atomic::Ordering::SeqCst),
+            "the walker→gate link wrote the session cell"
+        );
+        // The clamp short-circuited the protected call BEFORE the
+        // unpromptable gate (the gate saw only the view_image call itself).
+        let seen = gate.seen.lock().unwrap();
+        assert!(
+            !seen.iter().any(|(name, _)| name == "fs_write"),
+            "the protected mutation never reached the unpromptable gate: {seen:?}"
+        );
+        drop(seen);
+        // The denial is journaled AND model-visible with the named reason.
+        assert!(result.ops.iter().any(|envelope| matches!(
+            &envelope.op,
+            nano_session::op::Op::ToolResult {
+                call_id,
+                ok: false,
+                error_kind: Some(nano_session::NanoErrorKind::ApprovalDenied),
+                ..
+            } if call_id == "w1"
+        )));
+        let third = &requests[2];
+        assert!(third.messages.iter().flat_map(|m| &m.content).any(|block| {
+            matches!(
+                block,
+                nano_model::types::ContentBlock::ToolResult { content, .. }
+                    if content.contains(
+                        "image-influenced protected mutation requires interactive approval"
+                    )
+            )
+        }));
+        drop(requests);
+    }
+
+    /// §7 leg 1b: with a PROMPT-CAPABLE gate the protected call is NOT
+    /// pre-denied — the gate is consulted with the cell SET (the gate then
+    /// forces the human prompt; the ACP forcing is pinned separately).
+    #[tokio::test]
+    async fn p2b_prompt_capable_gate_sees_protected_call_with_cell_set() {
+        let (_tmp, tools, ws) = view_image_fixture();
+        let model = ScriptedModel::new(vec![
+            tool_response(ToolCall {
+                id: "img1".into(),
+                name: "view_image".into(),
+                arguments: serde_json::json!({"path": "shot.png"}),
+            }),
+            tool_response(ToolCall {
+                id: "w1".into(),
+                name: "fs_write".into(),
+                arguments: serde_json::json!({"path": ws.join("AGENTS.md"), "content": "x"}),
+            }),
+            text_response("done"),
+        ]);
+        let cell = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gate = ClampGate {
+            can_prompt: true,
+            cell: cell.clone(),
+            seen: Mutex::new(Vec::new()),
+        };
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            model_name: "mock".into(),
+            tool_definitions: crate::wiring::v1_tool_definitions(false, true),
+            approval: Some(&gate),
+            compaction: None,
+            robustness: crate::turn::TurnRobustness {
+                image_influence: Some(cell.clone()),
+                ..Default::default()
+            },
+        };
+        let result = engine.run_turn("p2b-clamp-prompt", "look then write").await;
+        assert_eq!(result.state, TurnState::Complete);
+        let seen = gate.seen.lock().unwrap();
+        assert!(
+            seen.iter()
+                .any(|(name, influenced)| name == "fs_write" && *influenced),
+            "the gate observed the protected call with the influence cell set: {seen:?}"
+        );
+    }
+
+    /// §7 leg 3 (post-kill-resume, manifest-presence path), pinned at the
+    /// posture the honesty rule forces pre-proving: with NO vision-proven
+    /// leaf in the vendored catalog, an image-influenced resumed context is
+    /// rejected WHOLE at the rung-3 pre-dispatch gate — typed
+    /// ModelLacksVision, ZERO model calls (zero egress). The
+    /// manifest-presence → flag fold is pinned by
+    /// p2b_image_influenced_fold_counts_result_image_manifests and the flag →
+    /// gate clamp by p2a_image_influenced_clamp_forces_human_approval; the
+    /// composed engine leg lands when the §8 live-proving flips a leaf.
+    #[tokio::test]
+    async fn p2b_post_kill_resume_image_influenced_is_fail_closed_zero_egress() {
+        let model = ScriptedModel::new(vec![
+            tool_response(ToolCall {
+                id: "w1".into(),
+                name: "fs_write".into(),
+                arguments: serde_json::json!({"path": "AGENTS.md", "content": "x"}),
+            }),
+            text_response("done"),
+        ]);
+        let tools = RecordingTools {
+            calls: Mutex::new(Vec::new()),
+            progress: ProgressSignals::default(),
+        };
+        let cell = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gate = ClampGate {
+            can_prompt: false,
+            cell: cell.clone(),
+            seen: Mutex::new(Vec::new()),
+        };
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            model_name: "mock".into(),
+            tool_definitions: vec![],
+            approval: Some(&gate),
+            compaction: None,
+            robustness: crate::turn::TurnRobustness {
+                image_influence: Some(cell.clone()),
+                ..Default::default()
+            },
+        };
+        let mut sink = |_: &nano_session::op::OpEnvelope| true;
+        let result = engine
+            .run_turn_streaming_with_context_blocks(
+                "p2b-resume",
+                crate::turn_input::TurnInput::text("resume and write"),
+                vec![],
+                None,
+                &mut sink,
+                true, // the resume fold's sticky-OR output: an image was here
+            )
+            .await;
+        assert!(
+            matches!(
+                &result.state,
+                TurnState::Failed(err) if err.kind == nano_session::NanoErrorKind::ModelLacksVision
+            ),
+            "image-influenced resume on an unproven leaf fails closed: {:?}",
+            result.state
+        );
+        assert!(
+            model.requests.lock().unwrap().is_empty(),
+            "zero model calls — the request was never transmitted"
+        );
+    }
+
+    /// §7 leg 2 (post-compaction): the result image is evicted by a reactive
+    /// compaction — the summarizer never sees the pixels, the journaled
+    /// CompactionComplete carries image_influenced=true, the cell stays SET
+    /// (sticky fetch_or), and a later protected mutation is STILL clamped.
+    #[tokio::test]
+    async fn p2b_post_compaction_protected_mutation_stays_clamped() {
+        let (_tmp, tools, ws) = view_image_fixture();
+        let model = FallibleModel {
+            responses: Mutex::new(vec![
+                Ok(tool_response(ToolCall {
+                    id: "img1".into(),
+                    name: "view_image".into(),
+                    arguments: serde_json::json!({"path": "shot.png"}),
+                })),
+                Err(ModelError::ContextOverflow("too big".into())),
+                Ok(text_response("compact summary")),
+                Ok(tool_response(ToolCall {
+                    id: "w1".into(),
+                    name: "fs_write".into(),
+                    arguments: serde_json::json!({"path": ws.join("AGENTS.md"), "content": "x"}),
+                })),
+                Ok(text_response("done")),
+            ]),
+            requests: Mutex::new(Vec::new()),
+        };
+        let cell = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gate = ClampGate {
+            can_prompt: false,
+            cell: cell.clone(),
+            seen: Mutex::new(Vec::new()),
+        };
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            model_name: "mock".into(),
+            tool_definitions: crate::wiring::v1_tool_definitions(false, true),
+            approval: Some(&gate),
+            compaction: Some(crate::compact::CompactionConfig {
+                context_window: 1_000_000,
+                auto_compact_limit: 900_000,
+            }),
+            robustness: crate::turn::TurnRobustness {
+                image_influence: Some(cell.clone()),
+                ..Default::default()
+            },
+        };
+        let result = engine.run_turn("p2b-compact", "look then write").await;
+        assert_eq!(result.state, TurnState::Complete);
+        // The eviction provenance is journaled.
+        assert!(result.ops.iter().any(|envelope| matches!(
+            &envelope.op,
+            nano_session::op::Op::CompactionComplete {
+                image_influenced: true,
+                ..
+            }
+        )));
+        // The summarizer never saw the result pixels; the post-compaction
+        // retry carried the placeholder, not pixels.
+        let requests = model.requests.lock().unwrap();
+        let summarize = &requests[2];
+        assert!(!summarize.messages.iter().flat_map(|m| &m.content).any(|block| {
+            matches!(
+                block,
+                nano_model::types::ContentBlock::ToolResult { images, .. } if !images.is_empty()
+            )
+        }));
+        let retry = &requests[3];
+        assert!(
+            !retry.messages.iter().flat_map(|m| &m.content).any(|block| {
+                matches!(
+                    block,
+                    nano_model::types::ContentBlock::ToolResult { images, .. } if !images.is_empty()
+                )
+            })
+        );
+        // The cell stayed set across compaction and the clamp still fired.
+        assert!(cell.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(result.ops.iter().any(|envelope| matches!(
+            &envelope.op,
+            nano_session::op::Op::ToolResult {
+                call_id,
+                ok: false,
+                error_kind: Some(nano_session::NanoErrorKind::ApprovalDenied),
+                ..
+            } if call_id == "w1"
+        )));
     }
 }

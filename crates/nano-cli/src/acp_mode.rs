@@ -4193,15 +4193,28 @@ pub fn messages_from_envelopes_rehydrating(
                     if !content.is_empty() {
                         content.push('\n');
                     }
-                    match attachments.and_then(|store| store.read_verified(&reference.digest).ok())
-                    {
-                        Some(bytes) => {
+                    // §3.3: the SAME BlobReadError split as the P2a intake
+                    // arm — operator logs distinguish TAMPERED/MISSING, never
+                    // a collapsed cause.
+                    let read = match attachments {
+                        Some(store) => store.read_verified(&reference.digest),
+                        None => Err(BlobReadError::Missing),
+                    };
+                    match read {
+                        Ok(bytes) => {
                             content.push_str(&nano_model::image_result::image_label(
                                 index, tool_name, reference,
                             ));
                             verified.push((reference.clone(), bytes));
                         }
-                        None => {
+                        Err(err) => {
+                            let cause = match &err {
+                                BlobReadError::Missing | BlobReadError::Store(_) => {
+                                    AttachmentIssueCause::Missing
+                                }
+                                BlobReadError::Tampered => AttachmentIssueCause::Tampered,
+                                BlobReadError::MalformedDigest => AttachmentIssueCause::Malformed,
+                            };
                             let prefix = if is_valid_digest(&reference.digest) {
                                 reference.digest.chars().take(12).collect::<String>()
                             } else {
@@ -4212,7 +4225,7 @@ pub fn messages_from_envelopes_rehydrating(
                                 index + 1
                             ));
                             notices.push(AttachmentIssue {
-                                cause: AttachmentIssueCause::Missing,
+                                cause,
                                 digest_prefix: prefix,
                             });
                         }
@@ -5261,6 +5274,7 @@ mod tests {
                 bytes: 100,
                 width: 8,
                 height: 8,
+                normalized_from: None,
                 placeholder: format!("[Image #{n}: /tmp/{n}.png]"),
             })
         };
@@ -5394,6 +5408,7 @@ mod tests {
                         bytes: 1,
                         width: 1,
                         height: 1,
+                        normalized_from: None,
                         placeholder: "[Image #1: /tmp/x.png]".into(),
                     })],
                 },
@@ -5506,5 +5521,468 @@ mod tests {
         );
         assert_eq!(rig.gate.approve(&amend), ApprovalDecision::Approve);
         assert_eq!(rig.prompt_count(), 0);
+    }
+
+    // ── P2b §3.3/§7: result-image replay/rehydration battery ─────────────
+
+    /// A temp attachment-store home that cleans itself up on drop.
+    struct TestStoreHome(std::path::PathBuf);
+    impl Drop for TestStoreHome {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn p2b_store(tag: &str) -> (TestStoreHome, AttachmentStore) {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let dir = std::env::temp_dir().join(format!(
+            "nano-p2b-store-{}-{tag}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).expect("store home");
+        let store = AttachmentStore::open(&dir).expect("attachment store");
+        (TestStoreHome(dir), store)
+    }
+
+    /// A two-image live artifact set, blobs written to the store, with the
+    /// second image journaled as downscaled (the §3.7 normalized-from
+    /// geometry). Returns the canonical parts and the journaled envelopes.
+    fn p2b_live_parts_and_envelopes(
+        store: &AttachmentStore,
+    ) -> (
+        nano_model::image_result::ImageToolResultParts,
+        Vec<OpEnvelope>,
+    ) {
+        let lease = store.acquire_write_lease().expect("lease");
+        let digest_a = store.put(&lease, b"fake-png-one").expect("put a");
+        let digest_b = store.put(&lease, b"fake-png-two").expect("put b");
+        let ordered =
+            |bytes: &[u8], digest: &str, normalized_from| nano_model::image_result::OrderedImage {
+                bytes: bytes.to_vec(),
+                mime: "image/png".into(),
+                digest: digest.into(),
+                width: 8,
+                height: 8,
+                normalized_from,
+            };
+        let (parts, provenance) = nano_model::image_result::build_image_tool_result(
+            "c1",
+            "view_image",
+            vec![
+                ordered(b"fake-png-one", &digest_a, None),
+                ordered(b"fake-png-two", &digest_b, Some((3000, 3000))),
+            ],
+        )
+        .expect("canonical builder");
+        drop(provenance); // the live acceptance seam consumed it; the replay arm re-mints
+        let envelopes = vec![
+            OpEnvelope::new(
+                "t-1",
+                "ts",
+                Op::ToolCall {
+                    turn_id: "t".into(),
+                    call_id: "c1".into(),
+                    name: "view_image".into(),
+                    args: serde_json::json!({"path": "a.png"}),
+                },
+            ),
+            OpEnvelope::new(
+                "t-2",
+                "ts",
+                Op::ToolResult {
+                    call_id: "c1".into(),
+                    ok: true,
+                    output_digest: parts.output_digest.clone(),
+                    changed_files: vec![],
+                    error_kind: None,
+                    image_refs: parts.image_refs.clone(),
+                },
+            ),
+        ];
+        (parts, envelopes)
+    }
+
+    /// Kill-resume fidelity: the envelopes make a full JSON round trip (the
+    /// journaled byte shape is what a resumed session parses), then the
+    /// rehydrating fold restores BOTH images byte-verified (base64 equality
+    /// against the live artifacts) at the same pairing position, with the
+    /// ReplayVerified provenance accepted (the message carries the images at
+    /// all).
+    #[test]
+    fn p2b_kill_resume_result_image_rehydrates_byte_verified() {
+        let (_home, store) = p2b_store("rehydrate");
+        let (parts, envelopes) = p2b_live_parts_and_envelopes(&store);
+        // Kill-resume honesty: serialize every envelope to its journaled
+        // JSON and re-parse — the fold consumes the RESUMED bytes, never the
+        // in-memory originals.
+        let envelopes: Vec<OpEnvelope> = envelopes
+            .iter()
+            .map(|envelope| {
+                serde_json::from_str(&serde_json::to_string(envelope).expect("journal serialize"))
+                    .expect("journal parse")
+            })
+            .collect();
+        let (messages, notices) = messages_from_envelopes_rehydrating(&envelopes, Some(&store));
+        assert!(notices.is_empty(), "clean rehydration, zero notices");
+        let result = messages
+            .iter()
+            .find(|message| message.role == Role::Tool)
+            .expect("tool result message");
+        let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            images,
+            ..
+        } = &result.content[0]
+        else {
+            panic!("tool result block")
+        };
+        assert_eq!(tool_use_id, "c1", "same pairing position");
+        assert_eq!(images, &parts.images, "byte-verified rehydration");
+        // §3.3: the replayed content is the standard elision marker PLUS the
+        // re-derived label lines — the deterministic parts byte-identical.
+        let expected = format!(
+            "[tool output elided from journal: ok=true, digest={}]\n{}",
+            parts.output_digest, parts.content
+        );
+        assert_eq!(content, &expected, "elision marker + re-derived labels");
+    }
+
+    /// §3.3: the replayed projection is byte-identical to the live builder's
+    /// — INCLUDING the §3.7 normalized-from geometry, which round-trips
+    /// through the journaled refs.
+    #[test]
+    fn p2b_live_and_replay_result_labels_are_byte_identical() {
+        let (_home, store) = p2b_store("labels");
+        let (parts, envelopes) = p2b_live_parts_and_envelopes(&store);
+        let (messages, _) = messages_from_envelopes_rehydrating(&envelopes, Some(&store));
+        let result = messages
+            .iter()
+            .find(|message| message.role == Role::Tool)
+            .expect("tool result message");
+        let ContentBlock::ToolResult { content, .. } = &result.content[0] else {
+            panic!("tool result block")
+        };
+        // The first line is the standard elision marker (the tool's own free
+        // text stays elided per the digest-only invariant); EVERYTHING after
+        // it is the label lines, byte-identical to the live projection.
+        let (marker, labels) = content.split_once('\n').expect("marker + labels");
+        assert_eq!(
+            marker,
+            format!(
+                "[tool output elided from journal: ok=true, digest={}]",
+                parts.output_digest
+            )
+        );
+        assert_eq!(labels, parts.content, "live == replay label lines");
+        assert!(
+            labels
+                .contains("[Image #2 from tool view_image — 8x8 png (normalized from 3000x3000)]"),
+            "the normalized-from geometry survives the journal: {labels}"
+        );
+    }
+
+    /// §3.3/§7 replay index: a result with NO journaled call, or with a
+    /// DUPLICATE call id, resolves to the deterministic unavailable name
+    /// (never an inferred name) — and the pixels are STILL digest-verified
+    /// and rehydrated (the name is the only casualty).
+    #[test]
+    fn p2b_replay_index_unpaired_and_duplicate_calls_degrade_name_only() {
+        let (_home, store) = p2b_store("index");
+        let (parts, envelopes) = p2b_live_parts_and_envelopes(&store);
+        let result_envelope = envelopes[1].clone();
+        let call_envelope = |name: &str, id: &str| {
+            OpEnvelope::new(
+                id,
+                "ts",
+                Op::ToolCall {
+                    turn_id: "t".into(),
+                    call_id: "c1".into(),
+                    name: name.into(),
+                    args: serde_json::json!({}),
+                },
+            )
+        };
+        for (tag, envelopes) in [
+            ("unpaired", vec![result_envelope.clone()]),
+            (
+                "duplicate",
+                vec![
+                    call_envelope("view_image", "t-d1"),
+                    call_envelope("view_image", "t-d2"),
+                    result_envelope,
+                ],
+            ),
+        ] {
+            let (messages, notices) = messages_from_envelopes_rehydrating(&envelopes, Some(&store));
+            assert!(notices.is_empty(), "{tag}: pixels still verify clean");
+            let result = messages
+                .iter()
+                .find(|message| message.role == Role::Tool)
+                .unwrap_or_else(|| panic!("{tag}: tool result message"));
+            let ContentBlock::ToolResult {
+                content, images, ..
+            } = &result.content[0]
+            else {
+                panic!("{tag}: tool result block")
+            };
+            assert!(
+                content.contains("<unavailable: unpaired call>"),
+                "{tag}: the deterministic unavailable name, never inferred: {content}"
+            );
+            assert_eq!(
+                images, &parts.images,
+                "{tag}: pixels still digest-verified and rehydrated"
+            );
+        }
+    }
+
+    /// §3.3 (M3 regression): a flipped blob byte logs TAMPERED, a deleted
+    /// blob logs MISSING — never collapsed — and both degrade to the loud
+    /// placeholder line with zero images attached.
+    #[test]
+    fn p2b_replay_distinguishes_tampered_from_missing() {
+        let (_home, store) = p2b_store("causes");
+        let (parts, _) = p2b_live_parts_and_envelopes(&store);
+        let result_op = |image_refs: Vec<nano_session::op::ImageRef>| {
+            vec![
+                OpEnvelope::new(
+                    "t-1",
+                    "ts",
+                    Op::ToolCall {
+                        turn_id: "t".into(),
+                        call_id: "c1".into(),
+                        name: "view_image".into(),
+                        args: serde_json::json!({}),
+                    },
+                ),
+                OpEnvelope::new(
+                    "t-2",
+                    "ts",
+                    Op::ToolResult {
+                        call_id: "c1".into(),
+                        ok: true,
+                        output_digest: "d".into(),
+                        changed_files: vec![],
+                        error_kind: None,
+                        image_refs,
+                    },
+                ),
+            ]
+        };
+        // MISSING: a ref whose blob was never written.
+        let missing_ref = nano_session::op::ImageRef {
+            digest: "ef".repeat(32),
+            ..parts.image_refs[0].clone()
+        };
+        let (messages, notices) =
+            messages_from_envelopes_rehydrating(&result_op(vec![missing_ref]), Some(&store));
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].cause, AttachmentIssueCause::Missing);
+        let ContentBlock::ToolResult {
+            content, images, ..
+        } = &messages
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("result")
+            .content[0]
+        else {
+            panic!("result block")
+        };
+        assert!(images.is_empty(), "no pixels without verification");
+        assert!(
+            content.contains(
+                "unavailable: attachment efefefefefef missing — do not describe it from memory"
+            ),
+            "the loud line: {content}"
+        );
+        // TAMPERED: flip one byte of the FIRST blob on disk.
+        let digest = &parts.image_refs[0].digest;
+        let blob = store.root().join("blobs").join(&digest[..2]).join(digest);
+        let mut bytes = std::fs::read(&blob).expect("blob");
+        bytes[0] ^= 0xFF;
+        std::fs::write(&blob, bytes).expect("flip");
+        let (messages, notices) = messages_from_envelopes_rehydrating(
+            &result_op(vec![parts.image_refs[0].clone()]),
+            Some(&store),
+        );
+        assert_eq!(notices.len(), 1);
+        assert_eq!(
+            notices[0].cause,
+            AttachmentIssueCause::Tampered,
+            "operator logs distinguish TAMPERED from MISSING"
+        );
+        let ContentBlock::ToolResult { images, .. } = &messages
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("result")
+            .content[0]
+        else {
+            panic!("result block")
+        };
+        assert!(images.is_empty(), "tampered pixels never reattach");
+    }
+
+    /// §3.3 canary, extended to image_refs (the P2a replay-frame canary's
+    /// sibling): replay_frames reads ONLY the digest-only projections —
+    /// neither image bytes nor digests nor the manifest structure reach ACP
+    /// replay frames.
+    #[test]
+    fn p2b_replay_frames_never_carry_result_image_bytes_or_digests() {
+        let (_home, store) = p2b_store("canary");
+        let (parts, envelopes) = p2b_live_parts_and_envelopes(&store);
+        let frames = replay_frames("s1", &envelopes);
+        let wire = serde_json::to_string(&frames).expect("serialize");
+        for reference in &parts.image_refs {
+            assert!(!wire.contains(&reference.digest), "no digest leaks");
+        }
+        assert!(!wire.contains("base64,"), "no data payloads");
+        assert!(!wire.contains("image_ref"), "no manifest structure leaks");
+        assert!(
+            !wire.contains("from tool view_image"),
+            "no label lines in replay frames (projection-only surface)"
+        );
+    }
+
+    /// §3.2 honest compat, pinned: an OLD reader ignores `image_refs`
+    /// entirely, so a pre-P2b binary replays the EXACT generic elision
+    /// marker — no label lines, no pixels. The degradation is a contract,
+    /// not a surprise.
+    #[test]
+    fn p2b_old_reader_degraded_replay_text_pinned() {
+        let (_home, store) = p2b_store("degraded");
+        let (parts, envelopes) = p2b_live_parts_and_envelopes(&store);
+        // What the old reader sees: the op with image_refs stripped (the
+        // field it never knew), parsed by the pre-P2b schema.
+        let mut value = serde_json::to_value(&envelopes[1]).expect("serialize");
+        value["op"]
+            .as_object_mut()
+            .expect("op object")
+            .remove("image_refs");
+        let old_read: OpEnvelope = serde_json::from_value(value).expect("old-reader parse");
+        let messages = messages_from_envelopes(&[envelopes[0].clone(), old_read]);
+        let result = messages
+            .iter()
+            .find(|message| message.role == Role::Tool)
+            .expect("tool result message");
+        let ContentBlock::ToolResult {
+            content, images, ..
+        } = &result.content[0]
+        else {
+            panic!("tool result block")
+        };
+        assert!(images.is_empty(), "old reader: zero pixels");
+        assert_eq!(
+            content,
+            &format!(
+                "[tool output elided from journal: ok=true, digest={}]",
+                parts.output_digest
+            ),
+            "the EXACT degraded replay text is pinned"
+        );
+        assert!(!content.contains("[Image"), "no label lines, no markers");
+    }
+
+    /// §3.5/§7: a CompactionComplete folds through the canonical builder on
+    /// replay, so a resumed post-compaction context with a result image in
+    /// the compacted prefix is byte-identical to the live compaction.
+    #[test]
+    fn p2b_compacted_replay_with_result_images_byte_identical_to_live() {
+        let (_home, store) = p2b_store("compacted");
+        let (parts, envelopes) = p2b_live_parts_and_envelopes(&store);
+        let summary = "summary text".to_string();
+        let mut compacted_envelopes = envelopes.clone();
+        compacted_envelopes.push(OpEnvelope::new(
+            "t-3",
+            "ts",
+            Op::CompactionComplete {
+                compaction_id: "k1".into(),
+                summary: summary.clone(),
+                covers_op_ids: vec!["t-1".into(), "t-2".into()],
+                changed_files: vec![],
+                image_influenced: true,
+            },
+        ));
+        let (replayed, notices) =
+            messages_from_envelopes_rehydrating(&compacted_envelopes, Some(&store));
+        assert!(notices.is_empty());
+        // The live side: the same pre-compaction context through the SAME
+        // canonical builder.
+        let live = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "view_image".into(),
+                    input: serde_json::json!({"path": "a.png"}),
+                }],
+            },
+            Message::tool_result_with_images(
+                "c1",
+                parts.content.clone(),
+                false,
+                parts.images.clone(),
+            ),
+        ];
+        let live_compacted = nano_agent::compact::build_compacted_history(live, &summary);
+        assert_eq!(replayed, live_compacted, "live == replay, byte-identical");
+    }
+
+    /// §3.6/§8 part 2: the resume fold counts result-image manifests by
+    /// PRESENCE — a covered manifest with a false record clears, an
+    /// uncompacted result-image manifest sets, sticky-OR over records.
+    #[test]
+    fn p2b_image_influenced_fold_counts_result_image_manifests() {
+        let result_manifest = |id: &str| {
+            OpEnvelope::new(
+                id,
+                "t",
+                Op::ToolResult {
+                    call_id: "c".into(),
+                    ok: true,
+                    output_digest: "d".into(),
+                    changed_files: vec![],
+                    error_kind: None,
+                    image_refs: vec![nano_session::op::ImageRef {
+                        digest: "ab".repeat(32),
+                        mime: "image/png".into(),
+                        bytes: 1,
+                        width: 1,
+                        height: 1,
+                        normalized_from: None,
+                        placeholder: "[Image #1 from tool view_image — 1x1 png]".into(),
+                    }],
+                },
+            )
+        };
+        let compaction = |id: &str, covers: Vec<String>, influenced: bool| {
+            OpEnvelope::new(
+                id,
+                "t",
+                Op::CompactionComplete {
+                    compaction_id: id.into(),
+                    summary: "s".into(),
+                    covers_op_ids: covers,
+                    changed_files: vec![],
+                    image_influenced: influenced,
+                },
+            )
+        };
+        // Uncompacted result-image manifest → influential (blob deleted or
+        // not — presence is the contract).
+        assert!(image_influenced_from_envelopes(&[result_manifest("r1")]));
+        // Covered by a false record → the pixels were summarized post-
+        // eviction; the flag stays clear.
+        assert!(!image_influenced_from_envelopes(&[
+            result_manifest("r1"),
+            compaction("k1", vec!["r1".into()], false),
+        ]));
+        // Any true record sticks, even covered and followed by false.
+        assert!(image_influenced_from_envelopes(&[
+            result_manifest("r1"),
+            compaction("k1", vec!["r1".into()], true),
+            compaction("k2", vec![], false),
+        ]));
     }
 }

@@ -118,6 +118,7 @@ mod tests {
                 bytes: 100,
                 width: 8,
                 height: 8,
+                normalized_from: None,
                 placeholder: placeholder.into(),
             },
             data: "aGVsbG8".into(),

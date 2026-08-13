@@ -37,6 +37,15 @@ tokio = { version = "1", features = ["rt", "sync"] }
 # Process-group kill for the C6 task kill domain (run_task).
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+# P2b §3.7 view_image: the reparse-safe CreateFileW + handle final-path
+# verification for ViewImageTool's confined open (the P2a-audit H-2
+# discipline; windows-sys stays pinned at 0.52).
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+
 [dev-dependencies]
 # Feature-unify the pure unix argv/policy builders into test builds so the
 # shell transform wiring is unit-tested on every host (they are pure string
