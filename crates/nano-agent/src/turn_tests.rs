@@ -889,6 +889,84 @@ mod tests {
         );
     }
 
+    /// §7 leg 3 (post-kill-resume), the composed leg on a vision-PROVEN leaf
+    /// (c980a20 blessed 27 leaves with live proofs, so the leg now exists):
+    /// image_influenced_before=true (manifest presence — the blob may be
+    /// deleted, the ref is still influential) + a proven leaf passes rung 3,
+    /// and the protected mutation hits the clamp: the unpromptable gate DENIES
+    /// with the named reason.
+    #[tokio::test]
+    async fn p2b_post_kill_resume_manifest_presence_keeps_clamp() {
+        let model = ScriptedModel::new(vec![
+            tool_response(ToolCall {
+                id: "w1".into(),
+                name: "fs_write".into(),
+                arguments: serde_json::json!({"path": "AGENTS.md", "content": "x"}),
+            }),
+            text_response("done"),
+        ]);
+        let tools = RecordingTools {
+            calls: Mutex::new(Vec::new()),
+            progress: ProgressSignals::default(),
+        };
+        let cell = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gate = ClampGate {
+            can_prompt: false,
+            cell: cell.clone(),
+            seen: Mutex::new(Vec::new()),
+        };
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            model_name: "flux-pinned-claude-opus".into(), // vendored vision-proven leaf
+            tool_definitions: vec![],
+            approval: Some(&gate),
+            compaction: None,
+            robustness: crate::turn::TurnRobustness {
+                image_influence: Some(cell.clone()),
+                ..Default::default()
+            },
+        };
+        let mut sink = |_: &nano_session::op::OpEnvelope| true;
+        let result = engine
+            .run_turn_streaming_with_context_blocks(
+                "p2b-resume-proven",
+                crate::turn_input::TurnInput::text("resume and write"),
+                vec![],
+                None,
+                &mut sink,
+                true, // manifest presence from the resume fold
+            )
+            .await;
+        assert_eq!(result.state, TurnState::Complete);
+        assert!(result.ops.iter().any(|envelope| matches!(
+            &envelope.op,
+            nano_session::op::Op::ToolResult {
+                call_id,
+                ok: false,
+                error_kind: Some(nano_session::NanoErrorKind::ApprovalDenied),
+                ..
+            } if call_id == "w1"
+        )));
+        let requests = model.requests.lock().unwrap();
+        assert!(
+            requests[1]
+                .messages
+                .iter()
+                .flat_map(|m| &m.content)
+                .any(|block| {
+                    matches!(
+                        block,
+                        nano_model::types::ContentBlock::ToolResult { content, .. }
+                            if content.contains(
+                                "image-influenced protected mutation requires interactive approval"
+                            )
+                    )
+                })
+        );
+    }
+
     /// §7 leg 2 (post-compaction): the result image is evicted by a reactive
     /// compaction — the summarizer never sees the pixels, the journaled
     /// CompactionComplete carries image_influenced=true, the cell stays SET
