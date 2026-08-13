@@ -494,9 +494,11 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         block_cap: memory_block_cap,
     };
     // P2a §6.3 (LANE-A BOUNDARY): the fail-closed static vision catalog —
-    // vendored exact-id entries only; aliases are never blessed in v1.
-    // (Tightening-only `[model_capabilities]` config overrides are applied
-    // by lane A's loader entry when it lands.)
+    // vendored exact-id entries only; aliases are never blessed in v1. Lane
+    // A's `with_tightening_overrides` hook exists for the tightening-only
+    // `[model_capabilities]` config — Nano has NO config-file channel at
+    // 4ca7700 (env vars only), so the vendored table is the whole runtime
+    // picture; the hook is one line once a config channel lands.
     let vision_catalog = match nano_model::vision_catalog::VisionCatalog::vendored() {
         Ok(catalog) => catalog,
         Err(err) => {
@@ -1188,7 +1190,7 @@ where
                             for issue in &attachment_issues {
                                 write_out(
                                     &out,
-                                    &attachment_missing_notice(&session_id, issue.cause.as_str(), &issue.digest_prefix),
+                                    &attachment_missing_notice(session_id, issue.cause.as_str(), &issue.digest_prefix),
                                 )?;
                             }
                             let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
