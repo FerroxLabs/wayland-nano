@@ -269,7 +269,7 @@ pub use path_normalization::canonicalize_path;
 #[cfg(target_os = "windows")]
 pub use process::{
     ConsoleMode, PipeSpawnHandles, StderrMode, StdinMode, create_process_as_user, read_handle_loop,
-    spawn_process_with_pipes,
+    spawn_process_with_pipes, spawn_process_with_pipes_contained,
 };
 #[cfg(target_os = "windows")]
 pub use resolved_permissions::{

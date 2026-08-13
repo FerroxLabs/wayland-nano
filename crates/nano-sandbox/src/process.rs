@@ -282,6 +282,70 @@ pub fn spawn_process_with_pipes(
     use_private_desktop: bool,
     logs_base_dir: Option<&Path>,
 ) -> Result<PipeSpawnHandles> {
+    spawn_process_with_pipes_inner(
+        h_token,
+        argv,
+        cwd,
+        env_map,
+        stdin_mode,
+        stderr_mode,
+        console_mode,
+        use_private_desktop,
+        logs_base_dir,
+        /*allow_breakaway*/ true,
+    )
+}
+
+/// [`spawn_process_with_pipes`] under a NO-BREAKAWAY job (P3 design §2.6):
+/// identical pipe setup and `PipeSpawnHandles` shape, but the spawn routes
+/// through `create_process_as_user_with_job_policy(allow_breakaway: false)`,
+/// which selects `JobObject::create_without_breakaway` —
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` WITHOUT `BREAKAWAY_OK`. A grandchild
+/// spawned with `CREATE_BREAKAWAY_FROM_JOB` is refused outright, so closing
+/// or terminating the job kills the child and all its DIRECT descendants
+/// (broker-spawned processes — `schtasks`, WMI `Win32_Process.Create`,
+/// service RPCs — are outside any job object BY DESIGN and are the
+/// documented post-RC2 limitation). MCP stdio children use ONLY this
+/// wrapper.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_process_with_pipes_contained(
+    h_token: HANDLE,
+    argv: &[String],
+    cwd: &Path,
+    env_map: &HashMap<String, String>,
+    stdin_mode: StdinMode,
+    stderr_mode: StderrMode,
+    console_mode: ConsoleMode,
+    use_private_desktop: bool,
+    logs_base_dir: Option<&Path>,
+) -> Result<PipeSpawnHandles> {
+    spawn_process_with_pipes_inner(
+        h_token,
+        argv,
+        cwd,
+        env_map,
+        stdin_mode,
+        stderr_mode,
+        console_mode,
+        use_private_desktop,
+        logs_base_dir,
+        /*allow_breakaway*/ false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_process_with_pipes_inner(
+    h_token: HANDLE,
+    argv: &[String],
+    cwd: &Path,
+    env_map: &HashMap<String, String>,
+    stdin_mode: StdinMode,
+    stderr_mode: StderrMode,
+    console_mode: ConsoleMode,
+    use_private_desktop: bool,
+    logs_base_dir: Option<&Path>,
+    allow_breakaway: bool,
+) -> Result<PipeSpawnHandles> {
     let mut in_r: HANDLE = 0;
     let mut in_w: HANDLE = 0;
     let mut out_r: HANDLE = 0;
@@ -315,7 +379,7 @@ pub fn spawn_process_with_pipes(
 
     let stdio = Some((in_r, out_w, stderr_handle));
     let spawn_result = unsafe {
-        create_process_as_user(
+        create_process_as_user_with_job_policy(
             h_token,
             argv,
             cwd,
@@ -324,6 +388,7 @@ pub fn spawn_process_with_pipes(
             stdio,
             console_mode,
             use_private_desktop,
+            allow_breakaway,
         )
     };
     let created = match spawn_result {

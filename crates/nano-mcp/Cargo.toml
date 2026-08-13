@@ -8,10 +8,26 @@ rust-version.workspace = true
 [dependencies]
 nano-egress = { version = "0.1.0", path = "../nano-egress" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
-tokio = { version = "1", features = ["macros", "rt", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "time", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# OAuth (P3 §6): S256 + bounded storage. All four are already in the
+# workspace lockfile (nano-egress/nano-sandbox) — no new versions.
+async-trait = "0.1"
+base64 = "0.22"
+rand = { version = "0.8", features = ["std", "std_rng"] }
+sha2 = "0.10"
+
+# OAuth credential storage (P3 §6.4, Q5 RULED): the keyring-primary store is
+# a hand-rolled wincred shim over the PINNED windows-sys 0.52 — the `keyring`
+# crate's Windows backend pulls a second windows-sys version, which the
+# workspace pin forbids.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Security_Credentials",
+] }
 
 [dev-dependencies]
 pretty_assertions = "1"
