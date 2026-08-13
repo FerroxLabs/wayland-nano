@@ -554,3 +554,21 @@ promotes/closes entries; builders append only.
   `op::GrantEndpoint{GrantMethod}` (reject Unknown), run
   `validate_oauth_grant`, append through the session coordinator.
   Lands in the RC2 wiring pass (docs/RC2-WIRING-PASS.md §7).
+
+## F-37: P4 session-browser merge-review debt (reviewer agent-146, verdict MERGE-OK, 2026-08-13) — OPEN
+
+- **MEDIUM-1:** `/resume <id>` (nano-tui/src/app.rs:760-773) is gated on
+  membership in the BOUNDED 200-entry list — an explicit-id resume of a
+  session older than the truncation window is refused with no workaround,
+  deviating from §6.2's "`/resume <id>` sends session/load". Fix (lands in
+  the wiring pass): explicit-id resume sends session/load directly after
+  the client-side syntax check (host re-validates); keep the Live-refusal
+  only when the row is present AND live.
+- **LOW-2:** `open_regular_no_follow` (session_browser.rs:231) propagates
+  ELOOP/NotFound/PermissionDenied from the open via `?`, failing the entire
+  listing on a transient swap. Fix: map those to Ok(None) (skip entry).
+- **LOW-3:** `let entry = entry?` (session_browser.rs:75) aborts the whole
+  list on one enumeration error; the cited precedent flattens
+  (bootstrap.rs:241). Fix: flatten.
+- **LOW-4:** `print_sessions` error line goes to stdout, not stderr
+  (exit code 2 is correct). Cosmetic.
