@@ -104,7 +104,7 @@ pub async fn run(
         workspace.join(".nano").join("skills"),
     ]);
 
-    let mut tool_definitions = v1_tool_definitions(search.is_some());
+    let mut tool_definitions = v1_tool_definitions(search.is_some(), false);
     tool_definitions.extend(mcp_definitions);
     tool_definitions.extend(nano_agent::memory::memory_tool_definitions(memory_write));
 

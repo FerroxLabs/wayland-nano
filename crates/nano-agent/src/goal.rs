@@ -468,4 +468,12 @@ impl<T: crate::turn::ToolExecutor> crate::turn::ToolExecutor for GoalToolExecuto
             error_kind: None,
         }
     }
+
+    fn take_image_result(&self, call_id: &str) -> Option<crate::turn::LiveImageToolResult> {
+        self.inner.take_image_result(call_id)
+    }
+
+    fn image_results_backed(&self) -> bool {
+        self.inner.image_results_backed()
+    }
 }

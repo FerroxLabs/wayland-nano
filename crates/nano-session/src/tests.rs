@@ -52,6 +52,7 @@ fn session_ops() -> Vec<OpEnvelope> {
                 output_digest: "d1".into(),
                 changed_files: vec!["main.rs".into()],
                 error_kind: None,
+                image_refs: vec![],
             },
         ),
         env(
@@ -127,6 +128,7 @@ fn duplicate_ids_never_double_apply() {
             output_digest: "d1".into(),
             changed_files: vec!["other.rs".into()],
             error_kind: None,
+            image_refs: vec![],
         },
     );
     ops.insert(4, dup);
@@ -745,6 +747,7 @@ fn p2a_image_ref() -> crate::op::ImageRef {
         bytes: 1234,
         width: 640,
         height: 480,
+        normalized_from: None,
         placeholder: "[Image #1: /tmp/x.png]".into(),
     }
 }
@@ -849,4 +852,38 @@ fn p2a_image_influenced_serde_default_and_skip() {
     assert!(json.contains(r#""image_influenced":true"#));
     let back: Op = serde_json::from_str(&json).expect("round trip");
     assert_eq!(back, influenced);
+}
+
+#[test]
+fn p2b_tool_result_image_refs_are_additive_optional_and_digest_only() {
+    let old = r#"{"type":"tool_result","call_id":"c1","ok":true,"output_digest":"d","changed_files":[],"error_kind":null}"#;
+    let parsed: Op = serde_json::from_str(old).unwrap();
+    assert!(matches!(parsed, Op::ToolResult { image_refs, .. } if image_refs.is_empty()));
+
+    let op = Op::ToolResult {
+        call_id: "c1".into(),
+        ok: true,
+        output_digest: "projection-digest".into(),
+        changed_files: vec![],
+        error_kind: None,
+        image_refs: vec![crate::op::ImageRef {
+            digest: "a".repeat(64),
+            mime: "image/png".into(),
+            bytes: 3,
+            width: 1,
+            height: 1,
+            normalized_from: None,
+            placeholder: "[Image #1 from tool view_image — 1x1 png]".into(),
+        }],
+    };
+    let json = serde_json::to_string(&op).unwrap();
+    assert!(json.contains(&"a".repeat(64)));
+    assert!(!json.contains("base64,"));
+    let mut old_reader_shape: serde_json::Value = serde_json::from_str(&json).unwrap();
+    old_reader_shape
+        .as_object_mut()
+        .unwrap()
+        .remove("image_refs");
+    let degraded: Op = serde_json::from_value(old_reader_shape).unwrap();
+    assert!(matches!(degraded, Op::ToolResult { image_refs, .. } if image_refs.is_empty()));
 }

@@ -342,7 +342,7 @@ impl Harness {
                     },
                     &config,
                     move |_| driver.clone(),
-                    move |workspace, mode, plan_file, diff_hook, _search_meter| {
+                    move |workspace, mode, plan_file, diff_hook, _search_meter, _image_approver| {
                         if real_fs {
                             let (exec, policy) =
                                 build_real_tools(workspace, mode, plan_file, diff_hook, &home);

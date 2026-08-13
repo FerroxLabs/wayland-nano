@@ -411,6 +411,7 @@ fn anthropic_request_body_uses_native_shape() {
                     tool_use_id: "call_abc".into(),
                     content: "sunny".into(),
                     is_error: false,
+                    images: vec![],
                 }],
             },
         ],
@@ -698,4 +699,139 @@ fn text_only_messages_keep_legacy_wire_shapes() {
         "hi"
     );
     assert_eq!(build_responses_body(&request)["input"], "hi");
+}
+
+// ---------------------------------------------------------------------------
+// P2b §3.4/§7: image-bearing ToolResult — the Anthropic native arm pinned
+// with NON-EMPTY images on a complete request (parallel view_image +
+// fs_read turn, mixed text/image results), and the completions/responses
+// rung-3 refusals proven zero-egress. `b25l`/`dHdv` are base64("one")/
+// base64("two") — synthetic bytes only.
+// ---------------------------------------------------------------------------
+
+fn p2b_image_result_request() -> (ModelRequest, crate::image_result::ImageToolResultParts) {
+    use crate::image_result::{OrderedImage, build_image_tool_result};
+    use crate::types::ContentBlock;
+    use sha2::{Digest, Sha256};
+    let ordered = |bytes: &[u8]| OrderedImage {
+        bytes: bytes.to_vec(),
+        mime: "image/png".into(),
+        digest: format!("{:x}", Sha256::digest(bytes)),
+        width: 1,
+        height: 1,
+        normalized_from: None,
+    };
+    let (parts, provenance) =
+        build_image_tool_result("t1", "view_image", vec![ordered(b"one"), ordered(b"two")])
+            .expect("canonical builder");
+    // The live acceptance seam consumes the token; the codec test needs only
+    // the parts.
+    drop(provenance);
+    let request = ModelRequest {
+        model: "flux-pinned-claude".into(),
+        messages: vec![
+            Message::user("look at these"),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "t1".into(),
+                        name: "view_image".into(),
+                        input: serde_json::json!({"path": "a.png"}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "t2".into(),
+                        name: "fs_read".into(),
+                        input: serde_json::json!({"path": "b.txt"}),
+                    },
+                ],
+            },
+            Message {
+                role: Role::Tool,
+                content: vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: parts.content.clone(),
+                        is_error: false,
+                        images: parts.images.clone(),
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "t2".into(),
+                        content: "file body".into(),
+                        is_error: false,
+                        images: vec![],
+                    },
+                ],
+            },
+        ],
+        ..Default::default()
+    };
+    (request, parts)
+}
+
+/// §3.4 native arm: the tool_result content becomes an ARRAY — one text part
+/// (the projection) then one base64 image part per image, order and count
+/// pinned; the sibling text-only result keeps the plain-string form.
+#[test]
+fn p2b_anthropic_tool_result_images_native_arm_pinned() {
+    let (request, _parts) = p2b_image_result_request();
+    let body = build_anthropic_body(&request);
+    let labels =
+        "[Image #1 from tool view_image — 1x1 png]\n[Image #2 from tool view_image — 1x1 png]";
+    assert_eq!(
+        body["messages"],
+        serde_json::json!([
+            {"role": "user", "content": "look at these"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "view_image", "input": {"path": "a.png"}},
+                {"type": "tool_use", "id": "t2", "name": "fs_read", "input": {"path": "b.txt"}}
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": [
+                    {"type": "text", "text": labels},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "b25l"}},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "dHdv"}}
+                ], "is_error": false},
+                {"type": "tool_result", "tool_use_id": "t2", "content": "file body", "is_error": false}
+            ]}
+        ])
+    );
+}
+
+/// §3.4 rung 3 (RC2 RULED): an image-bearing result is REFUSED on the
+/// completions and responses surfaces BEFORE any network I/O — the error is
+/// the typed refusal, never a connect/transport error, so the refusal is
+/// provably zero-egress (no listener, no fixture server, no packet).
+#[tokio::test]
+async fn p2b_completions_and_responses_refuse_tool_result_images_with_zero_egress() {
+    let (request, _parts) = p2b_image_result_request();
+    let completions = crate::flux_completions::FluxCompletionsClient::new(
+        nano_egress::client::EgressClient::flux(),
+    );
+    let err = completions
+        .complete_with_hooks(&request, "sk-test", &crate::types::CallHooks::none())
+        .await
+        .expect_err("completions surface refuses image-bearing results");
+    assert!(
+        matches!(
+            &err,
+            ModelError::UnsupportedParam { param, surface, .. }
+                if param == "tool_result_images" && surface == "flux-completions"
+        ),
+        "typed rung-3 refusal, not a transport error: {err:?}"
+    );
+    let responses =
+        crate::flux_responses::FluxResponsesClient::new(nano_egress::client::EgressClient::flux());
+    let err = responses
+        .complete_with_hooks(&request, "sk-test", &crate::types::CallHooks::none())
+        .await
+        .expect_err("responses surface refuses image-bearing results");
+    assert!(
+        matches!(
+            &err,
+            ModelError::UnsupportedParam { param, surface, .. }
+                if param == "tool_result_images" && surface == "flux-responses"
+        ),
+        "typed rung-3 refusal, not a transport error: {err:?}"
+    );
 }

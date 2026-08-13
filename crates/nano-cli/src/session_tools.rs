@@ -522,6 +522,14 @@ impl ToolExecutor for SessionTools<'_> {
             _ => self.inner.execute_cancellable(call, cancel).await,
         }
     }
+
+    fn take_image_result(&self, call_id: &str) -> Option<nano_agent::turn::LiveImageToolResult> {
+        self.inner.take_image_result(call_id)
+    }
+
+    fn image_results_backed(&self) -> bool {
+        self.inner.image_results_backed()
+    }
 }
 
 /// The protocol-host approval gate (C10 §3): the historical host gate is

@@ -72,11 +72,24 @@ pub fn evict_images_with_placeholders(messages: &mut [Message]) -> bool {
     let mut evicted = false;
     for message in messages.iter_mut() {
         for block in message.content.iter_mut() {
-            if matches!(block, ContentBlock::Image { .. }) {
-                *block = ContentBlock::Text {
-                    text: COMPACT_IMAGE_PLACEHOLDER.to_string(),
-                };
-                evicted = true;
+            match block {
+                ContentBlock::Image { .. } => {
+                    *block = ContentBlock::Text {
+                        text: COMPACT_IMAGE_PLACEHOLDER.to_string(),
+                    };
+                    evicted = true;
+                }
+                ContentBlock::ToolResult {
+                    content, images, ..
+                } if !images.is_empty() => {
+                    images.clear();
+                    if !content.is_empty() {
+                        content.push('\n');
+                    }
+                    content.push_str(COMPACT_IMAGE_PLACEHOLDER);
+                    evicted = true;
+                }
+                _ => {}
             }
         }
     }
@@ -124,8 +137,9 @@ fn message_bytes(message: &Message) -> usize {
             ContentBlock::ToolResult {
                 tool_use_id,
                 content,
+                images,
                 ..
-            } => tool_use_id.len() + content.len(),
+            } => tool_use_id.len() + content.len() + images.len() * IMAGE_BLOCK_BYTES,
             ContentBlock::Image { .. } => IMAGE_BLOCK_BYTES,
         })
         .sum()
@@ -162,6 +176,9 @@ pub fn enforce_image_budget(messages: &mut [Message]) {
         .fold(0u64, |sum, block| {
             sum.saturating_add(match block {
                 ContentBlock::Image { data, .. } => image_bytes(data),
+                ContentBlock::ToolResult { images, .. } => images
+                    .iter()
+                    .fold(0, |sum, image| sum.saturating_add(image_bytes(&image.data))),
                 _ => 0,
             })
         });
@@ -178,6 +195,18 @@ pub fn enforce_image_budget(messages: &mut [Message]) {
                 *block = ContentBlock::Text {
                     text: COMPACT_IMAGE_PLACEHOLDER.to_string(),
                 };
+            } else if let ContentBlock::ToolResult {
+                content, images, ..
+            } = block
+            {
+                while aggregate > cap && !images.is_empty() {
+                    let image = images.remove(0);
+                    aggregate = aggregate.saturating_sub(image_bytes(&image.data));
+                    if !content.is_empty() {
+                        content.push('\n');
+                    }
+                    content.push_str(COMPACT_IMAGE_PLACEHOLDER);
+                }
             }
         }
     }

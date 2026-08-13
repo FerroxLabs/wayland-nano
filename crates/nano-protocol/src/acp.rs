@@ -688,6 +688,7 @@ fn loaded_to_turn_block(loaded: nano_tools::image::LoadedImage) -> TurnBlock {
             bytes: loaded.bytes.len() as u64,
             width: loaded.width,
             height: loaded.height,
+            normalized_from: loaded.normalized_from,
             placeholder: loaded.placeholder.unwrap_or_default(),
         },
         data,

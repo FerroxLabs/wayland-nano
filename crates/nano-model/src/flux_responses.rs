@@ -84,6 +84,13 @@ impl FluxResponsesClient {
         api_key: &str,
         hooks: &CallHooks<'_>,
     ) -> Result<ModelResponse, ModelError> {
+        if request.has_tool_result_images() {
+            return Err(ModelError::UnsupportedParam {
+                param: "tool_result_images".into(),
+                surface: "flux-responses".into(),
+                message: "image-bearing tool results require anthropic-messages in RC2".into(),
+            });
+        }
         let mut body = build_request_body(request);
         let notices = crate::params::apply_params(Surface::Responses, &mut body, request)?;
         for notice in notices {

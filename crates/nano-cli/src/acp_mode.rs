@@ -403,11 +403,15 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     let search_tool = search.as_ref().map(|resolved| resolved.tool.clone());
     let tools_search = search_tool.clone();
     let tools_meter = search_meter.clone();
+    let tools_attachment_home = nano_home.to_path_buf();
     let make_tools = move |workspace: &std::path::Path,
                            mode: PermissionMode,
                            plan_file: &std::path::Path,
                            diff_hook: Option<DiffHook>,
-                           search_meter: Option<Arc<dyn nano_model::metering::UsageSink>>|
+                           search_meter: Option<Arc<dyn nano_model::metering::UsageSink>>,
+                           image_approver: Option<
+        Arc<dyn nano_tools::image::ImageReadApprover>,
+    >|
           -> (
         RealToolExecutor,
         nano_core::permissions::FileSystemSandboxPolicy,
@@ -451,6 +455,19 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         if let Some(tool) = &tools_search {
             let meter = search_meter.unwrap_or_else(|| tools_meter.clone());
             executor = executor.with_web_search(tool.clone(), meter);
+        }
+        if let Some(approver) = image_approver {
+            match AttachmentStore::open(&tools_attachment_home) {
+                Ok(store) => {
+                    executor = executor.with_view_image(
+                        nano_tools::image::ViewImageTool::new(policy.clone(), workspace, approver),
+                        store,
+                    );
+                }
+                Err(error) => {
+                    eprintln!("wayland-nano: view_image attachment store unavailable: {error}")
+                }
+            }
         }
         // C10 §6: live-wire diffs (never journaled).
         if let Some(hook) = diff_hook {
@@ -726,6 +743,7 @@ where
             &std::path::Path,
             Option<DiffHook>,
             Option<Arc<dyn nano_model::metering::UsageSink>>,
+            Option<Arc<dyn nano_tools::image::ImageReadApprover>>,
         ) -> (T, nano_core::permissions::FileSystemSandboxPolicy)
         + Send
         + Sync,
@@ -984,12 +1002,15 @@ where
                                 config.budget_cap,
                                 config.default_model,
                             );
+                            let image_influenced =
+                                Arc::new(std::sync::atomic::AtomicBool::new(false));
                             let mut registry = nano_agent::tasks::TaskRegistry::new(
                                 &task_nano_home,
                                 &cwd,
                                 config.default_model.to_string(),
                                 make_task_driver_factory(config.default_model),
-                            );
+                            )
+                            .with_image_influence(image_influenced.clone());
                             // P1 (D12): children inherit the session search
                             // chain — advertised exactly like the parent
                             // surface and metered by the SESSION CostMeter
@@ -1035,7 +1056,7 @@ where
                                 tasks,
                                 meter,
                                 // P2a §9.1: a fresh session starts clean.
-                                image_influenced: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                                image_influenced,
                             });
                             write_out(
                                 &out,
@@ -1252,12 +1273,18 @@ where
                                 ));
                                 meter.reseed(&usage, folded.budget_granted_tokens);
                             }
+                            let image_influenced = Arc::new(
+                                std::sync::atomic::AtomicBool::new(
+                                    image_influenced_from_envelopes(&report.envelopes),
+                                ),
+                            );
                             let mut registry = nano_agent::tasks::TaskRegistry::new(
                                 &task_nano_home,
                                 &cwd,
                                 config.default_model.to_string(),
                                 make_task_driver_factory(config.default_model),
-                            );
+                            )
+                            .with_image_influence(image_influenced.clone());
                             // P1 (D12): children inherit the session search
                             // chain — advertised exactly like the parent
                             // surface and metered by the SESSION CostMeter
@@ -1315,9 +1342,7 @@ where
                                 // manifest. Never the latest record: a
                                 // false-negative record cannot reopen the
                                 // clamp on resume.
-                                image_influenced: Arc::new(std::sync::atomic::AtomicBool::new(
-                                    image_influenced_from_envelopes(&report.envelopes),
-                                )),
+                                image_influenced,
                             });
                             write_out(
                                 &out,
@@ -1958,11 +1983,12 @@ where
                             // rest of the session; compaction never clears
                             // it (§8 part 2 provenance).
                             if turn_input.has_images()
-                                || prior_context.iter().any(|m| {
-                                    m.content
-                                        .iter()
-                                        .any(|b| matches!(b, ContentBlock::Image { .. }))
-                                })
+                                || nano_agent::image_influence::history_image_influence(
+                                    &prior_context,
+                                    &nano_agent::image_influence::ReplayManifestState::from_presence(
+                                        active.image_influenced.load(Ordering::SeqCst),
+                                    ),
+                                )
                             {
                                 active.image_influenced.store(true, Ordering::SeqCst);
                             }
@@ -2134,19 +2160,35 @@ where
                                     }
                                     _ => None,
                                 };
+                                let vision_backed = binding.wire == WireKind::AnthropicMessages
+                                    && nano_model::vision_catalog::VisionCatalog::vendored()
+                                        .map(|catalog| catalog.image_in(&turn_model))
+                                        .unwrap_or(false);
+                                let image_approver = vision_backed.then(|| {
+                                    Arc::new(AcpImageReadApprover {
+                                        session_id: session_id.clone(),
+                                        out: gate_out.clone(),
+                                        pending: gate_pending.clone(),
+                                        next_id: gate_ids.clone(),
+                                        cancel: cancel.clone(),
+                                    }) as Arc<dyn nano_tools::image::ImageReadApprover>
+                                });
                                 let (tools, turn_policy) = make_tools(
                                     &workspace,
                                     turn_mode,
                                     &plan_file,
                                     Some(diff_hook),
                                     search_sink,
+                                    image_approver,
                                 );
                                 // MCP-merged executor: mcp__ names route to the
                                 // session registry, everything else to the core
                                 // tools; the model sees both tool sets.
                                 let mcp_executor = McpToolExecutor::from_shared(turn_mcp, &tools);
-                                let mut tool_definitions =
-                                    v1_tool_definitions(config.search.is_some());
+                                let mut tool_definitions = v1_tool_definitions(
+                                    config.search.is_some(),
+                                    vision_backed && tools.image_results_backed(),
+                                );
                                 tool_definitions
                                     .extend(mcp_executor.tool_definitions_from_registry());
                                 // C5: the memory family routes through its own
@@ -2292,6 +2334,7 @@ where
                                         // dual-feed cell (r3 codex-F1).
                                         meter: turn_meter.clone(),
                                         extra_usage,
+                                        image_influence: Some(gate_image_influenced.clone()),
                                     },
                                 };
                                 let sink_session = session_id.clone();
@@ -3326,6 +3369,69 @@ struct AcpApproval<W: Write> {
     image_influenced: Arc<std::sync::atomic::AtomicBool>,
 }
 
+struct AcpImageReadApprover<W: Write> {
+    session_id: String,
+    out: Arc<Mutex<W>>,
+    pending: PendingMap,
+    next_id: Arc<std::sync::atomic::AtomicU64>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<W: Write> std::fmt::Debug for AcpImageReadApprover<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AcpImageReadApprover")
+            .field("session_id", &self.session_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<W: Write + Send> nano_tools::image::ImageReadApprover for AcpImageReadApprover<W> {
+    fn request(&self, canonical: &std::path::Path) -> nano_tools::image::ImageReadApproval {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, tx);
+        let arguments = serde_json::json!({"path": canonical.to_string_lossy()});
+        let request = request_permission_request(
+            id,
+            &self.session_id,
+            "view-image-read",
+            "view_image",
+            &arguments,
+        );
+        if write_out(&self.out, &request).is_err() {
+            self.pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&id);
+            return nano_tools::image::ImageReadApproval::Denied;
+        }
+        let decision = loop {
+            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(response) => break decision_from_response(&response),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if self.cancel.load(Ordering::SeqCst) {
+                        break ApprovalDecision::Deny;
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    break ApprovalDecision::Deny;
+                }
+            }
+        };
+        self.pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
+        match decision {
+            ApprovalDecision::Approve => nano_tools::image::ImageReadApproval::Approved,
+            ApprovalDecision::Deny => nano_tools::image::ImageReadApproval::Denied,
+        }
+    }
+}
+
 /// P2a §9.1: the closed protected-class classifier. A call is a protected
 /// trust mutation when it can persistently alter what Nano trusts:
 /// rule files (AGENTS.md), secret/credential subtrees (`.secrets`), or Nano
@@ -3335,24 +3441,7 @@ struct AcpApproval<W: Write> {
 /// denials stay with the tool layer; this classifier only downgrades
 /// auto-approval to the human prompt.
 pub(crate) fn is_protected_trust_mutation(call: &ToolCall) -> bool {
-    match call.name.as_str() {
-        "shell" => true,
-        "fs_write" | "fs_edit" => {
-            let Some(path) = call.arguments.get("path").and_then(|v| v.as_str()) else {
-                // Unparseable: the full_auto arm already prompts on missing
-                // paths; nothing extra to clamp here.
-                return false;
-            };
-            let normalized = path.replace('\\', "/").to_lowercase();
-            let file_name = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
-            file_name == "agents.md"
-                || normalized.contains("/.secrets/")
-                || normalized.starts_with(".secrets/")
-                || normalized.contains("/.nano/")
-                || normalized.starts_with(".nano/")
-        }
-        _ => false,
-    }
+    nano_agent::turn::is_protected_trust_mutation(call)
 }
 
 impl<W: Write> AcpApproval<W> {
@@ -3453,6 +3542,10 @@ impl<W: Write + Send> ApprovalGate for AcpApproval<W> {
                 _ => self.prompt_host(call),
             },
         }
+    }
+
+    fn can_prompt_image_clamp(&self) -> bool {
+        true
     }
 
     fn denial_reason(&self) -> Option<&'static str> {
@@ -3890,23 +3983,26 @@ pub fn image_influenced_from_envelopes(envelopes: &[OpEnvelope]) -> bool {
         return true;
     }
     envelopes.iter().any(|envelope| {
-        matches!(
-            &envelope.op,
-            Op::TurnBegin { input_blocks, .. }
-                if input_blocks.iter().any(|b| matches!(b, InputBlock::ImageRef(_)))
-        ) && !covered.contains(envelope.id.as_str())
+        let present = match &envelope.op {
+            Op::TurnBegin { input_blocks, .. } => input_blocks
+                .iter()
+                .any(|b| matches!(b, InputBlock::ImageRef(_))),
+            Op::ToolResult { image_refs, .. } => !image_refs.is_empty(),
+            _ => false,
+        };
+        present && !covered.contains(envelope.id.as_str())
     })
 }
 
 /// Whether any journaled manifest references an attachment — the store is
 /// opened (with its §5.5 fail-closed audit) only when one does.
 fn journal_has_image_manifests(envelopes: &[OpEnvelope]) -> bool {
-    envelopes.iter().any(|envelope| {
-        matches!(
-            &envelope.op,
-            Op::TurnBegin { input_blocks, .. }
-                if input_blocks.iter().any(|b| matches!(b, InputBlock::ImageRef(_)))
-        )
+    envelopes.iter().any(|envelope| match &envelope.op {
+        Op::TurnBegin { input_blocks, .. } => input_blocks
+            .iter()
+            .any(|b| matches!(b, InputBlock::ImageRef(_))),
+        Op::ToolResult { image_refs, .. } => !image_refs.is_empty(),
+        _ => false,
     })
 }
 
@@ -3948,6 +4044,8 @@ pub fn messages_from_envelopes_rehydrating(
     let mut notices = Vec::new();
     let mut messages = Vec::new();
     let mut assistant: Vec<ContentBlock> = Vec::new();
+    let mut call_names: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
     let mut seen = std::collections::HashSet::new();
     let flush_assistant = |messages: &mut Vec<Message>, assistant: &mut Vec<ContentBlock>| {
         if !assistant.is_empty() {
@@ -4040,6 +4138,15 @@ pub fn messages_from_envelopes_rehydrating(
                 args,
                 ..
             } => {
+                use std::collections::hash_map::Entry;
+                match call_names.entry(call_id.clone()) {
+                    Entry::Vacant(slot) => {
+                        slot.insert(Some(name.clone()));
+                    }
+                    Entry::Occupied(mut slot) => {
+                        slot.insert(None);
+                    }
+                }
                 assistant.push(ContentBlock::ToolUse {
                     id: call_id.clone(),
                     name: name.clone(),
@@ -4051,6 +4158,7 @@ pub fn messages_from_envelopes_rehydrating(
                 ok,
                 output_digest,
                 error_kind,
+                image_refs,
                 ..
             } => {
                 flush_assistant(&mut messages, &mut assistant);
@@ -4059,7 +4167,7 @@ pub fn messages_from_envelopes_rehydrating(
                 // C7/D5: a typed failure resumes as `<presentation> [output
                 // elided]` so the model still sees WHY the call failed; the
                 // kind is journaled, the text re-derives from the table.
-                let content = match (ok, error_kind) {
+                let mut content = match (ok, error_kind) {
                     (false, Some(kind)) => {
                         format!("{} [output elided]", error_presentation(*kind))
                     }
@@ -4067,7 +4175,80 @@ pub fn messages_from_envelopes_rehydrating(
                         "[tool output elided from journal: ok={ok}, digest={output_digest}]"
                     ),
                 };
-                messages.push(Message::tool_result(call_id, content, !ok));
+                if image_refs.is_empty() {
+                    messages.push(Message::tool_result(call_id, content, !ok));
+                    continue;
+                }
+                let tool_name = match call_names.get(call_id).and_then(|name| name.as_deref()) {
+                    Some(name) => name,
+                    None => {
+                        eprintln!(
+                            "wayland-nano: unpaired or duplicate tool call id during image-result replay"
+                        );
+                        "<unavailable: unpaired call>"
+                    }
+                };
+                let mut verified = Vec::new();
+                for (index, reference) in image_refs.iter().enumerate() {
+                    if !content.is_empty() {
+                        content.push('\n');
+                    }
+                    // §3.3: the SAME BlobReadError split as the P2a intake
+                    // arm — operator logs distinguish TAMPERED/MISSING, never
+                    // a collapsed cause.
+                    let read = match attachments {
+                        Some(store) => store.read_verified(&reference.digest),
+                        None => Err(BlobReadError::Missing),
+                    };
+                    match read {
+                        Ok(bytes) => {
+                            content.push_str(&nano_model::image_result::image_label(
+                                index, tool_name, reference,
+                            ));
+                            verified.push((reference.clone(), bytes));
+                        }
+                        Err(err) => {
+                            let cause = match &err {
+                                BlobReadError::Missing | BlobReadError::Store(_) => {
+                                    AttachmentIssueCause::Missing
+                                }
+                                BlobReadError::Tampered => AttachmentIssueCause::Tampered,
+                                BlobReadError::MalformedDigest => AttachmentIssueCause::Malformed,
+                            };
+                            let prefix = if is_valid_digest(&reference.digest) {
+                                reference.digest.chars().take(12).collect::<String>()
+                            } else {
+                                "malformed-digest".to_string()
+                            };
+                            content.push_str(&format!(
+                                "[Image #{} from tool {tool_name} unavailable: attachment {prefix} missing — do not describe it from memory]",
+                                index + 1
+                            ));
+                            notices.push(AttachmentIssue {
+                                cause,
+                                digest_prefix: prefix,
+                            });
+                        }
+                    }
+                }
+                if verified.len() == image_refs.len() {
+                    match nano_model::image_result::rehydrate_tool_result_images(verified) {
+                        Ok((images, provenance))
+                            if matches!(
+                                provenance.kind(),
+                                nano_model::image_result::ImageProvenanceKind::ReplayVerified { .. }
+                            ) =>
+                        {
+                            drop(provenance);
+                            messages.push(Message::tool_result_with_images(
+                                call_id, content, !ok, images,
+                            ));
+                        }
+                        _ => messages.push(Message::tool_result(call_id, content, !ok)),
+                    }
+                } else {
+                    messages.push(Message::tool_result(call_id, content, !ok));
+                }
             }
             Op::TurnEnd { .. } => flush_assistant(&mut messages, &mut assistant),
             // [R1/R2] The canonical replay arm: fold the SAME
@@ -5093,6 +5274,7 @@ mod tests {
                 bytes: 100,
                 width: 8,
                 height: 8,
+                normalized_from: None,
                 placeholder: format!("[Image #{n}: /tmp/{n}.png]"),
             })
         };
@@ -5226,6 +5408,7 @@ mod tests {
                         bytes: 1,
                         width: 1,
                         height: 1,
+                        normalized_from: None,
                         placeholder: "[Image #1: /tmp/x.png]".into(),
                     })],
                 },
@@ -5338,5 +5521,468 @@ mod tests {
         );
         assert_eq!(rig.gate.approve(&amend), ApprovalDecision::Approve);
         assert_eq!(rig.prompt_count(), 0);
+    }
+
+    // ── P2b §3.3/§7: result-image replay/rehydration battery ─────────────
+
+    /// A temp attachment-store home that cleans itself up on drop.
+    struct TestStoreHome(std::path::PathBuf);
+    impl Drop for TestStoreHome {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn p2b_store(tag: &str) -> (TestStoreHome, AttachmentStore) {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let dir = std::env::temp_dir().join(format!(
+            "nano-p2b-store-{}-{tag}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).expect("store home");
+        let store = AttachmentStore::open(&dir).expect("attachment store");
+        (TestStoreHome(dir), store)
+    }
+
+    /// A two-image live artifact set, blobs written to the store, with the
+    /// second image journaled as downscaled (the §3.7 normalized-from
+    /// geometry). Returns the canonical parts and the journaled envelopes.
+    fn p2b_live_parts_and_envelopes(
+        store: &AttachmentStore,
+    ) -> (
+        nano_model::image_result::ImageToolResultParts,
+        Vec<OpEnvelope>,
+    ) {
+        let lease = store.acquire_write_lease().expect("lease");
+        let digest_a = store.put(&lease, b"fake-png-one").expect("put a");
+        let digest_b = store.put(&lease, b"fake-png-two").expect("put b");
+        let ordered =
+            |bytes: &[u8], digest: &str, normalized_from| nano_model::image_result::OrderedImage {
+                bytes: bytes.to_vec(),
+                mime: "image/png".into(),
+                digest: digest.into(),
+                width: 8,
+                height: 8,
+                normalized_from,
+            };
+        let (parts, provenance) = nano_model::image_result::build_image_tool_result(
+            "c1",
+            "view_image",
+            vec![
+                ordered(b"fake-png-one", &digest_a, None),
+                ordered(b"fake-png-two", &digest_b, Some((3000, 3000))),
+            ],
+        )
+        .expect("canonical builder");
+        drop(provenance); // the live acceptance seam consumed it; the replay arm re-mints
+        let envelopes = vec![
+            OpEnvelope::new(
+                "t-1",
+                "ts",
+                Op::ToolCall {
+                    turn_id: "t".into(),
+                    call_id: "c1".into(),
+                    name: "view_image".into(),
+                    args: serde_json::json!({"path": "a.png"}),
+                },
+            ),
+            OpEnvelope::new(
+                "t-2",
+                "ts",
+                Op::ToolResult {
+                    call_id: "c1".into(),
+                    ok: true,
+                    output_digest: parts.output_digest.clone(),
+                    changed_files: vec![],
+                    error_kind: None,
+                    image_refs: parts.image_refs.clone(),
+                },
+            ),
+        ];
+        (parts, envelopes)
+    }
+
+    /// Kill-resume fidelity: the envelopes make a full JSON round trip (the
+    /// journaled byte shape is what a resumed session parses), then the
+    /// rehydrating fold restores BOTH images byte-verified (base64 equality
+    /// against the live artifacts) at the same pairing position, with the
+    /// ReplayVerified provenance accepted (the message carries the images at
+    /// all).
+    #[test]
+    fn p2b_kill_resume_result_image_rehydrates_byte_verified() {
+        let (_home, store) = p2b_store("rehydrate");
+        let (parts, envelopes) = p2b_live_parts_and_envelopes(&store);
+        // Kill-resume honesty: serialize every envelope to its journaled
+        // JSON and re-parse — the fold consumes the RESUMED bytes, never the
+        // in-memory originals.
+        let envelopes: Vec<OpEnvelope> = envelopes
+            .iter()
+            .map(|envelope| {
+                serde_json::from_str(&serde_json::to_string(envelope).expect("journal serialize"))
+                    .expect("journal parse")
+            })
+            .collect();
+        let (messages, notices) = messages_from_envelopes_rehydrating(&envelopes, Some(&store));
+        assert!(notices.is_empty(), "clean rehydration, zero notices");
+        let result = messages
+            .iter()
+            .find(|message| message.role == Role::Tool)
+            .expect("tool result message");
+        let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            images,
+            ..
+        } = &result.content[0]
+        else {
+            panic!("tool result block")
+        };
+        assert_eq!(tool_use_id, "c1", "same pairing position");
+        assert_eq!(images, &parts.images, "byte-verified rehydration");
+        // §3.3: the replayed content is the standard elision marker PLUS the
+        // re-derived label lines — the deterministic parts byte-identical.
+        let expected = format!(
+            "[tool output elided from journal: ok=true, digest={}]\n{}",
+            parts.output_digest, parts.content
+        );
+        assert_eq!(content, &expected, "elision marker + re-derived labels");
+    }
+
+    /// §3.3: the replayed projection is byte-identical to the live builder's
+    /// — INCLUDING the §3.7 normalized-from geometry, which round-trips
+    /// through the journaled refs.
+    #[test]
+    fn p2b_live_and_replay_result_labels_are_byte_identical() {
+        let (_home, store) = p2b_store("labels");
+        let (parts, envelopes) = p2b_live_parts_and_envelopes(&store);
+        let (messages, _) = messages_from_envelopes_rehydrating(&envelopes, Some(&store));
+        let result = messages
+            .iter()
+            .find(|message| message.role == Role::Tool)
+            .expect("tool result message");
+        let ContentBlock::ToolResult { content, .. } = &result.content[0] else {
+            panic!("tool result block")
+        };
+        // The first line is the standard elision marker (the tool's own free
+        // text stays elided per the digest-only invariant); EVERYTHING after
+        // it is the label lines, byte-identical to the live projection.
+        let (marker, labels) = content.split_once('\n').expect("marker + labels");
+        assert_eq!(
+            marker,
+            format!(
+                "[tool output elided from journal: ok=true, digest={}]",
+                parts.output_digest
+            )
+        );
+        assert_eq!(labels, parts.content, "live == replay label lines");
+        assert!(
+            labels
+                .contains("[Image #2 from tool view_image — 8x8 png (normalized from 3000x3000)]"),
+            "the normalized-from geometry survives the journal: {labels}"
+        );
+    }
+
+    /// §3.3/§7 replay index: a result with NO journaled call, or with a
+    /// DUPLICATE call id, resolves to the deterministic unavailable name
+    /// (never an inferred name) — and the pixels are STILL digest-verified
+    /// and rehydrated (the name is the only casualty).
+    #[test]
+    fn p2b_replay_index_unpaired_and_duplicate_calls_degrade_name_only() {
+        let (_home, store) = p2b_store("index");
+        let (parts, envelopes) = p2b_live_parts_and_envelopes(&store);
+        let result_envelope = envelopes[1].clone();
+        let call_envelope = |name: &str, id: &str| {
+            OpEnvelope::new(
+                id,
+                "ts",
+                Op::ToolCall {
+                    turn_id: "t".into(),
+                    call_id: "c1".into(),
+                    name: name.into(),
+                    args: serde_json::json!({}),
+                },
+            )
+        };
+        for (tag, envelopes) in [
+            ("unpaired", vec![result_envelope.clone()]),
+            (
+                "duplicate",
+                vec![
+                    call_envelope("view_image", "t-d1"),
+                    call_envelope("view_image", "t-d2"),
+                    result_envelope,
+                ],
+            ),
+        ] {
+            let (messages, notices) = messages_from_envelopes_rehydrating(&envelopes, Some(&store));
+            assert!(notices.is_empty(), "{tag}: pixels still verify clean");
+            let result = messages
+                .iter()
+                .find(|message| message.role == Role::Tool)
+                .unwrap_or_else(|| panic!("{tag}: tool result message"));
+            let ContentBlock::ToolResult {
+                content, images, ..
+            } = &result.content[0]
+            else {
+                panic!("{tag}: tool result block")
+            };
+            assert!(
+                content.contains("<unavailable: unpaired call>"),
+                "{tag}: the deterministic unavailable name, never inferred: {content}"
+            );
+            assert_eq!(
+                images, &parts.images,
+                "{tag}: pixels still digest-verified and rehydrated"
+            );
+        }
+    }
+
+    /// §3.3 (M3 regression): a flipped blob byte logs TAMPERED, a deleted
+    /// blob logs MISSING — never collapsed — and both degrade to the loud
+    /// placeholder line with zero images attached.
+    #[test]
+    fn p2b_replay_distinguishes_tampered_from_missing() {
+        let (_home, store) = p2b_store("causes");
+        let (parts, _) = p2b_live_parts_and_envelopes(&store);
+        let result_op = |image_refs: Vec<nano_session::op::ImageRef>| {
+            vec![
+                OpEnvelope::new(
+                    "t-1",
+                    "ts",
+                    Op::ToolCall {
+                        turn_id: "t".into(),
+                        call_id: "c1".into(),
+                        name: "view_image".into(),
+                        args: serde_json::json!({}),
+                    },
+                ),
+                OpEnvelope::new(
+                    "t-2",
+                    "ts",
+                    Op::ToolResult {
+                        call_id: "c1".into(),
+                        ok: true,
+                        output_digest: "d".into(),
+                        changed_files: vec![],
+                        error_kind: None,
+                        image_refs,
+                    },
+                ),
+            ]
+        };
+        // MISSING: a ref whose blob was never written.
+        let missing_ref = nano_session::op::ImageRef {
+            digest: "ef".repeat(32),
+            ..parts.image_refs[0].clone()
+        };
+        let (messages, notices) =
+            messages_from_envelopes_rehydrating(&result_op(vec![missing_ref]), Some(&store));
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].cause, AttachmentIssueCause::Missing);
+        let ContentBlock::ToolResult {
+            content, images, ..
+        } = &messages
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("result")
+            .content[0]
+        else {
+            panic!("result block")
+        };
+        assert!(images.is_empty(), "no pixels without verification");
+        assert!(
+            content.contains(
+                "unavailable: attachment efefefefefef missing — do not describe it from memory"
+            ),
+            "the loud line: {content}"
+        );
+        // TAMPERED: flip one byte of the FIRST blob on disk.
+        let digest = &parts.image_refs[0].digest;
+        let blob = store.root().join("blobs").join(&digest[..2]).join(digest);
+        let mut bytes = std::fs::read(&blob).expect("blob");
+        bytes[0] ^= 0xFF;
+        std::fs::write(&blob, bytes).expect("flip");
+        let (messages, notices) = messages_from_envelopes_rehydrating(
+            &result_op(vec![parts.image_refs[0].clone()]),
+            Some(&store),
+        );
+        assert_eq!(notices.len(), 1);
+        assert_eq!(
+            notices[0].cause,
+            AttachmentIssueCause::Tampered,
+            "operator logs distinguish TAMPERED from MISSING"
+        );
+        let ContentBlock::ToolResult { images, .. } = &messages
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("result")
+            .content[0]
+        else {
+            panic!("result block")
+        };
+        assert!(images.is_empty(), "tampered pixels never reattach");
+    }
+
+    /// §3.3 canary, extended to image_refs (the P2a replay-frame canary's
+    /// sibling): replay_frames reads ONLY the digest-only projections —
+    /// neither image bytes nor digests nor the manifest structure reach ACP
+    /// replay frames.
+    #[test]
+    fn p2b_replay_frames_never_carry_result_image_bytes_or_digests() {
+        let (_home, store) = p2b_store("canary");
+        let (parts, envelopes) = p2b_live_parts_and_envelopes(&store);
+        let frames = replay_frames("s1", &envelopes);
+        let wire = serde_json::to_string(&frames).expect("serialize");
+        for reference in &parts.image_refs {
+            assert!(!wire.contains(&reference.digest), "no digest leaks");
+        }
+        assert!(!wire.contains("base64,"), "no data payloads");
+        assert!(!wire.contains("image_ref"), "no manifest structure leaks");
+        assert!(
+            !wire.contains("from tool view_image"),
+            "no label lines in replay frames (projection-only surface)"
+        );
+    }
+
+    /// §3.2 honest compat, pinned: an OLD reader ignores `image_refs`
+    /// entirely, so a pre-P2b binary replays the EXACT generic elision
+    /// marker — no label lines, no pixels. The degradation is a contract,
+    /// not a surprise.
+    #[test]
+    fn p2b_old_reader_degraded_replay_text_pinned() {
+        let (_home, store) = p2b_store("degraded");
+        let (parts, envelopes) = p2b_live_parts_and_envelopes(&store);
+        // What the old reader sees: the op with image_refs stripped (the
+        // field it never knew), parsed by the pre-P2b schema.
+        let mut value = serde_json::to_value(&envelopes[1]).expect("serialize");
+        value["op"]
+            .as_object_mut()
+            .expect("op object")
+            .remove("image_refs");
+        let old_read: OpEnvelope = serde_json::from_value(value).expect("old-reader parse");
+        let messages = messages_from_envelopes(&[envelopes[0].clone(), old_read]);
+        let result = messages
+            .iter()
+            .find(|message| message.role == Role::Tool)
+            .expect("tool result message");
+        let ContentBlock::ToolResult {
+            content, images, ..
+        } = &result.content[0]
+        else {
+            panic!("tool result block")
+        };
+        assert!(images.is_empty(), "old reader: zero pixels");
+        assert_eq!(
+            content,
+            &format!(
+                "[tool output elided from journal: ok=true, digest={}]",
+                parts.output_digest
+            ),
+            "the EXACT degraded replay text is pinned"
+        );
+        assert!(!content.contains("[Image"), "no label lines, no markers");
+    }
+
+    /// §3.5/§7: a CompactionComplete folds through the canonical builder on
+    /// replay, so a resumed post-compaction context with a result image in
+    /// the compacted prefix is byte-identical to the live compaction.
+    #[test]
+    fn p2b_compacted_replay_with_result_images_byte_identical_to_live() {
+        let (_home, store) = p2b_store("compacted");
+        let (parts, envelopes) = p2b_live_parts_and_envelopes(&store);
+        let summary = "summary text".to_string();
+        let mut compacted_envelopes = envelopes.clone();
+        compacted_envelopes.push(OpEnvelope::new(
+            "t-3",
+            "ts",
+            Op::CompactionComplete {
+                compaction_id: "k1".into(),
+                summary: summary.clone(),
+                covers_op_ids: vec!["t-1".into(), "t-2".into()],
+                changed_files: vec![],
+                image_influenced: true,
+            },
+        ));
+        let (replayed, notices) =
+            messages_from_envelopes_rehydrating(&compacted_envelopes, Some(&store));
+        assert!(notices.is_empty());
+        // The live side: the same pre-compaction context through the SAME
+        // canonical builder.
+        let live = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "view_image".into(),
+                    input: serde_json::json!({"path": "a.png"}),
+                }],
+            },
+            Message::tool_result_with_images(
+                "c1",
+                parts.content.clone(),
+                false,
+                parts.images.clone(),
+            ),
+        ];
+        let live_compacted = nano_agent::compact::build_compacted_history(live, &summary);
+        assert_eq!(replayed, live_compacted, "live == replay, byte-identical");
+    }
+
+    /// §3.6/§8 part 2: the resume fold counts result-image manifests by
+    /// PRESENCE — a covered manifest with a false record clears, an
+    /// uncompacted result-image manifest sets, sticky-OR over records.
+    #[test]
+    fn p2b_image_influenced_fold_counts_result_image_manifests() {
+        let result_manifest = |id: &str| {
+            OpEnvelope::new(
+                id,
+                "t",
+                Op::ToolResult {
+                    call_id: "c".into(),
+                    ok: true,
+                    output_digest: "d".into(),
+                    changed_files: vec![],
+                    error_kind: None,
+                    image_refs: vec![nano_session::op::ImageRef {
+                        digest: "ab".repeat(32),
+                        mime: "image/png".into(),
+                        bytes: 1,
+                        width: 1,
+                        height: 1,
+                        normalized_from: None,
+                        placeholder: "[Image #1 from tool view_image — 1x1 png]".into(),
+                    }],
+                },
+            )
+        };
+        let compaction = |id: &str, covers: Vec<String>, influenced: bool| {
+            OpEnvelope::new(
+                id,
+                "t",
+                Op::CompactionComplete {
+                    compaction_id: id.into(),
+                    summary: "s".into(),
+                    covers_op_ids: covers,
+                    changed_files: vec![],
+                    image_influenced: influenced,
+                },
+            )
+        };
+        // Uncompacted result-image manifest → influential (blob deleted or
+        // not — presence is the contract).
+        assert!(image_influenced_from_envelopes(&[result_manifest("r1")]));
+        // Covered by a false record → the pixels were summarized post-
+        // eviction; the flag stays clear.
+        assert!(!image_influenced_from_envelopes(&[
+            result_manifest("r1"),
+            compaction("k1", vec!["r1".into()], false),
+        ]));
+        // Any true record sticks, even covered and followed by false.
+        assert!(image_influenced_from_envelopes(&[
+            result_manifest("r1"),
+            compaction("k1", vec!["r1".into()], true),
+            compaction("k2", vec![], false),
+        ]));
     }
 }

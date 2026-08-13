@@ -146,7 +146,7 @@ impl ModelDriver for ProviderDriver {
 /// typed `Unavailable` a forced invocation hits). `web_fetch` stays
 /// unconditional: an unconfigured fetch tool is inert by its second-domain
 /// egress policy (deny-by-default), which is the C4 posture.
-pub fn v1_tool_definitions(web_search_backed: bool) -> Vec<ToolDefinition> {
+pub fn v1_tool_definitions(web_search_backed: bool, vision_backed: bool) -> Vec<ToolDefinition> {
     let mut definitions = vec![
         ToolDefinition {
             name: "fs_read".into(),
@@ -292,6 +292,29 @@ pub fn v1_tool_definitions(web_search_backed: bool) -> Vec<ToolDefinition> {
             .unwrap_or(definitions.len());
         definitions.insert(position, web_search_tool_definition());
     }
+    if vision_backed {
+        definitions.push(ToolDefinition {
+            name: "view_image".into(),
+            description: "Read a policy-authorized local image. Args: path and optional integer-pixel region {x,y,width,height} on the normalized raster.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "region": {
+                        "type": "object",
+                        "properties": {
+                            "x": {"type": "integer", "minimum": 0},
+                            "y": {"type": "integer", "minimum": 0},
+                            "width": {"type": "integer", "minimum": 1},
+                            "height": {"type": "integer", "minimum": 1}
+                        },
+                        "required": ["x", "y", "width", "height"]
+                    }
+                },
+                "required": ["path"]
+            }),
+        });
+    }
     definitions
 }
 
@@ -327,8 +350,8 @@ pub const SESSION_TOOL_NAMES: [&str; 4] = ["todo", "ask_user", "enter_plan_mode"
 /// P1 (D12): children are advertised web_search exactly when the parent
 /// surface is — same backend-aware construction, metered via the shared
 /// session handle.
-pub fn child_tool_definitions(web_search_backed: bool) -> Vec<ToolDefinition> {
-    v1_tool_definitions(web_search_backed)
+pub fn child_tool_definitions(web_search_backed: bool, vision_backed: bool) -> Vec<ToolDefinition> {
+    v1_tool_definitions(web_search_backed, vision_backed)
         .into_iter()
         .filter(|def| !SESSION_TOOL_NAMES.contains(&def.name.as_str()))
         .collect()
@@ -360,6 +383,9 @@ pub struct RealToolExecutor {
     /// typed unavailability with zero socket activity (the second half of
     /// the D3 double guard; the first half is registration gating).
     web_search: Option<WebSearchTool>,
+    view_image: Option<nano_tools::image::ViewImageTool>,
+    attachment_store: Option<nano_session::attachment_store::AttachmentStore>,
+    pending_image_result: std::sync::Mutex<Option<(String, crate::turn::LiveImageToolResult)>>,
     /// P1 §2.5 (r2 claude-F2): the session meter/`UsageSink` handle,
     /// threaded beside the search slot by [`Self::with_web_search`]. The
     /// Flux grounding round-trip's usage is recorded through it against
@@ -391,6 +417,7 @@ impl std::fmt::Debug for RealToolExecutor {
             .field("workspace", &self.workspace)
             .field("web_fetch", &self.web_fetch.is_some())
             .field("web_search", &self.web_search.is_some())
+            .field("view_image", &self.view_image.is_some())
             .field("usage_sink", &self.usage_sink.is_some())
             .field("diff_hook", &self.diff_hook.is_some())
             .finish_non_exhaustive()
@@ -398,6 +425,10 @@ impl std::fmt::Debug for RealToolExecutor {
 }
 
 impl RealToolExecutor {
+    pub fn view_image_backed(&self) -> bool {
+        self.view_image.is_some() && self.attachment_store.is_some()
+    }
+
     pub fn new(fs: FsTools, shell: ShellTool, workspace: &std::path::Path) -> Self {
         Self {
             fs,
@@ -405,6 +436,9 @@ impl RealToolExecutor {
             workspace: workspace.to_path_buf(),
             web_fetch: None,
             web_search: None,
+            view_image: None,
+            attachment_store: None,
+            pending_image_result: std::sync::Mutex::new(None),
             usage_sink: None,
             task_kill: None,
             seen: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -442,6 +476,16 @@ impl RealToolExecutor {
     /// built from configured fetch hosts.
     pub fn with_web_fetch(mut self, tool: WebFetchTool) -> Self {
         self.web_fetch = Some(tool);
+        self
+    }
+
+    pub fn with_view_image(
+        mut self,
+        tool: nano_tools::image::ViewImageTool,
+        store: nano_session::attachment_store::AttachmentStore,
+    ) -> Self {
+        self.view_image = Some(tool);
+        self.attachment_store = Some(store);
         self
     }
 
@@ -589,6 +633,21 @@ impl ToolExecutor for RealToolExecutor {
     ) -> ToolOutcome {
         self.dispatch(call, cancel).await
     }
+
+    fn take_image_result(&self, call_id: &str) -> Option<crate::turn::LiveImageToolResult> {
+        let mut pending = self
+            .pending_image_result
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        match pending.take() {
+            Some((id, result)) if id == call_id => Some(result),
+            Some(_) | None => None,
+        }
+    }
+
+    fn image_results_backed(&self) -> bool {
+        self.view_image_backed()
+    }
 }
 
 impl RealToolExecutor {
@@ -598,6 +657,94 @@ impl RealToolExecutor {
         cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> ToolOutcome {
         match call.name.as_str() {
+            "view_image" => {
+                let Some(tool) = &self.view_image else {
+                    return Self::fail(
+                        "view_image is unavailable for this model or wire surface",
+                        nano_session::NanoErrorKind::ModelLacksVision,
+                    );
+                };
+                let Some(path) = Self::arg_str(call, "path") else {
+                    return Self::arg_error("missing path");
+                };
+                let region = match call.arguments.get("region") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => {
+                        let get = |key| {
+                            value
+                                .get(key)
+                                .and_then(serde_json::Value::as_u64)
+                                .and_then(|v| u32::try_from(v).ok())
+                        };
+                        let (Some(x), Some(y), Some(width), Some(height)) =
+                            (get("x"), get("y"), get("width"), get("height"))
+                        else {
+                            return Self::arg_error("region requires u32 x, y, width, height");
+                        };
+                        Some(nano_tools::image::ImageRegion {
+                            x,
+                            y,
+                            width,
+                            height,
+                        })
+                    }
+                };
+                let loaded = match tool.read(std::path::Path::new(path), region).await {
+                    Ok(loaded) => loaded,
+                    Err(error) => return Self::fail(error.to_string(), error.kind),
+                };
+                let Some(store) = &self.attachment_store else {
+                    return Self::fail(
+                        "view_image attachment store unavailable",
+                        nano_session::NanoErrorKind::AttachmentStoreError,
+                    );
+                };
+                let lease = match store.acquire_write_lease() {
+                    Ok(lease) => lease,
+                    Err(error) => return Self::fail(error.to_string(), error.kind()),
+                };
+                let digest = match store.put(&lease, &loaded.bytes) {
+                    Ok(digest) => digest,
+                    Err(error) => return Self::fail(error.to_string(), error.kind()),
+                };
+                let ordered = nano_model::image_result::OrderedImage {
+                    bytes: loaded.bytes,
+                    mime: loaded.wire_mime,
+                    digest,
+                    width: loaded.width,
+                    height: loaded.height,
+                    normalized_from: loaded.normalized_from,
+                };
+                let (parts, provenance) = match nano_model::image_result::build_image_tool_result(
+                    &call.id,
+                    "view_image",
+                    vec![ordered],
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        return Self::fail(error.detail, nano_session::NanoErrorKind::ImageInvalid);
+                    }
+                };
+                let output = parts.content.clone();
+                *self
+                    .pending_image_result
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = Some((
+                    call.id.clone(),
+                    crate::turn::LiveImageToolResult {
+                        parts,
+                        provenance,
+                        lease,
+                    },
+                ));
+                Self::ok(
+                    output,
+                    ProgressSignals {
+                        new_information: true,
+                        ..Default::default()
+                    },
+                )
+            }
             "fs_read" => {
                 let Some(path) = Self::arg_str(call, "path") else {
                     return Self::arg_error("missing path");
@@ -867,7 +1014,7 @@ mod tests {
     /// ALL modes).
     #[test]
     fn shell_schema_has_no_sandbox_relaxing_arguments() {
-        let defs = v1_tool_definitions(false);
+        let defs = v1_tool_definitions(false, false);
         let shell = defs
             .iter()
             .find(|d| d.name == "shell")
@@ -895,7 +1042,7 @@ mod tests {
     /// fs_edit auto-approves, and THIS pin catches the rename at the source.
     #[test]
     fn fs_write_and_fs_edit_take_a_path_argument() {
-        let defs = v1_tool_definitions(false);
+        let defs = v1_tool_definitions(false, false);
         for name in ["fs_write", "fs_edit"] {
             let def = defs.iter().find(|d| d.name == name).expect(name);
             assert!(
@@ -1268,11 +1415,11 @@ mod tests {
     /// session state or answer questions (codex root-thread-only rule).
     #[test]
     fn session_tools_advertised_but_absent_from_the_child_surface() {
-        let v1 = v1_tool_definitions(false);
+        let v1 = v1_tool_definitions(false, false);
         for name in SESSION_TOOL_NAMES {
             assert!(v1.iter().any(|d| d.name == name), "{name} advertised");
         }
-        let child = child_tool_definitions(false);
+        let child = child_tool_definitions(false, false);
         for name in SESSION_TOOL_NAMES {
             assert!(
                 !child.iter().any(|d| d.name == name),
@@ -1449,12 +1596,12 @@ mod tests {
     /// rule), present in the backed one.
     #[test]
     fn web_search_registration_is_backend_gated() {
-        let unbacked = v1_tool_definitions(false);
+        let unbacked = v1_tool_definitions(false, false);
         assert!(
             !unbacked.iter().any(|d| d.name == "web_search"),
             "unbacked surface never advertises web_search"
         );
-        let backed = v1_tool_definitions(true);
+        let backed = v1_tool_definitions(true, false);
         let def = backed
             .iter()
             .find(|d| d.name == "web_search")
@@ -1477,17 +1624,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn p2b_view_image_registration_is_vision_and_native_surface_gated() {
+        assert!(
+            !v1_tool_definitions(false, false)
+                .iter()
+                .any(|definition| definition.name == "view_image")
+        );
+        assert!(
+            v1_tool_definitions(false, true)
+                .iter()
+                .any(|definition| definition.name == "view_image")
+        );
+        assert!(
+            child_tool_definitions(false, true)
+                .iter()
+                .any(|definition| definition.name == "view_image")
+        );
+    }
+
     /// D12 (r2 claude-F6): BOTH definition call sites take the
     /// backend-aware path — the child surface advertises web_search exactly
     /// when the parent does, and still excludes the session-owned tools.
     #[test]
     fn child_surface_matches_parent_search_gating() {
-        let child_unbacked = child_tool_definitions(false);
+        let child_unbacked = child_tool_definitions(false, false);
         assert!(
             !child_unbacked.iter().any(|d| d.name == "web_search"),
             "unbacked child surface never advertises web_search"
         );
-        let child_backed = child_tool_definitions(true);
+        let child_backed = child_tool_definitions(true, false);
         assert!(
             child_backed.iter().any(|d| d.name == "web_search"),
             "backed child surface advertises web_search"

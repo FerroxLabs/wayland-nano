@@ -35,6 +35,15 @@ use nano_protocol::permission_mode::PermissionMode;
 use nano_session::op::{GoalBudgets, Op, OpEnvelope};
 use nano_session::writer::JournalWriter;
 use std::io::Write;
+
+#[derive(Debug)]
+pub struct DenyImageReadApprover;
+
+impl nano_tools::image::ImageReadApprover for DenyImageReadApprover {
+    fn request(&self, _canonical: &std::path::Path) -> nano_tools::image::ImageReadApproval {
+        nano_tools::image::ImageReadApproval::Denied
+    }
+}
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
@@ -349,7 +358,7 @@ where
     T: nano_agent::turn::ToolExecutor,
     W: Write + Send,
 {
-    let mut tool_definitions = v1_tool_definitions(web_search_backed);
+    let mut tool_definitions = v1_tool_definitions(web_search_backed, false);
     tool_definitions.extend(extra_tool_definitions.iter().cloned());
     let engine = TurnEngine {
         model: driver,

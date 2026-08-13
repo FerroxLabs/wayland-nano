@@ -1252,3 +1252,169 @@ fn p2a_enforce_image_budget_oldest_first() {
         "newest survives once under budget"
     );
 }
+
+// ── P2b §3.5: result-carried images in accounting, eviction, and pairing ──
+
+/// A ToolResult message carrying `count` 1x1 images (base64 payload sized by
+/// the caller) — the P2b shape under test.
+fn p2b_result_message(call_id: &str, content: &str, count: usize, data: &str) -> Message {
+    Message {
+        role: nano_model::types::Role::Tool,
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: call_id.into(),
+            content: content.into(),
+            is_error: false,
+            images: (0..count)
+                .map(|_| nano_model::types::ImageData {
+                    mime: "image/png".into(),
+                    data: data.to_string(),
+                })
+                .collect(),
+        }],
+    }
+}
+
+/// §3.5: the ToolResult arm of message_bytes counts `6,000 × images` ON TOP
+/// OF the id + projection text — no result image survives uncounted, and the
+/// base64 length never leaks into the estimate.
+#[test]
+fn p2b_message_bytes_tool_result_arm_counts_6000_per_image() {
+    let bare = p2b_result_message("c1", "abcd", 0, "A");
+    assert_eq!(message_bytes(&bare), 2 + 4);
+    let two = p2b_result_message("c1", "abcd", 2, &"A".repeat(100_000));
+    assert_eq!(message_bytes(&two), 2 + 4 + 2 * IMAGE_BLOCK_BYTES);
+}
+
+/// §3.5 eviction: over the §4.2 per-prompt aggregate budget, result-carried
+/// images are evicted OLDEST-FIRST with the explicit placeholder appended to
+/// the projection, and the pairing key (`tool_use_id`) is structurally
+/// untouched — `normalize_history` sees the same pairing before and after.
+#[test]
+fn p2b_enforce_image_budget_evicts_result_images_oldest_first_pairing_intact() {
+    let over_cap_data = "A".repeat(((MAX_PROMPT_IMAGE_AGGREGATE_BYTES / 3 * 4) + 4096) as usize);
+    let mut messages = vec![
+        Message {
+            role: nano_model::types::Role::Assistant,
+            content: vec![
+                ContentBlock::ToolUse {
+                    id: "old".into(),
+                    name: "view_image".into(),
+                    input: serde_json::json!({}),
+                },
+                ContentBlock::ToolUse {
+                    id: "new".into(),
+                    name: "view_image".into(),
+                    input: serde_json::json!({}),
+                },
+            ],
+        },
+        p2b_result_message(
+            "old",
+            "[Image #1 from tool view_image — 1x1 png]",
+            1,
+            &over_cap_data,
+        ),
+        p2b_result_message(
+            "new",
+            "[Image #1 from tool view_image — 1x1 png]",
+            1,
+            "aGVsbG8",
+        ),
+    ];
+    enforce_image_budget(&mut messages);
+    // Oldest evicted (placeholder appended, images cleared); newest kept.
+    let ContentBlock::ToolResult {
+        tool_use_id,
+        content,
+        images,
+        ..
+    } = &messages[1].content[0]
+    else {
+        panic!("result block")
+    };
+    assert_eq!(tool_use_id, "old", "pairing key untouched");
+    assert!(images.is_empty(), "oldest result image evicted");
+    assert!(
+        content.contains("[Image #1 from tool view_image")
+            && content.contains(COMPACT_IMAGE_PLACEHOLDER),
+        "label preserved + explicit placeholder appended: {content}"
+    );
+    let ContentBlock::ToolResult { images, .. } = &messages[2].content[0] else {
+        panic!("result block")
+    };
+    assert_eq!(images.len(), 1, "newest image survives");
+    // Pairing intact: the repair pass sees the same tool_use_id set, so the
+    // post-eviction history introduces NO orphans — normalize_history drops
+    // nothing.
+    let normalized = normalize_history(messages.clone());
+    assert_eq!(
+        normalized, messages,
+        "eviction left pairing intact (no orphaned results)"
+    );
+}
+
+/// §3.5 provenance: the summarizer never sees result pixels (the pre-summary
+/// transform clears ToolResult.images and appends the placeholder), and the
+/// journaled CompactionComplete carries image_influenced=true for an evicted
+/// RESULT image exactly as for an intake image.
+#[tokio::test]
+async fn p2b_summarizer_never_sees_result_pixels_and_provenance_journaled() {
+    let model = FakeModel::new(vec![], vec![text_response("clean summary", 0)]);
+    let mut messages = vec![
+        p2b_result_message(
+            "c1",
+            "[Image #1 from tool view_image — 1x1 png]",
+            1,
+            &"A".repeat(1000),
+        ),
+        Message::user("follow-up"),
+    ];
+    let mut journaled: Vec<Op> = Vec::new();
+    let mut emit = |op: Op| {
+        journaled.push(op);
+        true
+    };
+    compact_messages(
+        &model,
+        "mock",
+        &mut messages,
+        "c-res-img",
+        vec![],
+        vec![],
+        false,
+        &mut emit,
+    )
+    .await
+    .unwrap();
+    let requests = model.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let saw_result_pixels = requests[0]
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .any(|b| matches!(b, ContentBlock::ToolResult { images, .. } if !images.is_empty()));
+    assert!(
+        !saw_result_pixels,
+        "the summarizer must never see result pixels"
+    );
+    let saw_placeholder = requests[0]
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .any(|b| matches!(b, ContentBlock::ToolResult { content, .. } if content.contains(COMPACT_IMAGE_PLACEHOLDER)));
+    assert!(
+        saw_placeholder,
+        "the transform left the explicit placeholder"
+    );
+    drop(requests);
+    let Op::CompactionComplete {
+        image_influenced, ..
+    } = &journaled[1]
+    else {
+        panic!("complete expected")
+    };
+    assert!(
+        image_influenced,
+        "an evicted result image sets the provenance flag"
+    );
+}

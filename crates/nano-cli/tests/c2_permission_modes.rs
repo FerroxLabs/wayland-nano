@@ -241,7 +241,7 @@ impl Harness {
                     },
                     &config,
                     move |_| driver.clone(),
-                    move |_, _, _, _, _| (MockTools, workspace_policy()),
+                    move |_, _, _, _, _, _| (MockTools, workspace_policy()),
                 )
                 .await
             })

@@ -29,6 +29,8 @@ pub enum ContentBlock {
         tool_use_id: String,
         content: String,
         is_error: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageData>,
     },
     /// P2a §2.1 (donor: wayland-core `wcore-types/src/message.rs:41-55`,
     /// verbatim variant shape). INTAKE ONLY in P2a: `Image` blocks appear
@@ -40,6 +42,12 @@ pub enum ContentBlock {
         /// Base64 WITHOUT a data-URI prefix; codecs add their native wrapping.
         data: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageData {
+    pub mime: String,
+    pub data: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +96,24 @@ impl Message {
                 tool_use_id: tool_use_id.into(),
                 content: content.into(),
                 is_error,
+                images: Vec::new(),
+            }],
+        }
+    }
+
+    pub fn tool_result_with_images(
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+        images: Vec<ImageData>,
+    ) -> Self {
+        Self {
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: tool_use_id.into(),
+                content: content.into(),
+                is_error,
+                images,
             }],
         }
     }
@@ -141,6 +167,14 @@ impl Default for ModelRequest {
             output_schema_strict: true,
             metadata: BTreeMap::new(),
         }
+    }
+}
+
+impl ModelRequest {
+    pub fn has_tool_result_images(&self) -> bool {
+        self.messages.iter().flat_map(|message| &message.content).any(
+            |block| matches!(block, ContentBlock::ToolResult { images, .. } if !images.is_empty()),
+        )
     }
 }
 

@@ -259,7 +259,7 @@ impl Recorder {
                     move |_| driver.clone(),
                     // C2: make_tools returns the executor AND its exact fs
                     // policy (the gate's advisory oracle shares provenance).
-                    move |_, _, _, _, _| (MockTools, workspace_policy()),
+                    move |_, _, _, _, _, _| (MockTools, workspace_policy()),
                 )
                 .await
             })
