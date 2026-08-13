@@ -97,11 +97,17 @@ fn assert_shell_observation(
 fn build_fixture() -> PathBuf {
     FIXTURE
         .get_or_init(|| {
-            let output = std::env::temp_dir().join(format!(
-                "wayland-nano-argv-echo-{}{}",
-                std::process::id(),
-                std::env::consts::EXE_SUFFIX
-            ));
+            // Canonicalize the temp root first: CI profiles use 8.3 aliases
+            // (RUNNER~1) and macOS /var is a symlink to /private/var — both
+            // introduce bytes (~) or symlinked spellings the Clean grammar
+            // rejects. The canonical path is safe-set only.
+            let output = dunce::canonicalize(std::env::temp_dir())
+                .expect("canonical temp dir")
+                .join(format!(
+                    "wayland-nano-argv-echo-{}{}",
+                    std::process::id(),
+                    std::env::consts::EXE_SUFFIX
+                ));
             let _ = fs::remove_file(&output);
             let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/argv_echo.rs");
             let status = Command::new("rustc")

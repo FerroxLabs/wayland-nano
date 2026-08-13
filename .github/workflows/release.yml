@@ -120,7 +120,7 @@ jobs:
           [ "$count" -eq 5 ] || { echo "expected 5 platform binaries, found $count"; exit 1; }
           node bin/install.js
 
-      - name: Guard: tag must match package.json version
+      - name: "Guard: tag must match package.json version"
         working-directory: packaging/npm
         shell: bash
         run: |
