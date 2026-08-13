@@ -2437,6 +2437,7 @@ mod tests {
                         stop_reason: "stop".into(),
                     },
                 ],
+                model: None,
                 usage: Usage {
                     input_tokens: 100,
                     output_tokens: 25,

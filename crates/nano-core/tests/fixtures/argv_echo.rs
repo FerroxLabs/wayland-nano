@@ -9,7 +9,12 @@ fn main() {
         .append(true)
         .open(path)
         .expect("open argv log");
-    writeln!(log, "{}", args.join("\u{1f}")).expect("append argv log");
+    // ONE write syscall: write_fmt can split into multiple writes, and a
+    // piped sibling's writes then interleave mid-line (CI-proven tear on
+    // ubuntu-22.04: "producerconsumer"). A single short write under
+    // O_APPEND is atomic on POSIX.
+    let line = format!("{}\n", args.join("\u{1f}"));
+    log.write_all(line.as_bytes()).expect("append argv log");
     log.sync_data().expect("sync argv log");
     if args.first().is_some_and(|arg| arg == "fail") {
         std::process::exit(1);

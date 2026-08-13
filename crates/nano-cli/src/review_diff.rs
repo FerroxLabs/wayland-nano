@@ -262,9 +262,17 @@ fn run_hardened_git(
         command.env("SYSTEMROOT", root);
     }
     command.env("GIT_CONFIG_NOSYSTEM", "1");
-    let null_device = if cfg!(windows) { "NUL" } else { "/dev/null" };
-    command.env("GIT_CONFIG_GLOBAL", null_device);
-    command.env("GIT_CONFIG_SYSTEM", null_device);
+    // A REAL empty file under the scratch home, not a device name: the
+    // windows-11-arm git build rejects the literal "NUL" (CI-proven), and
+    // device paths are not portable. An empty readable file disables
+    // global/system config identically on every git build.
+    let empty_config = scratch_home.join("gitconfig-empty");
+    if !empty_config.exists() {
+        std::fs::write(&empty_config, b"")
+            .map_err(|e| ReviewDiffError::Spawn(format!("scratch env prep failed: {e}")))?;
+    }
+    command.env("GIT_CONFIG_GLOBAL", &empty_config);
+    command.env("GIT_CONFIG_SYSTEM", &empty_config);
     command.env("HOME", scratch_home);
     // Repo discovery is pinned to the workspace: never ascend above it
     // (the .git pre-check makes ascent moot; this is the in-env backstop).
@@ -460,19 +468,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
+        // A real empty file, not a device name — the windows-11-arm git
+        // build rejects "NUL" (CI-proven); an empty file works everywhere.
+        let empty_config = tmp.path().join("gitconfig-empty");
+        std::fs::write(&empty_config, b"").unwrap();
         let git = |args: &[&str]| {
             let output = Command::new("git")
                 .args(args)
                 .current_dir(&repo)
                 .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env(
-                    "GIT_CONFIG_GLOBAL",
-                    if cfg!(windows) { "NUL" } else { "/dev/null" },
-                )
-                .env(
-                    "GIT_CONFIG_SYSTEM",
-                    if cfg!(windows) { "NUL" } else { "/dev/null" },
-                )
+                .env("GIT_CONFIG_GLOBAL", &empty_config)
+                .env("GIT_CONFIG_SYSTEM", &empty_config)
                 .output()
                 .expect("git runs");
             assert!(
