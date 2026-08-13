@@ -491,3 +491,19 @@ promotes/closes entries; builders append only.
   (acp_mode.rs:4222-4236) rather than "carried" per §3.3 (harmless —
   Message cannot hold it); build_image_tool_result's _call_id unused
   (binding is via Op.call_id) — cosmetic.
+
+## F-33: P2a proof process follow-ups (proof agent-128, 2026-08-13) — OPEN
+
+- **Polyglot semantics conflict:** §13 leg 3 says polyglot PNG+ZIP is
+  "typed-rejected"; the certified §4.1 trailing-payload tolerance +
+  shipped code ACCEPT then gate-reject, and the re-encode is digest-
+  identical to the payload-free control (the payload never influences
+  output). One should be amended — recommendation: amend §13's wording to
+  "accepted-then-stripped, proven byte-inert", since the §4.1 tolerance is
+  itself certified and the strip is byte-proven.
+- **Wire naming note:** the note says `_meta.nanoError.kind`; the shipped
+  wire carries `error.data.nanoError.kind`. Reconcile the note's spelling
+  (code is the contract per C7).
+- **magistral-medium re-probe:** INCONCLUSIVE at leg 6 (Flux 400 "no
+  healthy deployments" on all calls incl. text-only control). Single
+  re-probe if Flux restores the deployment; catalog stays false meanwhile.
