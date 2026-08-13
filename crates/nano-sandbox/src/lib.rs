@@ -106,7 +106,6 @@ pub mod identity;
 pub mod job;
 #[cfg(target_os = "windows")]
 pub mod logging;
-#[cfg(target_os = "windows")]
 mod path_normalization;
 #[cfg(target_os = "windows")]
 pub mod proc_thread_attr;
@@ -145,7 +144,6 @@ pub mod workspace_acl;
 #[cfg(target_os = "windows")]
 pub mod wrapper;
 
-#[cfg(target_os = "windows")]
 pub use path_normalization::canonical_path_key;
 #[cfg(target_os = "windows")]
 pub use token::world_sid;
@@ -264,7 +262,6 @@ pub use logging::{
     current_log_file_path, current_log_file_path_for_nano_home, log_file_path_for_utc_date,
     log_note, log_writer,
 };
-#[cfg(target_os = "windows")]
 pub use path_normalization::canonicalize_path;
 #[cfg(target_os = "windows")]
 pub use process::{
