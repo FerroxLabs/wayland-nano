@@ -507,3 +507,18 @@ promotes/closes entries; builders append only.
 - **magistral-medium re-probe:** INCONCLUSIVE at leg 6 (Flux 400 "no
   healthy deployments" on all calls incl. text-only control). Single
   re-probe if Flux restores the deployment; catalog stays false meanwhile.
+
+## F-34: AttachmentStore GC sweep has no production caller (P2a proof, leg 4 GC leg) — OPEN, production finding
+
+- **Filed:** 2026-08-13, from the P2a adversarial proof (agent-128):
+  `AttachmentStore::sweep()` is implemented and unit-tested but NEVER
+  invoked — `/doctor` neither sweeps nor reports the store, and acp-host
+  startup doesn't sweep either (planted aged unreferenced blob + stale
+  `.tmp` survived both: `.tmp/p2a-proof/captures/leg4cd.json`,
+  `leg4d2.json`). Design §5.4 specifies "sweep invocation: host startup +
+  /doctor". Unreferenced blobs currently accumulate forever.
+- **Close means:** wire the sweep at host startup (lease+grace discipline
+  already in-crate) and a `/doctor` store report (size, blob count);
+  re-run the leg-4 GC concurrent leg (sweep racing a live attach — blob
+  survives) as the promotion proof. NOTE: F-32 LOW-7 (sweep's reference
+  scan must cover ToolResult.image_refs) must land first or with it.
