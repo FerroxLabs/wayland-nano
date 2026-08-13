@@ -377,6 +377,7 @@ impl CompactionError {
 /// `image_influenced_before` is the SESSION-SIDE sticky flag, supplied by
 /// the caller (the host passes its session value; the engine-internal
 /// callers receive it through the §5.2.1 blocks entry).
+#[allow(clippy::too_many_arguments)] // the compaction commit bundle travels together (goal.rs precedent)
 pub async fn compact_messages(
     model: &dyn ModelDriver,
     model_name: &str,
