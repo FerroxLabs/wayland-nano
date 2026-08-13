@@ -76,3 +76,11 @@ a lane branch.
   path legs, session browser, review mode) — evidence appended to
   shared/reviews/RC/evidence/CONSOLIDATED-VERIFICATION.md.
 - THEN the §13 leg-7 Desktop drive on Mac (owner).
+
+## 7. OAuth grant producer (F-36 — wiring-critical)
+
+Neither merged side implements the `record_grant` hook: OAuth logins
+currently journal NOTHING. Implement at the acp_mode session layer: checked
+`flow::GrantEndpoint` → `op::GrantEndpoint` conversion (reject Unknown),
+`validate_oauth_grant`, append via the session coordinator. Without this the
+P3 OAuth replay surface (`SessionState.mcp_oauth_grants`) is dead.

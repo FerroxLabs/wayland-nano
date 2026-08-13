@@ -523,3 +523,34 @@ promotes/closes entries; builders append only.
   re-run the leg-4 GC concurrent leg (sweep racing a live attach — blob
   survives) as the promotion proof. NOTE: F-32 LOW-7 (sweep's reference
   scan must cover ToolResult.image_refs) must land first or with it.
+
+## F-35: P3 ToolSearch merge-review LOW debt (reviewer agent-144, 2026-08-13) — OPEN
+
+- **LOW-5 (fidelity):** `McpElicitationUnsupported` typed kind is never
+  emitted for the pre-2025-06-18 case — the version gate is behaviorally
+  closed (no slot designated, spec-legal -32601) but the §7-named kind
+  never surfaces; the config-time HTTP refusal is eprintln-only, never a
+  client-visible typed error. Fail-closed today; fidelity gap only.
+- **LOW-7 (recorded deviation, verified safe by reviewer):** both
+  compaction paths journal `covers_op_ids` = the FULL snapshot
+  (acp_mode.rs:2435-2438, :2707-2711), discarding the builder-computed
+  per-turn ids (turn.rs:674/975) — a semantic change to a C1 contract.
+  Reviewer verified: covers is audit-only at rebuild, resume folds the
+  full stream, carry exact by construction; also fixes a latent base bug.
+  Recorded here and required in the fix-round commit message.
+- **LOW-10:** interrupted-call attribution (mcp.rs:1007-1009) is
+  last-writer-wins under concurrency — a journaled call_id can be
+  wrong/empty for non-designated concurrent calls. Audit-only field;
+  designated-slot binding is dispatcher-correct. Optional: key per-call.
+
+## F-36: OAuth grant op has NO producer on either merged side (reviewer agent-144 checklist item 7) — OPEN, wiring-critical
+
+- Master's OAuth lane (`nano-mcp/src/oauth/flow.rs:41,81`) defines
+  `record_grant: &dyn Fn(&GrantRecord)` expecting the ToolSearch branch's
+  `Op::McpOauthGrant` — but no code on either side implements the hook.
+  Until wired, OAuth logins journal nothing (grants exist only in
+  memory). Integrator: implement the hook at the acp_mode session layer —
+  checked conversion `flow::GrantEndpoint{HttpMethod}` →
+  `op::GrantEndpoint{GrantMethod}` (reject Unknown), run
+  `validate_oauth_grant`, append through the session coordinator.
+  Lands in the RC2 wiring pass (docs/RC2-WIRING-PASS.md §7).
