@@ -1370,9 +1370,12 @@ dependencies = [
  "dirs-next",
  "dunce",
  "globset",
+ "libc",
  "pretty_assertions",
  "serde",
  "serde_json",
+ "tempfile",
+ "toml",
  "tracing",
  "windows-sys 0.52.0",
 ]
