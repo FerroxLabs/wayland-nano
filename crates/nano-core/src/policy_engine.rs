@@ -13,6 +13,12 @@
 //! - named ADS spellings (`file:stream`) are normalized to the base file
 //!   before candidate resolution so a deny on a file covers all its streams
 //!   (Wayland Nano hardening, no donor counterpart);
+//! - read-deny candidates for missing targets canonicalize the deepest
+//!   EXISTING ancestor and re-append the lexical remainder, so an
+//!   alias-spelled prefix (8.3 short name, `/var` -> `/private/var`,
+//!   symlinked/junctioned dir) still matches a canonicalized deny root
+//!   (Wayland Nano hardening, no donor counterpart; regression cover in
+//!   `nano-core/tests/read_deny_alias.rs`);
 //! - writes to an existing regular file with more than one hard link are
 //!   denied: a hard link has no reparse point, so canonicalization cannot see
 //!   that the file object may also be reachable outside every writable entry
@@ -622,9 +628,44 @@ fn normalized_and_canonical_candidates(path: &Path) -> Vec<PathBuf> {
         && let Ok(canonical_absolute) = AbsolutePathBuf::from_absolute_path(canonical)
     {
         push_unique(&mut candidates, canonical_absolute.to_path_buf());
+    } else if let Some(canonical) = canonicalize_through_existing_ancestor(path) {
+        // The target does not exist yet (a future-created file under a denied
+        // dir, or a deny entry for a not-yet-created path): full-path
+        // canonicalization fails, which would leave only the lexical
+        // candidate. Deny roots are stored canonicalized, so an alias-spelled
+        // query (8.3 short name, `/var` -> `/private/var`, a symlinked or
+        // junctioned directory) would then never prefix-match. Canonicalize
+        // the deepest existing ancestor and re-append the lexical remainder
+        // so the canonical candidate survives missing targets.
+        push_unique(&mut candidates, canonical);
     }
 
     candidates
+}
+
+/// Canonicalizes the deepest existing ancestor of `path` and re-appends the
+/// lexical remainder beneath it, so alias spellings of an existing prefix
+/// still resolve to the canonical candidate when the target itself does not
+/// exist. `dunce::canonicalize` keeps the result free of `\\?\` verbatim
+/// prefixes so it compares cleanly against lexical candidates. Same
+/// ancestor-walk doctrine as [`canonicalize_write_target`].
+fn canonicalize_through_existing_ancestor(path: &Path) -> Option<PathBuf> {
+    for ancestor in path.ancestors() {
+        if std::fs::symlink_metadata(ancestor).is_err() {
+            continue;
+        }
+        let Ok(canonical_ancestor) = dunce::canonicalize(ancestor) else {
+            continue;
+        };
+        let Ok(suffix) = path.strip_prefix(ancestor) else {
+            continue;
+        };
+        if let Ok(canonical) = AbsolutePathBuf::from_absolute_path(canonical_ancestor.join(suffix))
+        {
+            return Some(canonical.to_path_buf());
+        }
+    }
+    None
 }
 
 fn push_unique(candidates: &mut Vec<PathBuf>, candidate: PathBuf) {

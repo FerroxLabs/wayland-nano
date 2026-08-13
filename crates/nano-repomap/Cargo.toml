@@ -1,0 +1,24 @@
+[package]
+name = "nano-repomap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nano-core = { version = "0.1.0", path = "../nano-core" }
+nano-sandbox = { version = "0.1.0", path = "../nano-sandbox" }
+dunce = "1"
+globset = "0.4"
+regex = "1"
+sha2 = "0.10"
+thiserror = "2"
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"
+
+# §14 leg 4's 8.3 short-name leg: GetShortPathNameW has no stable std
+# exposure. Pinned workspace windows-sys 0.52 per AGENTS.md.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem"] }

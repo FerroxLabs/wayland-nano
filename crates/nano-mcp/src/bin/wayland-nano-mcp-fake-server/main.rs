@@ -144,7 +144,8 @@ fn main() {
     let inject: Arc<Mutex<Option<Inject>>> = Arc::new(Mutex::new(None));
 
     let stdin = std::io::stdin();
-    for line in stdin.lock().lines() {
+    let mut lines = stdin.lock().lines();
+    while let Some(line) = lines.next() {
         let Ok(line) = line else { break };
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
@@ -194,7 +195,8 @@ fn main() {
                     }),
                 );
             }
-            "tools/call" => handle_call(&scenario, &out, &id, &v, call_delay, &flood, &inject),
+            "tools/call" if scenario == "flood" => handle_flood(&out, &id, &flood, &mut lines),
+            "tools/call" => handle_call(&scenario, &out, &id, &v, call_delay, &inject),
             // No method: a response to one of OUR server requests.
             "" => {
                 let kind = if v.get("error").is_some() {
@@ -293,7 +295,6 @@ fn handle_call(
     id: &Value,
     request: &Value,
     call_delay: Duration,
-    flood: &Arc<Mutex<Option<Flood>>>,
     inject: &Arc<Mutex<Option<Inject>>>,
 ) {
     let marker = request
@@ -417,48 +418,6 @@ fn handle_call(
                 }
             });
         }
-        "flood" => {
-            // 18 server requests on a NON-builtin method (the test installs
-            // a gated handler that parks): with the handler occupied, the
-            // 16-cap queue fills and the LAST request overflows to a -32603
-            // reply (§12 h).
-            const FLOOD_N: u64 = 18;
-            for n in 1..=FLOOD_N {
-                write_frame(
-                    out,
-                    &json!({"jsonrpc":"2.0","method":"probe/knock","id":format!("srv-{n}"),"params":{}}),
-                );
-            }
-            let cancelled = std::env::var("FAKE_CANCEL").unwrap_or_default();
-            if !cancelled.is_empty() {
-                write_frame(
-                    out,
-                    &json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":cancelled}}),
-                );
-            }
-            let expected = if cancelled.is_empty() {
-                FLOOD_N as usize
-            } else {
-                FLOOD_N as usize - 1
-            };
-            *flood.lock().unwrap() = Some(Flood {
-                call_id: id.clone(),
-                replies: Vec::new(),
-                expected,
-                done: false,
-            });
-            // Watchdog: answer with partial counts after 15s so a broken
-            // client fails the test fast instead of at the 30s call timeout.
-            let out2 = out.clone();
-            let flood2 = flood.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_secs(15));
-                let mut f = flood2.lock().unwrap();
-                if let Some(flood) = f.as_mut() {
-                    flood.finish(&out2);
-                }
-            });
-        }
         other => {
             write_frame(
                 out,
@@ -466,4 +425,82 @@ fn handle_call(
             );
         }
     }
+}
+
+/// flood (§12 h / §2.5): 18 server requests on a NON-builtin method against
+/// the client's 16-cap server-request queue, with a gated handler parked on
+/// the first one. TWO-PHASE, because the overflow count is only
+/// deterministic when the handler/thread split is fixed BEFORE the flood:
+///
+///   Phase 1 — send `srv-1` only. The client's handler thread dequeues it
+///   and parks on the test gate, then signals `probe/flood_go`. Waiting for
+///   that signal is what makes the arithmetic exact: the handler holds
+///   srv-1 and the queue is EMPTY when phase 2 starts. (Without the
+///   handshake a slow scheduler can let the reader saturate the queue
+///   before the handler's first recv, overflowing TWO requests instead of
+///   one — the macos-15-intel CI flake.)
+///
+///   Phase 2 — send `srv-2..=srv-18`: 16 fill the queue, srv-18 overflows
+///   to exactly one -32603 reply. The optional FAKE_CANCEL
+///   `notifications/cancelled` goes LAST on the wire, so the reader records
+///   it strictly after all enqueue/overflow decisions; it drops the queued
+///   request at handler-dequeue time and can never shift the overflow
+///   count.
+fn handle_flood(
+    out: &Out,
+    call_id: &Value,
+    flood: &Arc<Mutex<Option<Flood>>>,
+    lines: &mut impl Iterator<Item = std::io::Result<String>>,
+) {
+    const FLOOD_N: u64 = 18;
+    write_frame(
+        out,
+        &json!({"jsonrpc":"2.0","method":"probe/knock","id":"srv-1","params":{}}),
+    );
+    // Block until the client's handler reports parked-on-gate. Anything
+    // else arriving first is ignored; EOF means the client is gone.
+    for line in lines.by_ref() {
+        let Ok(line) = line else { return };
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if v.get("method").and_then(|m| m.as_str()) == Some("probe/flood_go") {
+            break;
+        }
+    }
+    for n in 2..=FLOOD_N {
+        write_frame(
+            out,
+            &json!({"jsonrpc":"2.0","method":"probe/knock","id":format!("srv-{n}"),"params":{}}),
+        );
+    }
+    let cancelled = std::env::var("FAKE_CANCEL").unwrap_or_default();
+    if !cancelled.is_empty() {
+        write_frame(
+            out,
+            &json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":cancelled}}),
+        );
+    }
+    let expected = if cancelled.is_empty() {
+        FLOOD_N as usize
+    } else {
+        FLOOD_N as usize - 1
+    };
+    *flood.lock().unwrap() = Some(Flood {
+        call_id: call_id.clone(),
+        replies: Vec::new(),
+        expected,
+        done: false,
+    });
+    // Watchdog: answer with partial counts after 15s so a broken client
+    // fails the test fast instead of at the 30s call timeout.
+    let out2 = out.clone();
+    let flood2 = flood.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(15));
+        let mut f = flood2.lock().unwrap();
+        if let Some(flood) = f.as_mut() {
+            flood.finish(&out2);
+        }
+    });
 }

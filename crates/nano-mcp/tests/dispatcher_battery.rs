@@ -66,16 +66,25 @@ fn is_cancel_obs(v: &Value, reason: &str) -> bool {
 
 /// §12 (b2) handler for the flood legs: parks every server request until
 /// the test opens the gate, so the 16-cap queue fills deterministically.
+/// On the FIRST parked request it reports `probe/flood_go` to the fake
+/// server: that handshake is what pins the handler/queue split (handler
+/// holds srv-1, queue empty) before the remaining 17 requests are sent,
+/// so the overflow count is exact on any scheduler.
 struct GatedHandler {
     gate: Arc<(Mutex<bool>, Condvar)>,
+    announced: AtomicBool,
 }
 
 impl ServerRequestHandler for GatedHandler {
     fn handle(
         &self,
-        _conn: &ConnectionHandle,
+        conn: &ConnectionHandle,
         _request: &ServerRequest,
     ) -> Option<Result<Value, (i64, String)>> {
+        if !self.announced.swap(true, Ordering::SeqCst) {
+            let go = serde_json::json!({"jsonrpc":"2.0","method":"probe/flood_go"});
+            let _ = conn.enqueue_priority(go.to_string());
+        }
         let (lock, cvar) = &*self.gate;
         let mut open = lock.lock().unwrap();
         while !*open {
@@ -88,7 +97,10 @@ impl ServerRequestHandler for GatedHandler {
 fn gated_options() -> (ConnectionOptions, Arc<(Mutex<bool>, Condvar)>) {
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
     let options = ConnectionOptions {
-        request_handler: Arc::new(GatedHandler { gate: gate.clone() }),
+        request_handler: Arc::new(GatedHandler {
+            gate: gate.clone(),
+            announced: AtomicBool::new(false),
+        }),
         ..Default::default()
     };
     (options, gate)
@@ -398,8 +410,10 @@ fn flood_overflow_32603_reader_never_blocked() {
     let client = connect("flood", &[], options);
     let call_client = client.clone();
     let call = std::thread::spawn(move || call_client.call_tool("echo", serde_json::json!({})));
-    // The reader enqueues 16, the 18th overflows — deterministic because
-    // the handler is parked on the first request.
+    // Deterministic by construction: the fake server sends srv-1 alone and
+    // waits for the handler's probe/flood_go (handler parked, queue empty)
+    // before sending srv-2..=srv-18 — so 16 fill the queue and srv-18
+    // overflows, exactly one -32603, on ANY scheduler.
     let start = Instant::now();
     while client.overflow_replies() == 0 && start.elapsed() < Duration::from_secs(10) {
         std::thread::sleep(Duration::from_millis(10));
@@ -413,7 +427,11 @@ fn flood_overflow_32603_reader_never_blocked() {
 }
 
 /// §2.5: the server cancelling ITS OWN queued request drops it — no reply
-/// for the cancelled id, everything else still answered.
+/// for the cancelled id, everything else still answered. The fake server
+/// sends the cancel AFTER the flood (wire order), so the reader records it
+/// strictly after all enqueue/overflow decisions: the overflow count stays
+/// exactly one (same pinned ordering as the flood leg above) and srv-5 is
+/// dropped at handler-dequeue time.
 #[test]
 fn server_cancel_drops_queued_request() {
     let (options, gate) = gated_options();

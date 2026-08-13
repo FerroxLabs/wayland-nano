@@ -4,6 +4,34 @@ These are standing rules. They apply to every agent and every change, and they
 override convenience. If a rule blocks your task, stop and report — do not
 route around it.
 
+## Working discipline
+
+Adapted for this repository from FerroxLabs `agents-md`. Repository security,
+scope, and active-lane rules below take precedence whenever they are stricter.
+
+- Start with the answer or action. No flattery, filler, or ceremonial status.
+- Never fabricate paths, APIs, commits, behavior, or test results. Inspect the
+  source or run the command; if evidence is unavailable, say so plainly.
+- Disagree directly when a premise conflicts with repository evidence or these
+  rules. Polite agreement never overrides correctness.
+- Before editing, state verifiable success criteria, read the owned files and
+  the interfaces they depend on, and match established repository patterns.
+- Surface material assumptions. Ask only when two unresolved interpretations
+  would materially change the result and repository evidence cannot decide.
+- Implement the smallest complete solution to the locked requirement. Add no
+  speculative features, future hooks, drive-by refactors, or unrelated cleanup.
+- Every changed line must trace to the assignment. Remove orphaned code created
+  by the change, but leave unrelated pre-existing code alone.
+- Prefer executing focused tests over reasoning from a plausible-looking diff.
+  Read complete failures, fix root causes, and never suppress a valid failure.
+- Define completion with external evidence, run that evidence, and inspect its
+  output. A plausible diff, compilation alone, or a narrow passing test is not
+  completion.
+- Communicate directly and concisely. Report facts, tradeoffs, blockers, and
+  evidence; do not pad progress reports or restate the request.
+- Commit messages are descriptive, have a subject under 72 characters, and
+  explain why when the subject is insufficient. Do not add AI attribution.
+
 ## Scope and filesystem boundaries
 
 - Write only inside `wayland-nano/` (this repo) and, when the task requires it,
@@ -106,3 +134,4 @@ route around it.
 - Scenario catalog + gaps: `docs/compliance/SCENARIO_CATALOG.md`
 - Scorecard / kill criteria: `../shared/SCORECARD.md`
 - C1.2 proof harness: `scripts/c12-proof/`; provisioning: `scripts/provision/`
+

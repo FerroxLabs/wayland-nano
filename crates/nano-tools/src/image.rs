@@ -2261,7 +2261,10 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         write_valid_png(&sub, "shot.png");
+        #[cfg(unix)]
         let outside_png = write_valid_png(&outside, "shot.png");
+        #[cfg(windows)]
+        write_valid_png(&outside, "shot.png");
         let tool = ViewImageTool::new(
             workspace_write_policy(),
             &ws,

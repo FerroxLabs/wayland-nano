@@ -12,6 +12,7 @@ dirs-next = "2"
 globset = "0.4"
 regex = "1"
 nano-core = { version = "0.1.0", path = "../nano-core" }
+nano-repomap = { version = "0.1.0", path = "../nano-repomap" }
 nano-egress = { version = "0.1.0", path = "../nano-egress" }
 nano-model = { version = "0.1.0", path = "../nano-model" }
 # nano-session supplies NanoErrorKind (the typed journal vocabulary) for the
@@ -21,6 +22,7 @@ nano-session = { version = "0.1.0", path = "../nano-session" }
 async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 # P2a §4.7/D8: pinned at the workspace table with the link-level decoder
 # allowlist {png, jpeg, gif, webp} — do NOT enable further features here
@@ -40,10 +42,12 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 # P2b §3.7 view_image: the reparse-safe CreateFileW + handle final-path
 # verification for ViewImageTool's confined open (the P2a-audit H-2
-# discipline; windows-sys stays pinned at 0.52).
+# discipline); P4 pty rides Win32_System_Threading. windows-sys stays pinned
+# at 0.52.
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
 ] }
 
 [dev-dependencies]

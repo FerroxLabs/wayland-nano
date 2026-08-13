@@ -6,6 +6,8 @@
 
 pub mod abs;
 pub mod budget;
+pub mod execrules;
 pub mod permissions;
 pub mod policy_engine;
 pub mod search;
+pub mod sensitive_path;

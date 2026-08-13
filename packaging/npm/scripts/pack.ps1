@@ -1,95 +1,98 @@
 <#
 .SYNOPSIS
-    Build the `wayland-nano` release binary and stage it into the npm package layout.
-
+    Stage Wayland Nano binaries and write the npm integrity manifest.
 .DESCRIPTION
-    Cross-builds (or natively builds) crates/nano-cli's `wayland-nano` binary for one
-    platform of the distribution matrix — or all of them — and copies the
-    result into packaging/npm/binaries/<platform>-<arch>/, the layout that
-    packaging/npm/bin/install.js and bin/wayland-nano.js resolve at install/runtime.
-
-    win32-arm64 is compile-gate only (not supported at runtime); the launcher
-    rejects it with a clear error. Cross targets require the matching rustup
-    target and a working linker (e.g. Xcode CLT for darwin, a cross gcc for
-    linux-arm64); building on the host platform always works.
-
+    With no ArtifactRoot, builds/stages the host from target/release. Explicit
+    cross targets use target/<rust-triple>/release. With ArtifactRoot, expects
+    <ArtifactRoot>/<platform-arch>/wayland-nano[.exe], the merged layout emitted
+    by the release workflow, and stages every requested target without building.
 .EXAMPLE
-    pwsh packaging/npm/scripts/pack.ps1                      # host platform
+    pwsh packaging/npm/scripts/pack.ps1
     pwsh packaging/npm/scripts/pack.ps1 -Platform linux-x64
-    pwsh packaging/npm/scripts/pack.ps1 -Platform all -SkipBuild
+    pwsh packaging/npm/scripts/pack.ps1 -Platform all -ArtifactRoot artifacts/npm-binaries
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('win32-x64', 'win32-arm64', 'darwin-x64', 'darwin-arm64', 'linux-x64', 'linux-arm64', 'all')]
+    [ValidateSet('host', 'win32-x64', 'darwin-x64', 'darwin-arm64', 'linux-x64', 'linux-arm64', 'all')]
     [string]$Platform = 'host',
-
-    # Copy already-built binaries from target/<triple>/release without invoking cargo.
+    [string]$ArtifactRoot,
     [switch]$SkipBuild
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-
-$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..')
-$PackageRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
-
-# npm platform-arch key -> Rust target triple. The key layout matches
-# packaging/npm/bin/install.js exactly.
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+$PackageRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $Matrix = [ordered]@{
     'win32-x64'    = 'x86_64-pc-windows-msvc'
-    'win32-arm64'  = 'aarch64-pc-windows-msvc'   # compile-gate only
-    'darwin-x64'   = 'x86_64-apple-darwin'
     'darwin-arm64' = 'aarch64-apple-darwin'
+    'darwin-x64'   = 'x86_64-apple-darwin'
     'linux-x64'    = 'x86_64-unknown-linux-gnu'
     'linux-arm64'  = 'aarch64-unknown-linux-gnu'
 }
 
 function Get-HostPlatformKey {
-    # PS 5.1 lacks $IsWindows/$IsMacOS/$IsLinux (pwsh 7-only automatics).
+    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+    if ([System.Environment]::OSVersion.Platform -eq 'Win32NT') {
+        if ($arch -ne 'X64') { throw "unsupported build host architecture: win32-$($arch.ToString().ToLowerInvariant())" }
+        return 'win32-x64'
+    }
     $os = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
-    $isWin = [System.Environment]::OSVersion.Platform -eq 'Win32NT'
-    if ($isWin) { return 'win32-x64' }
-    if ($os -match 'Darwin') {
-        if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { return 'darwin-arm64' } return 'darwin-x64'
-    }
-    if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { return 'linux-arm64' } return 'linux-x64'
+    if ($os -match 'Darwin') { if ($arch -eq 'Arm64') { return 'darwin-arm64' }; return 'darwin-x64' }
+    if ($arch -eq 'Arm64') { return 'linux-arm64' }
+    return 'linux-x64'
 }
 
-function Pack-One([string]$Key) {
-    $triple = $Matrix[$Key]
-    $exe = 'wayland-nano'; if ($Key.StartsWith('win32')) { $exe = 'wayland-nano.exe' }
-    $builtPath = Join-Path $RepoRoot "target\$triple\release\$exe"
-
-    if (-not $SkipBuild) {
-        Write-Host "==> cargo build --release -p nano-cli --target $triple"
-        Push-Location $RepoRoot
-        try {
-            & cargo build --release -p nano-cli --target $triple
-            if ($LASTEXITCODE -ne 0) { throw "cargo build failed for $triple (exit $LASTEXITCODE)" }
-        }
-        finally {
-            Pop-Location
-        }
-    }
-
-    if (-not (Test-Path $builtPath)) {
-        throw "expected binary not found: $builtPath (build first or drop -SkipBuild)"
-    }
-
-    $destDir = Join-Path $PackageRoot "binaries\$Key"
-    New-Item -ItemType Directory -Force -Path $destDir | Out-Null
-    Copy-Item -Force $builtPath (Join-Path $destDir $exe)
-    Write-Host "==> staged $Key -> $destDir\$exe"
-}
-
-$targets = switch ($Platform) {
-    'host' { @(Get-HostPlatformKey) }
-    'all'  { @($Matrix.Keys) }
+$Targets = switch ($Platform) {
+    'host' { @((Get-HostPlatformKey)) }
+    'all' { @($Matrix.Keys) }
     default { @($Platform) }
 }
-
-foreach ($key in $targets) {
-    Pack-One $key
+if ($ArtifactRoot) {
+    $ArtifactRoot = (Resolve-Path $ArtifactRoot).Path
+} elseif ($Platform -eq 'all') {
+    throw '-Platform all requires -ArtifactRoot, or stage cross-built targets individually'
 }
 
-Write-Host '==> done. Validate with: node --check packaging/npm/bin/install.js; node --check packaging/npm/bin/wayland-nano.js'
+$ManifestPlatforms = [ordered]@{}
+foreach ($Key in $Targets) {
+    $Triple = $Matrix[$Key]
+    $File = if ($Key -eq 'win32-x64') { 'wayland-nano.exe' } else { 'wayland-nano' }
+    if ($ArtifactRoot) {
+        $Source = Join-Path $ArtifactRoot "$Key\$File"
+    } else {
+        if (-not $SkipBuild) {
+            $CargoArgs = @('build', '--release', '-p', 'nano-cli')
+            if ($Platform -ne 'host') { $CargoArgs += @('--target', $Triple) }
+            Write-Host "==> cargo $($CargoArgs -join ' ')"
+            & cargo @CargoArgs
+            if ($LASTEXITCODE -ne 0) { throw "cargo build failed for $Key (exit $LASTEXITCODE)" }
+        }
+        $Source = if ($Platform -eq 'host') {
+            Join-Path $RepoRoot "target\release\$File"
+        } else {
+            Join-Path $RepoRoot "target\$Triple\release\$File"
+        }
+    }
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) { throw "expected binary not found: $Source" }
+
+    $DestinationDir = Join-Path $PackageRoot "binaries\$Key"
+    New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
+    $Destination = Join-Path $DestinationDir $File
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
+    $Info = Get-Item -LiteralPath $Destination
+    $ManifestPlatforms[$Key] = [ordered]@{
+        file = $File
+        size = $Info.Length
+        sha256 = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    Write-Host "==> staged $Key ($($Info.Length) bytes)"
+}
+
+$Manifest = [ordered]@{ schema = 1; algorithm = 'sha256'; platforms = $ManifestPlatforms }
+$ManifestPath = Join-Path $PackageRoot 'binaries-manifest.json'
+$Json = $Manifest | ConvertTo-Json -Depth 5
+$Bytes = [System.Text.UTF8Encoding]::new($false).GetBytes("$Json`n")
+$Handle = [System.IO.File]::Open($ManifestPath, 'Create', 'Write', 'None')
+try { $Handle.Write($Bytes, 0, $Bytes.Length); $Handle.Flush($true) } finally { $Handle.Dispose() }
+Write-Host "==> wrote $ManifestPath"

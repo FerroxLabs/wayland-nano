@@ -410,3 +410,116 @@ promotes/closes entries; builders append only.
      process-inventory oracle deferred to §13 leg-1b.
 - **Close means:** each item fixed or explicitly waived with the reason
   recorded here.
+
+## F-28: P4 repomap merge-review debt (reviewer agent-135, verdict MERGE-OK, 2026-08-13) — OPEN
+
+- **MEDIUM-1 (cost-bound TOCTOU) — FIXED at 02b538a:**
+  `nano-repomap/src/store.rs:321-345`
+  enforces the 5 MB per-file cap via pre-read metadata only; the streaming
+  `read_line` loop is unbounded, so a growing or long-line file blows the
+  §5.2 cost bound. Fix: `Read::take(max_file_bytes + 1)` + record Oversize.
+- **MEDIUM-2 (integration obligation, NOT optional):** `repo_map` ships
+  unwired by lane split (`nano-tools/src/repomap.rs:9-21`). The wiring
+  lane MUST land §5.5's read-only registration at all three gates
+  (acp_mode.rs, tasks.rs, exec_mode.rs) WITH the three-predicate agreement
+  regression test in the same merge that registers the tool.
+- **MEDIUM-3 (perf) — FIXED at 02b538a:** every refresh pass re-walks the whole tree and
+  re-reads hashed files under the tool Mutex with no file-count cap or
+  per-pass timeout; one pass on a huge repo stalls all queries. Fix:
+  document the total-pass bound or add a cap + `skipped_over_cap` counter.
+- **LOW-4 — FIXED at 02b538a:** `find_rename_source` (store.rs:311) treats any stat failure
+  as disappearance; require `NotFound` via `symlink_metadata`.
+- **LOW-5 — FIXED at 02b538a:** `skipped_denied` (store.rs:208) accumulates per-pass counts
+  forever; report last-pass count or rename to `_total`.
+- **LOW-6 — FIXED at 02b538a:** `query.rs:72` path-token match includes the workspace-root
+  prefix; match root-relative instead.
+- **LOW-7:** Windows battery owes a unicode-name case and (where the
+  volume permits) a >MAX_PATH case; the real-D:\ harness remains a §14
+  leg-4 proof obligation outside the branch.
+- **LOW-8 (pre-existing, relocated by this branch):**
+  `nano-core/src/sensitive_path.rs:25` `.env.` prefix check is
+  case-sensitive; `.ENV.PRODUCTION` slips on case-insensitive filesystems.
+
+## F-29: P4 rules merge-review LOW debt (reviewer agent-133, 2026-08-13) — OPEN
+
+- LOW-3: parse-disagreement check (execrules.rs:506-510) inspects only the
+  span's leading char; sound today only via positive-grammar side effect.
+  Fix: tokenize the raw span under both grammars and compare boundaries,
+  or delete the vestigial check + document the argument.
+- LOW-4: differential suite sorts segment lists (order-blind) and corpora
+  are thin (no cmd position-0 `=` leg, no mixed &&/||, no sh
+  backslash-path). Fix: assert order for deterministic connectors;
+  multiset only for &/| cases; extend corpora.
+- LOW-6: `nano-session/src/lock.rs` mechanism re-implemented in
+  nano-core/execrules.rs:1013-1090 (layering forced it; recorded in
+  UPSTREAM.md). Optional: extract the lock primitive to a shared leaf.
+
+## F-30: P3 oauth merge-review LOW debt (reviewer agent-132, 2026-08-13) — OPEN
+
+- LOW-5: duplicate Host headers pass if any one matches
+  (oauth/loopback.rs:199-202, `.any()`); RFC 7230 wants 400. Cheap fix.
+- LOW-6: wincred `write()` leaves a torn chunk prefix on mid-chunk
+  failure (reads still fail closed via serde parse). Optional: clean up
+  chunks 0..n on failure.
+
+## F-31: P4 PTY merge-review LOW debt (reviewer agent-134, 2026-08-13) — OPEN
+
+- LOW-5: default `after_offset` cursor is `state.output.oldest`
+  (pty.rs:380), not the note-letter per-reader resume; document the
+  default in the tool schema or track a per-session last-served offset.
+- LOW-7: no ConPTY-path CREATE_BREAKAWAY_FROM_JOB rejection test (property
+  rests transitively on job.rs's spawn_contained test); broker-escape
+  record is a string-constant self-test; §14 leg 3(c) owes the
+  schtasks/WMI survivor count at integration.
+- LOW-8: `unix_sandbox_argv` defined only for linux/macos — other
+  cfg(unix) targets fail to compile (fail-closed direction, at least);
+  session-cap test is Windows-only.
+
+## F-32: P2b image-results merge-review LOW debt (reviewer agent-137, 2026-08-13) — OPEN
+
+- LOW-5: unavailable-label text diverges from the design's fixed string —
+  `acp_mode.rs:4182-4190` + `image_result.rs:86` render dims instead of
+  "[Image #N from tool <unavailable: unpaired call> — do not describe it
+  from memory]". Fix: emit the fixed label in the None branch.
+- LOW-6: non-view_image image-bearing Live results are silently dropped
+  (turn.rs:1347 gates typed rejection on call.name == "view_image").
+  Fix: reject whenever image_result.is_some() && accepted.is_none().
+- LOW-7: AttachmentStore::sweep's reference-scan contract names only
+  input_blocks manifests (attachment_store.rs:367-369); §3.2 requires
+  covering ToolResult.image_refs when the host scan is wired. Latent —
+  no production caller exists yet; record + extend at wiring.
+- LOW-8 (info): ReplayVerified minted-then-dropped at replay
+  (acp_mode.rs:4222-4236) rather than "carried" per §3.3 (harmless —
+  Message cannot hold it); build_image_tool_result's _call_id unused
+  (binding is via Op.call_id) — cosmetic.
+
+## F-33: P2a proof process follow-ups (proof agent-128, 2026-08-13) — OPEN
+
+- **Polyglot semantics conflict:** §13 leg 3 says polyglot PNG+ZIP is
+  "typed-rejected"; the certified §4.1 trailing-payload tolerance +
+  shipped code ACCEPT then gate-reject, and the re-encode is digest-
+  identical to the payload-free control (the payload never influences
+  output). One should be amended — recommendation: amend §13's wording to
+  "accepted-then-stripped, proven byte-inert", since the §4.1 tolerance is
+  itself certified and the strip is byte-proven.
+- **Wire naming note:** the note says `_meta.nanoError.kind`; the shipped
+  wire carries `error.data.nanoError.kind`. Reconcile the note's spelling
+  (code is the contract per C7).
+- **magistral-medium re-probe:** INCONCLUSIVE at leg 6 (Flux 400 "no
+  healthy deployments" on all calls incl. text-only control). Single
+  re-probe if Flux restores the deployment; catalog stays false meanwhile.
+
+## F-34: AttachmentStore GC sweep has no production caller (P2a proof, leg 4 GC leg) — OPEN, production finding
+
+- **Filed:** 2026-08-13, from the P2a adversarial proof (agent-128):
+  `AttachmentStore::sweep()` is implemented and unit-tested but NEVER
+  invoked — `/doctor` neither sweeps nor reports the store, and acp-host
+  startup doesn't sweep either (planted aged unreferenced blob + stale
+  `.tmp` survived both: `.tmp/p2a-proof/captures/leg4cd.json`,
+  `leg4d2.json`). Design §5.4 specifies "sweep invocation: host startup +
+  /doctor". Unreferenced blobs currently accumulate forever.
+- **Close means:** wire the sweep at host startup (lease+grace discipline
+  already in-crate) and a `/doctor` store report (size, blob count);
+  re-run the leg-4 GC concurrent leg (sweep racing a live attach — blob
+  survives) as the promotion proof. NOTE: F-32 LOW-7 (sweep's reference
+  scan must cover ToolResult.image_refs) must land first or with it.

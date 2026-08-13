@@ -13,6 +13,9 @@
 
 pub mod telemetry;
 
+#[cfg(unix)]
+pub use portable_pty;
+
 // Unix containment backends. The policy/argv builders are pure string
 // construction, so they also compile in test builds on every host — and in
 // downstream crates' test builds via the `unix-argv-builders` feature — to
@@ -79,6 +82,8 @@ pub mod cap;
 #[cfg(target_os = "windows")]
 pub mod capture;
 #[cfg(target_os = "windows")]
+pub mod conpty;
+#[cfg(target_os = "windows")]
 pub mod deny_read_acl;
 #[cfg(target_os = "windows")]
 pub mod deny_read_resolver;
@@ -106,7 +111,6 @@ pub mod identity;
 pub mod job;
 #[cfg(target_os = "windows")]
 pub mod logging;
-#[cfg(target_os = "windows")]
 mod path_normalization;
 #[cfg(target_os = "windows")]
 pub mod proc_thread_attr;
@@ -145,7 +149,6 @@ pub mod workspace_acl;
 #[cfg(target_os = "windows")]
 pub mod wrapper;
 
-#[cfg(target_os = "windows")]
 pub use path_normalization::canonical_path_key;
 #[cfg(target_os = "windows")]
 pub use token::world_sid;
@@ -264,12 +267,11 @@ pub use logging::{
     current_log_file_path, current_log_file_path_for_nano_home, log_file_path_for_utc_date,
     log_note, log_writer,
 };
-#[cfg(target_os = "windows")]
 pub use path_normalization::canonicalize_path;
 #[cfg(target_os = "windows")]
 pub use process::{
     ConsoleMode, PipeSpawnHandles, StderrMode, StdinMode, create_process_as_user, read_handle_loop,
-    spawn_process_with_pipes,
+    spawn_process_with_pipes, spawn_process_with_pipes_contained,
 };
 #[cfg(target_os = "windows")]
 pub use resolved_permissions::{
