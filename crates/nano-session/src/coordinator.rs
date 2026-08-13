@@ -136,14 +136,16 @@ fn check_journal_path(path: &Path) -> io::Result<()> {
 /// the manual path's full-prefix watermark and the in-turn path's
 /// turn-scoped watermark — replay's clear-and-install carry arm replaces the
 /// fold of any surviving hydration ops with this full at-W state.
-pub fn hydration_carry_at(envelopes: &[OpEnvelope]) -> Option<Vec<HydrationCarryEntry>> {
+pub fn hydration_carry_at(
+    envelopes: &[OpEnvelope],
+) -> io::Result<Option<Vec<HydrationCarryEntry>>> {
     let replay_input: Vec<OpEnvelope> = compacted_prefix(envelopes).into_iter().cloned().collect();
     let state = SessionState::fold(&replay_input);
     if state.mcp_hydrated.is_empty()
         && state.mcp_tools_digest.is_empty()
         && state.mcp_recent_digests.is_empty()
     {
-        return None;
+        return Ok(None);
     }
     let mut server_ids: Vec<String> = state
         .mcp_hydrated
@@ -175,15 +177,18 @@ pub fn hydration_carry_at(envelopes: &[OpEnvelope]) -> Option<Vec<HydrationCarry
                 .unwrap_or_default(),
         };
         // The carry must itself be a legal journal payload: a state that
-        // cannot be re-journaled bounded is a caller bug, surfaced loudly
-        // rather than silently truncated.
-        debug_assert!(
-            validate_hydration_carry_entry(&entry).is_ok(),
-            "carry entry out of bounds: {entry:?}"
-        );
+        // cannot be re-journaled bounded aborts the compaction fail-safe
+        // (typed error — the caller publishes nothing), never silently
+        // truncated.
+        if let Err(rule) = validate_hydration_carry_entry(&entry) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("hydration carry entry out of bounds: {rule}"),
+            ));
+        }
         carry.push(entry);
     }
-    Some(carry)
+    Ok(Some(carry))
 }
 
 #[cfg(test)]
@@ -220,7 +225,7 @@ mod tests {
                 cwd: "/tmp".into(),
             },
         )];
-        assert!(hydration_carry_at(&envelopes).is_none());
+        assert!(hydration_carry_at(&envelopes).expect("carry").is_none());
     }
 
     #[test]
@@ -236,7 +241,9 @@ mod tests {
             ),
             hydration("2", "fs", &["read", "write"], &digest(1)),
         ];
-        let carry = hydration_carry_at(&envelopes).expect("carry present");
+        let carry = hydration_carry_at(&envelopes)
+            .expect("carry")
+            .expect("present");
         assert_eq!(carry.len(), 1);
         assert_eq!(carry[0].server_id, "fs");
         assert_eq!(carry[0].tool_names, vec!["read", "write"]);
@@ -272,7 +279,7 @@ mod tests {
                 covers_op_ids: vec!["1".into(), "2".into()],
                 changed_files: vec![],
                 image_influenced: false,
-                mcp_hydration: hydration_carry_at(&prefix),
+                mcp_hydration: hydration_carry_at(&prefix).expect("carry"),
             },
         );
         let journal = vec![
@@ -282,7 +289,9 @@ mod tests {
             hydration("4", "fs", &["write"], &digest(2)),
             hydration("5", "web", &["fetch"], &digest(3)),
         ];
-        let carry = hydration_carry_at(&journal).expect("carry present");
+        let carry = hydration_carry_at(&journal)
+            .expect("carry")
+            .expect("present");
         let fs = carry.iter().find(|e| e.server_id == "fs").expect("fs");
         assert_eq!(fs.tool_names, vec!["read", "write"]);
         assert_eq!(fs.tools_digest, digest(2));

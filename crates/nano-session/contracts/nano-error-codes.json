@@ -205,47 +205,47 @@
       "kind": "mcp_resource_unsupported",
       "retryable": false,
       "surface": "tool_card",
-      "title": "MCP server does not advertise resources",
+      "title": "This MCP server doesn't expose resources.",
       "wireCode": -32603
     },
     {
-      "hint": "List resources first",
+      "hint": "",
       "kind": "mcp_resource_denied",
       "retryable": false,
       "surface": "tool_card",
-      "title": "MCP resource URI was not advertised",
+      "title": "That resource URI wasn't advertised by the server; list resources first.",
       "wireCode": -32603
     },
     {
-      "hint": "Only bounded text is accepted",
+      "hint": "",
       "kind": "mcp_content_unsupported",
       "retryable": false,
       "surface": "tool_card",
-      "title": "MCP resource content is not supported",
+      "title": "Binary resource content isn't supported yet.",
       "wireCode": -32603
     },
     {
-      "hint": "Use a stdio server",
+      "hint": "",
       "kind": "mcp_elicitation_unsupported",
       "retryable": false,
       "surface": "tool_card",
-      "title": "MCP elicitation is unavailable on this transport",
+      "title": "This MCP server needs a question flow Nano doesn't support on this transport.",
       "wireCode": -32603
     },
     {
-      "hint": "Run nano auth login for this server",
+      "hint": "",
       "kind": "mcp_authorization_required",
       "retryable": false,
       "surface": "tool_card",
-      "title": "MCP login required",
+      "title": "Login required: nano auth login <server>.",
       "wireCode": -32603
     },
     {
-      "hint": "Provision the operator refresh file (0600) or fix the keyring",
+      "hint": "",
       "kind": "mcp_credstore_unavailable",
       "retryable": false,
       "surface": "tool_card",
-      "title": "MCP credential storage unavailable",
+      "title": "Secure credential storage is unavailable; provision <VAR>_FILE (0600) or fix the keyring.",
       "wireCode": -32603
     },
     {
@@ -253,7 +253,7 @@
       "kind": "mcp_oauth_failed",
       "retryable": false,
       "surface": "tool_card",
-      "title": "MCP OAuth login failed",
+      "title": "OAuth login failed (<bounded reason>).",
       "wireCode": -32603
     },
     {

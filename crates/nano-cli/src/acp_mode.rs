@@ -2437,7 +2437,7 @@ where
                                                     .map(|e| e.id.clone())
                                                     .collect();
                                                 let carry =
-                                                    nano_session::hydration_carry_at(&snapshot);
+                                                    nano_session::hydration_carry_at(&snapshot)?;
                                                 let complete = OpEnvelope::new(
                                                     envelope.id.clone(),
                                                     envelope.ts.clone(),
@@ -2710,7 +2710,7 @@ where
                                                 .map(|e| e.id.clone())
                                                 .collect();
                                             let carry =
-                                                nano_session::hydration_carry_at(&snapshot);
+                                                nano_session::hydration_carry_at(&snapshot)?;
                                             guard.append_complete(&OpEnvelope::new(
                                                 envelope_id.clone(),
                                                 "now",

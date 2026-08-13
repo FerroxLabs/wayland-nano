@@ -301,6 +301,7 @@ while ($true) {
         Write-Output ("{`"jsonrpc`":`"2.0`",`"id`":$($obj.id),`"result`":{`"resources`":$items$cur}}")
     } elseif ($obj.method -eq "resources/read") {
         Add-Content -Path $marker -Value "resources/read"
+        if ($env:FAKE_STALL_READ) { Start-Sleep -Seconds 600 }
         $uri = $obj.params.uri
         if ($uri -eq $blobUri) {
             Write-Output ("{`"jsonrpc`":`"2.0`",`"id`":$($obj.id),`"result`":{`"contents`":[{`"uri`":`"$uri`",`"blob`":`"aGk=`"}]}}")
@@ -330,6 +331,7 @@ while IFS= read -r line; do
             printf '{"jsonrpc":"2.0","id":%s,"result":{"resources":%s%s}}\n' "$id" "$(cat "$FAKE_RESOURCES_FILE")" "$cur" ;;
         *'"resources/read"'*)
             printf 'resources/read\n' >> "$FAKE_MARKER_FILE"
+            [ -n "$FAKE_STALL_READ" ] && sleep 600
             uri=$(printf '%s' "$line" | sed -n 's/.*"uri":"\([^"]*\)".*/\1/p')
             if [ "$uri" = "$FAKE_BLOB_URI" ]; then
                 printf '{"jsonrpc":"2.0","id":%s,"result":{"contents":[{"uri":"%s","blob":"aGk="}]}}\n' "$id" "$uri"
@@ -408,6 +410,22 @@ fn fake_server(
         },
         marker,
     }
+}
+
+/// A resources-capable server that answers resources/list but PARKS
+/// resources/read forever (the §5.2 lock-discipline probe fixture).
+fn stalling_resource_server(name: &str) -> FakeServer {
+    let mut server = resource_server(
+        name,
+        r#"{"resources":{}}"#,
+        &serde_json::json!([{"uri": "mem://alpha", "name": "alpha"}]),
+        None,
+    );
+    server
+        .spec
+        .env
+        .push(("FAKE_STALL_READ".to_string(), "1".to_string()));
+    server
 }
 
 fn tool_entry(name: &str, description: &str) -> serde_json::Value {
@@ -941,4 +959,71 @@ async fn elicitation_factory_connects_and_cell_tracks_dispatch() {
         .await;
     assert!(outcome.ok, "{}", outcome.output);
     assert!(cell.lock().unwrap().is_none());
+}
+
+/// §2.1 defect 5 / §5.2 ("lock to clone, never to wait"), proven at the
+/// production caller: a parked resources/read on one server must NOT stall
+/// a concurrent tool_search on another server past a bounded time. Drives
+/// the real mcp_session_tools split-phase path (gate + clone under a short
+/// lock, wire call unlocked, cache refresh re-locked).
+#[test]
+fn stalled_resource_read_does_not_block_tool_search() {
+    use std::sync::{Arc, Mutex};
+    let staller = stalling_resource_server("staller");
+    let searchable = fake_server(
+        "searchable",
+        &big_inventory(),
+        "{}",
+        &serde_json::json!([]),
+        None,
+        None,
+    );
+    let mut registry = McpRegistry::new();
+    registry.set_configured_server_count(2);
+    registry.register(staller.spec).expect("staller registers");
+    registry
+        .register(searchable.spec)
+        .expect("searchable registers");
+    // Advertise the URI through the production list path first.
+    registry.list_resources("staller").expect("list");
+    let registry = Arc::new(Mutex::new(registry));
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let coordinator =
+        nano_session::JournalCoordinator::open(dir.path().join("s.jsonl")).expect("coordinator");
+
+    let reader_registry = registry.clone();
+    let reader = std::thread::spawn(move || {
+        let outcome = crate::mcp_session_tools::execute_read_resource(
+            &reader_registry,
+            Some("staller"),
+            Some("mem://alpha"),
+        );
+        // The read resolves only when the fixture child dies at drop.
+        let _ = outcome;
+    });
+    // Give the reader thread time to park inside the wire call (it must NOT
+    // be holding the registry lock there).
+    std::thread::sleep(std::time::Duration::from_millis(700));
+
+    let started = std::time::Instant::now();
+    let outcome = crate::mcp_session_tools::execute_tool_search(
+        &registry,
+        &coordinator,
+        "s-hydrate-stall-test".into(),
+        "echo",
+        None,
+    );
+    let elapsed = started.elapsed();
+    assert!(outcome.ok, "search completes: {}", outcome.output);
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "search stalled {elapsed:?} behind the parked read"
+    );
+    // Teardown: dropping the registry kills both children; the parked read
+    // then fails typed on its own connection. The thread is deliberately
+    // NOT joined — joining would wait out the 30s dispatcher timeout before
+    // the kill lands; detachment is safe (the child is dead either way).
+    drop(registry);
+    drop(reader);
 }

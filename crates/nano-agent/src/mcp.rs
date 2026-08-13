@@ -107,7 +107,7 @@ fn classify_inventory(
 
 /// §3.6 sanitization: control characters stripped, then char-safe
 /// truncation to MAX_DESCRIPTION_CHARS. Returns (sanitized, truncated).
-fn sanitize_description(raw: Option<&str>) -> (Option<String>, bool) {
+pub(crate) fn sanitize_description(raw: Option<&str>) -> (Option<String>, bool) {
     let Some(raw) = raw else { return (None, false) };
     let stripped: String = raw.chars().filter(|c| !c.is_control()).collect();
     if stripped.chars().count() > MAX_DESCRIPTION_CHARS {
@@ -267,7 +267,7 @@ struct ResourceCache {
     truncated: bool,
 }
 
-fn resource_error_of_mcp(err: McpError) -> ResourceError {
+pub(crate) fn resource_error_of_mcp(err: McpError) -> ResourceError {
     let kind = match &err {
         McpError::ResourceUnsupported => NanoErrorKind::McpResourceUnsupported,
         McpError::ContentUnsupported => NanoErrorKind::McpContentUnsupported,
@@ -763,10 +763,11 @@ impl McpRegistry {
     // Resources v1 (§4)
     // -------------------------------------------------------------------
 
-    /// §4.2/§4.3: list one server's resources. The capability gate runs
-    /// BEFORE any wire call; on success this (and only this) call refreshes
-    /// the advertised-URI cache.
-    pub fn list_resources(&mut self, server: &str) -> Result<ResourceListing, ResourceError> {
+    /// §4.2/§4.3 gate + handle resolution (§2.1 defect 5 / §5.2: "lock to
+    /// clone, never to wait"). Takes `&self`, resolves the server, runs the
+    /// capability gate BEFORE any wire activity, and returns the CLONED
+    /// client — the caller drops the registry lock before the round trip.
+    pub fn resource_client_for(&self, server: &str) -> Result<McpClient, ResourceError> {
         let Some(entry) = self.servers.iter().find(|e| e.spec.name == server) else {
             return Err(ResourceError {
                 kind: NanoErrorKind::UnknownTool,
@@ -780,42 +781,66 @@ impl McpRegistry {
                 message: format!("MCP server '{server}' does not support resources"),
             });
         }
-        let client = entry.client.clone();
-        let result = client.list_resources().map_err(resource_error_of_mcp)?;
+        Ok(entry.client.clone())
+    }
+
+    /// The fail-closed advertised-URI check (§4.3), `&self`: only a URI the
+    /// server's most recent resources/list advertised may be read; anything
+    /// else is a typed denial with NO wire call.
+    pub fn validate_advertised_uri(&self, server: &str, uri: &str) -> Result<(), ResourceError> {
+        validate_resource_uri(&self.resource_cache, server, uri)
+    }
+
+    /// The cache refresh (§4.3: ONLY an explicit list call refreshes; no
+    /// background re-list, §2.5). Called AFTER the wire round trip completes,
+    /// under a fresh short lock. Returns the truncation notices.
+    pub fn cache_resource_listing(
+        &mut self,
+        server: &str,
+        result: &nano_mcp::protocol::McpResourceListResult,
+    ) -> Vec<String> {
         let truncated = result.truncated();
-        let mut notices = Vec::new();
-        if truncated {
-            notices.push(format!(
-                "MCP server '{server}': resources/list page truncated (nextCursor present; not followed in v1)"
-            ));
-        }
         let cache = self.resource_cache.entry(server.to_string()).or_default();
         cache.uris = result.resources.iter().map(|r| r.uri.clone()).collect();
         cache.truncated = truncated;
+        if truncated {
+            vec![format!(
+                "MCP server '{server}': resources/list page truncated (nextCursor present; not followed in v1)"
+            )]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// §4.2/§4.3: list one server's resources. Composes the three split
+    /// phases — gate+clone, wire round trip, cache refresh. Callers holding
+    /// the registry mutex must use the split phases directly so the lock is
+    /// never held across the round trip (mcp_session_tools does exactly
+    /// that; the stall test in mcp_tests proves it).
+    pub fn list_resources(&mut self, server: &str) -> Result<ResourceListing, ResourceError> {
+        let client = self.resource_client_for(server)?;
+        let result = client.list_resources().map_err(resource_error_of_mcp)?;
+        let notices = self.cache_resource_listing(server, &result);
         Ok(ResourceListing {
             server: server.to_string(),
+            truncated: result.truncated(),
             resources: result.resources,
-            truncated,
             notices,
         })
     }
 
     /// §4.3: read a resource by URI. The fail-closed advertised-URI check
     /// runs BEFORE any wire call; blob/non-text content is typed-refused by
-    /// the client and mapped through.
+    /// the client and mapped through. Same lock discipline as
+    /// [`Self::list_resources`]: no registry lock is needed across the round
+    /// trip — gate and URI check are `&self`, the cache is untouched.
     pub fn read_resource(
         &mut self,
         server: &str,
         uri: &str,
     ) -> Result<ResourceText, ResourceError> {
-        let Some(entry) = self.servers.iter().find(|e| e.spec.name == server) else {
-            return Err(ResourceError {
-                kind: NanoErrorKind::UnknownTool,
-                message: format!("unknown MCP server: {server}"),
-            });
-        };
-        validate_resource_uri(&self.resource_cache, server, uri)?;
-        let client = entry.client.clone();
+        let client = self.resource_client_for(server)?;
+        self.validate_advertised_uri(server, uri)?;
         let result = client.read_resource(uri).map_err(resource_error_of_mcp)?;
         let mut text = String::new();
         let mut mime_type = None;

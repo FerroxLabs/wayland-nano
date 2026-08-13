@@ -197,28 +197,27 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
         NanoErrorKind::McpTransport => card_retryable("MCP server unreachable", ""),
         NanoErrorKind::McpTimeout => card_retryable("MCP server timed out", ""),
         NanoErrorKind::McpResourceUnsupported => {
-            card("MCP server does not advertise resources", "")
+            card("This MCP server doesn't expose resources.", "")
         }
         NanoErrorKind::McpResourceDenied => card(
-            "MCP resource URI was not advertised",
-            "List resources first",
+            "That resource URI wasn't advertised by the server; list resources first.",
+            "",
         ),
-        NanoErrorKind::McpContentUnsupported => card(
-            "MCP resource content is not supported",
-            "Only bounded text is accepted",
-        ),
+        NanoErrorKind::McpContentUnsupported => {
+            card("Binary resource content isn't supported yet.", "")
+        }
         NanoErrorKind::McpElicitationUnsupported => card(
-            "MCP elicitation is unavailable on this transport",
-            "Use a stdio server",
+            "This MCP server needs a question flow Nano doesn't support on this transport.",
+            "",
         ),
         NanoErrorKind::McpAuthorizationRequired => {
-            card("MCP login required", "Run nano auth login for this server")
+            card("Login required: nano auth login <server>.", "")
         }
         NanoErrorKind::McpCredstoreUnavailable => card(
-            "MCP credential storage unavailable",
-            "Provision the operator refresh file (0600) or fix the keyring",
+            "Secure credential storage is unavailable; provision <VAR>_FILE (0600) or fix the keyring.",
+            "",
         ),
-        NanoErrorKind::McpOAuthFailed => card("MCP OAuth login failed", ""),
+        NanoErrorKind::McpOAuthFailed => card("OAuth login failed (<bounded reason>).", ""),
         NanoErrorKind::UnknownTool => card("Unknown tool", ""),
         NanoErrorKind::MissingArgs => card("Bad tool arguments", ""),
         NanoErrorKind::ApprovalDenied => card("Denied by user", ""),

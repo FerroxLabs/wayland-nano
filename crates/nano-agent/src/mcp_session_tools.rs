@@ -51,6 +51,18 @@ pub fn execute_tool_search(
             Some(NanoErrorKind::InvalidParams),
         );
     }
+    {
+        let guard = registry.lock().unwrap_or_else(|p| p.into_inner());
+        // §3.2 double-guard: unadvertised AND a typed refusal on forced
+        // invocation when no deferred inventory exists (the P1 D3 pattern).
+        if !guard.has_deferred_tools() {
+            return outcome(
+                false,
+                "tool_search refused: no deferred MCP tools exist in this session".into(),
+                Some(NanoErrorKind::UnknownTool),
+            );
+        }
+    }
     let result = registry
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -110,7 +122,10 @@ pub fn execute_tool_search(
 }
 
 /// `mcp_list_resources` (§4.3): ServerQuery — a read-only wire call through
-/// the dispatcher, capability-gated before any wire activity.
+/// the dispatcher, capability-gated before any wire activity. Lock
+/// discipline (§2.1 defect 5 / §5.2): the registry lock is held only to
+/// gate + clone the client and (after the round trip) to refresh the
+/// advertised-URI cache — never across the blocking call.
 pub fn execute_list_resources(
     registry: &Arc<Mutex<McpRegistry>>,
     server: Option<&str>,
@@ -122,39 +137,59 @@ pub fn execute_list_resources(
             Some(NanoErrorKind::InvalidParams),
         );
     };
-    let result = registry
+    let client = {
+        let guard = registry.lock().unwrap_or_else(|p| p.into_inner());
+        match guard.resource_client_for(server) {
+            Ok(client) => client,
+            Err(err) => return resource_failure(err),
+        }
+    };
+    // NO registry lock held across the round trip.
+    let result = match client.list_resources() {
+        Ok(result) => result,
+        Err(err) => return resource_failure(crate::mcp::resource_error_of_mcp(err)),
+    };
+    let notices = registry
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .list_resources(server);
-    match result {
-        Ok(listing) => {
-            let mut lines: Vec<String> = listing
-                .resources
-                .iter()
-                .map(|resource| {
-                    let mime = resource.mime_type.as_deref().unwrap_or("unknown");
-                    match &resource.description {
-                        Some(description) if !description.is_empty() => {
-                            format!("{} ({}) — {}", resource.uri, mime, description)
-                        }
-                        _ => format!("{} ({})", resource.uri, mime),
-                    }
-                })
-                .collect();
-            if listing.truncated {
-                lines.push(
-                    "truncated: the server has more resources (pagination is not followed in v1)"
-                        .to_string(),
-                );
+        .cache_resource_listing(server, &result);
+    let mut lines: Vec<String> = result
+        .resources
+        .iter()
+        .map(|resource| {
+            // LOW-6/§3.6: server-authored URI/description are untrusted
+            // remote content — sanitized (control chars stripped), capped,
+            // and the block is labeled untrusted.
+            let (uri, _) = crate::mcp::sanitize_description(Some(&resource.uri));
+            let (description, _) =
+                crate::mcp::sanitize_description(resource.description.as_deref());
+            let mime = resource.mime_type.as_deref().unwrap_or("unknown");
+            match description {
+                Some(description) if !description.is_empty() => {
+                    format!("{} ({}) — {}", uri.unwrap_or_default(), mime, description)
+                }
+                _ => format!("{} ({})", uri.unwrap_or_default(), mime),
             }
-            lines.extend(listing.notices.iter().cloned());
-            if listing.resources.is_empty() {
-                lines.push(format!("server '{server}' advertised no resources"));
-            }
-            outcome(true, lines.join("\n"), None)
-        }
-        Err(err) => resource_failure(err),
+        })
+        .collect();
+    if result.truncated() {
+        lines.push(
+            "truncated: the server has more resources (pagination is not followed in v1)"
+                .to_string(),
+        );
     }
+    lines.extend(notices);
+    if result.resources.is_empty() {
+        lines.push(format!("server '{server}' advertised no resources"));
+    }
+    outcome(
+        true,
+        format!(
+            "[Untrusted MCP resource listing from server '{server}']\n{}",
+            lines.join("\n")
+        ),
+        None,
+    )
 }
 
 /// `mcp_read_resource` (§4.3): ServerDataRead — advertised-URI-gated (no
@@ -175,20 +210,37 @@ pub fn execute_read_resource(
             Some(NanoErrorKind::InvalidParams),
         );
     };
-    let result = registry
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .read_resource(server, uri);
+    let client = {
+        let guard = registry.lock().unwrap_or_else(|p| p.into_inner());
+        let client = match guard.resource_client_for(server) {
+            Ok(client) => client,
+            Err(err) => return resource_failure(err),
+        };
+        // The advertised-URI gate runs BEFORE any wire call, under the same
+        // short lock.
+        if let Err(err) = guard.validate_advertised_uri(server, uri) {
+            return resource_failure(err);
+        }
+        client
+    };
+    // NO registry lock held across the round trip.
+    let result = client.read_resource(uri);
     match result {
-        Ok(text) => outcome(
-            true,
-            format!(
-                "[Untrusted MCP resource content from server '{}' ({})]\n{}",
-                text.server, text.uri, text.text
-            ),
-            None,
-        ),
-        Err(err) => resource_failure(err),
+        Ok(result) => {
+            let mut text = String::new();
+            for content in &result.contents {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&content.text);
+            }
+            outcome(
+                true,
+                format!("[Untrusted MCP resource content from server '{server}' ({uri})]\n{text}"),
+                None,
+            )
+        }
+        Err(err) => resource_failure(crate::mcp::resource_error_of_mcp(err)),
     }
 }
 
@@ -346,8 +398,8 @@ mod tests {
         let registry = Arc::new(Mutex::new(McpRegistry::new()));
         let inner = NoopInner;
         let executor = McpSessionToolExecutor::new(Some(registry), coordinator, "s".into(), &inner);
-        // Forced invocation with nothing deferred: typed refusal (the
-        // registry's tool_search reports the empty deferred set).
+        // Forced invocation with nothing deferred: TYPED refusal (§3.2
+        // double-guard), never an ok result.
         let outcome = executor
             .execute(&ToolCall {
                 id: "c1".into(),
@@ -355,7 +407,8 @@ mod tests {
                 arguments: serde_json::json!({"query": "anything"}),
             })
             .await;
-        assert!(!outcome.ok || outcome.output.contains("no deferred tools matched"));
+        assert!(!outcome.ok);
+        assert_eq!(outcome.error_kind, Some(NanoErrorKind::UnknownTool));
         // Empty query ⇒ InvalidParams.
         let outcome = executor
             .execute(&ToolCall {

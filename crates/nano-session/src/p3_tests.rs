@@ -381,3 +381,20 @@ fn p3_bounds_validators_reject_over_cap_payloads() {
     }];
     assert!(validate_oauth_grant("https://as.example", "i", &bad_path).is_err());
 }
+
+/// §5.6 elicitation bounds (LOW-9): the server-influenced request_id is
+/// capped at 64 chars; digests are canonical or (answer) empty.
+#[test]
+fn p3_elicitation_bounds() {
+    let good = validate_elicitation("s-elicit-1", "fs", "c1", "42", &p3_digest(1), &p3_digest(2));
+    assert!(good.is_ok());
+    // decline/cancel: empty answer_digest is legal.
+    assert!(validate_elicitation("s-elicit-1", "fs", "c1", "42", &p3_digest(1), "").is_ok());
+    // Attribution may be empty at a race edge; still bounded.
+    assert!(validate_elicitation("s-elicit-1", "fs", "", "42", &p3_digest(1), "").is_ok());
+    let oversized = "9".repeat(MAX_ELICITATION_REQUEST_ID_CHARS + 1);
+    assert!(validate_elicitation("s-elicit-1", "fs", "c1", &oversized, &p3_digest(1), "").is_err());
+    assert!(validate_elicitation("s-elicit-1", "fs", "c1", "42", "zz", "").is_err());
+    assert!(validate_elicitation("s-elicit-1", "fs", "c1", "42", &p3_digest(1), "zz").is_err());
+    assert!(validate_elicitation("", "fs", "c1", "42", &p3_digest(1), "").is_err());
+}

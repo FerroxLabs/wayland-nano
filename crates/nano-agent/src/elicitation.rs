@@ -532,6 +532,33 @@ impl ElicitationBridge {
                 answer_digest: answer_digest.to_string(),
             },
         );
+        let Op::McpElicitation {
+            elicitation_id: ref op_id,
+            ref server_id,
+            ref call_id,
+            ref request_id,
+            ..
+        } = envelope.op
+        else {
+            unreachable!("decide builds only McpElicitation")
+        };
+        // LOW-9/§5.6: an out-of-bounds payload (e.g. a hostile oversized
+        // server request id) is the same fail-closed cancel as an append
+        // failure — never journal it, never answer unjournaled.
+        let valid = nano_session::validate_elicitation(
+            op_id,
+            server_id,
+            call_id,
+            request_id,
+            schema_digest,
+            answer_digest,
+        );
+        if let Err(rule) = valid {
+            eprintln!(
+                "wayland-nano mcp elicitation: decision payload out of bounds ({rule}); fail-closed cancel (decision NOT journaled)"
+            );
+            return Ok(action_reply(McpElicitationAction::Cancel, None));
+        }
         match self.journal.append(&envelope) {
             Ok(_) => Ok(action_reply(action, content)),
             Err(err) => {
@@ -1292,12 +1319,13 @@ mod tests {
         let content = json!({"color": "blue"});
         let answer_digest = canonical_answer_digest(&content);
 
+        let schema_digest = "a".repeat(64);
         let accept = bridge
             .decide(
                 &req,
                 McpElicitationAction::Accept,
                 42,
-                "s",
+                &schema_digest,
                 &answer_digest,
                 Some(content.clone()),
             )
@@ -1307,11 +1335,25 @@ mod tests {
             json!({"action": "accept", "content": {"color": "blue"}})
         );
         let decline = bridge
-            .decide(&req, McpElicitationAction::Decline, 0, "s", "", None)
+            .decide(
+                &req,
+                McpElicitationAction::Decline,
+                0,
+                &schema_digest,
+                "",
+                None,
+            )
             .expect("decision");
         assert_eq!(decline, json!({"action": "decline"}));
         let cancel = bridge
-            .decide(&req, McpElicitationAction::Cancel, 0, "s", "", None)
+            .decide(
+                &req,
+                McpElicitationAction::Cancel,
+                0,
+                &schema_digest,
+                "",
+                None,
+            )
             .expect("decision");
         assert_eq!(cancel, json!({"action": "cancel"}));
 

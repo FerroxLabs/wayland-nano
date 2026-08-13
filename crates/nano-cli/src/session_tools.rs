@@ -797,8 +797,28 @@ mod tests {
         let blocker = tmp.path().join("blocker");
         std::fs::write(&blocker, "file").unwrap();
         assert!(nano_session::JournalCoordinator::open(blocker.join("x.jsonl")).is_err());
-        // Journal-first ordering is unchanged: the append precedes the cell
-        // mutation in execute_todo (asserted by the round-trip above).
+
+        // MID-FLIGHT append failure (P3 review): the journal file is
+        // replaced by a DIRECTORY after the coordinator opened it — the
+        // coordinator's torn-path guard fails the append typed and the
+        // visible list stays unchanged (journal-first).
+        std::fs::remove_file(&journal).unwrap();
+        std::fs::create_dir(&journal).unwrap();
+        let outcome = rt.block_on(tools.execute(&call(serde_json::json!({
+            "todos": [{"id": "t3", "content": "y", "status": "pending"}]
+        }))));
+        assert!(!outcome.ok);
+        assert!(
+            outcome.output.contains("list unchanged"),
+            "{}",
+            outcome.output
+        );
+        assert_eq!(
+            todos.lock().unwrap().len(),
+            1,
+            "journal-first: mid-flight append failure leaves the list visibly unchanged"
+        );
+        std::fs::remove_dir(&journal).unwrap();
     }
 
     /// The protocol-host gate: trust-all at baseline, but the plan posture

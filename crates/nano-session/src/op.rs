@@ -239,6 +239,42 @@ pub fn validate_hydration_batch(entries: &[HydrationEntry]) -> Result<(), &'stat
     Ok(())
 }
 
+/// The server-influenced elicitation request-id cap (§5.6): the stringified
+/// JSON-RPC id is bounded before it may reach the journal.
+pub const MAX_ELICITATION_REQUEST_ID_CHARS: usize = 64;
+
+/// Validates a `McpElicitation` payload (§5.6 bounds): ids bounded, digests
+/// canonical (`answer_digest` may be empty for decline/cancel).
+pub fn validate_elicitation(
+    elicitation_id: &str,
+    server_id: &str,
+    call_id: &str,
+    request_id: &str,
+    schema_digest: &str,
+    answer_digest: &str,
+) -> Result<(), &'static str> {
+    if elicitation_id.is_empty() || elicitation_id.chars().count() > MAX_AS_ORIGIN_CHARS {
+        return Err("elicitation_id empty or over the cap");
+    }
+    if server_id.is_empty() || server_id.chars().count() > MAX_HYDRATION_TOOL_NAME_CHARS {
+        return Err("server_id empty or over the cap");
+    }
+    // call_id may be empty (attribution unavailable at a race edge); bounded.
+    if call_id.chars().count() > MAX_AS_ORIGIN_CHARS {
+        return Err("call_id over the cap");
+    }
+    if request_id.chars().count() > MAX_ELICITATION_REQUEST_ID_CHARS {
+        return Err("request_id over the cap");
+    }
+    if !is_canonical_digest(schema_digest) {
+        return Err("schema_digest is not 64-hex");
+    }
+    if !answer_digest.is_empty() && !is_canonical_digest(answer_digest) {
+        return Err("answer_digest is not empty-or-64-hex");
+    }
+    Ok(())
+}
+
 /// Validates a `McpOauthGrant` payload (§6.3 bounds). Origin-shape rules
 /// (https-only, host normalization) are enforced by the egress layer's
 /// `host_of`; here only the journal-side caps apply.

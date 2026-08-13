@@ -158,7 +158,7 @@ fn compaction_carry_round_trip_through_coordinator() {
         let mut guard = coordinator.compaction().unwrap();
         let snapshot = guard.snapshot().unwrap();
         let covers: Vec<String> = snapshot.iter().map(|e| e.id.clone()).collect();
-        let carry = nano_session::hydration_carry_at(&snapshot);
+        let carry = nano_session::hydration_carry_at(&snapshot).unwrap();
         guard
             .append_complete(&OpEnvelope::new(
                 "3",

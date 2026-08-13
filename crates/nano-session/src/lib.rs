@@ -35,12 +35,12 @@ pub use lock::{FileLock, LockError, LockMode};
 pub use op::{
     CompactionCancelReason, DIGEST_HEX_CHARS, ESTIMATION_METHOD_VERSION, GoalBudgets, GoalOutcome,
     GoalReason, GoalStatusKind, GrantEndpoint, GrantMethod, HydrationCarryEntry, HydrationEntry,
-    ImageRef, InputBlock, MAX_AS_ORIGIN_CHARS, MAX_GOAL_OBJECTIVE_LEN, MAX_GOAL_SUMMARY_LEN,
-    MAX_GRANT_ENDPOINTS, MAX_HYDRATION_ENTRIES, MAX_HYDRATION_TOOL_NAME_CHARS,
-    MAX_HYDRATION_TOOL_NAMES, MAX_ISSUER_CHARS, MAX_RECENT_DIGESTS, McpElicitationAction, Op,
-    OpEnvelope, SCHEMA_VERSION, TurnOutcome, TurnUsage, UsageSource, is_canonical_digest,
-    validate_hydration_batch, validate_hydration_carry_entry, validate_hydration_entry,
-    validate_oauth_grant,
+    ImageRef, InputBlock, MAX_AS_ORIGIN_CHARS, MAX_ELICITATION_REQUEST_ID_CHARS,
+    MAX_GOAL_OBJECTIVE_LEN, MAX_GOAL_SUMMARY_LEN, MAX_GRANT_ENDPOINTS, MAX_HYDRATION_ENTRIES,
+    MAX_HYDRATION_TOOL_NAME_CHARS, MAX_HYDRATION_TOOL_NAMES, MAX_ISSUER_CHARS, MAX_RECENT_DIGESTS,
+    McpElicitationAction, Op, OpEnvelope, SCHEMA_VERSION, TurnOutcome, TurnUsage, UsageSource,
+    is_canonical_digest, validate_elicitation, validate_hydration_batch,
+    validate_hydration_carry_entry, validate_hydration_entry, validate_oauth_grant,
 };
 pub use reader::{JournalReport, read_journal};
 pub use redaction::{RedactionError, SecretKind, scan_for_secrets};
