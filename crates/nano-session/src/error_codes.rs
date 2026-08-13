@@ -196,6 +196,12 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
         NanoErrorKind::McpOutputBounded => card("MCP server output exceeded the bound", ""),
         NanoErrorKind::McpTransport => card_retryable("MCP server unreachable", ""),
         NanoErrorKind::McpTimeout => card_retryable("MCP server timed out", ""),
+        NanoErrorKind::McpResourceUnsupported => {
+            card("This MCP server doesn't expose resources.", "")
+        }
+        NanoErrorKind::McpContentUnsupported => {
+            card("Binary resource content isn't supported yet.", "")
+        }
         NanoErrorKind::UnknownTool => card("Unknown tool", ""),
         NanoErrorKind::MissingArgs => card("Bad tool arguments", ""),
         NanoErrorKind::ApprovalDenied => card("Denied by user", ""),
@@ -346,6 +352,8 @@ pub const ALL_KINDS: &[NanoErrorKind] = &[
     NanoErrorKind::McpOutputBounded,
     NanoErrorKind::McpTransport,
     NanoErrorKind::McpTimeout,
+    NanoErrorKind::McpResourceUnsupported,
+    NanoErrorKind::McpContentUnsupported,
     NanoErrorKind::UnknownTool,
     NanoErrorKind::MissingArgs,
     NanoErrorKind::ApprovalDenied,
@@ -487,7 +495,7 @@ mod tests {
     /// P2a §7 added the seven vision-intake kinds (41 → 48).
     #[test]
     fn all_kinds_count_is_pinned() {
-        assert_eq!(ALL_KINDS.len(), 48);
+        assert_eq!(ALL_KINDS.len(), 50);
     }
 
     /// The drift alarm: the committed JSON artifact must be byte-identical

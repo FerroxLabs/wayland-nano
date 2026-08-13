@@ -202,6 +202,22 @@
     },
     {
       "hint": "",
+      "kind": "mcp_resource_unsupported",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "This MCP server doesn't expose resources.",
+      "wireCode": -32603
+    },
+    {
+      "hint": "",
+      "kind": "mcp_content_unsupported",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "Binary resource content isn't supported yet.",
+      "wireCode": -32603
+    },
+    {
+      "hint": "",
       "kind": "unknown_tool",
       "retryable": false,
       "surface": "tool_card",
