@@ -1179,6 +1179,14 @@ impl MockServer {
                         Err(_) => return,
                     }
                 };
+                // BSD/macOS: accept()ed sockets INHERIT the listener's
+                // O_NONBLOCK (unlike Linux) — force the stream blocking
+                // before the read loop, or WouldBlock tears the request
+                // read and the client sees a transport reset (CI-proven on
+                // macos-15-intel).
+                stream
+                    .set_nonblocking(false)
+                    .expect("accepted stream blocking");
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(10)))
                     .ok();
