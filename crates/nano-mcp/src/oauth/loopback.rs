@@ -196,6 +196,7 @@ fn handle_connection(
     let _ = stream.set_read_timeout(Some(CONN_READ_TIMEOUT));
     let Some(head) = read_head(&mut stream) else {
         let _ = respond(&mut stream, "400 Bad Request", "malformed request");
+        close_gracefully(&mut stream);
         return ConnResult::Rejected;
     };
     let mut lines = head.split("\r\n");
@@ -204,6 +205,7 @@ fn handle_connection(
     let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
     if method != "GET" {
         let _ = respond(&mut stream, "405 Method Not Allowed", "GET only");
+        close_gracefully(&mut stream);
         return ConnResult::Rejected;
     }
     // Host header: exact `127.0.0.1:<port>` (case-insensitive header NAME,
@@ -214,11 +216,13 @@ fn handle_connection(
         .any(|(name, value)| name.eq_ignore_ascii_case("host") && value.trim() == host_header);
     if !host_ok {
         let _ = respond(&mut stream, "400 Bad Request", "bad Host");
+        close_gracefully(&mut stream);
         return ConnResult::Rejected;
     }
     let (req_path, query) = target.split_once('?').unwrap_or((target, ""));
     if req_path != path {
         let _ = respond(&mut stream, "404 Not Found", "unknown path");
+        close_gracefully(&mut stream);
         return ConnResult::Rejected;
     }
     let mut code: Option<String> = None;
@@ -229,6 +233,7 @@ fn handle_connection(
         let v = form_decode(v);
         if v.chars().count() > MAX_PARAM_CHARS {
             let _ = respond(&mut stream, "400 Bad Request", "oversized parameter");
+            close_gracefully(&mut stream);
             return ConnResult::Rejected;
         }
         match k {
@@ -249,6 +254,7 @@ fn handle_connection(
                 "200 OK",
                 "<html><body>Wayland Nano login failed; you can close this tab.</body></html>",
             );
+            close_gracefully(&mut stream);
             return ConnResult::ProviderError(bounded_error_code(raw_code));
         }
     }
@@ -269,10 +275,12 @@ fn handle_connection(
         (Some(_), Some(_)) => {
             // Right path, wrong state: attack signal — reject AND tear down.
             let _ = respond(&mut stream, "400 Bad Request", "state mismatch");
+            close_gracefully(&mut stream);
             ConnResult::StateMismatch
         }
         _ => {
             let _ = respond(&mut stream, "400 Bad Request", "missing code/state");
+            close_gracefully(&mut stream);
             ConnResult::Rejected
         }
     }
@@ -315,6 +323,33 @@ fn respond(stream: &mut TcpStream, status: &str, body: &str) -> std::io::Result<
     stream.flush()
 }
 
+/// Graceful close for a rejected connection: FIN our side (ordered AFTER
+/// the response just written), then drain any request bytes still in
+/// flight before the socket drops. Closing a socket with unread receive
+/// data is a TCP RST, and that reset can overtake or abort the queued
+/// response — the peer then sees a bare connection-reset with ZERO
+/// response bytes (observed as the `oversized_head_is_rejected` flake
+/// under load: the listener cut the head at the cap while the pad tail
+/// was still arriving, and the close reset the connection before the 431
+/// reached the client). Draining removes the unread-data condition so the
+/// close is FIN-ordered and the typed rejection is always delivered.
+/// Bounded twice over: the per-connection read deadline
+/// (CONN_READ_TIMEOUT) caps each read, and the byte cap stops the drain
+/// even against a flooding peer. NOT used on the success path: a valid
+/// callback's head is consumed to the terminator by construction, and the
+/// login result must not wait on the browser closing its socket.
+fn close_gracefully(stream: &mut TcpStream) {
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let mut sink = [0u8; 1024];
+    let mut drained = 0usize;
+    while drained <= MAX_HEAD_BYTES {
+        match stream.read(&mut sink) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => drained += n,
+        }
+    }
+}
+
 /// application/x-www-form-urlencoded decode for the two callback params:
 /// `%XX` decoding plus `+` → space.
 fn form_decode(value: &str) -> String {
@@ -352,7 +387,10 @@ mod tests {
     use super::*;
 
     /// Drive one raw request at a binding; returns the status line (or the
-    /// connect error for a torn-down listener).
+    /// connect error for a torn-down listener). An empty response is
+    /// reported WITH ITS CAUSE (clean EOF vs reset) instead of "" so a
+    /// load-transient failure is self-explaining; assertions still fail on
+    /// it — nothing is retried or tolerated here.
     fn raw_request(binding_addr: &str, request: &str) -> String {
         match TcpStream::connect(binding_addr) {
             Ok(mut s) => {
@@ -362,7 +400,18 @@ mod tests {
                 let mut chunk = [0u8; 1024];
                 loop {
                     match s.read(&mut chunk) {
-                        Ok(0) | Err(_) => break,
+                        Ok(0) => {
+                            if buf.is_empty() {
+                                return "<clean EOF with zero response bytes>".to_string();
+                            }
+                            break;
+                        }
+                        Err(e) => {
+                            if buf.is_empty() {
+                                return format!("<read error with zero response bytes: {e}>");
+                            }
+                            break;
+                        }
                         Ok(n) => buf.extend_from_slice(&chunk[..n]),
                     }
                 }
