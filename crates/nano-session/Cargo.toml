@@ -15,10 +15,16 @@ thiserror = "2"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+# P2a §5.5: Win32_Security / Win32_Security_Authorization /
+# Win32_System_Threading serve the attachment store's explicit
+# current-user-only ACL set + open-time DACL audit (fail-closed).
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
 ] }
 
 [dev-dependencies]

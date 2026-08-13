@@ -26,6 +26,7 @@ pub mod retry;
 pub mod sse;
 pub mod structured;
 pub mod types;
+pub mod vision_catalog;
 
 #[cfg(test)]
 mod fixture_tests;

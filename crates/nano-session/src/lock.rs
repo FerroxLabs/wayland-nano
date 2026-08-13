@@ -30,6 +30,15 @@ pub enum LockError {
     Io(#[from] io::Error),
 }
 
+/// Shared vs exclusive acquisition (P2a §5.4: attach writers hold a SHARED
+/// lease on the attachment store's `.gc.lock`; the GC sweep must take the
+/// EXCLUSIVE lock, so it can never run while any writer lease is held).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockMode {
+    Exclusive,
+    Shared,
+}
+
 /// RAII handle: the lock is held until this value drops.
 pub struct FileLock {
     file: File,
@@ -46,13 +55,24 @@ impl FileLock {
     /// locking the data file, not a sidecar, so the lock lifecycle tracks
     /// the journal's).
     pub fn try_acquire(path: &Path) -> Result<Self, LockError> {
+        Self::try_acquire_mode(path, LockMode::Exclusive)
+    }
+
+    /// Non-blocking shared acquire — many holders coexist, and every one of
+    /// them excludes an exclusive acquirer.
+    pub fn try_acquire_shared(path: &Path) -> Result<Self, LockError> {
+        Self::try_acquire_mode(path, LockMode::Shared)
+    }
+
+    /// Non-blocking acquire in the given mode.
+    pub fn try_acquire_mode(path: &Path, mode: LockMode) -> Result<Self, LockError> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(path)?;
-        lock_file(&file)?;
+        lock_file(&file, mode)?;
         Ok(Self { file })
     }
 }
@@ -64,11 +84,15 @@ impl Drop for FileLock {
 }
 
 #[cfg(unix)]
-fn lock_file(file: &File) -> Result<(), LockError> {
+fn lock_file(file: &File, mode: LockMode) -> Result<(), LockError> {
     use std::os::unix::io::AsRawFd;
     // Safety: fd is a valid open file descriptor owned by `file`; flock with
-    // LOCK_NB either takes the exclusive lock or fails with EWOULDBLOCK.
-    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    // LOCK_NB either takes the lock or fails with EWOULDBLOCK.
+    let op = match mode {
+        LockMode::Exclusive => libc::LOCK_EX,
+        LockMode::Shared => libc::LOCK_SH,
+    };
+    let rc = unsafe { libc::flock(file.as_raw_fd(), op | libc::LOCK_NB) };
     if rc == 0 {
         Ok(())
     } else {
@@ -110,19 +134,26 @@ fn lock_overlapped() -> windows_sys::Win32::System::IO::OVERLAPPED {
 }
 
 #[cfg(windows)]
-fn lock_file(file: &File) -> Result<(), LockError> {
+fn lock_file(file: &File, mode: LockMode) -> Result<(), LockError> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::LOCKFILE_EXCLUSIVE_LOCK;
     use windows_sys::Win32::Storage::FileSystem::LOCKFILE_FAIL_IMMEDIATELY;
     use windows_sys::Win32::Storage::FileSystem::LockFileEx;
     let handle = file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
     let mut overlapped = lock_overlapped();
+    // A shared LockFileEx acquisition is the same call without the
+    // LOCKFILE_EXCLUSIVE_LOCK flag; it conflicts with exclusive holders and
+    // vice versa, so a writer lease blocks a sweep (P2a §5.4).
+    let exclusive = match mode {
+        LockMode::Exclusive => LOCKFILE_EXCLUSIVE_LOCK,
+        LockMode::Shared => 0,
+    };
     // Safety: `handle` is a valid open file handle with write access;
     // `overlapped` points at a valid, live OVERLAPPED for the call.
     let ok = unsafe {
         LockFileEx(
             handle,
-            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            exclusive | LOCKFILE_FAIL_IMMEDIATELY,
             0,
             1,
             0,
@@ -185,6 +216,41 @@ mod tests {
         drop(first);
         let second = FileLock::try_acquire(&path).expect("reacquire after release");
         drop(second);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P2a §5.4: shared leases coexist with each other and exclude the
+    /// exclusive sweep (per-handle semantics on both platforms — the second
+    /// handle is what a competing host process would do).
+    #[test]
+    fn shared_leases_coexist_and_block_exclusive() {
+        let dir = std::env::temp_dir().join(format!(
+            "nano-p2a-lock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        std::fs::write(&path, "{}\n").unwrap();
+
+        let lease_a = FileLock::try_acquire_shared(&path).expect("first shared");
+        let lease_b = FileLock::try_acquire_shared(&path).expect("second shared coexists");
+        match FileLock::try_acquire(&path) {
+            Err(LockError::Busy) => {}
+            other => panic!("exclusive under held shared leases must be Busy, got {other:?}"),
+        }
+        drop(lease_a);
+        // One lease still held: the sweep stays locked out.
+        match FileLock::try_acquire(&path) {
+            Err(LockError::Busy) => {}
+            other => panic!("exclusive with one shared lease held must be Busy, got {other:?}"),
+        }
+        drop(lease_b);
+        let sweep = FileLock::try_acquire(&path).expect("exclusive after all leases released");
+        drop(sweep);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
