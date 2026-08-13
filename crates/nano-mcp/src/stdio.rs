@@ -1,18 +1,28 @@
-//! Stdio transport: line-delimited JSON-RPC over a child process's pipes.
+//! Stdio transport: spawn a child process and split its pipes for the
+//! full-duplex dispatcher (design note §2.2).
 //!
-//! v1 spawns children directly through std::process (the sandboxed spawn
-//! path plugs in here when elevated provisioning exists — the seam is
-//! `spawn_fn` so tests and future containment share one transport).
+//! v1 spawns children directly through std::process. Containment (the
+//! nano-sandbox job-object spawn, `spawn_process_with_pipes_contained`) is
+//! the containment lane's seam — it plugs in at `spawn` without any change
+//! to the dispatcher, which consumes only the pipe/child split below.
 
 use crate::client::McpError;
-use crate::protocol::JsonRpcResponse;
-use std::io::{BufRead, BufReader, Write};
+use std::io::BufReader;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
+/// The owned halves of a spawned child, one per dispatcher thread:
+/// the writer thread owns `stdin`, the reader thread owns `stdout`, and the
+/// supervisor owns `child` (it is the SOLE owner of child-kill, §2.3).
+pub struct TransportParts {
+    pub child: Child,
+    pub stdin: ChildStdin,
+    pub stdout: BufReader<ChildStdout>,
+}
+
 pub struct StdioTransport {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    child: Option<Child>,
+    stdin: Option<ChildStdin>,
+    stdout: Option<BufReader<ChildStdout>>,
 }
 
 impl StdioTransport {
@@ -32,61 +42,40 @@ impl StdioTransport {
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
         Ok(Self {
-            child,
-            stdin,
-            stdout,
+            child: Some(child),
+            stdin: Some(stdin),
+            stdout: Some(stdout),
         })
     }
 
     #[cfg(test)]
     pub fn from_pipes(child: Child, stdin: ChildStdin, stdout: ChildStdout) -> Self {
         Self {
-            child,
-            stdin,
-            stdout: BufReader::new(stdout),
+            child: Some(child),
+            stdin: Some(stdin),
+            stdout: Some(BufReader::new(stdout)),
         }
     }
 
-    pub fn send_line(&mut self, line: &str) -> Result<(), McpError> {
-        writeln!(self.stdin, "{line}")
-            .and_then(|_| self.stdin.flush())
-            .map_err(|e| McpError::Transport(format!("write: {e}")))
-    }
-
-    /// Reads one JSON-RPC response, skipping notification lines.
-    pub fn read_response(&mut self) -> Result<JsonRpcResponse, McpError> {
-        let mut line = String::new();
-        loop {
-            line.clear();
-            let n = self
-                .stdout
-                .read_line(&mut line)
-                .map_err(|e| McpError::Transport(format!("read: {e}")))?;
-            if n == 0 {
-                return Err(McpError::Transport("server closed stdout".into()));
-            }
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let value: serde_json::Value = serde_json::from_str(trimmed)
-                .map_err(|e| McpError::Protocol(format!("bad json line: {e}: {trimmed}")))?;
-            if value.get("method").is_some() && value.get("id").is_none() {
-                continue; // server notification: skip
-            }
-            return serde_json::from_value(value)
-                .map_err(|e| McpError::Protocol(format!("bad response shape: {e}")));
+    /// Splits the transport into the per-thread parts. After the split the
+    /// `StdioTransport` shell is inert (its Drop kills nothing; the
+    /// connection's supervisor owns the child from here on).
+    pub fn into_parts(mut self) -> TransportParts {
+        TransportParts {
+            child: self.child.take().expect("child present"),
+            stdin: self.stdin.take().expect("stdin present"),
+            stdout: self.stdout.take().expect("stdout present"),
         }
-    }
-
-    pub fn try_kill(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
 impl Drop for StdioTransport {
     fn drop(&mut self) {
-        self.try_kill();
+        // Only fires for a transport that was never split (e.g. a spawn
+        // followed by a connect-time failure before Connection::spawn).
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
