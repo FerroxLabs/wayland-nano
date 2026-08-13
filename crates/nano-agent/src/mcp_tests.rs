@@ -412,9 +412,7 @@ fn fake_server(
         _dir: dir,
         spec: McpServerSpec {
             name: name.into(),
-            command,
-            args,
-            env,
+            transport: Transport::Stdio { command, args, env },
             source: SpecSource::Config,
         },
         marker,
@@ -430,10 +428,10 @@ fn stalling_resource_server(name: &str) -> FakeServer {
         &serde_json::json!([{"uri": "mem://alpha", "name": "alpha"}]),
         None,
     );
-    server
-        .spec
-        .env
-        .push(("FAKE_STALL_READ".to_string(), "1".to_string()));
+    let Transport::Stdio { env, .. } = &mut server.spec.transport else {
+        panic!("fake servers are stdio");
+    };
+    env.push(("FAKE_STALL_READ".to_string(), "1".to_string()));
     server
 }
 
@@ -1078,9 +1076,11 @@ fn stalled_resource_read_does_not_block_tool_search() {
 fn identity_spec(name: &str, command: &str, args: &[&str], source: SpecSource) -> McpServerSpec {
     McpServerSpec {
         name: name.into(),
-        command: command.into(),
-        args: args.iter().map(|a| a.to_string()).collect(),
-        env: vec![("K".to_string(), "V".to_string())],
+        transport: Transport::Stdio {
+            command: command.into(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            env: vec![("K".to_string(), "V".to_string())],
+        },
         source,
     }
 }
@@ -1117,7 +1117,9 @@ fn instance_id_minting_is_deterministic_and_sensitive() {
     // env is NOT hashed (the canonical form is exactly {source, command,
     // args}).
     let mut no_env = a.clone();
-    no_env.env.clear();
+    if let Transport::Stdio { env, .. } = &mut no_env.transport {
+        env.clear();
+    }
     assert_eq!(mint_instance_id(&no_env), id);
     // command / args / source each move the id.
     assert_ne!(
@@ -1166,15 +1168,20 @@ fn instance_id_minting_is_deterministic_and_sensitive() {
 fn instance_id_canonical_json_form_is_pinned() {
     let spec = McpServerSpec {
         name: "display".into(),
-        command: "srv".into(),
-        args: vec!["a".into()],
-        env: vec![],
+        transport: Transport::Stdio {
+            command: "srv".into(),
+            args: vec!["a".into()],
+            env: vec![],
+        },
         source: SpecSource::Config,
+    };
+    let Transport::Stdio { command, args, .. } = &spec.transport else {
+        panic!("stdio spec");
     };
     let canonical = canonical_json(&serde_json::json!({
         "source": &spec.source,
-        "command": &spec.command,
-        "args": &spec.args,
+        "command": command,
+        "args": args,
     }));
     assert_eq!(
         canonical,
@@ -1182,10 +1189,86 @@ fn instance_id_canonical_json_form_is_pinned() {
     );
     let expected = format!("srv_{}", &sha256_hex(canonical.as_bytes())[..16]);
     assert_eq!(mint_instance_id(&spec), expected);
-    // Spec serde: source is defaulted for pre-§2.7 serialized specs.
+    // Spec serde: source is defaulted for pre-§2.7 serialized specs, and the
+    // untagged+flattened transport keeps the pre-§6.1 wire form parsing.
     let legacy: McpServerSpec =
         serde_json::from_str(r#"{"name":"d","command":"c","args":[],"env":[]}"#).unwrap();
     assert_eq!(legacy.source, SpecSource::Config);
+    assert_eq!(
+        legacy.transport,
+        Transport::Stdio {
+            command: "c".into(),
+            args: vec![],
+            env: vec![],
+        }
+    );
+}
+
+/// §6.1 (F-P3-1): an HTTP spec hashes its `url` (with an empty args array,
+/// arity preserved) — the canonical form is pinned byte-exactly, and the id
+/// is distinct from any stdio spec and from a different url.
+#[test]
+fn http_instance_id_hashes_the_url_canonical_form_pinned() {
+    let spec = McpServerSpec {
+        name: "remote".into(),
+        transport: Transport::Http {
+            url: "https://mcp.example/mcp/".into(),
+        },
+        source: SpecSource::Config,
+    };
+    let canonical = r#"{"args":[],"source":"config","url":"https://mcp.example/mcp/"}"#;
+    let expected = format!("srv_{}", &sha256_hex(canonical.as_bytes())[..16]);
+    assert_eq!(mint_instance_id(&spec), expected);
+    // The url is the hash input: a different url ⇒ a different id.
+    let other = McpServerSpec {
+        transport: Transport::Http {
+            url: "https://mcp.example/other/".into(),
+        },
+        ..spec.clone()
+    };
+    assert_ne!(mint_instance_id(&other), expected);
+    // A stdio spec can never alias an HTTP id (the middle slot differs).
+    assert_ne!(
+        mint_instance_id(&identity_spec(
+            "remote",
+            "https://mcp.example/mcp/",
+            &[],
+            SpecSource::Config
+        )),
+        expected
+    );
+    // The untagged serde form of an HTTP spec is exactly `{url}`.
+    let parsed: McpServerSpec =
+        serde_json::from_str(r#"{"name":"r","url":"https://mcp.example/mcp/"}"#).unwrap();
+    assert_eq!(parsed.transport, spec.transport);
+    assert_eq!(parsed.source, SpecSource::Config);
+}
+
+/// §6.1 (F-P3-1): registering an HTTP spec is a TYPED, LOUD refusal
+/// (`mcp_transport`) until the dispatcher-bound HTTP connection lands —
+/// never a silent skip, never a fake connection, nothing registered.
+#[test]
+fn http_registration_is_a_typed_refusal() {
+    let spec = McpServerSpec {
+        name: "remote".into(),
+        transport: Transport::Http {
+            url: "https://mcp.example/mcp/".into(),
+        },
+        source: SpecSource::Config,
+    };
+    let mut registry = McpRegistry::new();
+    let err = registry
+        .register(spec)
+        .expect_err("HTTP registration must refuse typed");
+    assert!(
+        matches!(err, RegisterError::HttpTransportUnavailable { ref name } if name == "remote"),
+        "err: {err}"
+    );
+    assert!(
+        err.to_string().contains("mcp_transport"),
+        "the refusal names the kind: {err}"
+    );
+    assert!(registry.is_empty(), "nothing registered on a refusal");
 }
 
 #[test]
@@ -1282,10 +1365,10 @@ fn duplicate_display_name_is_a_typed_refusal() {
     );
     // A DIFFERENT spec (distinct args ⇒ distinct instance_id) sharing the
     // display name: the mcp__samename__* namespace would collide.
-    second
-        .spec
-        .args
-        .last_mut()
+    let Transport::Stdio { args, .. } = &mut second.spec.transport else {
+        panic!("fake servers are stdio");
+    };
+    args.last_mut()
         .expect("script arg")
         .push_str("\n# variant\n");
     assert_ne!(

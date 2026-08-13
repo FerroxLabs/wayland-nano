@@ -379,8 +379,11 @@ pub struct McpRegistrationReceipt {
     /// The §3.4 canonical digest of the registered (sanitized, capped) tool
     /// inventory — the same value hydration journal ops carry.
     pub tools_digest: String,
-    /// Declared egress origins. EMPTY for stdio specs: HTTP lands with §6.1,
-    /// so an empty vec is the honest v1 value — never a fabricated origin.
+    /// Declared egress origins. EMPTY today (F-P3-1): HTTP specs parse and
+    /// mint identity but registration is a typed refusal until the §6.1
+    /// dispatcher HTTP binding lands, so every minted receipt is a stdio
+    /// server's — an empty vec is the honest value, never a fabricated
+    /// origin.
     pub egress_origins: Vec<String>,
     /// Seconds since the Unix epoch at registration — a wall-clock audit
     /// stamp (no monotonic guarantee; no new clock dependency).
@@ -390,16 +393,24 @@ pub struct McpRegistrationReceipt {
 /// §2.7 instance identity: `srv_` + the first 16 lowercase hex chars of
 /// sha256 over the canonical spec JSON `{source,command|url,args}` — object
 /// keys sorted recursively, no insignificant whitespace (the §3.4
-/// canonical-JSON discipline). Stdio specs hash `command`; HTTP's `url`
-/// lands with §6.1. The display name is deliberately NOT hashed (it keys
-/// nothing), and neither is `env`: the note's canonical form is exactly
-/// these three fields.
+/// canonical-JSON discipline). Stdio specs hash `command`; HTTP specs
+/// (§6.1, F-P3-1) hash `url` with an EMPTY `args` array, keeping the form's
+/// arity at three fields. The display name is deliberately NOT hashed (it
+/// keys nothing), and neither is `env`: the note's canonical form is
+/// exactly these three fields.
 pub fn mint_instance_id(spec: &McpServerSpec) -> String {
-    let canonical = canonical_json(&serde_json::json!({
-        "source": &spec.source,
-        "command": &spec.command,
-        "args": &spec.args,
-    }));
+    let canonical = match &spec.transport {
+        Transport::Stdio { command, args, .. } => canonical_json(&serde_json::json!({
+            "source": &spec.source,
+            "command": command,
+            "args": args,
+        })),
+        Transport::Http { url } => canonical_json(&serde_json::json!({
+            "source": &spec.source,
+            "url": url,
+            "args": Vec::<String>::new(),
+        })),
+    };
     let digest = sha256_hex(canonical.as_bytes());
     format!("srv_{}", &digest[..16])
 }
@@ -425,6 +436,15 @@ pub enum RegisterError {
         "MCP server display name '{name}' is already used by a different server instance; the mcp__{name}__* namespace would collide"
     )]
     DuplicateDisplayName { name: String },
+    /// §6.1 (F-P3-1): an HTTP spec parses, mints identity, and its origin
+    /// joins the session egress policy — but the dispatcher-bound HTTP
+    /// connection (with §6.1 auth-header resolution) is NOT wired yet.
+    /// Registration is a typed, loud refusal (`mcp_transport`); a pretend
+    /// connection would violate the honesty rule.
+    #[error(
+        "mcp_transport: MCP server '{name}' is an HTTP server; the dispatcher-bound HTTP connection (§6.1) is not wired yet — registration refused (fail-closed)"
+    )]
+    HttpTransportUnavailable { name: String },
     #[error(transparent)]
     Connect(#[from] McpError),
 }
@@ -437,14 +457,35 @@ fn now_unix_seconds() -> u64 {
         .unwrap_or(0)
 }
 
-/// A stdio MCP server registration spec. `name` is DISPLAY-ONLY (§2.7) —
-/// keyed surfaces use the receipt's `instance_id`.
+/// §6.1 (F-P3-1) transport dispatch. Serde stays WIRE-COMPATIBLE with
+/// pre-§6.1 stdio specs: the enum is untagged and the spec flattens it, so
+/// a stdio spec still serializes as top-level `{command, args, env}` and an
+/// HTTP spec as `{url}` — the config shapes `mcp_specs` parses.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum Transport {
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: Vec<(String, String)>,
+    },
+    /// https ONLY — `mcp_specs` refuses a plain-http url with a typed
+    /// InvalidParams rejection at parse, and OAuth discovery rejects
+    /// cleartext again at login (fail-closed at both boundaries).
+    Http { url: String },
+}
+
+/// An MCP server registration spec (§6.1: stdio or HTTP transport). `name`
+/// is DISPLAY-ONLY (§2.7) — keyed surfaces use the receipt's `instance_id`.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct McpServerSpec {
     pub name: String,
-    pub command: String,
-    pub args: Vec<String>,
-    pub env: Vec<(String, String)>,
+    /// Stdio command/args/env or the HTTP url (§6.1). Flattened + untagged
+    /// so the stdio serde wire form is unchanged.
+    #[serde(flatten)]
+    pub transport: Transport,
     /// Where the spec came from (§2.7; rides the instance-id hash).
     /// Serde-defaulted so pre-§2.7 constructors and fixtures parse unchanged.
     #[serde(default)]
@@ -566,13 +607,24 @@ impl McpRegistry {
             });
         }
         let interrupted_call: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        // §6.1 (F-P3-1): an HTTP spec is identity-valid and egress-armed,
+        // but the dispatcher-bound HTTP connection (with §6.1 auth-header
+        // resolution: static <SERVER>_MCP_TOKEN[_FILE] → stored OAuth token
+        // → typed McpAuthorizationRequired) is not wired — refuse typed and
+        // loud rather than fake a connection. The §5.5 requires-elicitation
+        // refusal runs even earlier, at config parse (mcp_specs).
+        let Transport::Stdio { command, args, env } = &spec.transport else {
+            return Err(RegisterError::HttpTransportUnavailable {
+                name: spec.name.clone(),
+            });
+        };
         let client = match &self.elicitation_factory {
             Some(factory) => {
                 let parts = factory(&instance_id, &spec.name, interrupted_call.clone());
                 McpClient::connect_with_options(
-                    &spec.command,
-                    &spec.args,
-                    &spec.env,
+                    command,
+                    args,
+                    env,
                     ConnectionOptions {
                         request_handler: parts.handler,
                         slot_retired_hook: parts.slot_retired_hook,
@@ -580,7 +632,7 @@ impl McpRegistry {
                     },
                 )?
             }
-            None => McpClient::connect(&spec.command, &spec.args, &spec.env)?,
+            None => McpClient::connect(command, args, env)?,
         };
         // §2.7: the receipt records the connect-time negotiated capabilities.
         // A completed connect without the record is a protocol defect — fail
@@ -1366,9 +1418,11 @@ done
         let mut registry = McpRegistry::new();
         let registered = registry.register(McpServerSpec {
             name: "fake".into(),
-            command,
-            args,
-            env: vec![],
+            transport: Transport::Stdio {
+                command,
+                args,
+                env: vec![],
+            },
             source: SpecSource::Config,
         });
         assert_eq!(registered.expect("register"), 1);

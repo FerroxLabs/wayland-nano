@@ -1351,9 +1351,11 @@ fn fake_mcp_server_spec() -> nano_agent::mcp::McpServerSpec {
     let (command, args) = fake_mcp_command();
     nano_agent::mcp::McpServerSpec {
         name: "fake".into(),
-        command,
-        args,
-        env: vec![],
+        transport: nano_agent::mcp::Transport::Stdio {
+            command,
+            args,
+            env: vec![],
+        },
         source: nano_agent::mcp::SpecSource::Config,
     }
 }

@@ -44,6 +44,21 @@
 //!   turn executor is the MCP-merged one (mcp__ tools are advertised to the
 //!   model and routed on calls), and every mcp__ call goes through the
 //!   approval gate (mutating-unknown: never auto-approved).
+//! - P3 §6.1/§8 (F-P3-1): NANO_MCP_SERVERS and `mcpServers` entries are
+//!   `{name, command, args}` (stdio) or `{name, url}` (HTTP — https ONLY; a
+//!   plain-http url is a typed InvalidParams rejection at parse). HTTP
+//!   origins join the session egress policy at construction; HTTP
+//!   REGISTRATION is a typed refusal (`mcp_transport`) until the
+//!   dispatcher-bound HTTP connection lands. OAuth for HTTP servers runs
+//!   through `wayland-nano auth login|status|logout <server>` (§6.2):
+//!   tokens live keyring-primary (§6.4) with the operator-provisioned
+//!   refresh-file fallback `NANO_MCP_OAUTH_REFRESH_FILE_<SERVER>` (unix
+//!   0600 enforced fail-closed; Windows typed-unavailable until the ACL
+//!   helper lands), and standalone logins journal their grants
+//!   journal-first to `<nano_home>/oauth/grants.jsonl`. The static bearer
+//!   channel `<SERVER>_MCP_TOKEN` / `<SERVER>_MCP_TOKEN_FILE` (the
+//!   provider_key `read_key_file` discipline, sanitizer-registered) is
+//!   RESERVED for the §6.1 HTTP binding — nothing consumes it yet.
 
 use nano_agent::loop_protection::TurnBudget;
 use nano_agent::mcp::{McpRegistry, McpServerSpec, McpToolExecutor};
@@ -364,6 +379,14 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     for provider in &credentialed {
         policy = policy.allow_url(provider.spec.base_url);
     }
+    // Operator-supplied MCP servers (NANO_MCP_SERVERS) merge into every
+    // session alongside the mcpServers param Desktop publishes. Parsed once
+    // here: P3 §6.1 — every configured HTTP MCP server's ORIGIN joins the
+    // session policy at construction (https hosts set; inert until the
+    // dispatcher HTTP binding lands — HTTP registration is a typed refusal
+    // — and deny-by-default is otherwise unchanged).
+    let env_mcp_specs = crate::mcp_specs::mcp_specs_from_env();
+    let policy = crate::mcp_specs::allow_http_mcp_origins(policy, &env_mcp_specs);
 
     let reader = std::io::BufReader::new(std::io::stdin());
     let writer = std::io::stdout();
@@ -575,9 +598,7 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     // fail-closed authority regardless of what this cached value says.
     let probe_home = nano_home.to_path_buf();
     let sandbox_probe = move || platform_sandbox_available(&probe_home);
-    // Operator-supplied MCP servers (NANO_MCP_SERVERS) merge into every
-    // session alongside the mcpServers param Desktop publishes.
-    let env_mcp_specs = crate::mcp_specs::mcp_specs_from_env();
+    // (env_mcp_specs was parsed at startup, beside the §6.1 egress arm.)
     // C5: memory. Writes are opt-in (NANO_MEMORY_WRITE=1/true); the block
     // cap override is downward-only (a larger value is a typed config error,
     // not a silent clamp — same posture as the C1 overrides).
