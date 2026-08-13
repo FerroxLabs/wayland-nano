@@ -224,6 +224,11 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
         // P4 §8: tool-card surface (a failed pty_* call), never retryable —
         // the session is gone; re-sending the identical call cannot succeed.
         NanoErrorKind::PtySessionGone => card("That terminal session has exited", ""),
+        // P4 review mode §8: tool-card surface on the review_result notice,
+        // never retryable — the model's report will not improve on resend.
+        NanoErrorKind::ReviewParseFailed => {
+            card("The review finished but its report couldn't be parsed", "")
+        }
         NanoErrorKind::BudgetExhausted => response(
             -32603,
             false,
@@ -382,6 +387,7 @@ pub const ALL_KINDS: &[NanoErrorKind] = &[
     NanoErrorKind::MissingArgs,
     NanoErrorKind::ApprovalDenied,
     NanoErrorKind::PtySessionGone,
+    NanoErrorKind::ReviewParseFailed,
     NanoErrorKind::BudgetExhausted,
     NanoErrorKind::BudgetExceeded,
     NanoErrorKind::NoProgress,
@@ -519,10 +525,11 @@ mod tests {
     /// adding one without a spec fails to compile (exhaustive match above).
     /// P2a §7 added the seven vision-intake kinds (41 → 48); P3 §7 added the
     /// seven MCP-ecosystem kinds (48 → 55); the RC2 wiring pass added P4's
-    /// PtySessionGone (55 → 56).
+    /// PtySessionGone (55 → 56); the P4 review-mode merge added
+    /// ReviewParseFailed (56 → 57).
     #[test]
     fn all_kinds_count_is_pinned() {
-        assert_eq!(ALL_KINDS.len(), 56);
+        assert_eq!(ALL_KINDS.len(), 57);
     }
 
     /// P3 §12 [r2 codex-F16]: symbolic wire names are the compatibility

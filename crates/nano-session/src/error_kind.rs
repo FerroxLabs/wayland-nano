@@ -75,6 +75,10 @@ pub enum NanoErrorKind {
     /// (§4.4). The exit code rides the tool-card detail when known; the
     /// presentation stays static.
     PtySessionGone,
+    /// P4 review mode §8: the review turn finished but its findings output
+    /// failed the strict JSON parse AND the plain-text fallback (empty).
+    /// Never retryable — the model output will not improve on resend.
+    ReviewParseFailed,
     // ── engine stops (turn-fatal, NOT user cancels) ─────────────────────
     BudgetExhausted,
     /// P1 §4.1: the session token cap stopped the turn (a zero output

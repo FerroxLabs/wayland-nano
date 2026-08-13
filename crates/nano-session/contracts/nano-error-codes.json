@@ -289,6 +289,14 @@
       "wireCode": -32603
     },
     {
+      "hint": "",
+      "kind": "review_parse_failed",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "The review finished but its report couldn't be parsed",
+      "wireCode": -32603
+    },
+    {
       "hint": "Start a new session or narrow the task",
       "kind": "budget_exhausted",
       "retryable": false,

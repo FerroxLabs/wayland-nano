@@ -569,3 +569,42 @@ promotes/closes entries; builders append only.
   (bootstrap.rs:241). Fix: flatten.
 - **LOW-4:** `print_sessions` error line goes to stdout, not stderr
   (exit code 2 is correct). Cosmetic.
+
+---
+
+## F-38: bwrap probe test is environment-sensitive on CI (ubuntu-24.04-arm) — OPEN, test-robustness
+
+- **Filed:** 2026-08-13, integrator observation. Master commit 061ff9b
+  (docs-only) failed CI run 31704608343 on `ubuntu-24.04-arm`:
+  `linux_bwrap::tests::linux_probe::system_bwrap_warning_reports_user_namespace_failures`
+  panicked with `loopback: Failed RTM_NEWADDR` — the probe executes the
+  system bubblewrap and asserts a user-namespace warning is surfaced, but
+  the runner environment failed earlier at netlink loopback address
+  config, so no warning materialized (left=None). The SAME code passed at
+  a7065e0 and the rerun of 061ff9b came back 6/6 green with zero code
+  changes — confirmed environmental flake, not a regression.
+- **Close means:** the probe test tolerates (or explicitly detects and
+  skips/reports) runner environments where netlink RTM_NEWADDR is
+  restricted, WITHOUT weakening the user-namespace warning assertion on
+  environments that support it. Do not fix by loosening the assertion —
+  detect the environment class and branch.
+- **Severity:** LOW (flake cost: one rerun cycle; no user-facing impact).
+
+# Pending FOLLOWUPS entries — to ride the next merge commit
+
+## F-39: doctor is report-only for attachment GC; design §5.4 says "startup + explicit /doctor" — LOW, reconciliation
+- From agent-159 P2a GC re-proof (all 5 legs PASS, F-34 stays closed). Shipped: sweep at startup only; /doctor reports but does not sweep. Matches F-34's close contract; deviates from P2a design note §5.4's literal text. Fix = either wire a doctor-triggered sweep or amend §5.4 wording. Evidence: .tmp/p2a-reproof/captures/reproof-leg2.json.
+
+## F-40: /doctor sessions-dir-permissions WARN leaks attachment-audit wording — LOW, cosmetic
+- From agent-159. On a sessions-less home, /doctor prints a WARN whose detail contains `GetNamedSecurityInfoW failed` (attachment-audit phrasing); rc stays 0. Cosmetic string hygiene.
+
+## P3 proof findings (agent-154, manifest section at shared/reviews/RC/evidence/CONSOLIDATED-VERIFICATION.md:992)
+- CRITICAL/HIGH going to fix round (feat/p3-fixround): F-P3-1 (OAuth flow dead code — CRITICAL), F-P3-2 (StdioTransport uncontained children — HIGH), F-P3-3 (registration receipt/instance_id/SpecSource absent — HIGH), F-P3-4 (elicitation op-id reset on resume, answer never journaled — HIGH, live-proven), F-P3-7 (user-cancel maps to decline not cancel — acp_mode.rs:3753-3771), F-P3-13 (backpressure battery host-dependent failure — triage).
+- MEDIUM/LOW filed by reference: F-P3-5..F-P3-12 + LOW list live in the manifest section (static tool definitions vs §3.2, shutdown cancel misses, >64-name hydrated union compaction, churn-breaker skip, DCR listener leak, http.rs error leakage, etc.). Unreproduced anomaly: one leg5-timeout rc=1 exit, 2 clean reruns.
+
+## P2b proof findings (agent-160, manifest section at CONSOLIDATED-VERIFICATION.md:1043-1065)
+- **F-P2B-1 HIGH (live-proven both wires):** view_image unreachable in every shipped config — vision_backed conjuncts mutually unsatisfiable (flux leaves bind openai-completions; vision catalog keys are all flux-pinned-*). Unblock options: bless an anthropic:<model> catalog id after live probe, OR wire flux→anthropic compat routing (FluxDriver::anthropic_compat exists, uncalled). DEFER to post-P5-merge wave — the fix surface (provider_router/vision gating) is inside agent-149's active lane.
+- **F-P2B-2 LOW:** ToolResult replay degradation arm emits no operator stderr log (comment claims it at acp_mode.rs:4792-4794; notice cause split correct and test-pinned).
+- **F-P2B-3 LOW:** rung-3 vision gate is once-per-turn — mid-turn compaction eviction doesn't re-arm until next prompt (fail-closed, self-heals).
+- F-32 LOW-6 independently re-confirmed accurate post-wiring.
+- Alt B decision RECORDED in the manifest (leg 7). Legs 3/4/5/6 PASS on all expressible paths; leg 2 inexpressible under F-P2B-1.
