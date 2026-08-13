@@ -368,3 +368,45 @@ promotes/closes entries; builders append only.
   runs.
 - **Close means:** bind `WriteLease` to the canonical store/lock identity
   and reject mismatches in `put`, with a two-store regression test.
+
+## F-27: P3 dispatcher merge-review LOW debt (8 items, reviewer agent-131, 2026-08-13) — OPEN
+
+- **Filed:** 2026-08-13, from the independent pre-merge review of
+  `feat/p3-dispatcher` (verdict MERGE-OK; gates green; merged at 8b2412a,
+  integrator repair 8d8425d).
+- **Items:**
+  1. §2.2 undocumented deviation: `enqueue_priority_handler`
+     (`nano-mcp/src/dispatcher.rs:650-665`) grants a 500ms bounded
+     drain-retry before poisoning (note names no such retry; rationale is
+     §12(h)'s 17-through-16 requirement). Record-only or note amendment.
+  2. §2.3 letter-deviation: child exit reaped by supervisor-tick
+     `try_wait` polling (`dispatcher.rs:1258-1269`), not a wait thread.
+  3. Graceful-close poison-reason race: writer drain-exit always emits
+     `SupEvent::WriterDone` (:1177) which the supervisor maps to poison
+     "writer queue disconnected"; if it lands before `Shutdown` a clean
+     close records an alarming reason. Fix: suppress WriterDone when
+     `shared.closing()`.
+  4. §2.6 per-pending-id `notifications/cancelled` can silently miss the
+     wire: `Connection::shutdown` (:1460-1478) enqueues cancels after
+     `set_closing`; the writer's closing drain may exit first and the Err
+     is discarded unlogged. Fix: enqueue cancels before set_closing, or
+     log the drop.
+  5. Dead test-only surface: `StdioTransport::from_pipes`
+     (`stdio.rs:51-53`) is cfg(test) with zero callers. Delete.
+  6. §2.1.5/§2.4 unwired one layer up (declared deferral):
+     `nano-agent/src/mcp.rs:138` holds the registry mutex across blocking
+     `call_tool_mutable`; `execute_cancellable` still delegates to plain
+     `execute` despite `call_tool_cancellable` existing
+     (`client.rs:281-288`). Fix belongs to a nano-agent lane:
+     lock-to-clone + call the cancellable path; until then turn-cancel of
+     an in-flight MCP call is not end-to-end.
+  7. §2.6 contained spawn not in this branch (scope split, honestly
+     documented): supervisor kills via bare `child.kill()`;
+     `spawn_process_with_pipes_contained` lands with the oauth-egress
+     lane; stdio-MCP capability flag pinned FALSE until §13 leg-1b.
+  8. Test-coverage gaps vs §12 (non-blocking): no writer-thread
+     fault-injection leg (reader has one); §12(j) sustained-priority-flood
+     asserted at scheduler unit level, not on the wire; §12(k)
+     process-inventory oracle deferred to §13 leg-1b.
+- **Close means:** each item fixed or explicitly waived with the reason
+  recorded here.
