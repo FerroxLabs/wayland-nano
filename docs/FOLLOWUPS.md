@@ -411,7 +411,7 @@ promotes/closes entries; builders append only.
 - **Close means:** each item fixed or explicitly waived with the reason
   recorded here.
 
-## F-28: P4 repomap merge-review debt (reviewer agent-135, verdict MERGE-OK, 2026-08-13) — OPEN
+## F-28: P4 repomap merge-review debt (reviewer agent-135, verdict MERGE-OK, 2026-08-13) — MEDIUM-2 CLOSED at a7065e0 (three-gate registration + agreement tests landed in the wiring pass); MEDIUM-1/3 + LOWs FIXED at 02b538a; LOW-7/8 remain OPEN
 
 - **MEDIUM-1 (cost-bound TOCTOU) — FIXED at 02b538a:**
   `nano-repomap/src/store.rs:321-345`
@@ -484,10 +484,7 @@ promotes/closes entries; builders append only.
 - LOW-6: non-view_image image-bearing Live results are silently dropped
   (turn.rs:1347 gates typed rejection on call.name == "view_image").
   Fix: reject whenever image_result.is_some() && accepted.is_none().
-- LOW-7: AttachmentStore::sweep's reference-scan contract names only
-  input_blocks manifests (attachment_store.rs:367-369); §3.2 requires
-  covering ToolResult.image_refs when the host scan is wired. Latent —
-  no production caller exists yet; record + extend at wiring.
+- LOW-7: FIXED at a7065e0 — referenced_blob_digests(sessions_dir) scans both input_blocks manifests and ToolResult.image_refs, fail-closed on unreadable journals.
 - LOW-8 (info): ReplayVerified minted-then-dropped at replay
   (acp_mode.rs:4222-4236) rather than "carried" per §3.3 (harmless —
   Message cannot hold it); build_image_tool_result's _call_id unused
@@ -509,7 +506,7 @@ promotes/closes entries; builders append only.
   healthy deployments" on all calls incl. text-only control). Single
   re-probe if Flux restores the deployment; catalog stays false meanwhile.
 
-## F-34: AttachmentStore GC sweep has no production caller (P2a proof, leg 4 GC leg) — OPEN, production finding
+## F-34: AttachmentStore GC sweep has no production caller (P2a proof, leg 4 GC leg) — FIXED at a7065e0 (startup sweep + /doctor report + image_refs scan; the leg-4 concurrent re-proof is owed to the P2a re-verification pass)
 
 - **Filed:** 2026-08-13, from the P2a adversarial proof (agent-128):
   `AttachmentStore::sweep()` is implemented and unit-tested but NEVER
@@ -543,7 +540,7 @@ promotes/closes entries; builders append only.
   wrong/empty for non-designated concurrent calls. Audit-only field;
   designated-slot binding is dispatcher-correct. Optional: key per-call.
 
-## F-36: OAuth grant op has NO producer on either merged side (reviewer agent-144 checklist item 7) — OPEN, wiring-critical
+## F-36: OAuth grant op has NO producer on either merged side (reviewer agent-144 checklist item 7) — FIXED at a7065e0 (oauth_grant_recorder at the acp_mode session layer, journal-first, idempotent)
 
 - Master's OAuth lane (`nano-mcp/src/oauth/flow.rs:41,81`) defines
   `record_grant: &dyn Fn(&GrantRecord)` expecting the ToolSearch branch's
@@ -557,7 +554,7 @@ promotes/closes entries; builders append only.
 
 ## F-37: P4 session-browser merge-review debt (reviewer agent-146, verdict MERGE-OK, 2026-08-13) — OPEN
 
-- **MEDIUM-1:** `/resume <id>` (nano-tui/src/app.rs:760-773) is gated on
+- **MEDIUM-1:** FIXED at a7065e0 (`/resume <id>` sends session/load for any syntax-safe explicit id; refuses only present-and-live rows). Original text: `/resume <id>` (nano-tui/src/app.rs:760-773) was gated on
   membership in the BOUNDED 200-entry list — an explicit-id resume of a
   session older than the truncation window is refused with no workaround,
   deviating from §6.2's "`/resume <id>` sends session/load". Fix (lands in
