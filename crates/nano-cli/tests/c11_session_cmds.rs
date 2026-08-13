@@ -39,6 +39,7 @@ fn make_session(sessions: &std::path::Path, id: &str) {
             Op::TurnBegin {
                 turn_id: format!("{id}-turn-1"),
                 input: "work".into(),
+                input_blocks: Vec::new(),
             },
         ))
         .unwrap();

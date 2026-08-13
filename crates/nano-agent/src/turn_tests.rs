@@ -418,4 +418,130 @@ mod tests {
         };
         assert_eq!(gate.ask(&call), AskOutcome::Unavailable);
     }
+
+    // ── P2a §5.2.1/§6.2: producer plumbing + the pre-dispatch gate ──────
+
+    /// §12 producer plumbing regression: a legacy &str entry journals
+    /// TurnBegin with projection == input AND the single-Text manifest, and
+    /// the dispatched first user message is byte-identical to pre-P2a.
+    #[tokio::test]
+    async fn p2a_legacy_text_entry_journals_projection_and_manifest() {
+        use nano_session::op::{InputBlock, Op};
+        let model = ScriptedModel::new(vec![text_response("done")]);
+        let tools = RecordingTools {
+            calls: Mutex::new(Vec::new()),
+            progress: ProgressSignals::default(),
+        };
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            model_name: "mock".into(),
+            tool_definitions: vec![],
+            approval: None,
+            compaction: None,
+            robustness: Default::default(),
+        };
+        let result = engine.run_turn("t1", "fix the build").await;
+        assert!(matches!(result.state, TurnState::Complete));
+        let Op::TurnBegin {
+            input,
+            input_blocks,
+            ..
+        } = &result.ops[0].op
+        else {
+            panic!("first op must be TurnBegin")
+        };
+        assert_eq!(input, "fix the build");
+        assert_eq!(
+            *input_blocks,
+            vec![InputBlock::Text {
+                text: "fix the build".into()
+            }]
+        );
+        let requests = model.requests.lock().unwrap();
+        assert_eq!(
+            requests[0].messages.last().unwrap().content,
+            vec![nano_model::types::ContentBlock::Text {
+                text: "fix the build".into()
+            }]
+        );
+    }
+
+    /// §6.2 rung 3: an image-bearing turn against a model that is NOT
+    /// vision-proven (the vendored catalog blesses nothing until §13 leg 6)
+    /// is WHOLE-REQUEST rejected with typed ModelLacksVision — zero egress
+    /// (the scripted driver records no request), no strip-and-transmit. The
+    /// journal still carries the audit pair: TurnBegin (projection +
+    /// digests-only manifest) then TurnEnd(Failed).
+    #[tokio::test]
+    async fn p2a_rung3_rejects_image_turn_on_unproven_model_with_zero_egress() {
+        use crate::turn_input::{TurnBlock, TurnInput};
+        use nano_session::NanoErrorKind;
+        use nano_session::op::{ImageRef, InputBlock, Op, OpEnvelope};
+        let model = ScriptedModel::new(vec![text_response("never served")]);
+        let tools = RecordingTools {
+            calls: Mutex::new(Vec::new()),
+            progress: ProgressSignals::default(),
+        };
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            // An EXCLUDED family (explicit-false posture, §6.3).
+            model_name: "flux-pinned-codestral".into(),
+            tool_definitions: vec![],
+            approval: None,
+            compaction: None,
+            robustness: Default::default(),
+        };
+        let digest = "cd".repeat(32);
+        let input = TurnInput {
+            blocks: vec![TurnBlock::Image {
+                reference: ImageRef {
+                    digest: digest.clone(),
+                    mime: "image/png".into(),
+                    bytes: 5,
+                    width: 1,
+                    height: 1,
+                    placeholder: "[Image #1: /tmp/x.png]".into(),
+                },
+                data: "aGVsbG8".into(),
+            }],
+        };
+        let mut sink = |_: &OpEnvelope| true;
+        let result = engine
+            .run_turn_streaming_with_context_blocks("t1", input, vec![], None, &mut sink, false)
+            .await;
+        let TurnState::Failed(err) = &result.state else {
+            panic!("expected typed failure, got {:?}", result.state)
+        };
+        assert_eq!(err.kind, NanoErrorKind::ModelLacksVision);
+        assert!(
+            model.requests.lock().unwrap().is_empty(),
+            "zero egress: no request ever built"
+        );
+        let Op::TurnBegin {
+            input,
+            input_blocks,
+            ..
+        } = &result.ops[0].op
+        else {
+            panic!("first op must be TurnBegin")
+        };
+        assert_eq!(input, "[Image #1: /tmp/x.png]");
+        assert!(
+            matches!(&input_blocks[0], InputBlock::ImageRef(r) if r.digest == digest && r.mime == "image/png")
+        );
+        // Digest-only: the journaled manifest never carries the live data.
+        let journaled = serde_json::to_string(&result.ops[0].op).expect("serialize");
+        assert!(!journaled.contains("aGVsbG8"));
+        assert!(matches!(
+            result.ops.last().unwrap().op,
+            Op::TurnEnd {
+                outcome: nano_session::op::TurnOutcome::Failed,
+                ..
+            }
+        ));
+    }
 }

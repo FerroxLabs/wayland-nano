@@ -1457,6 +1457,7 @@ name = "nano-cli"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "dirs-next",
  "nano-agent",
  "nano-core",
@@ -1538,10 +1539,13 @@ version = "0.1.0"
 name = "nano-protocol"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "dirs-next",
  "nano-agent",
  "nano-egress",
  "nano-model",
  "nano-session",
+ "nano-tools",
  "pretty_assertions",
  "serde",
  "serde_json",

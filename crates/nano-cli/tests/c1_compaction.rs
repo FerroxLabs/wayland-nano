@@ -261,6 +261,11 @@ impl Harness {
                     write_enabled: false,
                     block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
                 };
+                // P2a: lane-A vision catalog (vendored, fail-closed) + the attachment
+                // store root beside the session journals (lane-B boundary use).
+                let vision_catalog = nano_model::vision_catalog::VisionCatalog::vendored()
+                    .expect("vendored vision catalog parses");
+                let attachment_home = sessions_dir.parent().expect("root");
                 let config = acp_mode::ServeConfig {
                     sessions_dir: &sessions_dir,
                     default_model: "mock",
@@ -280,6 +285,8 @@ impl Harness {
                     search_meter: None,
                     pricing: None,
                     budget_cap: None,
+                    vision_catalog: &vision_catalog,
+                    attachment_home,
                 };
                 acp_mode::serve(
                     ChannelReader {
@@ -689,6 +696,7 @@ fn crash_after_begin_replays_uncompacted() {
             Op::TurnBegin {
                 turn_id: "t1".into(),
                 input: "real question".into(),
+                input_blocks: Vec::new(),
             },
         ),
         OpEnvelope::new(
@@ -743,6 +751,7 @@ fn crash_after_complete_replays_compacted() {
             Op::TurnBegin {
                 turn_id: "t1".into(),
                 input: "real question".into(),
+                input_blocks: Vec::new(),
             },
         ),
         OpEnvelope::new(
@@ -777,6 +786,7 @@ fn crash_after_complete_replays_compacted() {
                 summary: "durable summary".into(),
                 covers_op_ids: vec!["1".into(), "2".into(), "3".into()],
                 changed_files: vec![],
+                image_influenced: false,
             },
         ),
     ];
@@ -807,6 +817,7 @@ fn forged_compaction_ops_are_replay_tolerant() {
             Op::TurnBegin {
                 turn_id: "t1".into(),
                 input: "keep me".into(),
+                input_blocks: Vec::new(),
             },
         ),
         OpEnvelope::new(
@@ -829,6 +840,7 @@ fn forged_compaction_ops_are_replay_tolerant() {
             summary: String::new(),
             covers_op_ids: vec![],
             changed_files: vec![],
+            image_influenced: false,
         },
     ));
     let messages = acp_mode::messages_from_envelopes(&forged);
@@ -842,6 +854,7 @@ fn forged_compaction_ops_are_replay_tolerant() {
             summary: "out of nowhere".into(),
             covers_op_ids: vec!["not-real".into()],
             changed_files: vec![],
+            image_influenced: false,
         },
     )];
     let messages = acp_mode::messages_from_envelopes(&first);
@@ -856,6 +869,7 @@ fn forged_compaction_ops_are_replay_tolerant() {
             summary: "\u{1b}[2J\u{1b}[H wipe \u{202e} rtl".into(),
             covers_op_ids: vec![],
             changed_files: vec![],
+            image_influenced: false,
         },
     ));
     let messages = acp_mode::messages_from_envelopes(&hostile);
@@ -876,6 +890,7 @@ fn replay_arm_flushes_pending_assistant_before_compaction() {
             Op::TurnBegin {
                 turn_id: "t1".into(),
                 input: "q".into(),
+                input_blocks: Vec::new(),
             },
         ),
         OpEnvelope::new(
@@ -896,6 +911,7 @@ fn replay_arm_flushes_pending_assistant_before_compaction() {
                 summary: "s".into(),
                 covers_op_ids: vec![],
                 changed_files: vec![],
+                image_influenced: false,
             },
         ),
     ];

@@ -339,6 +339,54 @@ pub const MAX_GOAL_OBJECTIVE_LEN: usize = 4000;
 /// Cap on a `goal_complete` summary, schema-validated like any other argument.
 pub const MAX_GOAL_SUMMARY_LEN: usize = 2000;
 
+// ── P2a vision intake (panel-certified design: P2a-vision-intake-design.md) ─
+// JOURNAL-MIGRATION REVIEW FLAG (RC2 coordinated review, same review as the
+// P1 trio above): the TWO P2a journal additions — (a) `input_blocks` on
+// `Op::TurnBegin`, (b) `image_influenced` on `Op::CompactionComplete` — are
+// both additive-optional (serde-defaulted, skipped when empty/false), so
+// pre-P2a journals replay unchanged and old readers tolerate the fields
+// (unknown-field tolerance on `Op` is load-bearing — CI-pinned in tests). `SCHEMA_VERSION`
+// stays 1. The manifest carries metadata + sha256 DIGESTS only — image
+// bytes NEVER reach the journal (the digest-only invariant).
+
+/// The durable half of an attached image (P2a §5.2/§5.2.1): everything the
+/// journal needs to reference and rehydrate a blob-store attachment —
+/// digests only, NEVER bytes. `digest` is validated (`^[0-9a-f]{64}$`)
+/// before ANY path use on journal read (§5.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageRef {
+    /// sha256 hex of the re-encoded bytes (the blob-store address).
+    pub digest: String,
+    /// Sniffed mime, closed wire set (never the sender's claim).
+    pub mime: String,
+    /// Re-encoded size in bytes.
+    pub bytes: u64,
+    pub width: u32,
+    pub height: u32,
+    /// Display text, e.g. `[Image #2: /path/x.png]` — display/projection
+    /// only; reconstruction never parses it (§3.1/§5.2).
+    pub placeholder: String,
+}
+
+/// One entry of the ordered input-block manifest journaled on
+/// `Op::TurnBegin` (P2a §5.2): the machine contract for reconstructing
+/// arbitrary ordered ACP content — text/image interleaving, duplicates, and
+/// user-authored `[Image #…]`-like text are all unambiguous because no
+/// string matching is ever performed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InputBlock {
+    Text { text: String },
+    ImageRef(ImageRef),
+}
+
+/// `skip_serializing_if` helper for the `CompactionComplete.image_influenced`
+/// flag (P2a §8 part 2): keeps false-valued journals byte-minimal. Not std;
+/// the existing precedents use `Option::is_none`.
+fn is_false(b: &bool) -> bool {
+    !b
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Op {
@@ -348,7 +396,19 @@ pub enum Op {
     },
     TurnBegin {
         turn_id: String,
+        /// The plain-text PROJECTION of `input_blocks` (placeholders
+        /// inline), produced by the §5.2.1 projection function from the
+        /// manifest at turn start — one function, one call site, so the two
+        /// cannot diverge. Serves display, `replay_frames`, and old readers.
         input: String,
+        /// P2a §5.2 — JOURNAL-MIGRATION REVIEW FLAG (addition (a)). The
+        /// ORDERED BLOCK MANIFEST: reconstruction walks it in order —
+        /// `Text` → `ContentBlock::Text`, `ImageRef` → rehydrated
+        /// `ContentBlock::Image` (§5.3). Digests + metadata only, NEVER
+        /// bytes. Serde-defaulted: pre-P2a journals replay unchanged
+        /// (text-only, byte-identical); omitted when empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        input_blocks: Vec<InputBlock>,
     },
     ToolCall {
         turn_id: String,
@@ -408,6 +468,17 @@ pub enum Op {
         /// Durable-effect inventory at compaction time. The summary replaces
         /// the *transcript*; effects must survive or replay diverges.
         changed_files: Vec<String>,
+        /// P2a §8 part 2 — JOURNAL-MIGRATION REVIEW FLAG (addition (b)).
+        /// Sticky-transitive image provenance: journaled as
+        /// `image_influenced_before OR any-image-evicted-this-compaction`.
+        /// A summary produced from an image-influenced context is itself
+        /// image-influenced (image-derived content can persist in summary
+        /// TEXT after pixels are gone), so the §9.1 untrusted-turn clamp can
+        /// never be reopened by compaction alone; replay folds the STICKY-OR
+        /// over ALL records, never the latest. Serde-defaulted so pre-P2a
+        /// journals replay unchanged; omitted when false.
+        #[serde(default, skip_serializing_if = "is_false")]
+        image_influenced: bool,
     },
     CompactionCancel {
         compaction_id: String,

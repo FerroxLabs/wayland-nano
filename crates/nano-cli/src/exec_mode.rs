@@ -167,6 +167,11 @@ pub struct ExecApproval<W: Write + Send> {
     pub cwd: PathBuf,
     pub sandbox_available: bool,
     pub events: Arc<Mutex<ExecEvents<W>>>,
+    /// P2a §9.1: exec is NON-INTERACTIVE — "always require explicit human
+    /// approval" on an image-influenced turn means protected trust
+    /// mutations are DENIED outright (approval is impossible; fail closed).
+    /// Set from the journaled sticky-OR fold when exec resumes a session.
+    pub image_influenced: bool,
 }
 
 impl<W: Write + Send> std::fmt::Debug for ExecApproval<W> {
@@ -223,13 +228,22 @@ pub fn exec_gate_decision(
 
 impl<W: Write + Send> ApprovalGate for ExecApproval<W> {
     fn approve(&self, call: &ToolCall) -> ApprovalDecision {
-        let decision = exec_gate_decision(
-            call,
-            self.mode,
-            &self.policy,
-            &self.cwd,
-            self.sandbox_available,
-        );
+        // P2a §9.1: on an image-influenced turn a protected trust mutation
+        // requires explicit human approval — impossible on this
+        // non-interactive surface, so it is DENIED (fail closed), exactly
+        // the posture exec already applies to anything that would prompt.
+        let decision =
+            if self.image_influenced && crate::acp_mode::is_protected_trust_mutation(call) {
+                ApprovalDecision::Deny
+            } else {
+                exec_gate_decision(
+                    call,
+                    self.mode,
+                    &self.policy,
+                    &self.cwd,
+                    self.sandbox_available,
+                )
+            };
         if decision == ApprovalDecision::Deny {
             self.events
                 .lock()

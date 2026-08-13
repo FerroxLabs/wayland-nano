@@ -1,6 +1,6 @@
 //! Slash commands (composer prefix `/`): `/model`, `/mode`, `/plan`,
-//! `/todo`, `/status`, `/doctor`, `/compact`, `/quit` — the v1 set (design
-//! doc §4 + C10).
+//! `/todo`, `/status`, `/doctor`, `/compact`, `/attach`, `/quit` — the v1
+//! set (design doc §4 + C10 + P2a).
 //!
 //! `/status` and `/doctor` data path (normative, panel condition C1): both
 //! run `wayland-nano doctor` as a SHORT-LIVED SUBPROCESS and render the
@@ -40,6 +40,11 @@ pub enum SlashCommand {
     /// <tokens>` sends `session/budget` (the single-shot grant — the
     /// journal-first ordering lives host-side).
     Budget(Option<u64>),
+    /// P2a §3.1: `/attach <path>` — attach an image to the next prompt.
+    /// Path SYNTAX validation only (no I/O in the TUI — the TUI process
+    /// never reads image bytes; the host resolves them at prompt time
+    /// through the §4 loader). The payload is the path as typed.
+    Attach(String),
     /// Shut down (cancel any turn, kill the host, restore the terminal).
     Quit,
     /// Unknown `/...` input — reported, never executed.
@@ -79,6 +84,17 @@ pub fn parse(text: &str) -> Option<SlashCommand> {
                     _ => SlashCommand::Unknown(trimmed.to_string()),
                 },
                 _ => SlashCommand::Unknown(trimmed.to_string()),
+            }
+        }
+        "/attach" => {
+            // P2a §3.1: path syntax only — non-empty, no control characters
+            // (the composer sanitizer already strips them; this is the
+            // fail-closed recheck at the command boundary).
+            let path = trimmed.strip_prefix("/attach").unwrap_or("").trim();
+            if path.is_empty() || path.chars().any(|c| c.is_control()) {
+                SlashCommand::Unknown(trimmed.to_string())
+            } else {
+                SlashCommand::Attach(path.to_string())
             }
         }
         "/quit" => SlashCommand::Quit,
@@ -134,6 +150,30 @@ mod tests {
         assert_eq!(
             parse("/permissions"),
             Some(SlashCommand::Unknown("/permissions".into()))
+        );
+    }
+
+    /// P2a §3.1: /attach parses a path argument (syntax-only validation);
+    /// empty/missing paths are UNKNOWN, never executed. Paths with spaces
+    /// survive intact.
+    #[test]
+    fn parses_attach() {
+        assert_eq!(
+            parse("/attach C:/pics/shot one.png"),
+            Some(SlashCommand::Attach("C:/pics/shot one.png".into()))
+        );
+        assert_eq!(
+            parse("/attach"),
+            Some(SlashCommand::Unknown("/attach".into()))
+        );
+        assert_eq!(
+            parse("/attach   "),
+            Some(SlashCommand::Unknown("/attach".into()))
+        );
+        // Not a prefix match: /attachments is its own (unknown) command.
+        assert_eq!(
+            parse("/attachments"),
+            Some(SlashCommand::Unknown("/attachments".into()))
         );
     }
 

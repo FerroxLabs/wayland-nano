@@ -249,6 +249,11 @@ impl Harness {
                     write_enabled: false,
                     block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
                 };
+                // P2a: lane-A vision catalog (vendored, fail-closed) + the attachment
+                // store root beside the session journals (lane-B boundary use).
+                let vision_catalog = nano_model::vision_catalog::VisionCatalog::vendored()
+                    .expect("vendored vision catalog parses");
+                let attachment_home = sessions_dir.parent().expect("root");
                 let config = acp_mode::ServeConfig {
                     sessions_dir: &sessions_dir,
                     default_model: "mock",
@@ -267,6 +272,8 @@ impl Harness {
                     search_meter: None,
                     pricing: None,
                     budget_cap: None,
+                    vision_catalog: &vision_catalog,
+                    attachment_home,
                     journal_append_failer: None,
                 };
                 acp_mode::serve(

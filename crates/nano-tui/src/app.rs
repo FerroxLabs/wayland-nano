@@ -95,6 +95,11 @@ pub struct App {
     /// Discovered, never probed; without it a mid-turn submit keeps the old
     /// "a turn is already running" behavior.
     steer_supported: bool,
+    /// P2a §3.1: the per-session attachment list (paths, in mint order) —
+    /// SESSION-VOLATILE composer state (§10); the journaled manifest is the
+    /// durable record. The TUI never reads the bytes: the host resolves
+    /// each path through the §4 loader at prompt time.
+    attachments: Vec<String>,
     ready: bool,
     should_quit: bool,
     sender: AppEventSender,
@@ -125,6 +130,7 @@ impl App {
             nano_home,
             turn_active: false,
             steer_supported: false,
+            attachments: Vec::new(),
             ready: false,
             should_quit: false,
             sender,
@@ -397,6 +403,7 @@ impl App {
             Some(SlashCommand::Compact) => self.submit_compact(conn),
             Some(SlashCommand::Goal(action)) => self.submit_goal(conn, &action),
             Some(SlashCommand::Budget(tokens)) => self.submit_budget(conn, tokens),
+            Some(SlashCommand::Attach(path)) => self.attach_image(&path),
             Some(SlashCommand::Status) => {
                 self.transcript.push_note(&self.status.report());
                 // C1: /status doctor data comes from the short-lived
@@ -410,10 +417,30 @@ impl App {
             Some(SlashCommand::Quit) => self.begin_quit(conn),
             Some(SlashCommand::Unknown(command)) => {
                 self.transcript.push_note(&format!(
-                    "unknown command: {command} (have: /model /mode /plan /todo /status /doctor /compact /budget /quit)"
+                    "unknown command: {command} (have: /model /mode /plan /todo /status /doctor /compact /budget /attach /quit)"
                 ));
             }
         }
+    }
+
+    /// `/attach <path>` (P2a §3.1): records the attachment in the
+    /// per-session list and mints the grok placeholder contract
+    /// (`[Image #N: <path>]`, `placeholder_images.rs:39`) into the composer
+    /// buffer. The placeholder is DISPLAY-AND-LEGACY-TEXT only —
+    /// reconstruction never parses it (the §5.2 ordered manifest is the
+    /// machine contract). No I/O here: the TUI process never reads image
+    /// bytes; the host resolves the path at prompt time (§3.3).
+    fn attach_image(&mut self, path: &str) {
+        self.attachments.push(path.to_string());
+        let n = self.attachments.len();
+        let placeholder = format!("[Image #{n}: {path}]");
+        if !self.composer.is_empty() {
+            self.composer.insert_paste(" ");
+        }
+        self.composer.insert_paste(&placeholder);
+        self.transcript.push_note(&format!(
+            "attached {placeholder} — resolved and validated host-side at prompt time"
+        ));
     }
 
     /// `/plan` (C10 §3): the TUI is an ACP CLIENT, so this sends
@@ -576,10 +603,13 @@ impl App {
             return;
         };
         self.transcript.push_user(text);
+        // P2a §3.1: the attachment list rides as `image_path` extension
+        // blocks in manifest (mint) order; consumed by THIS prompt.
+        let attachments = std::mem::take(&mut self.attachments);
         self.send_request(
             conn,
             "session/prompt",
-            acp_client::prompt_params(&session_id, text),
+            acp_client::prompt_params_with_attachments(&session_id, text, &attachments),
             Pending::Prompt,
         );
         self.turn_active = true;
@@ -1170,4 +1200,76 @@ fn deny_option_id(request: &ApprovalRequest) -> String {
 /// details (sanitized downstream).
 fn one_line(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "<unprintable>".to_string())
+}
+
+/// P2a §3.1 tests: the /attach → composer placeholder → image_path wire
+/// blocks flow, through the real App submit path.
+#[cfg(test)]
+mod p2a_tests {
+    use super::*;
+    use crate::acp_client::ConnEvent;
+    use crate::acp_client::Connection;
+
+    #[derive(Default)]
+    struct RecordingConn {
+        sent: Vec<Value>,
+    }
+
+    impl Connection for RecordingConn {
+        fn send(&mut self, frame: &Value) -> Result<(), String> {
+            self.sent.push(frame.clone());
+            Ok(())
+        }
+        async fn next_event(&mut self) -> Option<ConnEvent> {
+            None
+        }
+    }
+
+    fn test_app() -> App {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            crate::event::AppEventSender::new(tx),
+            "C:/ws".into(),
+            std::path::PathBuf::from("C:/nano"),
+            None,
+        );
+        app.ready = true;
+        app.session_id = Some("s1".into());
+        app
+    }
+
+    /// The placeholder contract: /attach mints `[Image #N: <path>]` into
+    /// the composer (display only) and records the path; submit sends one
+    /// text block + one image_path block per attachment IN MINT ORDER, and
+    /// the attachment list is consumed by that prompt.
+    #[test]
+    fn attach_mints_placeholders_and_prompt_carries_image_path_blocks() {
+        let mut app = test_app();
+        app.composer.insert_paste("check this");
+        app.attach_image("C:/pics/a.png");
+        app.attach_image("C:/pics/b.png");
+        let mut conn = RecordingConn::default();
+        app.submit(&mut conn);
+        let prompt = conn
+            .sent
+            .iter()
+            .find(|f| f["method"] == "session/prompt")
+            .expect("prompt frame sent");
+        let blocks = &prompt["params"]["prompt"];
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(
+            blocks[0]["text"],
+            "check this [Image #1: C:/pics/a.png] [Image #2: C:/pics/b.png]"
+        );
+        assert_eq!(
+            blocks[1],
+            serde_json::json!({"type": "image_path", "path": "C:/pics/a.png"})
+        );
+        assert_eq!(
+            blocks[2],
+            serde_json::json!({"type": "image_path", "path": "C:/pics/b.png"})
+        );
+        // Consumed: the next prompt carries no attachments.
+        assert!(app.attachments.is_empty());
+    }
 }

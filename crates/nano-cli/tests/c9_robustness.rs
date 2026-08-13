@@ -229,6 +229,11 @@ impl Harness {
                     write_enabled: false,
                     block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
                 };
+                // P2a: lane-A vision catalog (vendored, fail-closed) + the attachment
+                // store root beside the session journals (lane-B boundary use).
+                let vision_catalog = nano_model::vision_catalog::VisionCatalog::vendored()
+                    .expect("vendored vision catalog parses");
+                let attachment_home = sessions_dir_owned.parent().expect("root");
                 let config = acp_mode::ServeConfig {
                     sessions_dir: &sessions_dir_owned,
                     default_model: &default_model,
@@ -244,6 +249,8 @@ impl Harness {
                     search_meter: None,
                     pricing: None,
                     budget_cap: None,
+                    vision_catalog: &vision_catalog,
+                    attachment_home,
                     sandbox_probe: &sandbox_probe,
                     journal_append_failer: None,
                     router: &router,
@@ -707,6 +714,7 @@ fn replay_fold_treats_steers_and_reasks_as_user_messages() {
             nano_session::op::Op::TurnBegin {
                 turn_id: "t".into(),
                 input: "original prompt".into(),
+                input_blocks: Vec::new(),
             },
         ),
         nano_session::op::OpEnvelope::new(

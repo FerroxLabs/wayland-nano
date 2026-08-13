@@ -20,6 +20,9 @@ path = "src/bin/gen_error_table.rs"
 
 [dependencies]
 async-trait = "0.1"
+# P2a §5.1/§5.3: attachment blob publish/rehydrate base64 at the ACP host
+# boundary (0.22, the in-tree version — nano-sandbox).
+base64 = "0.22"
 dirs-next = "2"
 nano-agent = { version = "0.1.0", path = "../nano-agent" }
 nano-core = { version = "0.1.0", path = "../nano-core" }

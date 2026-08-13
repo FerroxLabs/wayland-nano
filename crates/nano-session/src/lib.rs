@@ -32,8 +32,8 @@ pub use fork::{ForkError, ForkOutcome, ForkPoint, fork_journal};
 pub use lock::{FileLock, LockError, LockMode};
 pub use op::{
     CompactionCancelReason, ESTIMATION_METHOD_VERSION, GoalBudgets, GoalOutcome, GoalReason,
-    GoalStatusKind, MAX_GOAL_OBJECTIVE_LEN, MAX_GOAL_SUMMARY_LEN, Op, OpEnvelope, SCHEMA_VERSION,
-    TurnOutcome, TurnUsage, UsageSource,
+    GoalStatusKind, ImageRef, InputBlock, MAX_GOAL_OBJECTIVE_LEN, MAX_GOAL_SUMMARY_LEN, Op,
+    OpEnvelope, SCHEMA_VERSION, TurnOutcome, TurnUsage, UsageSource,
 };
 pub use reader::{JournalReport, read_journal};
 pub use redaction::{RedactionError, SecretKind, scan_for_secrets};

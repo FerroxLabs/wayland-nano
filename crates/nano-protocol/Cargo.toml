@@ -8,9 +8,18 @@ rust-version.workspace = true
 [dependencies]
 nano-agent = { version = "0.1.0", path = "../nano-agent" }
 nano-model = { version = "0.1.0", path = "../nano-model" }
+# P2a §2.3 (LANE-A BOUNDARY): the ACP prompt-block converter drives the §4
+# hardened loader (nano_tools::image) at intake.
+nano-tools = { version = "0.1.0", path = "../nano-tools" }
 # C7: NanoErrorKind (the journaled error vocabulary) — serde-only crate,
 # no cycle (nano-session depends on nothing in this workspace).
 nano-session = { version = "0.1.0", path = "../nano-session" }
+# P2a §2.3: ACP image-block base64 decode/encode at the converter boundary
+# (0.22, the in-tree version — nano-sandbox).
+base64 = "0.22"
+# P2a §3.3: the image_path confinement allowlist includes the OS user
+# pictures dir.
+dirs-next = "2"
 tokio = { version = "1", features = ["macros", "rt"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

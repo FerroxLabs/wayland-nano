@@ -51,6 +51,7 @@ fn turn(id_prefix: &str, turn_id: &str, input: &str) -> Vec<OpEnvelope> {
             Op::TurnBegin {
                 turn_id: turn_id.into(),
                 input: input.into(),
+                input_blocks: Vec::new(),
             },
         ),
         env(
@@ -222,6 +223,7 @@ fn fork_at_turn_truncates_at_turn_end() {
             Op::TurnBegin {
                 turn_id: "q-turn-1".into(),
                 input: "died mid-turn".into(),
+                input_blocks: Vec::new(),
             },
         ),
     ];
@@ -347,6 +349,7 @@ fn imported_region_overrun_is_typed_replay_error() {
             Op::TurnBegin {
                 turn_id: "t".into(),
                 input: "x".into(),
+                input_blocks: Vec::new(),
             },
         ),
     ];
@@ -381,6 +384,7 @@ fn child_authored_op_ids_never_collide_with_imported() {
             Op::TurnBegin {
                 turn_id: "child-turn-1".into(),
                 input: "new work".into(),
+                input_blocks: Vec::new(),
             },
         ))
         .unwrap();
@@ -492,6 +496,7 @@ fn imported_cron_fired_never_touches_child_scheduler_state() {
             Op::TurnBegin {
                 turn_id: "parent-turn-1".into(),
                 input: "scheduled".into(),
+                input_blocks: Vec::new(),
             },
         ),
         // Child-authored CronFired AFTER the imported region: folds live.
@@ -587,6 +592,7 @@ fn fork_of_compacted_journal_replays_identically() {
             summary: "summary of the prefix".into(),
             covers_op_ids: vec!["p-begin-1".into(), "p-1-tb".into()],
             changed_files: vec!["main.rs".into()],
+            image_influenced: false,
         },
     ));
     envelopes.extend(turn("p-2", "parent-turn-2", "second"));

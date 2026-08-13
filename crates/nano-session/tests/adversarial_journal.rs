@@ -41,6 +41,7 @@ fn base_ops() -> Vec<OpEnvelope> {
             Op::TurnBegin {
                 turn_id: "t1".into(),
                 input: "fix the build".into(),
+                input_blocks: Vec::new(),
             },
         ),
         env(
@@ -399,6 +400,7 @@ fn out_of_order_ops_fold_without_panic_into_safe_states() {
                 summary: "orphan".into(),
                 covers_op_ids: vec![],
                 changed_files: vec![],
+                image_influenced: false,
             },
         ),
         env(
@@ -406,6 +408,7 @@ fn out_of_order_ops_fold_without_panic_into_safe_states() {
             Op::TurnBegin {
                 turn_id: "t1".into(),
                 input: "still open".into(),
+                input_blocks: Vec::new(),
             },
         ),
     ];
