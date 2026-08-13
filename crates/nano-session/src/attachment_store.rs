@@ -183,6 +183,7 @@ impl AttachmentStore {
     /// typed and fail-closed (§5.5).
     pub fn open(nano_home: &Path) -> Result<Self, AttachmentStoreError> {
         let root = nano_home.join(STORE_DIR);
+        #[cfg(windows)]
         let created = !root.exists();
         make_private_dir(&root)?;
         make_private_dir(&root.join(STAGING_DIR))?;
@@ -626,7 +627,6 @@ fn is_reparse_point(_meta: &fs::Metadata) -> bool {
 /// Read a blob with no-follow semantics and a byte ceiling.
 #[cfg(unix)]
 fn read_no_follow(path: &Path, ceiling: u64) -> Result<Vec<u8>, BlobReadError> {
-    use std::io::Read as _;
     use std::os::unix::fs::OpenOptionsExt;
     let file = fs::OpenOptions::new()
         .read(true)
