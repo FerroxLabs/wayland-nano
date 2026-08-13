@@ -188,6 +188,54 @@ fn overline_file_recorded_with_empty_symbols() {
 }
 
 #[test]
+fn path_tokens_exclude_the_workspace_root_prefix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("root_prefix_token_only");
+    std::fs::create_dir_all(&ws).unwrap();
+    write(&ws, "src/lib.rs", "pub fn unrelated_symbol() {}\n");
+    let policy = base_policy(&ws);
+    let mut map = RepoMap::build(&ws, test_options(), ReadPolicy::new(&policy, &ws)).unwrap();
+
+    assert!(
+        map.query(Some("root_prefix_token_only"), None, 20)
+            .matches
+            .is_empty()
+    );
+    assert_eq!(
+        map.query(Some("src unrelated_symbol"), None, 20)
+            .matches
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn refresh_caps_files_and_counts_every_omission() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    write(&ws, "a.rs", "pub fn a() {}\n");
+    write(&ws, "b.rs", "pub fn b() {}\n");
+    write(&ws, "c.rs", "pub fn c() {}\n");
+    let policy = base_policy(&ws);
+    let options = IndexOptions {
+        max_files_per_refresh: 2,
+        ..test_options()
+    };
+
+    let mut map = RepoMap::build(&ws, options, ReadPolicy::new(&policy, &ws)).unwrap();
+    assert_eq!(map.stats().files, 2);
+    assert_eq!(map.stats().skipped_over_cap, 1);
+    assert!(map.entry(&ws.join("c.rs")).is_none());
+
+    std::fs::remove_file(ws.join("a.rs")).unwrap();
+    map.refresh();
+    assert_eq!(map.stats().files, 2);
+    assert_eq!(map.stats().skipped_over_cap, 0);
+    assert!(map.entry(&ws.join("c.rs")).is_some());
+}
+
+#[test]
 fn gitignored_path_absent() {
     let (_tmp, ws, map) = fixture(true);
     assert!(map.entry(&ws.join("ignored.rs")).is_none());
@@ -207,6 +255,29 @@ fn denied_read_path_absent_counted_never_enumerated() {
     // …and never enumerable through a query, even by exact symbol name.
     let result = map.query(Some("hidden_symbol"), None, 20);
     assert!(result.matches.is_empty());
+}
+
+#[test]
+fn skipped_denied_reports_only_the_last_refresh_pass() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    write(&ws, "visible.rs", "pub fn visible() {}\n");
+    write(&ws, "denied/hidden.rs", "pub fn hidden() {}\n");
+    let mut entries = base_entries(&ws);
+    entries.push(FileSystemSandboxEntry::new(
+        FileSystemPath::Path {
+            path: AbsolutePathBuf::from_absolute_path(ws.join("denied")).unwrap(),
+        },
+        FileSystemAccessMode::Deny,
+    ));
+    let policy = FileSystemSandboxPolicy::restricted(entries);
+    let mut map = RepoMap::build(&ws, test_options(), ReadPolicy::new(&policy, &ws)).unwrap();
+    assert_eq!(map.stats().skipped_denied, 1);
+
+    std::fs::remove_dir_all(ws.join("denied")).unwrap();
+    map.refresh();
+    assert_eq!(map.stats().skipped_denied, 0);
 }
 
 #[test]

@@ -10,6 +10,8 @@
 //! - the §5.3 read policy (`repomap_path_allowed`) checked at EVERY
 //!   directory entry and BEFORE any read; denied paths are counted
 //!   (`skipped_denied`), never enumerated;
+//! - at most `max_files` policy-allowed files are retained for a refresh;
+//!   every additional eligible file is counted in `skipped_over_cap`;
 //! - deterministic output (sorted).
 //!
 //! Gitignore respect is a globset-based approximation (deviation 8 —
@@ -36,11 +38,18 @@ pub struct WalkOutcome {
     /// once — their subtree is never descended into). Honest and
     /// bounded; the paths themselves are never reported (§5.3).
     pub skipped_denied: u64,
+    /// Policy-allowed files omitted after the per-refresh file cap.
+    pub skipped_over_cap: u64,
 }
 
-/// Walk `root` (already canonicalized by the caller) and collect every
-/// indexable regular file.
-pub fn walk(root: &Path, policy: &ReadPolicy, respect_gitignore: bool) -> WalkOutcome {
+/// Walk `root` (already canonicalized by the caller), retaining at most
+/// `max_files` indexable regular files and counting the remainder.
+pub fn walk(
+    root: &Path,
+    policy: &ReadPolicy,
+    respect_gitignore: bool,
+    max_files: usize,
+) -> WalkOutcome {
     let mut out = WalkOutcome::default();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut layers: Vec<GitignoreLayer> = Vec::new();
@@ -51,6 +60,7 @@ pub fn walk(root: &Path, policy: &ReadPolicy, respect_gitignore: bool) -> WalkOu
         &mut seen,
         &mut layers,
         &mut out,
+        max_files,
     );
     out.files.sort();
     out
@@ -63,6 +73,7 @@ fn walk_dir(
     seen: &mut HashSet<PathBuf>,
     layers: &mut Vec<GitignoreLayer>,
     out: &mut WalkOutcome,
+    max_files: usize,
 ) {
     let canonical = dunce::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     if !seen.insert(canonical) {
@@ -82,7 +93,9 @@ fn walk_dir(
         }
         return;
     };
-    for entry in entries.flatten() {
+    let mut entries = entries.flatten().collect::<Vec<_>>();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
         let path = entry.path();
         let Ok(ft) = entry.file_type() else {
             continue;
@@ -101,7 +114,15 @@ fn walk_dir(
             if respect_gitignore && is_ignored(layers, &path, true) {
                 continue;
             }
-            walk_dir(&path, policy, respect_gitignore, seen, layers, out);
+            walk_dir(
+                &path,
+                policy,
+                respect_gitignore,
+                seen,
+                layers,
+                out,
+                max_files,
+            );
             continue;
         }
         if !ft.is_file() {
@@ -114,7 +135,11 @@ fn walk_dir(
         if respect_gitignore && is_ignored(layers, &path, false) {
             continue;
         }
-        out.files.push(path);
+        if out.files.len() < max_files {
+            out.files.push(path);
+        } else {
+            out.skipped_over_cap = out.skipped_over_cap.saturating_add(1);
+        }
     }
     if pushed {
         layers.pop();
@@ -253,7 +278,7 @@ mod tests {
         write(ws, "src/b.rs", "fn b() {}\n");
         write(ws, "src/a.rs", "fn a() {}\n");
         write(ws, "README.md", "# x\n");
-        let out = walk(ws, &open_policy(), true);
+        let out = walk(ws, &open_policy(), true, usize::MAX);
         assert_eq!(
             rel_paths(&out, ws),
             vec!["README.md", "src/a.rs", "src/b.rs"]
@@ -269,7 +294,7 @@ mod tests {
         write(ws, "src/main.rs", "fn main() {}\n");
         write(ws, "target/out.rs", "fn built() {}\n");
         write(ws, "debug.log", "noise\n");
-        let out = walk(ws, &open_policy(), true);
+        let out = walk(ws, &open_policy(), true, usize::MAX);
         assert_eq!(rel_paths(&out, ws), vec![".gitignore", "src/main.rs"]);
     }
 
@@ -280,7 +305,7 @@ mod tests {
         write(ws, ".gitignore", "*.log\n!keep.log\n");
         write(ws, "drop.log", "x\n");
         write(ws, "keep.log", "x\n");
-        let out = walk(ws, &open_policy(), true);
+        let out = walk(ws, &open_policy(), true, usize::MAX);
         assert_eq!(rel_paths(&out, ws), vec![".gitignore", "keep.log"]);
     }
 
@@ -294,7 +319,7 @@ mod tests {
         write(ws, "sub/.gitignore", "inner.rs\n");
         write(ws, "sub/inner.rs", "fn i() {}\n");
         write(ws, "inner.rs", "fn top() {}\n"); // nested layer must not leak up
-        let out = walk(ws, &open_policy(), true);
+        let out = walk(ws, &open_policy(), true, usize::MAX);
         assert_eq!(
             rel_paths(&out, ws),
             vec![".gitignore", "inner.rs", "sub/.gitignore", "sub/rooted.txt"]
@@ -307,7 +332,7 @@ mod tests {
         let ws = tmp.path();
         write(ws, ".gitignore", "ignored.rs\n");
         write(ws, "ignored.rs", "fn i() {}\n");
-        let out = walk(ws, &open_policy(), false);
+        let out = walk(ws, &open_policy(), false, usize::MAX);
         assert_eq!(rel_paths(&out, ws), vec![".gitignore", "ignored.rs"]);
     }
 
@@ -317,7 +342,7 @@ mod tests {
         let ws = tmp.path();
         write(ws, ".git/config", "[core]\n");
         write(ws, "src/main.rs", "fn main() {}\n");
-        let out = walk(ws, &open_policy(), true);
+        let out = walk(ws, &open_policy(), true, usize::MAX);
         assert_eq!(rel_paths(&out, ws), vec!["src/main.rs"]);
     }
 
@@ -332,7 +357,7 @@ mod tests {
         std::fs::write(outside.join("secret.rs"), "fn secret() {}\n").unwrap();
         std::os::unix::fs::symlink(&outside, ws.join("linked")).unwrap();
         std::fs::write(ws.join("src/main.rs"), "fn main() {}\n").unwrap();
-        let out = walk(&ws, &open_policy(), true);
+        let out = walk(&ws, &open_policy(), true, usize::MAX);
         assert_eq!(rel_paths(&out, &ws), vec!["src/main.rs"]);
     }
 
@@ -361,7 +386,7 @@ mod tests {
             .expect("spawn mklink");
         assert!(status.success(), "mklink /J failed: {status}");
         std::fs::write(ws.join("src/main.rs"), "fn main() {}\n").unwrap();
-        let out = walk(&ws, &open_policy(), true);
+        let out = walk(&ws, &open_policy(), true, usize::MAX);
         let rels = rel_paths(&out, &ws);
         assert_eq!(rels, vec!["src/main.rs"]);
         // fs oracle: nothing from the junction target leaked in.
