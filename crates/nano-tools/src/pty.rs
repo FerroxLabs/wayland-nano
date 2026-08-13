@@ -758,7 +758,10 @@ fn unix_sandbox_argv(
 #[cfg(target_os = "macos")]
 fn unix_sandbox_argv(
     command: &str,
-    cwd: &Path,
+    // The seatbelt wrapper runs `sh -c <command>`; the session cwd is applied
+    // by the Command builder at the spawn site (`builder.cwd(cwd)`), unlike
+    // linux where the helper needs it inside the argv.
+    _cwd: &Path,
     workspace: &Path,
     profile: &nano_core::permissions::PermissionProfile,
 ) -> Result<Vec<String>, PtyError> {
