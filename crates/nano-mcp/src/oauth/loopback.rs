@@ -133,6 +133,10 @@ pub(crate) fn bind_with_timeout(
 
 /// The accept loop: exactly ONE success (200 + teardown); bounded 4xx for
 /// mismatches; typed failure + teardown on state mismatch or expiry.
+/// Teardown is ordered BEFORE the outcome is signaled on every terminal
+/// path (the listener is dropped first, then the channel sent): once
+/// `await_callback` returns, the port must already be closed — a later
+/// connect is refused and a queued-but-unaccepted duplicate is reset.
 fn accept_loop(
     listener: TcpListener,
     tx: mpsc::Sender<CallbackOutcome>,
@@ -143,23 +147,27 @@ fn accept_loop(
 ) {
     loop {
         if Instant::now() >= expires_at {
+            drop(listener);
             let _ = tx.send(CallbackOutcome::Failed(FailReason::CallbackTimeout));
             return;
         }
         match listener.accept() {
             Ok((stream, _)) => match handle_connection(stream, &host_header, &path, &state) {
                 ConnResult::Success(code) => {
+                    drop(listener); // consumed: teardown before signaling
                     let _ = tx.send(CallbackOutcome::Code(code));
-                    return; // consumed: teardown (listener drops with the thread)
+                    return;
                 }
                 ConnResult::StateMismatch => {
+                    drop(listener); // fail-closed teardown before signaling
                     let _ = tx.send(CallbackOutcome::Failed(FailReason::StateMismatch));
-                    return; // fail-closed teardown
+                    return;
                 }
                 ConnResult::ProviderError(code) => {
                     // §6.2 step 5: the provider answered with an `error`
                     // param on a validly-bound state — typed failure, fast
                     // teardown (never the 180s CallbackTimeout hang).
+                    drop(listener);
                     let _ = tx.send(CallbackOutcome::Failed(FailReason::ProviderError(code)));
                     return;
                 }
@@ -169,6 +177,7 @@ fn accept_loop(
                 std::thread::sleep(Duration::from_millis(20));
             }
             Err(_) => {
+                drop(listener);
                 let _ = tx.send(CallbackOutcome::Failed(FailReason::CallbackRejected));
                 return;
             }
@@ -193,6 +202,14 @@ fn handle_connection(
     path: &str,
     state: &str,
 ) -> ConnResult {
+    // The LISTENER is nonblocking (the accept loop polls). On BSD-derived
+    // platforms (macOS) an accepted socket inherits O_NONBLOCK — the
+    // canonical BSD sockets semantics, unlike Linux/Windows — so restore
+    // blocking mode explicitly; SO_RCVTIMEO below is meaningless on a
+    // nonblocking socket, and a read issued before the peer's bytes land
+    // would otherwise fail instantly with WouldBlock. (`read_head` also
+    // tolerates WouldBlock itself, in case this call ever fails.)
+    let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(CONN_READ_TIMEOUT));
     let Some(head) = read_head(&mut stream) else {
         let _ = respond(&mut stream, "400 Bad Request", "malformed request");
@@ -288,13 +305,20 @@ fn handle_connection(
 
 /// Bounded head read: at most MAX_HEAD_BYTES, stopping at the header
 /// terminator. Oversized or unreadable ⇒ None (the caller 4xx's).
+/// WouldBlock is "not yet", never "never": the deadline for the next bytes
+/// is refreshed on every successful read (the same per-read discipline
+/// SO_RCVTIMEO gave on blocking sockets), so a peer whose head arrives in
+/// split segments — or a socket still in inherited nonblocking mode — is
+/// waited on, not rejected as "malformed".
 fn read_head(stream: &mut TcpStream) -> Option<String> {
     let mut buf = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
+    let mut deadline = Instant::now() + CONN_READ_TIMEOUT;
     loop {
         match stream.read(&mut chunk) {
             Ok(0) => return None,
             Ok(n) => {
+                deadline = Instant::now() + CONN_READ_TIMEOUT;
                 buf.extend_from_slice(&chunk[..n]);
                 if buf.len() > MAX_HEAD_BYTES {
                     let _ = respond(
@@ -307,6 +331,12 @@ fn read_head(stream: &mut TcpStream) -> Option<String> {
                 if buf.windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
                 }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(10));
             }
             Err(_) => return None,
         }
@@ -447,6 +477,48 @@ mod tests {
         assert!(status.contains("200"), "status: {status}");
         let code = handle.join().expect("join").expect("callback");
         assert_eq!(code, "authcode123");
+    }
+
+    /// Regression pin for the CI flake on macOS (run fe6d621): the request
+    /// head can arrive in SPLIT TCP segments, and on BSD-derived platforms
+    /// the accepted socket may report WouldBlock before the first byte
+    /// lands (inherited nonblocking mode). A partial or delayed head is
+    /// NOT "malformed": the listener must wait for the rest and complete
+    /// the login. (On Windows/Linux the blocking read already waited, so
+    /// pre-fix this passed there — it discriminates where the defect
+    /// lives.)
+    #[test]
+    fn split_head_across_segments_still_completes() {
+        let binding = bind_with_timeout("srv_test", Duration::from_secs(10)).expect("bind");
+        let addr = addr_of(&binding);
+        let host = addr.clone();
+        let path = binding.callback_path.clone();
+        let state = binding.state.clone();
+        let handle = std::thread::spawn(move || binding.await_callback());
+        let mut s = TcpStream::connect(&addr).expect("connect");
+        s.write_all(format!("GET {path}?code=authcode123&state={state} HTTP/1.1\r\n").as_bytes())
+            .unwrap();
+        s.flush().unwrap();
+        // Force the server to read a partial head before the rest arrives.
+        std::thread::sleep(Duration::from_millis(200));
+        s.write_all(format!("Host: {host}\r\n\r\n").as_bytes())
+            .unwrap();
+        s.flush().unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            match s.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+        let status = String::from_utf8_lossy(&buf)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        assert!(status.contains("200"), "status: {status}");
+        assert_eq!(handle.join().unwrap().unwrap(), "authcode123");
     }
 
     #[test]
