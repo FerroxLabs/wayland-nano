@@ -1,7 +1,8 @@
 //! Hand-rolled ACP (JSON-RPC over stdio) client subset (design doc §2):
 //! initialize, session/new, session/load, session/prompt, session/cancel,
 //! session/set_model, session/set_mode (C2), session/update,
-//! session/request_permission.
+//! session/request_permission, and the `_wayland/session/list` Nano
+//! extension.
 //!
 //! The `agent-client-protocol` SDK crate is explicitly rejected (a new
 //! external prod dep); this subset is small and the wire contract is the
@@ -20,6 +21,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -27,6 +29,33 @@ use tokio::sync::mpsc;
 use nano_session::NanoErrorKind;
 
 pub const ACP_PROTOCOL_VERSION: u32 = 1;
+pub const SESSION_LIST_METHOD: &str = "_wayland/session/list";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionListStatus {
+    Closed,
+    Live,
+    Corrupt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionListSummary {
+    pub session_id: String,
+    pub cwd: String,
+    pub modified_ms: u64,
+    pub size_bytes: u64,
+    pub status: SessionListStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionListResponse {
+    pub sessions: Vec<SessionListSummary>,
+    pub truncated: bool,
+    pub live_status_caveat: String,
+}
 
 /// The typed payload inside `error.data.nanoError` / `_meta.nanoError`
 /// (C7). An unrecognized (future) kind deserializes to
@@ -560,6 +589,14 @@ pub fn session_load_params(session_id: &str, cwd: &str) -> Value {
     json!({"sessionId": session_id, "cwd": cwd, "mcpServers": []})
 }
 
+pub fn session_list_params() -> Value {
+    json!({})
+}
+
+pub fn parse_session_list(result: Value) -> Option<SessionListResponse> {
+    serde_json::from_value(result).ok()
+}
+
 pub fn prompt_params(session_id: &str, text: &str) -> Value {
     prompt_params_with_attachments(session_id, text, &[])
 }
@@ -620,6 +657,17 @@ pub fn parse_steer_capability(result: &Value) -> bool {
         .and_then(|e| e.get("session/steer"))
         .and_then(|s| s.get("version"))
         .is_some()
+}
+
+/// Session-list support is capability-discovered, never probed.
+pub fn parse_session_list_capability(result: &Value) -> bool {
+    result
+        .get("agentCapabilities")
+        .and_then(|c| c.get("nanoExtensions"))
+        .and_then(|extensions| extensions.get(SESSION_LIST_METHOD))
+        .and_then(|surface| surface.get("version"))
+        .and_then(Value::as_u64)
+        == Some(1)
 }
 
 /// _wayland/goal/* (C11): the goal lifecycle mirror. The subcommand selects
@@ -1138,6 +1186,32 @@ mod tests {
         assert_eq!(ids, ["read_only", "default", "full_auto", "quantum"]);
         assert!(parse_modes(&json!({})).is_none());
         assert!(parse_modes(&json!({"modes": {"availableModes": []}})).is_none());
+    }
+
+    #[test]
+    fn session_list_capability_and_response_are_typed() {
+        let initialize = json!({"agentCapabilities":{"nanoExtensions":{
+            "_wayland/session/list":{"version":1}
+        }}});
+        assert!(parse_session_list_capability(&initialize));
+        assert!(!parse_session_list_capability(&json!({})));
+        let response = parse_session_list(json!({
+            "sessions":[{
+                "sessionId":"s1","cwd":"C:/workspace","modifiedMs":12,
+                "sizeBytes":34,"status":"live"
+            }],
+            "truncated":false,
+            "liveStatusCaveat":"point-in-time"
+        }))
+        .unwrap();
+        assert_eq!(response.sessions[0].status, SessionListStatus::Live);
+        assert!(
+            parse_session_list(json!({
+                "sessions":[{"status":"future"}],
+                "truncated":false,"liveStatusCaveat":"point-in-time"
+            }))
+            .is_none()
+        );
     }
 
     /// C7: the numeric code AND the typed data payload survive parsing.

@@ -203,7 +203,7 @@ impl Status {
             .map(|b| format!(" | {}", b.summary()))
             .unwrap_or_default();
         format!(
-            " {} | {} | {} | {}{}{}{}{}{}{} | /model /mode /plan /todo /status /doctor /compact /budget /quit ",
+            " {} | {} | {} | {}{}{}{}{}{}{} | /model /mode /plan /todo /status /doctor /sessions /resume /compact /budget /quit ",
             self.model,
             self.mode,
             self.wire,

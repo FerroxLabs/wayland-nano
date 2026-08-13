@@ -25,7 +25,8 @@ pub mod writer;
 
 pub use attachment_store::{
     AttachmentStore, AttachmentStoreError, BlobReadError, GC_GRACE_SECS, MAX_BLOB_READ_BYTES,
-    SweepReport, WriteLease, attachment_unavailable_placeholder, is_valid_digest,
+    SweepReport, WriteLease, attachment_unavailable_placeholder, audit_private_session_dir,
+    is_valid_digest,
 };
 pub use error_kind::NanoErrorKind;
 pub use fork::{ForkError, ForkOutcome, ForkPoint, fork_journal};

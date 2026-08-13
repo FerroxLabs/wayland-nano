@@ -25,7 +25,10 @@ use ratatui::backend::Backend;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::acp_client::{self, ConnEvent, Connection, Inbound, SessionUpdate, WireError};
+use crate::acp_client::{
+    self, ConnEvent, Connection, Inbound, SessionListResponse, SessionListStatus, SessionUpdate,
+    WireError,
+};
 use crate::composer::{Composer, ComposerAction};
 use crate::doctor;
 use crate::event::{AppEvent, AppEventSender};
@@ -37,11 +40,16 @@ use crate::status::{Status, WireState};
 use crate::transcript::Transcript;
 
 /// What an outstanding client request is waiting for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Pending {
     Initialize,
     SessionNew,
-    SessionLoad,
+    SessionLoad {
+        startup: bool,
+    },
+    SessionList {
+        resume_id: Option<String>,
+    },
     Prompt,
     SetModel,
     SetMode,
@@ -61,6 +69,11 @@ enum Modal {
     },
     ModelPicker(ListSelectionView),
     ModePicker(ListSelectionView),
+    SessionPicker {
+        view: ListSelectionView,
+        statuses: HashMap<String, SessionListStatus>,
+        caveat: String,
+    },
 }
 
 pub struct App {
@@ -95,6 +108,8 @@ pub struct App {
     /// Discovered, never probed; without it a mid-turn submit keeps the old
     /// "a turn is already running" behavior.
     steer_supported: bool,
+    /// Session browser support, discovered from `_wayland/session/list`.
+    sessions_supported: bool,
     /// P2a §3.1: the per-session attachment list (paths, in mint order) —
     /// SESSION-VOLATILE composer state (§10); the journaled manifest is the
     /// durable record. The TUI never reads the bytes: the host resolves
@@ -130,6 +145,7 @@ impl App {
             nano_home,
             turn_active: false,
             steer_supported: false,
+            sessions_supported: false,
             attachments: Vec::new(),
             ready: false,
             should_quit: false,
@@ -150,6 +166,9 @@ impl App {
             }
             Some(Modal::ModelPicker(view)) => Some(("model", view, None)),
             Some(Modal::ModePicker(view)) => Some(("mode", view, None)),
+            Some(Modal::SessionPicker { view, caveat, .. }) => {
+                Some(("session", view, Some(caveat.as_str())))
+            }
             None => None,
         }
     }
@@ -362,6 +381,40 @@ impl App {
                     ModalOutcome::Cancelled => {}
                 }
             }
+            Modal::SessionPicker {
+                view,
+                statuses,
+                caveat,
+            } => {
+                let mut view = view;
+                match view.handle_key(key) {
+                    ModalOutcome::Open => {
+                        self.modal = Some(Modal::SessionPicker {
+                            view,
+                            statuses,
+                            caveat,
+                        });
+                    }
+                    ModalOutcome::Selected(session_id) => match statuses.get(&session_id) {
+                        Some(SessionListStatus::Live) => {
+                            self.transcript
+                                .push_note(&format!("session {session_id} is live; {caveat}"));
+                            self.modal = Some(Modal::SessionPicker {
+                                view,
+                                statuses,
+                                caveat,
+                            });
+                        }
+                        Some(SessionListStatus::Closed | SessionListStatus::Corrupt) => {
+                            self.load_selected_session(conn, &session_id);
+                        }
+                        None => self
+                            .transcript
+                            .push_note("selected session row had no typed status"),
+                    },
+                    ModalOutcome::Cancelled => {}
+                }
+            }
         }
     }
 
@@ -414,10 +467,12 @@ impl App {
                 self.transcript.push_note("running wayland-nano doctor…");
                 doctor::run_doctor_async(self.sender.clone(), &self.nano_home);
             }
+            Some(SlashCommand::Sessions) => self.request_sessions(conn, None),
+            Some(SlashCommand::Resume(session_id)) => self.request_sessions(conn, Some(session_id)),
             Some(SlashCommand::Quit) => self.begin_quit(conn),
             Some(SlashCommand::Unknown(command)) => {
                 self.transcript.push_note(&format!(
-                    "unknown command: {command} (have: /model /mode /plan /todo /status /doctor /compact /budget /attach /quit)"
+                    "unknown command: {command} (have: /model /mode /plan /todo /status /doctor /sessions /resume /compact /budget /attach /quit)"
                 ));
             }
         }
@@ -674,6 +729,107 @@ impl App {
         )));
     }
 
+    fn request_sessions<C: Connection>(&mut self, conn: &mut C, resume_id: Option<String>) {
+        if !self.ready {
+            self.transcript
+                .push_note("not connected yet — wait for the session");
+            return;
+        }
+        if !self.sessions_supported {
+            self.transcript
+                .push_note("session browser not advertised by the host");
+            return;
+        }
+        if resume_id
+            .as_deref()
+            .is_some_and(|id| !is_session_id_syntax_safe(id))
+        {
+            self.transcript.push_note("invalid session id");
+            return;
+        }
+        self.send_request(
+            conn,
+            acp_client::SESSION_LIST_METHOD,
+            acp_client::session_list_params(),
+            Pending::SessionList { resume_id },
+        );
+    }
+
+    fn apply_session_list<C: Connection>(
+        &mut self,
+        conn: &mut C,
+        response: SessionListResponse,
+        resume_id: Option<String>,
+    ) {
+        if let Some(resume_id) = resume_id {
+            match response
+                .sessions
+                .iter()
+                .find(|summary| summary.session_id == resume_id)
+            {
+                Some(summary) if summary.status == SessionListStatus::Live => {
+                    self.transcript.push_note(&format!(
+                        "session {resume_id} is live; {}",
+                        response.live_status_caveat
+                    ));
+                }
+                Some(_) => self.load_selected_session(conn, &resume_id),
+                None => self
+                    .transcript
+                    .push_note("session is not present in the bounded session list"),
+            }
+            return;
+        }
+
+        if response.sessions.is_empty() {
+            self.transcript.push_note("no sessions found");
+            return;
+        }
+        let statuses = response
+            .sessions
+            .iter()
+            .map(|summary| (summary.session_id.clone(), summary.status))
+            .collect();
+        let items = response
+            .sessions
+            .into_iter()
+            .map(|summary| ListItem {
+                id: summary.session_id.clone(),
+                name: summary.session_id.clone(),
+                description: Some(format!(
+                    "{} · mtime {} ms · {} bytes · {:?}",
+                    summary.cwd, summary.modified_ms, summary.size_bytes, summary.status
+                )),
+                is_current: self.session_id.as_deref() == Some(summary.session_id.as_str()),
+            })
+            .collect();
+        let caveat = if response.truncated {
+            format!("{}; results truncated", response.live_status_caveat)
+        } else {
+            response.live_status_caveat
+        };
+        self.modal = Some(Modal::SessionPicker {
+            view: ListSelectionView::new_explicit("Resume session", items),
+            statuses,
+            caveat,
+        });
+    }
+
+    fn load_selected_session<C: Connection>(&mut self, conn: &mut C, session_id: &str) {
+        if self.turn_active {
+            self.transcript
+                .push_note("cannot resume another session while a turn is running");
+            return;
+        }
+        self.resume_session = Some(session_id.to_string());
+        self.send_request(
+            conn,
+            "session/load",
+            acp_client::session_load_params(session_id, &self.cwd),
+            Pending::SessionLoad { startup: false },
+        );
+    }
+
     fn begin_quit<C: Connection>(&mut self, conn: &mut C) {
         if self.turn_active
             && let Some(session_id) = self.session_id.clone()
@@ -758,9 +914,15 @@ impl App {
         if let Some(error) = error {
             self.push_wire_error(&error);
             match pending {
-                Pending::Initialize | Pending::SessionNew | Pending::SessionLoad => {
+                Pending::Initialize
+                | Pending::SessionNew
+                | Pending::SessionLoad { startup: true } => {
                     self.status.wire = WireState::Disconnected;
                 }
+                Pending::SessionLoad { startup: false } => {
+                    self.resume_session = None;
+                }
+                Pending::SessionList { .. } => {}
                 Pending::Prompt => {
                     // C7/D1 mid-stream semantics: the already-committed
                     // partial assistant cell STAYS; the error cell is
@@ -791,6 +953,7 @@ impl App {
                 // C9: steer support is DISCOVERED from the advertised
                 // nanoExtensions block, never probed.
                 self.steer_supported = acp_client::parse_steer_capability(&result);
+                self.sessions_supported = acp_client::parse_session_list_capability(&result);
                 let cwd = self.cwd.clone();
                 if let Some(resume) = self.resume_session.clone() {
                     // session/load: journal-backed resume (design §2). Replay
@@ -799,7 +962,7 @@ impl App {
                         conn,
                         "session/load",
                         acp_client::session_load_params(&resume, &cwd),
-                        Pending::SessionLoad,
+                        Pending::SessionLoad { startup: true },
                     );
                 } else {
                     self.send_request(
@@ -837,7 +1000,7 @@ impl App {
                 self.transcript
                     .push_note(&format!("session ready: {session_id}"));
             }
-            Pending::SessionLoad => {
+            Pending::SessionLoad { .. } => {
                 if let Some((current, models)) = acp_client::parse_models(&result) {
                     self.status.model = current;
                     self.status.models = models;
@@ -857,6 +1020,12 @@ impl App {
                 self.transcript
                     .push_note(&format!("session resumed: {resumed}"));
             }
+            Pending::SessionList { resume_id } => match acp_client::parse_session_list(result) {
+                Some(response) => self.apply_session_list(conn, response, resume_id),
+                None => self
+                    .transcript
+                    .push_note("session/list returned an invalid result"),
+            },
             Pending::Prompt => {
                 self.transcript.commit_active();
                 self.turn_active = false;
@@ -1202,6 +1371,13 @@ fn one_line(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "<unprintable>".to_string())
 }
 
+fn is_session_id_syntax_safe(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
 /// P2a §3.1 tests: the /attach → composer placeholder → image_path wire
 /// blocks flow, through the real App submit path.
 #[cfg(test)]
@@ -1271,5 +1447,128 @@ mod p2a_tests {
         );
         // Consumed: the next prompt carries no attachments.
         assert!(app.attachments.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod p4_session_browser_tests {
+    use super::*;
+    use crate::acp_client::ConnEvent;
+    use crossterm::event::KeyModifiers;
+    use serde_json::json;
+
+    #[derive(Default)]
+    struct RecordingConn {
+        sent: Vec<Value>,
+    }
+
+    impl Connection for RecordingConn {
+        fn send(&mut self, frame: &Value) -> Result<(), String> {
+            self.sent.push(frame.clone());
+            Ok(())
+        }
+
+        async fn next_event(&mut self) -> Option<ConnEvent> {
+            None
+        }
+    }
+
+    fn test_app() -> App {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            crate::event::AppEventSender::new(tx),
+            "C:/ws".into(),
+            std::path::PathBuf::from("C:/nano"),
+            None,
+        );
+        app.ready = true;
+        app.session_id = Some("current".into());
+        app.sessions_supported = true;
+        app
+    }
+
+    fn response(id: u64, status: &str) -> Value {
+        json!({
+            "jsonrpc":"2.0",
+            "id":id,
+            "result":{
+                "sessions":[{
+                    "sessionId":"target",
+                    "cwd":"C:/target",
+                    "modifiedMs":123,
+                    "sizeBytes":456,
+                    "status":status
+                }],
+                "truncated":false,
+                "liveStatusCaveat":"live status is a point-in-time probe"
+            }
+        })
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn sessions_lists_without_loading_and_requires_navigation_before_enter() {
+        let mut app = test_app();
+        let mut conn = RecordingConn::default();
+        app.composer.insert_paste("/sessions");
+        app.submit(&mut conn);
+        assert_eq!(conn.sent.len(), 1);
+        assert_eq!(conn.sent[0]["method"], acp_client::SESSION_LIST_METHOD);
+        assert!(
+            conn.sent
+                .iter()
+                .all(|frame| frame["method"] != "session/load")
+        );
+
+        let id = conn.sent[0]["id"].as_u64().unwrap();
+        app.handle_conn_event(&mut conn, ConnEvent::Frame(response(id, "closed")));
+        assert_eq!(app.modal_view().map(|view| view.0), Some("session"));
+        app.handle_key(&mut conn, key(KeyCode::Enter));
+        assert_eq!(conn.sent.len(), 1, "Enter cannot choose the first row");
+        app.handle_key(&mut conn, key(KeyCode::Down));
+        app.handle_key(&mut conn, key(KeyCode::Enter));
+        assert_eq!(conn.sent.len(), 2);
+        assert_eq!(conn.sent[1]["method"], "session/load");
+        assert_eq!(conn.sent[1]["params"]["sessionId"], "target");
+    }
+
+    #[test]
+    fn live_picker_row_is_visible_but_never_loaded() {
+        let mut app = test_app();
+        let mut conn = RecordingConn::default();
+        app.request_sessions(&mut conn, None);
+        let id = conn.sent[0]["id"].as_u64().unwrap();
+        app.handle_conn_event(&mut conn, ConnEvent::Frame(response(id, "live")));
+        app.handle_key(&mut conn, key(KeyCode::Down));
+        app.handle_key(&mut conn, key(KeyCode::Enter));
+        assert_eq!(conn.sent.len(), 1);
+        assert!(app.modal_open(), "refused live row keeps the picker open");
+    }
+
+    #[test]
+    fn resume_with_id_gates_on_list_then_uses_existing_load_path() {
+        let mut app = test_app();
+        let mut conn = RecordingConn::default();
+        app.composer.insert_paste("/resume target");
+        app.submit(&mut conn);
+        assert_eq!(conn.sent.len(), 1);
+        assert_eq!(conn.sent[0]["method"], acp_client::SESSION_LIST_METHOD);
+        let id = conn.sent[0]["id"].as_u64().unwrap();
+        app.handle_conn_event(&mut conn, ConnEvent::Frame(response(id, "corrupt")));
+        assert_eq!(conn.sent.len(), 2);
+        assert_eq!(conn.sent[1]["method"], "session/load");
+        assert_eq!(conn.sent[1]["params"]["sessionId"], "target");
+    }
+
+    #[test]
+    fn unsafe_resume_id_is_rejected_without_any_wire_request() {
+        let mut app = test_app();
+        let mut conn = RecordingConn::default();
+        app.composer.insert_paste("/resume ../outside");
+        app.submit(&mut conn);
+        assert!(conn.sent.is_empty());
     }
 }

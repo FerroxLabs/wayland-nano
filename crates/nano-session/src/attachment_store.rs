@@ -612,6 +612,13 @@ fn audit_private_dir(_path: &Path) -> Result<(), AttachmentStoreError> {
     ))
 }
 
+/// Reuses the attachment-store owner-only directory audit for the session
+/// browser's report-only `/doctor` line. This never creates or repairs the
+/// directory and therefore cannot weaken an existing ACL or permission mode.
+pub fn audit_private_session_dir(path: &Path) -> Result<(), AttachmentStoreError> {
+    audit_private_dir(path)
+}
+
 /// Reparse rejection (§5.3/§5.5): symlink, junction, or any reparse-point
 /// store entry is rejected.
 fn reject_reparse(path: &Path, detail: &'static str) -> Result<(), AttachmentStoreError> {

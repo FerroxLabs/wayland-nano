@@ -51,6 +51,20 @@ impl std::fmt::Debug for FileLock {
 }
 
 impl FileLock {
+    /// Session-browser liveness probe over an already-opened, no-follow
+    /// journal handle. Consuming the handle keeps the exact validated file
+    /// locked until this guard drops, so the browser never reopens by path.
+    pub fn try_acquire_file(file: File) -> Result<Self, LockError> {
+        Self::try_acquire_file_mode(file, LockMode::Exclusive)
+    }
+
+    /// Session-browser lock probe over an already-opened journal handle in
+    /// the requested mode. Existing path-based APIs retain their behavior.
+    pub fn try_acquire_file_mode(file: File, mode: LockMode) -> Result<Self, LockError> {
+        lock_file(&file, mode)?;
+        Ok(Self { file })
+    }
+
     /// Non-blocking exclusive acquire on `path` (the journal file itself —
     /// locking the data file, not a sidecar, so the lock lifecycle tracks
     /// the journal's).
@@ -72,8 +86,7 @@ impl FileLock {
             .create(true)
             .truncate(false)
             .open(path)?;
-        lock_file(&file, mode)?;
-        Ok(Self { file })
+        Self::try_acquire_file_mode(file, mode)
     }
 }
 
@@ -251,6 +264,31 @@ mod tests {
         drop(lease_b);
         let sweep = FileLock::try_acquire(&path).expect("exclusive after all leases released");
         drop(sweep);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_browser_can_probe_the_exact_open_handle() {
+        let dir = std::env::temp_dir().join(format!(
+            "wayland-nano-session-browser-lock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        std::fs::write(&path, "{}\n").unwrap();
+
+        let file = File::open(&path).unwrap();
+        let browser_probe = FileLock::try_acquire_file(file).expect("lock opened handle");
+        match FileLock::try_acquire(&path) {
+            Err(LockError::Busy) => {}
+            other => panic!("path contender must see browser probe, got {other:?}"),
+        }
+        drop(browser_probe);
+        FileLock::try_acquire(&path).expect("probe releases immediately");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
