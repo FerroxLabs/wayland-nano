@@ -32,6 +32,7 @@ fn session_ops() -> Vec<OpEnvelope> {
             Op::TurnBegin {
                 turn_id: "t1".into(),
                 input: "fix the build".into(),
+                input_blocks: Vec::new(),
             },
         ),
         env(
@@ -277,6 +278,7 @@ fn compaction_replay_is_actionably_equivalent() {
             summary: "turn t1 fixed main.rs".into(),
             covers_op_ids: vec!["2".into(), "3".into(), "4".into(), "5".into()],
             changed_files: vec!["main.rs".into()],
+            image_influenced: false,
         },
     ));
 
@@ -732,4 +734,119 @@ mod p1_economy {
         assert_eq!(a.applied_estimate, Some(150));
         assert!(!a.priced);
     }
+}
+
+// ── P2a §5.2/§8: journal schema additions (ordered manifest + provenance) ──
+
+fn p2a_image_ref() -> crate::op::ImageRef {
+    crate::op::ImageRef {
+        digest: "ab".repeat(32), // 64 lowercase hex chars
+        mime: "image/png".into(),
+        bytes: 1234,
+        width: 640,
+        height: 480,
+        placeholder: "[Image #1: /tmp/x.png]".into(),
+    }
+}
+
+/// The manifest's tagged wire shape is pinned (internally tagged,
+/// snake_case, digests only).
+#[test]
+fn p2a_input_block_wire_shape_pinned() {
+    let op = Op::TurnBegin {
+        turn_id: "t1".into(),
+        input: "look [Image #1: /tmp/x.png]".into(),
+        input_blocks: vec![
+            crate::op::InputBlock::Text {
+                text: "look".into(),
+            },
+            crate::op::InputBlock::ImageRef(p2a_image_ref()),
+        ],
+    };
+    let json = serde_json::to_value(&op).expect("serialize");
+    assert_eq!(json["type"], "turn_begin");
+    assert_eq!(json["input_blocks"][0]["type"], "text");
+    assert_eq!(json["input_blocks"][1]["type"], "image_ref");
+    assert_eq!(json["input_blocks"][1]["digest"], "ab".repeat(32));
+    assert_eq!(json["input_blocks"][1]["bytes"], 1234);
+    // Digest-only invariant: no image bytes, no base64 payloads, ever.
+    let line = serde_json::to_string(&op).expect("serialize");
+    assert!(!line.contains("base64,"), "journal carries digests only");
+    let back: Op = serde_json::from_str(&line).expect("deserialize");
+    assert_eq!(back, op);
+}
+
+/// New-reader-on-old-journal: a pre-P2a TurnBegin (no `input_blocks` field)
+/// deserializes with an empty manifest and RE-SERIALIZES byte-identically
+/// (skip_serializing_if keeps old journals byte-minimal).
+#[test]
+fn p2a_old_journal_turn_begin_round_trips_byte_identical() {
+    let old = r#"{"type":"turn_begin","turn_id":"t1","input":"fix the build"}"#;
+    let op: Op = serde_json::from_str(old).expect("old journal parses");
+    let Op::TurnBegin { input_blocks, .. } = &op else {
+        panic!("wrong op")
+    };
+    assert!(input_blocks.is_empty());
+    assert_eq!(serde_json::to_string(&op).expect("serialize"), old);
+}
+
+/// Old-reader-on-new-journal (forward direction): `Op` carries NO
+/// `deny_unknown_fields`, so a pre-P2a binary ignores the unknown
+/// `input_blocks` FIELD and replays the `input` projection cleanly. Simulated
+/// by deserializing a new-style op through a projection-only lens.
+#[test]
+fn p2a_new_journal_still_readable_via_projection() {
+    let new = r#"{"type":"turn_begin","turn_id":"t1","input":"look [Image #1: /tmp/x.png]","input_blocks":[{"type":"text","text":"look"},{"type":"image_ref","digest":"abababababababababababababababababababababababababababababababab","mime":"image/png","bytes":1234,"width":640,"height":480,"placeholder":"[Image #1: /tmp/x.png]"}]}"#;
+    let op: Op = serde_json::from_str(new).expect("new journal parses");
+    let Op::TurnBegin {
+        input,
+        input_blocks,
+        ..
+    } = op
+    else {
+        panic!("wrong op")
+    };
+    assert_eq!(input, "look [Image #1: /tmp/x.png]");
+    assert_eq!(input_blocks.len(), 2);
+}
+
+/// CI assertion (P2a §5.2): no `Op` variant may EVER gain
+/// `deny_unknown_fields` — it would break old-reader tolerance of
+/// additive-optional fields.
+#[test]
+fn p2a_op_never_denies_unknown_fields() {
+    let source = std::fs::read_to_string(format!("{}/src/op.rs", env!("CARGO_MANIFEST_DIR")))
+        .expect("read op.rs");
+    assert!(
+        !source.contains("deny_unknown_fields"),
+        "Op must tolerate unknown FIELDS (old readers); unknown op TYPES ride the Unknown arm"
+    );
+}
+
+/// CompactionComplete.image_influenced: serde-defaulted (absent ⇒ false),
+/// skipped when false, present when true.
+#[test]
+fn p2a_image_influenced_serde_default_and_skip() {
+    let old = r#"{"type":"compaction_complete","compaction_id":"k1","summary":"s","covers_op_ids":[],"changed_files":[]}"#;
+    let op: Op = serde_json::from_str(old).expect("old journal parses");
+    let Op::CompactionComplete {
+        image_influenced, ..
+    } = &op
+    else {
+        panic!("wrong op")
+    };
+    assert!(!image_influenced);
+    // False stays byte-minimal; true is journaled.
+    assert_eq!(serde_json::to_string(&op).expect("serialize"), old);
+    let influenced = Op::CompactionComplete {
+        compaction_id: "k1".into(),
+        summary: "s".into(),
+        covers_op_ids: vec![],
+        changed_files: vec![],
+        image_influenced: true,
+    };
+    let json = serde_json::to_string(&influenced).expect("serialize");
+    assert!(json.contains(r#""image_influenced":true"#));
+    let back: Op = serde_json::from_str(&json).expect("round trip");
+    assert_eq!(back, influenced);
 }

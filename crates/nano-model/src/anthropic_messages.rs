@@ -322,6 +322,11 @@ fn message_to_wire(message: &Message) -> serde_json::Value {
                 "content": content,
                 "is_error": is_error,
             }),
+            // P2a §2.2: the Anthropic-native base64 image source block.
+            ContentBlock::Image { mime, data } => serde_json::json!({
+                "type": "image",
+                "source": {"type": "base64", "media_type": mime, "data": data},
+            }),
         })
         .collect();
     // The recorded requests use the plain-string content form for a lone

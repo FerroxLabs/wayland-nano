@@ -195,17 +195,45 @@ fn message_to_wire(message: &Message) -> serde_json::Value {
         Role::Assistant => "assistant",
         Role::Tool => "tool",
     };
-    let texts: Vec<String> = message
+    // P2a §2.2: when any Image block is present the user message's `content`
+    // becomes an ARRAY of parts — text parts as {"type":"text","text":…}
+    // (NOT the bare-string fast path, so part order is preserved) and each
+    // image as a data-URL image_url part (codex models.rs:722 shape). No
+    // `detail` field in P2a (Q7 RULED).
+    let has_images = message
         .content
         .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text { text } => Some(text.clone()),
-            _ => None,
-        })
-        .collect();
+        .any(|b| matches!(b, ContentBlock::Image { .. }));
+    let content: serde_json::Value = if has_images {
+        let parts: Vec<serde_json::Value> = message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => {
+                    Some(serde_json::json!({"type": "text", "text": text}))
+                }
+                ContentBlock::Image { mime, data } => Some(serde_json::json!({
+                    "type": "image_url",
+                    "image_url": {"url": format!("data:{mime};base64,{data}")},
+                })),
+                _ => None,
+            })
+            .collect();
+        serde_json::json!(parts)
+    } else {
+        let texts: Vec<String> = message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        serde_json::json!(texts.join("\n"))
+    };
     let mut wire = serde_json::json!({
         "role": role,
-        "content": texts.join("\n"),
+        "content": content,
     });
     let tool_calls: Vec<serde_json::Value> = message
         .content

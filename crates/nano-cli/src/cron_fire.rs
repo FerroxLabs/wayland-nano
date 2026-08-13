@@ -121,6 +121,10 @@ where
             cwd: session_cwd,
             sandbox_available: self.sandbox_available,
             events: events.clone(),
+            // P2a §9.1: same sticky-OR fold as exec — an image-influenced
+            // session's cron fires deny protected trust mutations (no human
+            // is present to approve them).
+            image_influenced: crate::acp_mode::image_influenced_from_envelopes(&session.envelopes),
         };
         // Provenance: the transcript and journal show the input as
         // scheduled, never as the interactive user.

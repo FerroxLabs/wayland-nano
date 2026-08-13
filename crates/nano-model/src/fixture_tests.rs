@@ -604,3 +604,98 @@ fn responses_stream_rate_limit_frame_emits_mid_stream_observation() {
             .any(|e| matches!(e, ModelEvent::TextDelta(t) if t == "hi"))
     );
 }
+
+// ---------------------------------------------------------------------------
+// P2a §2.2: pinned wire-JSON fixtures for ContentBlock::Image emission (one
+// per codec, pinned BEFORE the producers land — the C10 diff-block
+// precedent). `aGVsbG8` is base64("hello") — synthetic bytes only.
+// ---------------------------------------------------------------------------
+
+fn image_request() -> ModelRequest {
+    use crate::types::ContentBlock;
+    ModelRequest {
+        model: "flux-pinned-gpt-5".into(),
+        messages: vec![Message::user_blocks(vec![
+            ContentBlock::Text {
+                text: "before".into(),
+            },
+            ContentBlock::Image {
+                mime: "image/png".into(),
+                data: "aGVsbG8".into(),
+            },
+            ContentBlock::Text {
+                text: "after".into(),
+            },
+        ])],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn completions_image_blocks_emit_image_url_parts_in_order() {
+    let body = build_request_body(&image_request());
+    // Exactly ONE image_url part, data:<sniffed-mime>;base64, prefix, part
+    // order preserved (text parts are NOT the bare-string fast path).
+    assert_eq!(
+        body["messages"][0],
+        serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "before"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8"}},
+                {"type": "text", "text": "after"}
+            ]
+        })
+    );
+    // No `detail` field in P2a (Q7 RULED, §16).
+    assert!(
+        body["messages"][0]["content"][1]["image_url"]
+            .get("detail")
+            .is_none()
+    );
+}
+
+#[test]
+fn anthropic_image_blocks_emit_base64_source_parts_in_order() {
+    let body = build_anthropic_body(&image_request());
+    assert_eq!(
+        body["messages"][0]["content"],
+        serde_json::json!([
+            {"type": "text", "text": "before"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aGVsbG8"}},
+            {"type": "text", "text": "after"}
+        ])
+    );
+}
+
+#[test]
+fn responses_image_blocks_emit_input_image_parts_in_order() {
+    let body = build_responses_body(&image_request());
+    assert_eq!(
+        body["input"],
+        serde_json::json!([
+            {"role": "user", "content": [
+                {"type": "input_text", "text": "before"},
+                {"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8"},
+                {"type": "input_text", "text": "after"}
+            ]}
+        ])
+    );
+}
+
+/// Regression: a lone text block keeps the historical bare-string /
+/// joined-text shapes on all three codecs (no array form without images).
+#[test]
+fn text_only_messages_keep_legacy_wire_shapes() {
+    let request = ModelRequest {
+        model: "m".into(),
+        messages: vec![Message::user("hi")],
+        ..Default::default()
+    };
+    assert_eq!(build_request_body(&request)["messages"][0]["content"], "hi");
+    assert_eq!(
+        build_anthropic_body(&request)["messages"][0]["content"],
+        "hi"
+    );
+    assert_eq!(build_responses_body(&request)["input"], "hi");
+}

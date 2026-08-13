@@ -60,21 +60,33 @@ use nano_model::provider_catalog::WireKind;
 use nano_model::types::{ContentBlock, Message, ModelObservation, Role, ToolCall};
 use nano_protocol::acp::{
     AvailableModel, JsonRpcNotification, JsonRpcResponse, NanoErrorExtras, PLAN_MODE_ID,
-    agent_capabilities, agent_message_chunk, budget_clamp_notice, budget_notice,
-    budget_warn_notice, compaction_notice, error_presentation, param_inert_notice, prompt_result,
-    rate_limit_notice, reconnect_notice, request_permission_request, request_question_request,
-    session_load_result, session_modes_value, session_new_result, set_model_result,
-    steer_dropped_notice, steer_queued_result, tool_call_diff, tool_call_done, tool_call_replay,
-    tool_call_update, user_message_chunk,
+    acp_blocks_to_content_blocks, agent_capabilities, agent_message_chunk,
+    attachment_missing_notice, budget_clamp_notice, budget_notice, budget_warn_notice,
+    compaction_notice, error_presentation, param_inert_notice, prompt_result, rate_limit_notice,
+    reconnect_notice, request_permission_request, request_question_request, session_load_result,
+    session_modes_value, session_new_result, set_model_result, steer_dropped_notice,
+    steer_queued_result, tool_call_diff, tool_call_done, tool_call_replay, tool_call_update,
+    user_message_chunk,
 };
 use nano_protocol::permission_mode::PermissionMode;
 use nano_session::NanoErrorKind;
 use nano_session::SessionState;
-use nano_session::op::{Op, OpEnvelope, TodoItem};
+use nano_session::op::{InputBlock, Op, OpEnvelope, TodoItem};
 use nano_session::reader::read_journal;
 use nano_session::writer::JournalWriter;
 use nano_tools::fs::FsTools;
 use nano_tools::shell::ShellTool;
+// ── LANE-A BOUNDARY (P2a) ────────────────────────────────────────────────
+// Lane A owns: the §4 loader (nano-tools/src/image.rs), the §5 digest-keyed
+// attachment blob store (nano-session/src/attachment_store.rs), the §6.3
+// vision catalog (nano-model/src/vision_catalog.rs), and the seven new §7
+// error kinds (NanoErrorKind::{ModelLacksVision, ImageInvalid,
+// ImageUnsupportedFormat, ImageTooLarge, ImageTooMany, AttachmentMissing,
+// AttachmentStoreError}). This module CONSUMES those APIs and defines none
+// of them.
+use nano_session::attachment_store::{
+    AttachmentStore, BlobReadError, attachment_unavailable_placeholder, is_valid_digest,
+};
 use std::io::{BufRead, Write};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -154,6 +166,17 @@ struct Session {
     /// the budget authority behind warn/stop/grant. `None` = pre-P1
     /// unmetered posture.
     meter: Option<nano_agent::cost::CostMeter>,
+    /// P2a §9.1: the sticky image-influenced flag — set whenever a turn's
+    /// ASSEMBLED CONTEXT contains any `ContentBlock::Image` (current prompt
+    /// or replayed history) OR an image-influenced compaction summary; OR'd
+    /// with every observed `CompactionComplete.image_influenced` (§8 part 2
+    /// flow-back); reconstructed on session/load as the sticky-OR over ALL
+    /// journaled records plus uncompacted manifests. NEVER cleared
+    /// mid-session: image-borne instructions can persist in summary text
+    /// after pixels are gone. The §9.1 approval clamp reads it — protected
+    /// trust mutations always take the human prompt while set, in EVERY
+    /// mode including full_auto.
+    image_influenced: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// P1 §3.3: the parent-journal rollup sink — appends
@@ -470,6 +493,21 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         write_enabled: memory_write,
         block_cap: memory_block_cap,
     };
+    // P2a §6.3 (LANE-A BOUNDARY): the fail-closed static vision catalog —
+    // vendored exact-id entries only; aliases are never blessed in v1.
+    // (Tightening-only `[model_capabilities]` config overrides are applied
+    // by lane A's loader entry when it lands.)
+    let vision_catalog = match nano_model::vision_catalog::VisionCatalog::vendored() {
+        Ok(catalog) => catalog,
+        Err(err) => {
+            // Fail-closed, same posture as the pricing catalog load: a
+            // corrupt vendored table is a typed startup error.
+            eprintln!("wayland-nano: vision catalog unavailable: {err}");
+            return Ok(2);
+        }
+    };
+    // P2a §5.1: the digest-keyed attachment blob store root (opened lazily
+    // at intake/resume; open carries the §5.5 permission audit).
     // P1 §3.1: the pricing catalog — FAIL-CLOSED: a malformed
     // NANO_PRICING_PATH override is a typed startup error naming the path,
     // never a silent fallback to bundled, never a partial parse.
@@ -509,6 +547,8 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         search_meter: Some(&search_meter),
         pricing,
         budget_cap,
+        vision_catalog: &vision_catalog,
+        attachment_home: nano_home,
     };
     serve(reader, writer, &config, make_driver, make_tools).await
 }
@@ -616,6 +656,17 @@ pub struct ServeConfig<'a> {
     /// P1 §4.1: the session token cap (`NANO_BUDGET_SESSION_TOKENS`).
     /// `None` = no cap (back-compat).
     pub budget_cap: Option<u64>,
+    /// P2a §6.3/§6.4 (LANE-A BOUNDARY): the fail-closed static vision
+    /// catalog — exact-id keys, aliases never blessed, tightening-only
+    /// overrides already applied. Drives the §6.2 rung-1 per-prompt gate and
+    /// the initialize-scoped advisory `promptCapabilities.image`; the §6.2
+    /// rung-3 pre-dispatch gate consults the vendored table engine-side.
+    pub vision_catalog: &'a nano_model::vision_catalog::VisionCatalog,
+    /// P2a §5.1 (LANE-A BOUNDARY): the nano-home root the attachment blob
+    /// store opens (store root = `<nano_home>/attachments`, owned by lane
+    /// A's `AttachmentStore::open`). Opened lazily at intake/resume — open
+    /// carries the §5.5 permission audit, fail-closed.
+    pub attachment_home: &'a std::path::Path,
 }
 
 /// C5 memory wiring for the ACP host.
@@ -819,7 +870,17 @@ where
                     }
                     Inbound::Request { id, method, params } => match method.as_str() {
                         "initialize" => {
-                            write_out(&out, &JsonRpcResponse::ok(id, agent_capabilities()))?;
+                            // P2a §6.4/D4: image capability advertises from
+                            // the configured STARTUP leaf — initialize-scoped,
+                            // advisory only, stale after session/set_model;
+                            // the rung-1/3 gates never trust it.
+                            write_out(
+                                &out,
+                                &JsonRpcResponse::ok(
+                                    id,
+                                    agent_capabilities(config.default_model, config.vision_catalog),
+                                ),
+                            )?;
                         }
                         "authenticate" => {
                             write_out(
@@ -971,6 +1032,8 @@ where
                                 mcp,
                                 tasks,
                                 meter,
+                                // P2a §9.1: a fresh session starts clean.
+                                image_influenced: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                             });
                             write_out(
                                 &out,
@@ -1091,7 +1154,43 @@ where
                                     },
                                 ));
                             }
-                            let context_messages = messages_from_envelopes(&report.envelopes);
+                            // P2a §5.3: rehydrate image manifests from the
+                            // blob store (opened, with its fail-closed §5.5
+                            // audit, only when the journal references one);
+                            // every degradation is a loud placeholder PLUS a
+                            // session/update notice (test-asserted).
+                            let attachment_store = if journal_has_image_manifests(
+                                &report.envelopes,
+                            ) {
+                                match AttachmentStore::open(config.attachment_home) {
+                                    Ok(store) => Some(store),
+                                    Err(err) => {
+                                        write_out(
+                                            &out,
+                                            &JsonRpcResponse::err_typed(
+                                                id,
+                                                NanoErrorKind::AttachmentStoreError,
+                                                format!("attachment store unavailable: {err}"),
+                                                NanoErrorExtras::default(),
+                                            ),
+                                        )?;
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+                            let (context_messages, attachment_issues) =
+                                messages_from_envelopes_rehydrating(
+                                    &report.envelopes,
+                                    attachment_store.as_ref(),
+                                );
+                            for issue in &attachment_issues {
+                                write_out(
+                                    &out,
+                                    &attachment_missing_notice(&session_id, issue.cause.as_str(), &issue.digest_prefix),
+                                )?;
+                            }
                             let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                             *current_cancel.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(cancel.clone());
@@ -1207,6 +1306,16 @@ where
                                 mcp,
                                 tasks,
                                 meter,
+                                // P2a §8 part 2 / §9.1: reconstructed from
+                                // the journal — sticky-OR over ALL journaled
+                                // CompactionComplete.image_influenced records
+                                // plus any UNCOMPACTED image-bearing
+                                // manifest. Never the latest record: a
+                                // false-negative record cannot reopen the
+                                // clamp on resume.
+                                image_influenced: Arc::new(std::sync::atomic::AtomicBool::new(
+                                    image_influenced_from_envelopes(&report.envelopes),
+                                )),
                             });
                             write_out(
                                 &out,
@@ -1585,17 +1694,164 @@ where
                                 continue;
                             };
                             let params = params.unwrap_or_default();
-                            let text = params
+                            // P2a §2.3: the text-only extractor (which
+                            // silently dropped non-text blocks) is REPLACED
+                            // by the typed converter — order and multiplicity
+                            // preserved exactly; unknown block types
+                            // typed-reject naming the tag only (§14
+                            // deviation 8); image blocks are validated and
+                            // re-encoded by the §4 loader (claimed MIME is a
+                            // HINT only); `image_path` extension blocks
+                            // (§3.1, the TUI attach path) resolve through
+                            // the same host-side loader. The FIRST invalid
+                            // block aborts the whole prompt.
+                            let prompt_parts = params
                                 .get("prompt")
                                 .and_then(|p| p.as_array())
-                                .map(|parts| {
-                                    parts
-                                        .iter()
-                                        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-                                        .collect::<Vec<_>>()
-                                        .join("\n")
-                                })
+                                .cloned()
                                 .unwrap_or_default();
+                            let turn_input = match acp_blocks_to_content_blocks(
+                                &prompt_parts,
+                                &active.workspace,
+                            )
+                            .await
+                            {
+                                Ok(input) => input,
+                                Err(rejection) => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            rejection.kind,
+                                            rejection.message,
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                            };
+                            // P2a §6.2 rung 1 (the load-bearing rung): an
+                            // image-bearing prompt against a current leaf
+                            // that is not vision-proven in the §6.3 catalog
+                            // is typed-rejected BEFORE the turn starts and
+                            // BEFORE any byte leaves the egress path — zero
+                            // network I/O. The TUI may pre-check for UX
+                            // immediacy, but THIS host check is
+                            // authoritative — the TUI is not a trust
+                            // boundary, and Desktop exempts ACP agents from
+                            // its own vision gate.
+                            if turn_input.has_images()
+                                && !config.vision_catalog.image_in(&active.model)
+                            {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::ModelLacksVision,
+                                        format!(
+                                            "model_lacks_vision: {} cannot process images. Switch to a vision-capable model (/model).",
+                                            active.model
+                                        ),
+                                        NanoErrorExtras::default(),
+                                    ),
+                                )?;
+                                continue;
+                            }
+                            // P2a §5.1: publish the re-encoded blobs BEFORE
+                            // the turn journals their manifest references.
+                            // The whole span — staging write → rename →
+                            // journal-append fsync — runs under the shared
+                            // GC write lease (§5.4): a sweep can never
+                            // observe, let alone delete, a published-but-
+                            // not-yet-referenced blob. The lease guard rides
+                            // the turn sink below and is dropped once the
+                            // TurnBegin append is durable.
+                            let mut attach_lease = None;
+                            if turn_input.has_images() {
+                                let store = match AttachmentStore::open(config.attachment_home) {
+                                    Ok(store) => store,
+                                    Err(err) => {
+                                        write_out(
+                                            &out,
+                                            &JsonRpcResponse::err_typed(
+                                                id,
+                                                NanoErrorKind::AttachmentStoreError,
+                                                format!("attachment store unavailable: {err}"),
+                                                NanoErrorExtras::default(),
+                                            ),
+                                        )?;
+                                        continue;
+                                    }
+                                };
+                                let lease = match store.acquire_write_lease() {
+                                    Ok(lease) => lease,
+                                    Err(err) => {
+                                        write_out(
+                                            &out,
+                                            &JsonRpcResponse::err_typed(
+                                                id,
+                                                NanoErrorKind::AttachmentStoreError,
+                                                format!("attachment store lock failed: {err}"),
+                                                NanoErrorExtras::default(),
+                                            ),
+                                        )?;
+                                        continue;
+                                    }
+                                };
+                                let mut publish_failed = None;
+                                for block in &turn_input.blocks {
+                                    let nano_agent::turn_input::TurnBlock::Image {
+                                        reference,
+                                        data,
+                                    } = block
+                                    else {
+                                        continue;
+                                    };
+                                    use base64::Engine;
+                                    let bytes = match base64::engine::general_purpose::STANDARD
+                                        .decode(data)
+                                    {
+                                        Ok(bytes) => bytes,
+                                        Err(_) => {
+                                            publish_failed = Some(
+                                                "image block data is not valid base64".to_string(),
+                                            );
+                                            break;
+                                        }
+                                    };
+                                    // The store content-addresses the bytes;
+                                    // the returned digest MUST equal the
+                                    // loader-computed one (defense in depth).
+                                    match store.put(&lease, &bytes) {
+                                        Ok(digest) if digest == reference.digest => {}
+                                        Ok(_) => {
+                                            publish_failed = Some(
+                                                "attachment digest mismatch at publish"
+                                                    .to_string(),
+                                            );
+                                            break;
+                                        }
+                                        Err(err) => {
+                                            publish_failed =
+                                                Some(format!("attachment publish failed: {err}"));
+                                            break;
+                                        }
+                                    }
+                                }
+                                if let Some(message) = publish_failed {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            NanoErrorKind::AttachmentStoreError,
+                                            message,
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                                attach_lease = Some(lease);
+                            }
                             // A fresh prompt starts un-cancelled; a cancel that
                             // landed between turns must not poison this one.
                             active.cancel.store(false, Ordering::SeqCst);
@@ -1693,6 +1949,24 @@ where
                             let session_id = active.id.clone();
                             let workspace = active.workspace.clone();
                             let cancel = active.cancel.clone();
+                            // P2a §9.1: the sticky session flag is set
+                            // whenever THIS turn's assembled context carries
+                            // any image — the current prompt OR the replayed
+                            // history (post-rehydration). Sticky for the
+                            // rest of the session; compaction never clears
+                            // it (§8 part 2 provenance).
+                            if turn_input.has_images()
+                                || prior_context.iter().any(|m| {
+                                    m.content
+                                        .iter()
+                                        .any(|b| matches!(b, ContentBlock::Image { .. }))
+                                })
+                            {
+                                active.image_influenced.store(true, Ordering::SeqCst);
+                            }
+                            let image_influenced_cell = active.image_influenced.clone();
+                            let image_influenced_before =
+                                image_influenced_cell.load(Ordering::SeqCst);
                             // The session's current model (set via
                             // session/set_model) is captured NOW: the whole
                             // turn runs on it, and a later switch only takes
@@ -1795,6 +2069,12 @@ where
                             let memory_write = config.memory.write_enabled;
                             let make_driver = make_driver.clone();
                             let make_tools = &make_tools;
+                            // P2a: move the §5.4 GC lease guard (held until
+                            // TurnBegin is durably journaled), the §9.1 flag
+                            // cell (gate clamp + §8 flow-back), and the
+                            // authoritative TurnInput into the turn.
+                            let mut attach_lease = attach_lease;
+                            let gate_image_influenced = image_influenced_cell.clone();
                             let turn_future = async move {
                                 // Held for the turn's lifetime (C11): forks
                                 // and cron fires see typed busy.
@@ -1902,6 +2182,11 @@ where
                                     // C10 §3: the shared posture cell —
                                     // enforcement at the gate, live mid-turn.
                                     plan: plan_cell.clone(),
+                                    // P2a §9.1: the image-influenced clamp —
+                                    // protected trust mutations ALWAYS take
+                                    // the human prompt while set, in every
+                                    // mode including full_auto.
+                                    image_influenced: gate_image_influenced.clone(),
                                 };
                                 // C10: the session-owned tools (todo / plan /
                                 // ask_user) wrap the MCP-merged executor and
@@ -2043,19 +2328,46 @@ where
                                     if !journaled {
                                         return false;
                                     }
+                                    // P2a §5.1/§5.4: TurnBegin is the FIRST
+                                    // op through this sink — once its append
+                                    // is durable the blob-publish → journal-
+                                    // reference span is closed and the
+                                    // shared GC lease is released.
+                                    if matches!(envelope.op, Op::TurnBegin { .. }) {
+                                        drop(attach_lease.take());
+                                    }
+                                    // P2a §8 part 2 flow-back: compaction
+                                    // provenance returns to host session
+                                    // state over the existing op channel —
+                                    // the sticky flag ORs every observed
+                                    // CompactionComplete.image_influenced.
+                                    if let Op::CompactionComplete {
+                                        image_influenced,
+                                        ..
+                                    } = &envelope.op
+                                    {
+                                        gate_image_influenced
+                                            .fetch_or(*image_influenced, Ordering::SeqCst);
+                                    }
                                     let mut guard =
                                         sink_out.lock().unwrap_or_else(|p| p.into_inner());
                                     let _ =
                                         write_op_frame(&mut *guard, &sink_session, envelope);
                                     true
                                 };
+                                // P2a §5.2.1: the host's sole prompt-
+                                // execution call is RE-ROUTED to the blocks
+                                // entry — the authoritative TurnInput (the
+                                // §2.3 converter's output) plus the session's
+                                // sticky provenance flag.
                                 let result = engine
-                                    .run_turn_streaming_with_context(
+                                    .run_turn_streaming_with_context_blocks(
                                         &turn_id,
-                                        &text,
+                                        turn_input,
                                         prior_context,
                                         Some(cancel.as_ref()),
                                         &mut sink,
+                                        image_influenced_before,
                                     )
                                     .await;
                                 // P1 §5: the meter's status payload rides
@@ -2202,6 +2514,16 @@ where
                             let model_name = binding.model.clone();
                             let session_id = active.id.clone();
                             let mut context = std::mem::take(&mut active.context);
+                            // P2a §8 part 2: capture the provenance inputs
+                            // BEFORE the swap — the session's sticky flag
+                            // and whether the compacted context held images.
+                            let image_influenced_before =
+                                active.image_influenced.load(Ordering::SeqCst);
+                            let had_images = context.iter().any(|m| {
+                                m.content
+                                    .iter()
+                                    .any(|b| matches!(b, ContentBlock::Image { .. }))
+                            });
                             let mut op_sequence = 0u32;
                             let notice_id = compaction_id.clone();
                             let notice_session = session_id.clone();
@@ -2246,6 +2568,10 @@ where
                                 &compaction_id,
                                 covers_op_ids,
                                 changed_files,
+                                // P2a §8 part 2: the session-side sticky
+                                // provenance flag — the host passes its
+                                // session value directly (r5).
+                                image_influenced_before,
                                 &mut emit,
                             )
                             .await;
@@ -2253,6 +2579,13 @@ where
                             // (compact_messages never swaps without a durable
                             // Complete); on success it IS the compacted one.
                             active.context = context;
+                            // P2a §8 part 2 flow-back: the journaled
+                            // provenance (= before OR any-image-evicted;
+                            // eviction happens iff the context held an image)
+                            // folds back into the sticky session flag.
+                            if outcome.is_ok() && (image_influenced_before || had_images) {
+                                active.image_influenced.store(true, Ordering::SeqCst);
+                            }
                             match outcome {
                                 Ok(()) => write_out(
                                     &out,
@@ -2647,8 +2980,47 @@ where
                                 &active.todos,
                                 &active.plan,
                             );
-                            context.extend(messages_from_envelopes(&report.envelopes));
+                            // P2a: refresh the sticky §9.1 flag from the
+                            // journal fold (sticky-OR over ALL records —
+                            // belt-and-braces beside the live sink fold),
+                            // and rehydrate image manifests through the SAME
+                            // §5.3 site session/load uses. A store failure
+                            // here degrades loudly (placeholders + notices),
+                            // never aborts the session between turns.
+                            let influenced = image_influenced_from_envelopes(&report.envelopes);
+                            active
+                                .image_influenced
+                                .fetch_or(influenced, Ordering::SeqCst);
+                            let attachment_store =
+                                if journal_has_image_manifests(&report.envelopes) {
+                                    match AttachmentStore::open(config.attachment_home) {
+                                        Ok(store) => Some(store),
+                                        Err(err) => {
+                                            // Fail-loud degradation: every
+                                            // manifest entry becomes the §5.3
+                                            // placeholder below.
+                                            eprintln!(
+                                                "wayland-nano: attachment store open failed between turns: {err}"
+                                            );
+                                            None
+                                        }
+                                    }
+                                } else {
+                                    None
+                                };
+                            let (rebuilt, attachment_issues) =
+                                messages_from_envelopes_rehydrating(
+                                    &report.envelopes,
+                                    attachment_store.as_ref(),
+                                );
+                            context.extend(rebuilt);
                             active.context = context;
+                            for issue in &attachment_issues {
+                                write_out(
+                                    &out,
+                                    &attachment_missing_notice(&turn_session, issue.cause.as_str(), &issue.digest_prefix),
+                                )?;
+                            }
                         }
                         Err(err) => {
                             eprintln!("wayland-nano: session journal re-read failed: {err}");
@@ -2941,6 +3313,44 @@ struct AcpApproval<W: Write> {
     /// in EVERY C2 mode, including full_auto. Live: a tool-driven mid-turn
     /// entry tightens the very next approval check.
     plan: Arc<Mutex<crate::session_tools::PlanPosture>>,
+    /// P2a §9.1/D12: the session's sticky image-influenced cell. While set,
+    /// protected TRUST MUTATIONS (rule amendment, credential/secret and
+    /// nano-home config writes, statically-unclassifiable shell commands —
+    /// the classes reachable through today's tool surface; OAuth consent /
+    /// egress-allowlist / capability-override flows have no tool surface at
+    /// 4ca7700) ALWAYS route to the interactive human prompt, in every mode
+    /// including full_auto — auto-approve paths are bypassed. Read-only and
+    /// ordinary workspace-scoped calls keep their normal mode semantics.
+    image_influenced: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// P2a §9.1: the closed protected-class classifier. A call is a protected
+/// trust mutation when it can persistently alter what Nano trusts:
+/// rule files (AGENTS.md), secret/credential subtrees (`.secrets`), or Nano
+/// home config (`.nano` — capability/egress/credential settings). `shell`
+/// commands are not statically classifiable (a contained shell can write a
+/// rule file), so under the clamp they ALWAYS ask — fail-closed. Path
+/// denials stay with the tool layer; this classifier only downgrades
+/// auto-approval to the human prompt.
+pub(crate) fn is_protected_trust_mutation(call: &ToolCall) -> bool {
+    match call.name.as_str() {
+        "shell" => true,
+        "fs_write" | "fs_edit" => {
+            let Some(path) = call.arguments.get("path").and_then(|v| v.as_str()) else {
+                // Unparseable: the full_auto arm already prompts on missing
+                // paths; nothing extra to clamp here.
+                return false;
+            };
+            let normalized = path.replace('\\', "/").to_lowercase();
+            let file_name = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
+            file_name == "agents.md"
+                || normalized.contains("/.secrets/")
+                || normalized.starts_with(".secrets/")
+                || normalized.contains("/.nano/")
+                || normalized.starts_with(".nano/")
+        }
+        _ => false,
+    }
 }
 
 impl<W: Write> AcpApproval<W> {
@@ -2986,6 +3396,18 @@ impl<W: Write + Send> ApprovalGate for AcpApproval<W> {
                 ApprovalDecision::Approve
             } else {
                 ApprovalDecision::Deny
+            };
+        }
+        // 2b. P2a §9.1 (D12): on an image-influenced turn a protected TRUST
+        //     MUTATION always takes the explicit human prompt — auto-approve
+        //     paths are bypassed in EVERY mode (read_only's categorical deny
+        //     is stricter still and unchanged). Placed after the plan
+        //     posture so the plan-file exception still works under the
+        //     clamp; ordinary workspace writes keep their mode semantics.
+        if self.image_influenced.load(Ordering::SeqCst) && is_protected_trust_mutation(call) {
+            return match self.effective_mode() {
+                PermissionMode::ReadOnly => ApprovalDecision::Deny,
+                _ => self.prompt_host(call),
             };
         }
         match self.effective_mode() {
@@ -3352,6 +3774,140 @@ fn replay_frames(session_id: &str, envelopes: &[OpEnvelope]) -> Vec<JsonRpcNotif
     frames
 }
 
+/// P2a §5.3: one loud resume-degradation event — a journaled image manifest
+/// entry whose blob could not be rehydrated. `cause` distinguishes
+/// MISSING/TAMPERED/MALFORMED OPERATOR-SIDE (logs, notices); the
+/// user-facing typed kind stays `AttachmentMissing` in every case (Q3
+/// RULED).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentIssueCause {
+    Missing,
+    Tampered,
+    Malformed,
+}
+
+impl AttachmentIssueCause {
+    /// The bounded wire word (closed vocabulary — the C7 discipline).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AttachmentIssueCause::Missing => "missing",
+            AttachmentIssueCause::Tampered => "tampered",
+            AttachmentIssueCause::Malformed => "malformed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentIssue {
+    pub cause: AttachmentIssueCause,
+    /// 8-char prefix of a VALIDATED digest, or "<malformed>" — never a raw
+    /// journal string.
+    pub digest_prefix: String,
+}
+
+/// §5.3 steps 2–5: validate the digest (exactly `^[0-9a-f]{64}$` — lane A's
+/// `is_valid_digest`) BEFORE any path use, then open the blob through the
+/// store (no-follow, reparse-point rejection, and sha256 verification live
+/// INSIDE lane A's `read_verified`), then obey the §4.2 wire-payload cap.
+/// Any failure is the loud `AttachmentMissing` degradation — resume NEVER
+/// aborts (Q3 RULED), and a malformed digest can never become an
+/// arbitrary-path read.
+fn rehydrate_image_block(
+    store: Option<&AttachmentStore>,
+    reference: &nano_session::op::ImageRef,
+) -> Result<String, AttachmentIssue> {
+    let prefix = || {
+        if is_valid_digest(&reference.digest) {
+            reference.digest.chars().take(12).collect()
+        } else {
+            "<malformed>".to_string()
+        }
+    };
+    if !is_valid_digest(&reference.digest) {
+        return Err(AttachmentIssue {
+            cause: AttachmentIssueCause::Malformed,
+            digest_prefix: prefix(),
+        });
+    }
+    let Some(store) = store else {
+        return Err(AttachmentIssue {
+            cause: AttachmentIssueCause::Missing,
+            digest_prefix: prefix(),
+        });
+    };
+    let bytes = store
+        .read_verified(&reference.digest)
+        .map_err(|err| AttachmentIssue {
+            cause: match &err {
+                BlobReadError::Missing | BlobReadError::Store(_) => AttachmentIssueCause::Missing,
+                BlobReadError::Tampered => AttachmentIssueCause::Tampered,
+                BlobReadError::MalformedDigest => AttachmentIssueCause::Malformed,
+            },
+            digest_prefix: prefix(),
+        })?;
+    use base64::Engine;
+    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    // §5.3 step 5: a digest-valid blob still obeys the §4.2 wire cap
+    // (defense-in-depth — intake capped it; a store that wrote more is
+    // inconsistent and degrades loudly).
+    if data.len() as u64 > nano_tools::image::MAX_IMAGE_PAYLOAD_BYTES {
+        eprintln!(
+            "wayland-nano: attachment {} OVERSIZE blob exceeds the wire cap",
+            prefix()
+        );
+        return Err(AttachmentIssue {
+            cause: AttachmentIssueCause::Missing,
+            digest_prefix: prefix(),
+        });
+    }
+    Ok(data)
+}
+
+/// P2a §8 part 2 replay-fold rule: the image-influenced session flag is
+/// reconstructed as the STICKY-OR over ALL journaled records — ANY
+/// `CompactionComplete.image_influenced == true` OR any UNCOMPACTED
+/// image-bearing `input_blocks` manifest (a manifest is compacted once some
+/// `CompactionComplete.covers_op_ids` covers its TurnBegin envelope id).
+/// Never the LATEST record: a false-negative record cannot reopen the §9.1
+/// clamp on resume.
+pub fn image_influenced_from_envelopes(envelopes: &[OpEnvelope]) -> bool {
+    let mut covered: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut any_influenced = false;
+    for envelope in envelopes {
+        if let Op::CompactionComplete {
+            image_influenced,
+            covers_op_ids,
+            ..
+        } = &envelope.op
+        {
+            any_influenced |= *image_influenced;
+            covered.extend(covers_op_ids.iter().map(String::as_str));
+        }
+    }
+    if any_influenced {
+        return true;
+    }
+    envelopes.iter().any(|envelope| {
+        matches!(
+            &envelope.op,
+            Op::TurnBegin { input_blocks, .. }
+                if input_blocks.iter().any(|b| matches!(b, InputBlock::ImageRef(_)))
+        ) && !covered.contains(envelope.id.as_str())
+    })
+}
+
+/// Whether any journaled manifest references an attachment — the store is
+/// opened (with its §5.5 fail-closed audit) only when one does.
+fn journal_has_image_manifests(envelopes: &[OpEnvelope]) -> bool {
+    envelopes.iter().any(|envelope| {
+        matches!(
+            &envelope.op,
+            Op::TurnBegin { input_blocks, .. }
+                if input_blocks.iter().any(|b| matches!(b, InputBlock::ImageRef(_)))
+        )
+    })
+}
+
 /// Rebuilds model-consumable conversation context from journaled ops. Tool
 /// payloads are NOT persisted (digest-only journals), so a restored tool
 /// result carries an explicit elision marker instead of the original output:
@@ -3365,7 +3921,29 @@ fn replay_frames(session_id: &str, envelopes: &[OpEnvelope]) -> Vec<JsonRpcNotif
 /// builder (C1 §6), so a resumed context is byte-identical to the live
 /// post-compaction one over the compacted prefix. Pub for the C1 replay /
 /// fault-injection tests; not part of the wire surface.
+///
+/// P2a §5.3 — THE SOLE image rehydration site: this signature is preserved
+/// for journal-only consumers (the C1 replay/fault-injection tests, exec and
+/// cron rebuilds). With no store handle, every image manifest entry degrades
+/// to the loud §5.3 placeholder (operator-logged MISSING) — never a silent
+/// drop. ACP session paths call [`messages_from_envelopes_rehydrating`]
+/// with the store and emit the test-asserted session/update notices.
 pub fn messages_from_envelopes(envelopes: &[OpEnvelope]) -> Vec<Message> {
+    messages_from_envelopes_rehydrating(envelopes, None).0
+}
+
+/// P2a §5.3: the rehydrating variant — walks each non-compacted TurnBegin's
+/// `input_blocks` manifest IN ORDER: `Text` → `ContentBlock::Text`,
+/// `ImageRef` → a digest-verified `ContentBlock::Image` rebuilt at its
+/// manifest position. Missing/corrupt/tampered blobs become the loud
+/// placeholder at that position and an [`AttachmentIssue`] (the caller emits
+/// the C9-style session/update notice — test-asserted). Image bytes and
+/// digests NEVER reach `replay_frames` (the two-surface split).
+pub fn messages_from_envelopes_rehydrating(
+    envelopes: &[OpEnvelope],
+    attachments: Option<&AttachmentStore>,
+) -> (Vec<Message>, Vec<AttachmentIssue>) {
+    let mut notices = Vec::new();
     let mut messages = Vec::new();
     let mut assistant: Vec<ContentBlock> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -3382,9 +3960,62 @@ pub fn messages_from_envelopes(envelopes: &[OpEnvelope]) -> Vec<Message> {
             continue; // idempotent fold: duplicate ids never double-apply
         }
         match &envelope.op {
-            Op::TurnBegin { input, .. } => {
+            Op::TurnBegin {
+                input,
+                input_blocks,
+                ..
+            } => {
                 flush_assistant(&mut messages, &mut assistant);
-                messages.push(Message::user(input.clone()));
+                if input_blocks.is_empty() {
+                    // Pre-P2a journal or a text-only turn: the projection IS
+                    // the message — byte-identical to the pre-P2a fold.
+                    messages.push(Message::user(input.clone()));
+                } else {
+                    // §5.2: walk the ordered manifest — NO string matching
+                    // is ever performed; leading/trailing/adjacent/duplicate
+                    // images and user-authored `[Image #…]`-like text are
+                    // all unambiguous by construction.
+                    let mut blocks: Vec<ContentBlock> = Vec::new();
+                    let mut image_ordinal = 0u32;
+                    for block in input_blocks {
+                        match block {
+                            InputBlock::Text { text } => {
+                                blocks.push(ContentBlock::Text { text: text.clone() });
+                            }
+                            InputBlock::ImageRef(reference) => {
+                                image_ordinal += 1;
+                                match rehydrate_image_block(attachments, reference) {
+                                    Ok(data) => blocks.push(ContentBlock::Image {
+                                        mime: reference.mime.clone(),
+                                        data,
+                                    }),
+                                    Err(issue) => {
+                                        let word = match issue.cause {
+                                            AttachmentIssueCause::Missing => "MISSING",
+                                            AttachmentIssueCause::Tampered => "TAMPERED",
+                                            AttachmentIssueCause::Malformed => "MALFORMED",
+                                        };
+                                        eprintln!(
+                                            "wayland-nano: attachment {word}: {}",
+                                            issue.digest_prefix
+                                        );
+                                        notices.push(issue);
+                                        // Lane A's placeholder fn is the ONE
+                                        // source of the §5.3 text (12-char
+                                        // prefix, never a raw digest).
+                                        blocks.push(ContentBlock::Text {
+                                            text: attachment_unavailable_placeholder(
+                                                image_ordinal as usize,
+                                                &reference.digest,
+                                            ),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    messages.push(Message::user_blocks(blocks));
+                }
             }
             // C9 kill-resume fidelity: drained steers and the schema re-ask
             // fold EXACTLY like the TurnBegin input fold, so a resumed
@@ -3448,6 +4079,10 @@ pub fn messages_from_envelopes(envelopes: &[OpEnvelope]) -> Vec<Message> {
             // real user messages survive the builder by construction.
             Op::CompactionComplete { summary, .. } => {
                 flush_assistant(&mut messages, &mut assistant);
+                // P2a §8: the rehydrated history flows through the SAME
+                // canonical builder (images counted at 6,000 bytes, the
+                // deterministic placeholder eviction) — live and resumed
+                // contexts stay byte-identical by construction.
                 messages = nano_agent::compact::build_compacted_history(
                     std::mem::take(&mut messages),
                     summary,
@@ -3457,7 +4092,7 @@ pub fn messages_from_envelopes(envelopes: &[OpEnvelope]) -> Vec<Message> {
         }
     }
     flush_assistant(&mut messages, &mut assistant);
-    messages
+    (messages, notices)
 }
 
 /// Writes the ACP `session/update` frame for one journaled op, live.
@@ -3578,6 +4213,8 @@ mod tests {
         plan: Arc<Mutex<crate::session_tools::PlanPosture>>,
         stop: Arc<std::sync::atomic::AtomicBool>,
         responder: Option<std::thread::JoinHandle<()>>,
+        /// P2a §9.1: the image-influenced cell wired into the gate.
+        image_influenced: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl TestGate {
@@ -3620,6 +4257,7 @@ mod tests {
                 })
             });
             let plan = test_posture(workspace);
+            let image_influenced = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let gate = AcpApproval {
                 session_id: "test-session".into(),
                 out: out.clone(),
@@ -3632,6 +4270,7 @@ mod tests {
                 cwd: workspace.to_path_buf(),
                 sandbox_available,
                 plan: plan.clone(),
+                image_influenced: image_influenced.clone(),
             };
             Self {
                 gate,
@@ -3640,6 +4279,7 @@ mod tests {
                 plan,
                 stop,
                 responder,
+                image_influenced,
             }
         }
 
@@ -3653,6 +4293,11 @@ mod tests {
 
         fn set_mode(&self, mode: PermissionMode) {
             *self.mode_cell.lock().unwrap_or_else(|p| p.into_inner()) = mode;
+        }
+
+        /// P2a §9.1: simulate an image-influenced session.
+        fn set_image_influenced(&self, value: bool) {
+            self.image_influenced.store(value, Ordering::SeqCst);
         }
     }
 
@@ -4433,5 +5078,263 @@ mod tests {
 
         let (forwarded, _) = run_reader(&set_mode_line(7, "read_only"), None);
         assert_eq!(forwarded.len(), 1, "no session: forwarded, nothing relayed");
+    }
+
+    // ── P2a tests ────────────────────────────────────────────────────────
+
+    fn p2a_manifest_envelopes() -> Vec<OpEnvelope> {
+        use nano_session::op::{ImageRef, InputBlock};
+        let reference = |digest: &str, n: u32| {
+            InputBlock::ImageRef(ImageRef {
+                digest: digest.into(),
+                mime: "image/png".into(),
+                bytes: 100,
+                width: 8,
+                height: 8,
+                placeholder: format!("[Image #{n}: /tmp/{n}.png]"),
+            })
+        };
+        vec![
+            OpEnvelope::new(
+                "s1-begin-1",
+                "2026-08-12T00:00:00Z",
+                Op::SessionBegin {
+                    session_id: "s1".into(),
+                    cwd: "C:\\repo".into(),
+                },
+            ),
+            // Leading image, interleaved text, DUPLICATE image, trailing
+            // image — order and multiplicity must reconstruct exactly.
+            OpEnvelope::new(
+                "s1-turn-1-1",
+                "2026-08-12T00:00:01Z",
+                Op::TurnBegin {
+                    turn_id: "s1-turn-1".into(),
+                    input: "[Image #1: /tmp/1.png]\nlook\n[Image #2: /tmp/2.png]\n[Image #3: /tmp/3.png]".into(),
+                    input_blocks: vec![
+                        reference(&"aa".repeat(32), 1),
+                        InputBlock::Text {
+                            text: "look".into(),
+                        },
+                        reference(&"bb".repeat(32), 2),
+                        reference(&"aa".repeat(32), 3), // duplicate digest
+                    ],
+                },
+            ),
+        ]
+    }
+
+    /// §5.3 with NO store handle: every manifest image degrades IN POSITION
+    /// to the loud placeholder (never a silent drop, never an abort — Q3
+    /// RULED); text blocks survive verbatim; ordinal numbering is per-turn
+    /// manifest order.
+    #[test]
+    fn p2a_rehydration_without_store_degrades_loudly_in_order() {
+        let messages = messages_from_envelopes(&p2a_manifest_envelopes());
+        assert_eq!(messages.len(), 1);
+        let content = &messages[0].content;
+        assert_eq!(content.len(), 4);
+        assert!(
+            matches!(&content[0], ContentBlock::Text { text } if text.contains("[Image #1 unavailable") && text.contains(&"aa".repeat(4)))
+        );
+        assert!(matches!(&content[1], ContentBlock::Text { text } if text == "look"));
+        assert!(
+            matches!(&content[2], ContentBlock::Text { text } if text.contains("[Image #2 unavailable"))
+        );
+        assert!(
+            matches!(&content[3], ContentBlock::Text { text } if text.contains("[Image #3 unavailable"))
+        );
+        // The placeholder instructs the model not to confabulate.
+        let text = match &content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            _ => panic!(),
+        };
+        assert!(text.contains("do not describe it from memory"));
+    }
+
+    /// §5.2/§12: user-authored `[Image #…]`-like text stays TEXT through the
+    /// fold — no string parsing anywhere. Old journals (no manifest field)
+    /// replay byte-identically to the pre-P2a fold.
+    #[test]
+    fn p2a_placeholder_like_text_stays_text_and_old_journals_unchanged() {
+        let envelopes = vec![
+            OpEnvelope::new(
+                "1",
+                "t",
+                Op::SessionBegin {
+                    session_id: "s".into(),
+                    cwd: "c".into(),
+                },
+            ),
+            OpEnvelope::new(
+                "2",
+                "t",
+                Op::TurnBegin {
+                    turn_id: "t1".into(),
+                    input: "[Image #99: fake]".into(),
+                    input_blocks: vec![], // serde-defaulted old journal
+                },
+            ),
+            OpEnvelope::new(
+                "3",
+                "t",
+                Op::TurnBegin {
+                    turn_id: "t2".into(),
+                    input: "see [Image #1: /tmp/a.png]".into(),
+                    input_blocks: vec![nano_session::op::InputBlock::Text {
+                        text: "see [Image #1: /tmp/a.png]".into(), // user-authored TEXT
+                    }],
+                },
+            ),
+        ];
+        let messages = messages_from_envelopes(&envelopes);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            messages[0].content,
+            vec![ContentBlock::Text {
+                text: "[Image #99: fake]".into()
+            }]
+        );
+        assert_eq!(
+            messages[1].content,
+            vec![ContentBlock::Text {
+                text: "see [Image #1: /tmp/a.png]".into()
+            }]
+        );
+    }
+
+    /// §8 part 2 replay-fold rule (sticky-OR): ANY journaled
+    /// CompactionComplete.image_influenced=true reconstructs the flag; an
+    /// UNCOMPACTED image manifest reconstructs it; a compaction-COVERED
+    /// manifest with a false record does not (the record was truthful:
+    /// post-eviction); and a false record never REOPENS a set flag.
+    #[test]
+    fn p2a_image_influenced_fold_is_sticky_or() {
+        use nano_session::op::{ImageRef, InputBlock};
+        let manifest_turn = |id: &str| {
+            OpEnvelope::new(
+                id,
+                "t",
+                Op::TurnBegin {
+                    turn_id: id.into(),
+                    input: "x".into(),
+                    input_blocks: vec![InputBlock::ImageRef(ImageRef {
+                        digest: "ab".repeat(32),
+                        mime: "image/png".into(),
+                        bytes: 1,
+                        width: 1,
+                        height: 1,
+                        placeholder: "[Image #1: /tmp/x.png]".into(),
+                    })],
+                },
+            )
+        };
+        let compaction = |id: &str, covers: Vec<String>, influenced: bool| {
+            OpEnvelope::new(
+                id,
+                "t",
+                Op::CompactionComplete {
+                    compaction_id: id.into(),
+                    summary: "s".into(),
+                    covers_op_ids: covers,
+                    changed_files: vec![],
+                    image_influenced: influenced,
+                },
+            )
+        };
+        // No images anywhere → false.
+        assert!(!image_influenced_from_envelopes(&[]));
+        // Uncompacted image manifest → true.
+        assert!(image_influenced_from_envelopes(&[manifest_turn("t1")]));
+        // Any true record → true, even with a later false record (sticky-OR,
+        // never latest).
+        assert!(image_influenced_from_envelopes(&[
+            manifest_turn("t1"),
+            compaction("k1", vec!["t1".into()], true),
+            compaction("k2", vec![], false),
+        ]));
+        // A COVERED manifest with only false records → false (the covered
+        // manifest's pixels were summarized post-eviction).
+        assert!(!image_influenced_from_envelopes(&[
+            manifest_turn("t1"),
+            compaction("k1", vec!["t1".into()], false),
+        ]));
+    }
+
+    /// §5.3 two-surface split — the replay-frame CANARY: replay_frames reads
+    /// ONLY the `input` projection; neither digests nor any base64 payload
+    /// reach ACP replay frames.
+    #[test]
+    fn p2a_replay_frames_never_carry_image_bytes_or_digests() {
+        let frames = replay_frames("s1", &p2a_manifest_envelopes());
+        let wire = serde_json::to_string(&frames).expect("serialize");
+        assert!(wire.contains("[Image #1: /tmp/1.png]"), "projection shows");
+        assert!(!wire.contains(&"aa".repeat(32)), "no digest leaks");
+        assert!(!wire.contains("base64,"), "no data-URL payloads");
+        assert!(!wire.contains("image_ref"), "no manifest structure leaks");
+    }
+
+    /// §9.1 (D12): on an image-influenced turn, protected trust mutations
+    /// ALWAYS surface the human-approval prompt — every mode, zero
+    /// auto-approvals — while ordinary workspace-scoped calls keep their
+    /// normal mode semantics. (The §12 screenshot-of-instructions fixture
+    /// drives this same gate end-to-end in the proof legs.)
+    #[test]
+    fn p2a_image_influenced_clamp_forces_human_approval() {
+        let ws = workspace();
+        for mode in PermissionMode::ALL {
+            let rig = TestGate::new(mode, &ws.0, true, Some("allow"));
+            rig.set_image_influenced(true);
+            // Rule amendment (contained write to AGENTS.md).
+            let amend = call(
+                "fs_write",
+                serde_json::json!({"path": ws.0.join("AGENTS.md"), "content": "x"}),
+            );
+            // Credential/secret-subtree write.
+            let secret = call(
+                "fs_write",
+                serde_json::json!({"path": ws.0.join(".secrets/flux-test-key"), "content": "x"}),
+            );
+            // Statically unclassifiable shell command.
+            let shell = call("shell", serde_json::json!({"command": "echo hi"}));
+            for protected in [amend, secret, shell] {
+                let before = rig.prompt_count();
+                rig.gate.approve(&protected);
+                match mode {
+                    PermissionMode::ReadOnly => {
+                        assert_eq!(
+                            rig.prompt_count(),
+                            before,
+                            "read_only denies categorically (stricter), no prompt"
+                        );
+                    }
+                    _ => assert_eq!(
+                        rig.prompt_count(),
+                        before + 1,
+                        "{mode:?}: image-influenced {} must prompt the human",
+                        protected.name
+                    ),
+                }
+            }
+            // Ordinary workspace-scoped calls keep their mode semantics:
+            // contained fs_write to a regular file still auto-approves in
+            // full_auto under the clamp.
+            let ordinary = contained_write(&ws.0);
+            let before = rig.prompt_count();
+            let decision = rig.gate.approve(&ordinary);
+            if mode == PermissionMode::FullAuto {
+                assert_eq!(decision, ApprovalDecision::Approve);
+                assert_eq!(rig.prompt_count(), before, "ordinary write: no prompt");
+            }
+        }
+        // Control: without the flag, the same AGENTS.md write auto-approves
+        // in full_auto (the clamp, not the path, forces the prompt).
+        let rig = TestGate::new(PermissionMode::FullAuto, &ws.0, true, Some("allow"));
+        let amend = call(
+            "fs_write",
+            serde_json::json!({"path": ws.0.join("AGENTS.md"), "content": "x"}),
+        );
+        assert_eq!(rig.gate.approve(&amend), ApprovalDecision::Approve);
+        assert_eq!(rig.prompt_count(), 0);
     }
 }

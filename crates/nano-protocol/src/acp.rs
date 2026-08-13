@@ -180,14 +180,28 @@ impl JsonRpcNotification {
 /// stdio support (acpTypes.ts `parseAgentCapabilitiesObject`: `stdio: mcp
 /// !== null`) and reads `http`/`sse` as booleans — so the honest shape is
 /// exactly `{http: false, sse: false}` (stdio-only, implied by presence).
-pub fn agent_capabilities() -> serde_json::Value {
+///
+/// P2a §6.4/D4 — FLAGGED SIGNATURE CHANGE (was the pure no-arg fn; single
+/// call site `acp_mode.rs` initialize handler): `promptCapabilities.image`
+/// advertises from the configured STARTUP leaf via the §6.3 vision catalog.
+/// The advertisement is INITIALIZE-SCOPED and ADVISORY ONLY — it describes
+/// the agent's startup configuration, never the session's current leaf, and
+/// it goes STALE after `session/set_model`; it is never per-session truth
+/// and the §6.2 rung-1/rung-3 gates NEVER trust it.
+///
+/// LANE-A BOUNDARY: the vision catalog type is lane A's
+/// `nano-model/src/vision_catalog.rs`; consumed, never defined here.
+pub fn agent_capabilities(
+    startup_leaf: &str,
+    vision_catalog: &nano_model::vision_catalog::VisionCatalog,
+) -> serde_json::Value {
     serde_json::json!({
         "protocolVersion": ACP_PROTOCOL_VERSION,
         "agentCapabilities": {
             "loadSession": true,
             "promptCapabilities": {
                 "text": true,
-                "image": false,
+                "image": vision_catalog.image_in(startup_leaf),
                 "embeddedContext": false
             },
             "mcpCapabilities": {
@@ -210,6 +224,274 @@ pub fn agent_capabilities() -> serde_json::Value {
     })
 }
 
+// ── P2a §2.3: ACP wire intake — the typed prompt-block converter ─────────
+//
+// LANE-A BOUNDARY: the §4 hardened loader (`nano_tools::image`) and the §7
+// image error kinds (`NanoErrorKind::{ImageInvalid, ImageUnsupportedFormat,
+// ImageTooLarge, ImageTooMany, …}`) are lane-A surfaces; this module
+// consumes both and defines neither. The lane-A loader
+// (`load_image(bytes, claimed_mime)`, async over the spawn_blocking decode
+// boundary) NEVER touches filesystem policy, so the §3.3 path threat model
+// is enforced HERE, host-side.
+use nano_agent::turn_input::{TurnBlock, TurnInput};
+use nano_session::op::ImageRef;
+
+/// A typed prompt-block rejection (P2a §2.3/§7): unknown block types ride
+/// `InvalidParams` naming the type TAG only (closed vocabulary, no content
+/// echo — the C7 `nanoError` closed-fields rule); loader failures carry the
+/// §7 image kinds; path denials ride the reused `FsReadDenied` /
+/// `FsSensitiveDenied`. The FIRST invalid block aborts the whole prompt — a
+/// partially converted prompt is never executed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockRejection {
+    pub kind: NanoErrorKind,
+    pub message: String,
+}
+
+impl BlockRejection {
+    fn invalid_params(message: impl Into<String>) -> Self {
+        Self {
+            kind: NanoErrorKind::InvalidParams,
+            message: message.into(),
+        }
+    }
+
+    fn fs_read_denied(message: impl Into<String>) -> Self {
+        Self {
+            kind: NanoErrorKind::FsReadDenied,
+            message: message.into(),
+        }
+    }
+}
+
+/// P2a §3.3 — the TUI/path threat model (grok `placeholder_images.rs:13-37`,
+/// ported to the host intake boundary): canonicalize; prefix allowlist (the
+/// session workspace root + the OS user pictures dir — NEVER all of
+/// `$HOME`); extension allowlist as PRE-FILTER ONLY (never trusted — §4.1
+/// magic-byte sniffing is the real check); sensitive-subtree rejection (any
+/// dot-prefixed component under an allowed root — `.ssh`/`.gnupg`/`.aws`-
+/// style names and `.photoslibrary`-style bundles are all dot-prefixed);
+/// symlink/junction escape from every allowed root fails the prefix check
+/// on the CANONICAL path. The read is bounded at `MAX_IMAGE_FILE_BYTES`
+/// before any decoder runs. Returns the bytes and the canonical display
+/// path (for the placeholder/provenance — the TUI never sees bytes).
+fn confined_image_read(
+    raw_path: &str,
+    workspace: &std::path::Path,
+) -> Result<(Vec<u8>, String), BlockRejection> {
+    use nano_tools::image::MAX_IMAGE_FILE_BYTES;
+    // Extension pre-filter (never trusted — §4.1 sniffs magic bytes).
+    let extension_ok = std::path::Path::new(raw_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            matches!(
+                e.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "gif" | "webp"
+            )
+        })
+        .unwrap_or(false);
+    if !extension_ok {
+        return Err(BlockRejection::fs_read_denied(
+            "image_path: extension outside {png,jpg,jpeg,gif,webp}",
+        ));
+    }
+    // Canonicalize (resolves symlinks/junctions): an escape from every
+    // allowed root fails the prefix check below.
+    let canonical = std::fs::canonicalize(raw_path)
+        .map_err(|_| BlockRejection::fs_read_denied("image_path: cannot resolve the path"))?;
+    if !canonical.is_file() {
+        return Err(BlockRejection::fs_read_denied(
+            "image_path: not a regular file",
+        ));
+    }
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(root) = std::fs::canonicalize(workspace) {
+        roots.push(root);
+    }
+    if let Some(pictures) = dirs_next::picture_dir()
+        && let Ok(root) = std::fs::canonicalize(pictures)
+    {
+        roots.push(root);
+    }
+    let Some(root) = roots.iter().find(|root| canonical.starts_with(root)) else {
+        return Err(BlockRejection::fs_read_denied(
+            "image_path: outside the allowed roots (workspace, OS pictures dir)",
+        ));
+    };
+    // Sensitive-subtree rejection: a dot-prefixed component below the root.
+    let relative = canonical.strip_prefix(root).unwrap_or(canonical.as_path());
+    let sensitive = relative.components().any(|component| {
+        matches!(component, std::path::Component::Normal(name)
+            if name.to_string_lossy().starts_with('.'))
+    });
+    if sensitive {
+        return Err(BlockRejection {
+            kind: NanoErrorKind::FsSensitiveDenied,
+            message: "image_path: sensitive subtree (dot-path under an allowed root)".into(),
+        });
+    }
+    // Bounded read: at most MAX_IMAGE_FILE_BYTES + 1 so an oversize file is
+    // a typed ImageTooLarge with ZERO decode work.
+    use std::io::Read as _;
+    let file = std::fs::File::open(&canonical)
+        .map_err(|_| BlockRejection::fs_read_denied("image_path: cannot open the file"))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_IMAGE_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| BlockRejection::fs_read_denied("image_path: read failed"))?;
+    if bytes.len() as u64 > MAX_IMAGE_FILE_BYTES {
+        return Err(BlockRejection {
+            kind: NanoErrorKind::ImageTooLarge,
+            message: "image file exceeds the 50 MiB intake ceiling".into(),
+        });
+    }
+    Ok((bytes, canonical.display().to_string()))
+}
+
+/// P2a §2.3 — converts the ACP `session/prompt` `prompt` block array into
+/// the ONE authoritative §5.2.1 [`TurnInput`], preserving block ORDER and
+/// multiplicity exactly (the ordered manifest the journal relies on):
+///
+/// - `{ "type": "text", "text": … }` → `TurnBlock::Text`;
+/// - `{ "type": "image", "data": <base64>, "mimeType": <mime> }` → the §4
+///   loader (the claimed MIME is a HINT only — a claim-vs-sniff mismatch is
+///   a typed `ImageInvalid`, never a quiet re-label) → `TurnBlock::Image`
+///   carrying BOTH the durable digest reference AND the live re-encoded
+///   pixels;
+/// - `{ "type": "image_path", "path": … }` — Nano's TUI extension block
+///   (§3.1): the §3.3 path confinement above + the same §4 loader (the TUI
+///   process never reads image bytes);
+/// - any other block type (`resource`, `resource_link`, `audio`, …) →
+///   typed `InvalidParams` rejection naming the type TAG only. Today such
+///   blocks are silently dropped; typed rejection is the deliberate,
+///   flagged behavior change (§14 deviation 8).
+///
+/// §4.2 prompt-level caps are enforced here: >16 images or >50 MiB
+/// aggregate (saturating arithmetic) → typed `ImageTooMany`. Decodes are
+/// sequential (the loader's §4.2 semaphore), one block at a time. Each
+/// accepted image logs its §9.4 intake receipt (host-side, one line).
+pub async fn acp_blocks_to_content_blocks(
+    prompt: &[serde_json::Value],
+    workspace: &std::path::Path,
+) -> Result<TurnInput, BlockRejection> {
+    use base64::Engine;
+    let mut blocks: Vec<TurnBlock> = Vec::new();
+    let mut image_count: usize = 0;
+    let mut aggregate_bytes: u64 = 0;
+    for part in prompt {
+        let tag = part.get("type").and_then(|t| t.as_str());
+        match tag {
+            Some("text") => {
+                let text = part.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                blocks.push(TurnBlock::Text {
+                    text: text.to_string(),
+                });
+            }
+            Some("image") => {
+                image_count += 1;
+                if image_count > nano_tools::image::MAX_IMAGES_PER_PROMPT {
+                    return Err(BlockRejection {
+                        kind: NanoErrorKind::ImageTooMany,
+                        message: "too many images in one prompt (limit: 16)".into(),
+                    });
+                }
+                let data = part
+                    .get("data")
+                    .and_then(|d| d.as_str())
+                    .ok_or_else(|| BlockRejection::invalid_params("image block requires data"))?;
+                // Malformed base64 is a param-shape failure → InvalidParams
+                // (§7: reused, not new). The string is validated, never
+                // echoed.
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .map_err(|_| {
+                        BlockRejection::invalid_params("image block data is not valid base64")
+                    })?;
+                let claimed_mime = part.get("mimeType").and_then(|m| m.as_str());
+                let mut loaded = nano_tools::image::load_image(&bytes, claimed_mime)
+                    .await
+                    .map_err(|err| BlockRejection {
+                        kind: err.kind,
+                        message: err.to_string(),
+                    })?;
+                loaded.placeholder = Some(format!("[Image #{image_count}: attached image]"));
+                aggregate_bytes = aggregate_bytes.saturating_add(loaded.bytes.len() as u64);
+                if aggregate_bytes > nano_tools::image::MAX_PROMPT_IMAGE_AGGREGATE_BYTES {
+                    return Err(BlockRejection {
+                        kind: NanoErrorKind::ImageTooMany,
+                        message: "prompt image aggregate exceeds the 50 MiB limit".into(),
+                    });
+                }
+                eprintln!("wayland-nano: intake {}", loaded.receipt_line());
+                blocks.push(loaded_to_turn_block(loaded));
+            }
+            Some("image_path") => {
+                image_count += 1;
+                if image_count > nano_tools::image::MAX_IMAGES_PER_PROMPT {
+                    return Err(BlockRejection {
+                        kind: NanoErrorKind::ImageTooMany,
+                        message: "too many images in one prompt (limit: 16)".into(),
+                    });
+                }
+                let path = part.get("path").and_then(|p| p.as_str()).ok_or_else(|| {
+                    BlockRejection::invalid_params("image_path block requires path")
+                })?;
+                let (bytes, display) = confined_image_read(path, workspace)?;
+                let mut loaded =
+                    nano_tools::image::load_image(&bytes, None)
+                        .await
+                        .map_err(|err| BlockRejection {
+                            kind: err.kind,
+                            message: err.to_string(),
+                        })?;
+                loaded.orig_path = Some(display.clone());
+                loaded.placeholder = Some(format!("[Image #{image_count}: {display}]"));
+                aggregate_bytes = aggregate_bytes.saturating_add(loaded.bytes.len() as u64);
+                if aggregate_bytes > nano_tools::image::MAX_PROMPT_IMAGE_AGGREGATE_BYTES {
+                    return Err(BlockRejection {
+                        kind: NanoErrorKind::ImageTooMany,
+                        message: "prompt image aggregate exceeds the 50 MiB limit".into(),
+                    });
+                }
+                eprintln!("wayland-nano: intake {}", loaded.receipt_line());
+                blocks.push(loaded_to_turn_block(loaded));
+            }
+            // Typed rejection naming the type TAG only (bounded: the tag is
+            // truncated, never the content) — the C7 closed-fields rule.
+            other => {
+                let tag = other.unwrap_or("<missing>");
+                let tag: String = tag.chars().take(64).collect();
+                return Err(BlockRejection::invalid_params(format!(
+                    "unsupported prompt block type: {tag}"
+                )));
+            }
+        }
+    }
+    Ok(TurnInput { blocks })
+}
+
+/// §2.3: one loaded image → the two-half `TurnBlock::Image` — the durable
+/// digest reference (journaled) AND the live re-encoded base64 pixels
+/// (request-time only, NEVER journaled). The reference mime is the
+/// RE-ENCODED wire mime (png/jpeg — the closed wire subset): the journaled
+/// manifest must label the bytes it references, and the §5.3 rehydration
+/// rebuilds the wire block from exactly those bytes.
+fn loaded_to_turn_block(loaded: nano_tools::image::LoadedImage) -> TurnBlock {
+    use base64::Engine;
+    let data = base64::engine::general_purpose::STANDARD.encode(&loaded.bytes);
+    TurnBlock::Image {
+        reference: ImageRef {
+            digest: loaded.digest,
+            mime: loaded.wire_mime,
+            bytes: loaded.bytes.len() as u64,
+            width: loaded.width,
+            height: loaded.height,
+            placeholder: loaded.placeholder.unwrap_or_default(),
+        },
+        data,
+    }
+}
 /// A model the session can switch to (the ACP `models` block, unstable API).
 /// The ACP-spec field name is `modelId` — proven by live Desktop behavior
 /// (SessionLifecycle.ts maps m.modelId; rows sent as `id` render with
@@ -541,6 +823,30 @@ pub fn param_inert_notice(
     )
 }
 
+/// P2a §5.3 (Q3 RULED): the loud resume-degradation notice — a journaled
+/// image manifest entry whose blob is missing/tampered/malformed became the
+/// explicit placeholder in the rebuilt context. Closed fields only (the C7
+/// `nanoError` discipline): the bounded cause word and the 8-char digest
+/// prefix, never a path or payload.
+pub fn attachment_missing_notice(
+    session_id: &str,
+    cause: &str,
+    digest_prefix: &str,
+) -> JsonRpcNotification {
+    JsonRpcNotification::new(
+        "session/update",
+        serde_json::json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "attachment_missing",
+                "kind": "attachment_missing",
+                "cause": cause,
+                "digest": digest_prefix
+            }
+        }),
+    )
+}
+
 /// Rate-limit observation (C9 §5, Q4): the coalesced latest snapshot per
 /// turn iteration. `snapshot` is the serialized RateLimitSnapshot (all
 /// fields optional — UIs render "unknown" on absence, never a guess).
@@ -739,12 +1045,22 @@ mod tests {
 
     #[test]
     fn initialize_response_shape() {
-        let caps = agent_capabilities();
+        // P2a §6.4/D4: the vendored catalog blesses NOTHING until the §13
+        // leg-6 probes land, so the startup-leaf advertisement is false here.
+        let catalog = nano_model::vision_catalog::VisionCatalog::vendored()
+            .expect("vendored vision catalog parses");
+        let caps = agent_capabilities("flux-pinned-codestral", &catalog);
         assert_eq!(caps["protocolVersion"], 1);
         assert_eq!(caps["agentInfo"]["name"], "wayland-nano");
         assert_eq!(
             caps["agentCapabilities"]["promptCapabilities"]["text"],
             true
+        );
+        // Advisory, initialize-scoped, startup-leaf-driven (§6.4): false for
+        // an unproven leaf.
+        assert_eq!(
+            caps["agentCapabilities"]["promptCapabilities"]["image"],
+            false
         );
         // stdio-only MCP: the block's presence advertises stdio to Desktop
         // (acpTypes.ts), http/sse stay honestly false.
@@ -755,6 +1071,77 @@ mod tests {
         );
         assert_eq!(mcp["http"], false);
         assert_eq!(mcp["sse"], false);
+    }
+
+    // ── P2a §2.3: the ACP prompt-block converter ─────────────────────────
+
+    /// Regression: text-only prompts convert byte-identically to the old
+    /// extractor's join — one Text block per part, projection joins with
+    /// "\n".
+    #[tokio::test]
+    async fn p2a_converter_text_only_matches_legacy_join() {
+        let prompt = serde_json::json!([
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"}
+        ]);
+        let input =
+            acp_blocks_to_content_blocks(prompt.as_array().unwrap(), std::path::Path::new("."))
+                .await
+                .expect("text-only converts");
+        assert_eq!(input.projection(), "first\nsecond");
+        assert!(!input.has_images());
+    }
+
+    /// Unknown block types are typed-rejected (InvalidParams) naming the
+    /// type TAG only — never silently dropped (§14 deviation 8). The FIRST
+    /// invalid block aborts the whole prompt.
+    #[tokio::test]
+    async fn p2a_converter_unknown_block_types_typed_reject() {
+        for tag in ["resource", "resource_link", "audio"] {
+            let prompt = serde_json::json!([{"type": tag, "data": "whatever"}]);
+            let err =
+                acp_blocks_to_content_blocks(prompt.as_array().unwrap(), std::path::Path::new("."))
+                    .await
+                    .expect_err("unknown block type must reject");
+            assert_eq!(err.kind, NanoErrorKind::InvalidParams);
+            assert!(
+                err.message.contains(tag),
+                "names the tag only: {}",
+                err.message
+            );
+            assert!(!err.message.contains("whatever"), "no content echo");
+        }
+        // First-invalid-block aborts: a valid text part before a bad block
+        // still rejects the whole prompt.
+        let prompt = serde_json::json!([
+            {"type": "text", "text": "ok"},
+            {"type": "audio", "data": "x"}
+        ]);
+        assert!(
+            acp_blocks_to_content_blocks(prompt.as_array().unwrap(), std::path::Path::new("."))
+                .await
+                .is_err()
+        );
+        // A block with no type tag is typed-rejected too.
+        let prompt = serde_json::json!([{"text": "no tag"}]);
+        let err =
+            acp_blocks_to_content_blocks(prompt.as_array().unwrap(), std::path::Path::new("."))
+                .await
+                .expect_err("missing tag must reject");
+        assert_eq!(err.kind, NanoErrorKind::InvalidParams);
+    }
+
+    /// Malformed base64 in an image block is a typed param-shape failure
+    /// (§7: InvalidParams reused, not new) — and it happens BEFORE any
+    /// loader/decode work.
+    #[tokio::test]
+    async fn p2a_converter_malformed_base64_is_typed() {
+        let prompt = serde_json::json!([{"type": "image", "data": "!!!not-base64!!!", "mimeType": "image/png"}]);
+        let err =
+            acp_blocks_to_content_blocks(prompt.as_array().unwrap(), std::path::Path::new("."))
+                .await
+                .expect_err("malformed base64 must reject");
+        assert_eq!(err.kind, NanoErrorKind::InvalidParams);
     }
 
     #[test]

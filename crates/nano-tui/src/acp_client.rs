@@ -561,7 +561,24 @@ pub fn session_load_params(session_id: &str, cwd: &str) -> Value {
 }
 
 pub fn prompt_params(session_id: &str, text: &str) -> Value {
-    json!({"sessionId": session_id, "prompt": [{"type": "text", "text": text}]})
+    prompt_params_with_attachments(session_id, text, &[])
+}
+
+/// P2a §3.1: the prompt params attachment form — each attached path rides
+/// as an `{"type":"image_path","path":…}` extension block under the same
+/// params object, in manifest (mint) order. ACP tolerates extension blocks
+/// and the host owns the allowlist; the TUI process never reads image bytes
+/// (the host's §4 loader resolves them at prompt time).
+pub fn prompt_params_with_attachments(
+    session_id: &str,
+    text: &str,
+    attachments: &[String],
+) -> Value {
+    let mut prompt = vec![json!({"type": "text", "text": text})];
+    for path in attachments {
+        prompt.push(json!({"type": "image_path", "path": path}));
+    }
+    json!({"sessionId": session_id, "prompt": prompt})
 }
 
 pub fn set_model_params(session_id: &str, model_id: &str) -> Value {
@@ -799,6 +816,33 @@ impl Drop for SubprocessConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P2a §3.1: the attachment form rides as image_path extension blocks
+    /// under the same params object, in mint order; the no-attachment form
+    /// is byte-identical to the pre-P2a shape.
+    #[test]
+    fn p2a_prompt_params_attachment_form() {
+        let prompt = prompt_params_with_attachments(
+            "s1",
+            "look at this",
+            &["C:/pics/a.png".to_string(), "C:/pics/b.png".to_string()],
+        );
+        assert_eq!(prompt["prompt"][0]["type"], "text");
+        assert_eq!(prompt["prompt"][0]["text"], "look at this");
+        assert_eq!(
+            prompt["prompt"][1],
+            json!({"type": "image_path", "path": "C:/pics/a.png"})
+        );
+        assert_eq!(
+            prompt["prompt"][2],
+            json!({"type": "image_path", "path": "C:/pics/b.png"})
+        );
+        // No attachments: exactly the legacy single-text-block shape.
+        assert_eq!(
+            prompt_params("s1", "hi"),
+            json!({"sessionId": "s1", "prompt": [{"type": "text", "text": "hi"}]})
+        );
+    }
 
     #[test]
     fn builders_match_the_wire_shapes() {

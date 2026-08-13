@@ -30,6 +30,16 @@ pub enum ContentBlock {
         content: String,
         is_error: bool,
     },
+    /// P2a §2.1 (donor: wayland-core `wcore-types/src/message.rs:41-55`,
+    /// verbatim variant shape). INTAKE ONLY in P2a: `Image` blocks appear
+    /// only in user messages; tool-result images are P2b's type-widening
+    /// decision.
+    Image {
+        /// Sniffed MIME (never the sender's claim), from the closed wire set.
+        mime: String,
+        /// Base64 WITHOUT a data-URI prefix; codecs add their native wrapping.
+        data: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +53,16 @@ impl Message {
         Self {
             role: Role::User,
             content: vec![ContentBlock::Text { text: text.into() }],
+        }
+    }
+
+    /// P2a §2.1: a user message from ordered content blocks (text + image
+    /// interleavings preserved exactly — the block list is the machine
+    /// contract; no string parsing anywhere).
+    pub fn user_blocks(blocks: Vec<ContentBlock>) -> Self {
+        Self {
+            role: Role::User,
+            content: blocks,
         }
     }
 
@@ -360,5 +380,47 @@ impl CallHooks<'_> {
         if let Some(observer) = self.observer {
             observer(observation);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// P2a §2.1: the Image variant's wire/journal serde shape is pinned
+    /// (tagged `image`, snake_case fields — the wcore shape).
+    #[test]
+    fn image_block_serde_round_trip() {
+        let block = ContentBlock::Image {
+            mime: "image/png".into(),
+            data: "aGVsbG8".into(),
+        };
+        let json = serde_json::to_value(&block).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({"type": "image", "mime": "image/png", "data": "aGVsbG8"})
+        );
+        let back: ContentBlock = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, block);
+    }
+
+    #[test]
+    fn user_blocks_preserves_order_and_multiplicity() {
+        let message = Message::user_blocks(vec![
+            ContentBlock::Text { text: "a".into() },
+            ContentBlock::Image {
+                mime: "image/jpeg".into(),
+                data: "eA".into(),
+            },
+            ContentBlock::Image {
+                mime: "image/jpeg".into(),
+                data: "eA".into(),
+            },
+            ContentBlock::Text { text: "b".into() },
+        ]);
+        assert_eq!(message.role, Role::User);
+        assert_eq!(message.content.len(), 4);
+        assert!(matches!(message.content[1], ContentBlock::Image { .. }));
+        assert!(matches!(message.content[2], ContentBlock::Image { .. }));
     }
 }

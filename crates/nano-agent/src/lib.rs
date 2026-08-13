@@ -18,6 +18,7 @@ pub mod skills;
 pub mod steer;
 pub mod tasks;
 pub mod turn;
+pub mod turn_input;
 pub mod wiring;
 
 #[cfg(test)]

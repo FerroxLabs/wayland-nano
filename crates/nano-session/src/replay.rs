@@ -220,7 +220,15 @@ impl SessionState {
                     self.cwd = Some(cwd.clone());
                 }
             }
-            Op::TurnBegin { turn_id, input } => {
+            // P2a §5.2.1(a): this destructure was the deliberate fail-loud
+            // tripwire for the `input_blocks` schema addition (strict, no
+            // `..` — adding the field broke the build HERE by design). The
+            // replay fold's OpenTurn tracks only the text projection (open
+            // work, not model context), so the field is covered by `..`;
+            // block-fidelity reconstruction lives solely in
+            // `messages_from_envelopes` (§5.3), which walks `input_blocks`
+            // with a text-only fallback for pre-P2a journals.
+            Op::TurnBegin { turn_id, input, .. } => {
                 self.open_turn = Some(OpenTurn {
                     turn_id: turn_id.clone(),
                     input: input.clone(),

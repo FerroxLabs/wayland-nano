@@ -536,6 +536,7 @@ async fn protocol_journals_begin_complete_then_swaps() {
         "c-1",
         vec!["op-1".into()],
         vec!["src/main.rs".into()],
+        false,
         &mut emit,
     )
     .await
@@ -576,6 +577,7 @@ async fn canary_summary_is_never_persisted() {
         "c-2",
         vec![],
         vec![],
+        false,
         &mut emit,
     )
     .await
@@ -614,6 +616,7 @@ async fn redactor_error_fails_closed() {
         "c-3",
         vec![],
         vec![],
+        false,
         &mut emit,
     )
     .await
@@ -639,6 +642,7 @@ async fn journal_failure_blocks_the_swap() {
         "c-4",
         vec![],
         vec![],
+        false,
         &mut emit,
     )
     .await
@@ -656,6 +660,7 @@ async fn journal_failure_blocks_the_swap() {
         "c-5",
         vec![],
         vec![],
+        false,
         &mut deny_all,
     )
     .await
@@ -932,4 +937,318 @@ fn builder_output_matches_rule_by_rule() {
         Message::user(format!("{SUMMARY_PREFIX}\n{summary}")),
     ];
     assert_eq!(built, expected, "byte-identical by construction");
+}
+
+// ── P2a §8: image-aware compaction ───────────────────────────────────────
+
+fn p2a_image_message(data: &str) -> Message {
+    Message::user_blocks(vec![
+        ContentBlock::Text { text: "see".into() },
+        ContentBlock::Image {
+            mime: "image/png".into(),
+            data: data.to_string(),
+        },
+    ])
+}
+
+/// §8 part 3: the Image arm of message_bytes returns EXACTLY 6,000 bytes
+/// (1,500 tokens at BYTES_PER_TOKEN = 4) — never the base64 length.
+#[test]
+fn p2a_message_bytes_image_arm_is_6000() {
+    let message = Message::user_blocks(vec![ContentBlock::Image {
+        mime: "image/png".into(),
+        data: "A".repeat(100_000),
+    }]);
+    assert_eq!(message_bytes(&message), 6_000);
+    let mixed = Message::user_blocks(vec![
+        ContentBlock::Text {
+            text: "abcd".into(),
+        },
+        ContentBlock::Image {
+            mime: "image/png".into(),
+            data: "A".repeat(10),
+        },
+    ]);
+    assert_eq!(message_bytes(&mixed), 4 + 6_000);
+}
+
+/// §8 part 1: the pre-summary transform replaces every Image IN PLACE with
+/// the structural placeholder and reports whether anything was evicted.
+#[test]
+fn p2a_evict_images_with_placeholders_in_place() {
+    let mut messages = vec![
+        Message::user_blocks(vec![
+            ContentBlock::Text { text: "a".into() },
+            ContentBlock::Image {
+                mime: "image/png".into(),
+                data: "x".into(),
+            },
+            ContentBlock::Image {
+                mime: "image/png".into(),
+                data: "y".into(),
+            },
+        ]),
+        Message::user("plain"),
+    ];
+    assert!(evict_images_with_placeholders(&mut messages));
+    let content = &messages[0].content;
+    assert!(matches!(&content[0], ContentBlock::Text { text } if text == "a"));
+    assert!(
+        matches!(&content[1], ContentBlock::Text { text } if text == COMPACT_IMAGE_PLACEHOLDER)
+    );
+    assert!(
+        matches!(&content[2], ContentBlock::Text { text } if text == COMPACT_IMAGE_PLACEHOLDER)
+    );
+    assert!(!evict_images_with_placeholders(&mut messages));
+}
+
+/// §8 parts 1+2: the summarize call receives ZERO Image blocks (pixels
+/// never reach the summarizer), and the journaled CompactionComplete
+/// carries image_influenced=true (any-image-evicted arm).
+#[tokio::test]
+async fn p2a_summarizer_never_sees_pixels_and_provenance_journaled() {
+    let model = FakeModel::new(vec![], vec![text_response("clean summary", 0)]);
+    let mut messages = vec![
+        p2a_image_message(&"A".repeat(1000)),
+        Message::user("follow-up"),
+    ];
+    let mut journaled: Vec<Op> = Vec::new();
+    let mut emit = |op: Op| {
+        journaled.push(op);
+        true
+    };
+    compact_messages(
+        &model,
+        "mock",
+        &mut messages,
+        "c-img",
+        vec![],
+        vec![],
+        false,
+        &mut emit,
+    )
+    .await
+    .unwrap();
+    // The captured summarize request held ZERO image blocks.
+    let requests = model.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let saw_image = requests[0]
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .any(|b| matches!(b, ContentBlock::Image { .. }));
+    assert!(!saw_image, "the summarizer must never see pixels");
+    let saw_placeholder = requests[0]
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .any(|b| matches!(b, ContentBlock::Text { text } if text == COMPACT_IMAGE_PLACEHOLDER));
+    assert!(
+        saw_placeholder,
+        "the transform left the explicit placeholder"
+    );
+    drop(requests);
+    // Provenance: before=false, but an image was evicted → true.
+    let Op::CompactionComplete {
+        image_influenced, ..
+    } = &journaled[1]
+    else {
+        panic!("complete expected")
+    };
+    assert!(image_influenced);
+    // The LIVE history kept its (under-budget) image block.
+    assert!(
+        messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .any(|b| matches!(b, ContentBlock::Image { .. }))
+    );
+}
+
+/// §8 part 2: the session-side sticky flag alone forces provenance true
+/// (transitivity), and with neither source the flag journals false.
+#[tokio::test]
+async fn p2a_provenance_flag_sources() {
+    let model = FakeModel::new(vec![], vec![text_response("s", 0)]);
+    let mut messages = vec![Message::user("plain work")];
+    let mut journaled: Vec<Op> = Vec::new();
+    let mut emit = |op: Op| {
+        journaled.push(op);
+        true
+    };
+    compact_messages(
+        &model,
+        "mock",
+        &mut messages,
+        "c-a",
+        vec![],
+        vec![],
+        true,
+        &mut emit,
+    )
+    .await
+    .unwrap();
+    let Op::CompactionComplete {
+        image_influenced, ..
+    } = &journaled[1]
+    else {
+        panic!("complete expected")
+    };
+    assert!(*image_influenced, "sticky session flag propagates");
+
+    let model = FakeModel::new(vec![], vec![text_response("s", 0)]);
+    let mut messages = vec![Message::user("plain work")];
+    let mut journaled: Vec<Op> = Vec::new();
+    let mut emit = |op: Op| {
+        journaled.push(op);
+        true
+    };
+    compact_messages(
+        &model,
+        "mock",
+        &mut messages,
+        "c-b",
+        vec![],
+        vec![],
+        false,
+        &mut emit,
+    )
+    .await
+    .unwrap();
+    let Op::CompactionComplete {
+        image_influenced, ..
+    } = &journaled[1]
+    else {
+        panic!("complete expected")
+    };
+    assert!(!*image_influenced, "no images, no flag → false");
+}
+
+/// §8 parts 3+4: images are COUNTED against the retained-history budget;
+/// under-budget images survive intact, over-budget images leave the
+/// placeholder at BOTH the tail-cut crosser and wholesale-dropped older
+/// messages, and an image-only message is never silently dropped.
+#[test]
+fn p2a_builder_counts_and_evicts_images_with_placeholders() {
+    // Under budget: image retained verbatim.
+    let history = vec![Message::user("older"), p2a_image_message(&"A".repeat(500))];
+    let built = build_compacted_history(history, "sum");
+    assert!(
+        built
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .any(|b| matches!(b, ContentBlock::Image { .. })),
+        "under-budget image retained: {built:?}"
+    );
+
+    // Budget is 80,000 bytes. Build: oldest = text 30,000 + image (36,000),
+    // then an image-only message (6,000), then two more text+image
+    // (36,000 each). Newest-first: 36,000 + 36,000 = 72,000 fit intact;
+    // the image-only (6,000) crosses (78,000 > 80,000? no — 72,000+6,000
+    // = 78,000 fits); the oldest (36,000) crosses → its image becomes a
+    // placeholder and its text tail fills the remaining 2,000 bytes.
+    let make = || {
+        vec![
+            Message::user_blocks(vec![
+                ContentBlock::Text {
+                    text: "a".repeat(30_000),
+                },
+                ContentBlock::Image {
+                    mime: "image/png".into(),
+                    data: "A".repeat(100),
+                },
+            ]),
+            Message::user_blocks(vec![ContentBlock::Image {
+                mime: "image/png".into(),
+                data: "B".repeat(100),
+            }]),
+            Message::user_blocks(vec![
+                ContentBlock::Text {
+                    text: "c".repeat(30_000),
+                },
+                ContentBlock::Image {
+                    mime: "image/png".into(),
+                    data: "C".repeat(100),
+                },
+            ]),
+            Message::user_blocks(vec![
+                ContentBlock::Text {
+                    text: "d".repeat(30_000),
+                },
+                ContentBlock::Image {
+                    mime: "image/png".into(),
+                    data: "D".repeat(100),
+                },
+            ]),
+        ]
+    };
+    let built = build_compacted_history(make(), "sum");
+    // Determinism: same input → identical output.
+    assert_eq!(built, build_compacted_history(make(), "sum"));
+    // The two newest image messages survived intact (72,000 ≤ 80,000), the
+    // image-only one fit (78,000 ≤ 80,000), the oldest crossed: its image
+    // was evicted with the explicit placeholder and its text tail survived.
+    let images = built
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter(|b| matches!(b, ContentBlock::Image { .. }))
+        .count();
+    let placeholders = built
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter(|b| matches!(b, ContentBlock::Text { text } if text == COMPACT_IMAGE_PLACEHOLDER))
+        .count();
+    assert_eq!(images, 3, "under-budget images retained: {built:?}");
+    assert_eq!(placeholders, 1, "one placeholder for the one dropped image");
+    // The image-only message was never silently dropped: it is present with
+    // its image block (it fit under the cap).
+    // The crosser's text tail: 80,000 − 78,000 = 2,000 bytes of tail.
+    let crosser = &built[0];
+    let tail_len: usize = crosser
+        .content
+        .iter()
+        .map(|b| match b {
+            ContentBlock::Text { text } if text != COMPACT_IMAGE_PLACEHOLDER => text.len(),
+            _ => 0,
+        })
+        .sum();
+    assert_eq!(tail_len, 2_000, "crosser keeps its tail within budget");
+}
+
+/// §8 part 5: enforce_image_budget is oldest-first, deterministic, and
+/// leaves the explicit placeholder; under-budget histories are untouched.
+/// (The aggregate cap constant is lane-A-owned — §4.2, 50 MiB.)
+#[test]
+fn p2a_enforce_image_budget_oldest_first() {
+    // Under the cap: untouched.
+    let mut messages = vec![p2a_image_message(&"A".repeat(1000))];
+    enforce_image_budget(&mut messages);
+    assert!(
+        matches!(messages[0].content[1], ContentBlock::Image { .. }),
+        "under-budget history untouched"
+    );
+
+    // Over the cap: two images whose RAW estimate exceeds 50 MiB
+    // (data.len()/4*3 per image = 27 MiB → aggregate 54 MiB > 50 MiB):
+    // the OLDEST is evicted, the newest survives.
+    let big = "A".repeat(36_000_000);
+    let mut messages = vec![
+        Message::user_blocks(vec![ContentBlock::Image {
+            mime: "image/png".into(),
+            data: big.clone(),
+        }]),
+        Message::user_blocks(vec![ContentBlock::Image {
+            mime: "image/png".into(),
+            data: big,
+        }]),
+    ];
+    enforce_image_budget(&mut messages);
+    assert!(
+        matches!(&messages[0].content[0], ContentBlock::Text { text } if text == COMPACT_IMAGE_PLACEHOLDER),
+        "oldest evicted with placeholder"
+    );
+    assert!(
+        matches!(messages[1].content[0], ContentBlock::Image { .. }),
+        "newest survives once under budget"
+    );
 }

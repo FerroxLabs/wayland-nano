@@ -108,6 +108,10 @@ where
         cwd: workspace.to_path_buf(),
         sandbox_available,
         events: events.clone(),
+        // P2a §9.1: sticky-OR fold of the resumed journal — an
+        // image-influenced session clamps protected trust mutations to
+        // DENY on this non-interactive surface.
+        image_influenced: crate::acp_mode::image_influenced_from_envelopes(&session.envelopes),
     };
 
     let live_goal = session

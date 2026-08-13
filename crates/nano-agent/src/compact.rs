@@ -44,6 +44,45 @@ pub const SUMMARY_PREFIX: &str = "[wayland-nano compaction summary]";
 /// bring the estimate back under the limit.
 pub const GUARD_TRIP_AT: u32 = 2;
 
+/// P2a §8 part 3: the byte weight of ONE image block for the compaction
+/// heuristic — 6,000 bytes = 1,500 tokens at [`BYTES_PER_TOKEN`] = 4, the
+/// provider-aware conservative upper bound (Anthropic bills ≈ (w·h)/750 ⇒
+/// ≈1,398 tokens at the 1,048,576 px normalization ceiling; OpenAI
+/// high-detail tiling at ≤1024×1024 ≈ 1,105; the unknown-provider ceiling
+/// rounds to 1,500). A pre-sample bound, not an authority — server-reported
+/// `input_tokens` reconciles the estimate after the first sample
+/// ([`TokenTracker`]). No image survives compaction uncounted.
+pub const IMAGE_BLOCK_BYTES: usize = 6_000;
+
+/// P2a §8 part 1 (grok's `IMAGE_COMPACT_PLACEHOLDER` semantics): the
+/// structural placeholder that replaces EVERY evicted `ContentBlock::Image`
+/// IN PLACE — compaction eviction is deterministic, budget-driven, and
+/// model-independent, and it ALWAYS leaves this explicit marker (never a
+/// silent strip, §9.2).
+pub const COMPACT_IMAGE_PLACEHOLDER: &str =
+    "[Image removed during compaction — do not describe it from memory]";
+
+/// P2a §8 part 1 — the pre-summary transform: replace EVERY
+/// `ContentBlock::Image` in `messages` IN PLACE by the structural
+/// placeholder Text block. Returns whether any image was evicted (feeds the
+/// `CompactionComplete.image_influenced` provenance formula). One
+/// deterministic function shared by the live path and the replay fold, so
+/// live and resumed contexts stay byte-identical by construction.
+pub fn evict_images_with_placeholders(messages: &mut [Message]) -> bool {
+    let mut evicted = false;
+    for message in messages.iter_mut() {
+        for block in message.content.iter_mut() {
+            if matches!(block, ContentBlock::Image { .. }) {
+                *block = ContentBlock::Text {
+                    text: COMPACT_IMAGE_PLACEHOLDER.to_string(),
+                };
+                evicted = true;
+            }
+        }
+    }
+    evicted
+}
+
 /// Handoff-summary prompt, adapted from the codex donor
 /// (`prompts/templates/compact/prompt.md`) with the C1 §8 credentials
 /// exclusion added (defense-in-depth; the redaction gate is the real gate).
@@ -70,7 +109,9 @@ pub fn approx_token_count(bytes: usize) -> u64 {
 }
 
 /// Byte weight of one message for the heuristic: text, tool-call
-/// names/inputs, and tool-result payloads all count.
+/// names/inputs, and tool-result payloads all count; P2a §8 part 3: each
+/// image block weighs [`IMAGE_BLOCK_BYTES`] (1,500 tokens), never its base64
+/// length — no image survives compaction uncounted.
 fn message_bytes(message: &Message) -> usize {
     message
         .content
@@ -85,6 +126,7 @@ fn message_bytes(message: &Message) -> usize {
                 content,
                 ..
             } => tool_use_id.len() + content.len(),
+            ContentBlock::Image { .. } => IMAGE_BLOCK_BYTES,
         })
         .sum()
 }
@@ -93,6 +135,52 @@ fn message_bytes(message: &Message) -> usize {
 /// the post-compaction recompute).
 pub fn estimate_messages_tokens(messages: &[Message]) -> u64 {
     approx_token_count(messages.iter().map(message_bytes).sum())
+}
+
+// ── LANE-A BOUNDARY (P2a §4.2) ───────────────────────────────────────────
+// The per-prompt aggregate image budget constant is owned by lane A's
+// hardened loader (`crates/nano-tools/src/image.rs`). This crate CONSUMES
+// the constant; it defines nothing itself.
+use nano_tools::image::MAX_PROMPT_IMAGE_AGGREGATE_BYTES;
+
+/// P2a §8 part 5 — the request-build byte budget, called at message
+/// assembly in `run_turn_inner` (the turn.rs:495-496 seam: after the
+/// context + user-input push, before request build). A replayed history can
+/// hold many turns' images; when the aggregate image payload across the
+/// assembled history exceeds the §4.2 per-prompt budget, the OLDEST
+/// `ContentBlock::Image` blocks are replaced by the §8 part-1 placeholder
+/// until under budget — deterministic, and DISTINCT from capability gating
+/// (§6.2 rung 3): this eviction runs identically for every model and leaves
+/// a marker; it never transmits a silently-reduced context.
+pub fn enforce_image_budget(messages: &mut [Message]) {
+    // base64 → raw-bytes estimate; saturating per the §4.2 arithmetic rule.
+    let cap = MAX_PROMPT_IMAGE_AGGREGATE_BYTES;
+    let image_bytes = |data: &str| data.len() as u64 / 4 * 3;
+    let mut aggregate = messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .fold(0u64, |sum, block| {
+            sum.saturating_add(match block {
+                ContentBlock::Image { data, .. } => image_bytes(data),
+                _ => 0,
+            })
+        });
+    if aggregate <= cap {
+        return;
+    }
+    for message in messages.iter_mut() {
+        for block in message.content.iter_mut() {
+            if aggregate <= cap {
+                return;
+            }
+            if let ContentBlock::Image { data, .. } = block {
+                aggregate = aggregate.saturating_sub(image_bytes(data));
+                *block = ContentBlock::Text {
+                    text: COMPACT_IMAGE_PLACEHOLDER.to_string(),
+                };
+            }
+        }
+    }
 }
 
 /// Token accounting state (C1 §2): the last server-reported
@@ -276,6 +364,19 @@ impl CompactionError {
 /// `emit` appends one op and returns whether it is durably journaled. Any
 /// failure journals `CompactionCancel` (best-effort — the journal may be the
 /// thing that failed) and returns a typed error with `messages` untouched.
+///
+/// P2a §8 parts 1+2: the summarizer receives a PIXEL-FREE transformed CLONE
+/// of the history — [`evict_images_with_placeholders`] has already replaced
+/// every `ContentBlock::Image` with the structural placeholder BEFORE the
+/// summary call, so no image-borne content can be re-transcribed into
+/// `CompactionComplete.summary` from the pixels. The journaled
+/// `image_influenced` is `image_influenced_before OR
+/// any-image-evicted-this-compaction` — sticky-transitive provenance: a
+/// summary of an image-influenced context is itself image-influenced, so
+/// the §9.1 clamp can never be reopened by compaction alone.
+/// `image_influenced_before` is the SESSION-SIDE sticky flag, supplied by
+/// the caller (the host passes its session value; the engine-internal
+/// callers receive it through the §5.2.1 blocks entry).
 pub async fn compact_messages(
     model: &dyn ModelDriver,
     model_name: &str,
@@ -283,6 +384,7 @@ pub async fn compact_messages(
     compaction_id: &str,
     covers_op_ids: Vec<String>,
     changed_files: Vec<String>,
+    image_influenced_before: bool,
     emit: &mut (dyn FnMut(Op) -> bool + Send),
 ) -> Result<(), CompactionError> {
     if !emit(Op::CompactionBegin {
@@ -290,7 +392,13 @@ pub async fn compact_messages(
     }) {
         return Err(CompactionError::JournalWrite);
     }
-    let summary = match summarize(model, model_name, messages).await {
+    // The pre-summary transform runs on a CLONE: the live history keeps its
+    // image blocks for the retained-history builder (part 4 evicts only
+    // over-budget ones); the summarizer never sees pixels.
+    let mut summary_input = messages.clone();
+    let any_image_evicted = evict_images_with_placeholders(&mut summary_input);
+    let image_influenced = image_influenced_before || any_image_evicted;
+    let summary = match summarize(model, model_name, &summary_input).await {
         Ok(summary) => summary,
         Err(err) => {
             let _ = emit(Op::CompactionCancel {
@@ -322,6 +430,7 @@ pub async fn compact_messages(
         summary: summary.clone(),
         covers_op_ids,
         changed_files,
+        image_influenced,
     }) {
         let _ = emit(Op::CompactionCancel {
             compaction_id: compaction_id.to_string(),
@@ -421,6 +530,13 @@ fn remove_oldest_pair_preserving(messages: &mut Vec<Message>) {
 /// 3. assistant messages, tool calls, and tool outputs discarded wholesale
 ///    (pairing preserved by removal);
 /// 4. the pair-invariant repair pass as safety net.
+///
+/// P2a §8 parts 3+4: the budget arm is the per-block byte sum
+/// ([`message_bytes`] — an image weighs 6,000 bytes, so images are COUNTED);
+/// under-budget recent messages keep their images intact. On the over-budget
+/// paths (the tail-cut crosser and every wholesale-dropped older message)
+/// each dropped image emits the part-1 placeholder IN WALK ORDER — an
+/// explicit marker, never a silent strip (§9.2).
 pub fn build_compacted_history(messages: Vec<Message>, summary: &str) -> Vec<Message> {
     let mut budget_bytes = (COMPACT_USER_MESSAGE_MAX_TOKENS * BYTES_PER_TOKEN) as usize;
     let mut kept: Vec<Message> = Vec::new();
@@ -436,23 +552,55 @@ pub fn build_compacted_history(messages: Vec<Message>, summary: &str) -> Vec<Mes
                 _ => None,
             })
             .collect::<String>();
-        if text.is_empty() || text.starts_with(SUMMARY_PREFIX) {
+        let has_images = message
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. }));
+        // An image-only message has empty text and MUST NOT be skipped here
+        // — that would be a silent drop (§9.2).
+        if text.is_empty() && !has_images {
+            continue;
+        }
+        if text.starts_with(SUMMARY_PREFIX) {
             continue; // prior summaries are replaced, never stacked
         }
-        if text.len() <= budget_bytes {
+        let bytes = message_bytes(message);
+        if bytes <= budget_bytes {
             kept.push(message.clone());
-            budget_bytes -= text.len();
-        } else {
-            // The overflow message keeps its TAIL (the part nearest to the
-            // present), cut at a char boundary — deterministic, so live and
-            // replay produce byte-identical output.
-            let mut start = text.len() - budget_bytes;
+            budget_bytes -= bytes;
+            continue;
+        }
+        // Over budget: every image in the message becomes the structural
+        // placeholder (in block order); the text keeps its TAIL within the
+        // remaining budget, cut at a char boundary — deterministic, so live
+        // and replay produce byte-identical output. Older messages get the
+        // same treatment with the budget now exhausted: placeholder per
+        // dropped image, no text (text-only older messages drop wholesale,
+        // exactly as the pre-P2a `break` dropped them).
+        let mut content: Vec<ContentBlock> = Vec::new();
+        for block in &message.content {
+            if matches!(block, ContentBlock::Image { .. }) {
+                content.push(ContentBlock::Text {
+                    text: COMPACT_IMAGE_PLACEHOLDER.to_string(),
+                });
+            }
+        }
+        if !text.is_empty() && budget_bytes > 0 {
+            let mut start = text.len() - budget_bytes.min(text.len());
             while !text.is_char_boundary(start) {
                 start += 1;
             }
-            kept.push(Message::user(&text[start..]));
-            break;
+            content.push(ContentBlock::Text {
+                text: text[start..].to_string(),
+            });
         }
+        if !content.is_empty() {
+            kept.push(Message {
+                role: Role::User,
+                content,
+            });
+        }
+        budget_bytes = 0;
     }
     kept.reverse();
     kept.push(Message::user(format!("{SUMMARY_PREFIX}\n{summary}")));

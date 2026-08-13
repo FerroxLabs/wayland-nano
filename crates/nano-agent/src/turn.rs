@@ -10,6 +10,7 @@ use crate::loop_protection::{
     ToolCallKey, TurnBudget,
 };
 use crate::steer::SteerHandle;
+use crate::turn_input::TurnInput;
 use nano_model::auth::RefreshOutcome;
 use nano_model::types::{
     CallHooks, Message, ModelError, ModelEvent, ModelObservation, ModelRequest, ModelResponse,
@@ -386,8 +387,19 @@ impl<'a> TurnEngine<'a> {
         input: &str,
         context: Option<Message>,
     ) -> TurnResult {
-        self.run_turn_inner(turn_id, input, context.into_iter().collect(), None, None)
-            .await
+        // P2a §5.2.1: the six legacy &str entries keep their signatures
+        // UNTOUCHED and delegate via `TurnInput::text`, passing
+        // `image_influenced_before: false` — safe because the §8 sticky-OR
+        // resume fold makes a false-negative RECORD harmless by construction.
+        self.run_turn_inner(
+            turn_id,
+            TurnInput::text(input),
+            context.into_iter().collect(),
+            None,
+            None,
+            false,
+        )
+        .await
     }
 
     /// Runs a turn with SEVERAL prepended context messages (skill
@@ -399,7 +411,7 @@ impl<'a> TurnEngine<'a> {
         input: &str,
         context: Vec<Message>,
     ) -> TurnResult {
-        self.run_turn_inner(turn_id, input, context, None, None)
+        self.run_turn_inner(turn_id, TurnInput::text(input), context, None, None, false)
             .await
     }
 
@@ -413,8 +425,15 @@ impl<'a> TurnEngine<'a> {
         input: &str,
         cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> TurnResult {
-        self.run_turn_inner(turn_id, input, Vec::new(), cancel, None)
-            .await
+        self.run_turn_inner(
+            turn_id,
+            TurnInput::text(input),
+            Vec::new(),
+            cancel,
+            None,
+            false,
+        )
+        .await
     }
 
     /// Runs a turn like [`Self::run_turn_cancellable`], additionally invoking
@@ -430,8 +449,15 @@ impl<'a> TurnEngine<'a> {
         cancel: Option<&std::sync::atomic::AtomicBool>,
         sink: &mut (dyn FnMut(&OpEnvelope) -> bool + Send),
     ) -> TurnResult {
-        self.run_turn_inner(turn_id, input, Vec::new(), cancel, Some(sink))
-            .await
+        self.run_turn_inner(
+            turn_id,
+            TurnInput::text(input),
+            Vec::new(),
+            cancel,
+            Some(sink),
+            false,
+        )
+        .await
     }
 
     /// Runs a streaming turn whose model context starts with `prior` messages
@@ -445,17 +471,55 @@ impl<'a> TurnEngine<'a> {
         cancel: Option<&std::sync::atomic::AtomicBool>,
         sink: &mut (dyn FnMut(&OpEnvelope) -> bool + Send),
     ) -> TurnResult {
-        self.run_turn_inner(turn_id, input, prior, cancel, Some(sink))
-            .await
+        self.run_turn_inner(
+            turn_id,
+            TurnInput::text(input),
+            prior,
+            cancel,
+            Some(sink),
+            false,
+        )
+        .await
+    }
+
+    /// P2a §5.2.1 — the ONE new public entry, beside
+    /// [`Self::run_turn_streaming_with_context`]: identical streaming
+    /// semantics, but the user input arrives as the authoritative
+    /// [`TurnInput`] (ordered text+image blocks) instead of a bare `&str`.
+    /// `image_influenced_before` carries the session-side sticky §8 part-2
+    /// provenance flag into the engine (the internal `compact_messages`
+    /// callers have no other truthful source for it). The host's sole
+    /// prompt-execution call routes here; the six legacy `&str` entries
+    /// delegate via [`TurnInput::text`] with `image_influenced_before:
+    /// false`.
+    pub async fn run_turn_streaming_with_context_blocks(
+        &self,
+        turn_id: &str,
+        input: TurnInput,
+        prior: Vec<Message>,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+        sink: &mut (dyn FnMut(&OpEnvelope) -> bool + Send),
+        image_influenced_before: bool,
+    ) -> TurnResult {
+        self.run_turn_inner(
+            turn_id,
+            input,
+            prior,
+            cancel,
+            Some(sink),
+            image_influenced_before,
+        )
+        .await
     }
 
     async fn run_turn_inner(
         &self,
         turn_id: &str,
-        input: &str,
+        input: TurnInput,
         context: Vec<Message>,
         cancel: Option<&std::sync::atomic::AtomicBool>,
         sink: Option<&mut (dyn FnMut(&OpEnvelope) -> bool + Send)>,
+        image_influenced_before: bool,
     ) -> TurnResult {
         let mut ops: Vec<OpEnvelope> = Vec::new();
         let mut next_id = 0u32;
@@ -473,11 +537,17 @@ impl<'a> TurnEngine<'a> {
             }
         };
 
+        // P2a §5.2.1: ONE statement emits BOTH views of the single TurnInput
+        // value — the placeholder-bearing projection (`input`, for display /
+        // replay_frames / old readers) AND the digests-only ordered manifest
+        // (`input_blocks`, the §5.2 machine contract). Journal-first ordering
+        // is unchanged.
         emit(
             &mut ops,
             Op::TurnBegin {
                 turn_id: turn_id.into(),
-                input: input.into(),
+                input: input.projection(),
+                input_blocks: input.manifest(),
             },
         );
 
@@ -493,7 +563,33 @@ impl<'a> TurnEngine<'a> {
         budget_tracker.start_turn();
 
         let mut messages = context;
-        messages.push(Message::user(input));
+        // P2a §5.2.1: the first user message is built from the TurnInput's
+        // live half — Text→ContentBlock::Text, Image→ContentBlock::Image.
+        messages.push(Message::user_blocks(input.content_blocks()));
+        // P2a §8 part 5: the request-build image budget AT the assembly seam
+        // — a replayed history can hold many turns' images; oldest-first
+        // deterministic eviction with the explicit placeholder, distinct
+        // from capability gating (it runs identically for every model).
+        crate::compact::enforce_image_budget(&mut messages);
+        // P2a §6.2 rung 3 — computed at the assembly seam, enforced at loop
+        // top before ANY request build: whether the assembled history still
+        // carries an image AND the exact current model id is vision-proven.
+        // LANE-A BOUNDARY: the vision catalog (nano-model vision_catalog.rs)
+        // and the ModelLacksVision error kind (nano-session error_kind.rs)
+        // are lane-A surfaces; a catalog load failure reads as NOT proven
+        // (fail-closed). The model id is fixed for the turn and images can
+        // only ever be EVICTED mid-turn (compaction), so this is computed
+        // once, here.
+        let image_present = messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|b| matches!(b, nano_model::types::ContentBlock::Image { .. }))
+        });
+        let vision_proven = nano_model::vision_catalog::VisionCatalog::vendored()
+            .map(|catalog| catalog.image_in(&self.model_name))
+            .unwrap_or(false);
+        let rung3_blocked = image_present && !vision_proven;
         let mut final_text = String::new();
         let mut last_usage = nano_model::types::Usage::default();
         // P1 §3.4: the turn-scoped usage accumulator — sums EVERY response's
@@ -585,6 +681,7 @@ impl<'a> TurnEngine<'a> {
                         &compaction_id,
                         covers_op_ids,
                         changed_files,
+                        image_influenced_before,
                         &mut journal_emit,
                     )
                     .await;
@@ -676,6 +773,36 @@ impl<'a> TurnEngine<'a> {
             }
             // Coalesced rate-limit snapshot (latest-wins per iteration).
             flush_rate_limit(&rate_limit_dirty, &latest_rate_limit);
+
+            // ── P2a §6.2 rung 3: the PRE-DISPATCH gate on the COMPLETE
+            // assembled history (context + memory block + user input, post
+            // §8-part-5 budget eviction, post-compaction-swap) ──
+            // If ANY ContentBlock::Image survives anywhere in the assembled
+            // messages and the current EXACT model id is not vision-proven
+            // in the §6.3 catalog, the WHOLE request is rejected with typed
+            // ModelLacksVision — zero egress (this runs before the
+            // reservation and before any request build), never
+            // strip-and-transmit (D9). Consequence for a mid-session
+            // set_model to a text-only leaf: the next prompt is rejected
+            // HERE; history keeps its blocks, so switching back restores
+            // full vision context with zero loss.
+            if rung3_blocked {
+                state = TurnState::Failed(TypedError::new(
+                    NanoErrorKind::ModelLacksVision,
+                    "model_lacks_vision: the assembled context carries image content but the current model is not vision-proven; no request was transmitted",
+                ));
+                emit(
+                    &mut ops,
+                    turn_end_op(
+                        turn_id,
+                        nano_session::op::TurnOutcome::Failed,
+                        &mut turn_usage,
+                        &mut usage_recorded,
+                        &self.robustness.extra_usage,
+                    ),
+                );
+                break;
+            }
 
             // ── P1 §4.2: ATOMIC output reservation + clamp — the ONE clamp
             // site (this single ModelRequest build serves parent AND child
@@ -855,6 +982,7 @@ impl<'a> TurnEngine<'a> {
                         &compaction_id,
                         covers_op_ids,
                         changed_files,
+                        image_influenced_before,
                         &mut journal_emit,
                     )
                     .await;

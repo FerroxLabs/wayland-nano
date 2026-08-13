@@ -210,6 +210,41 @@ fn input_to_wire(messages: &[&Message]) -> serde_json::Value {
 
 fn message_to_items(message: &Message) -> Vec<serde_json::Value> {
     let mut items = Vec::new();
+    let (role, part_type) = match message.role {
+        Role::Assistant => ("assistant", "output_text"),
+        _ => ("user", "input_text"),
+    };
+    // P2a §2.2: an image-bearing message emits ONE input item whose content
+    // is the ordered part array — input_text parts for text, the
+    // Responses-API input_image part (data: URL) for each image — so block
+    // order survives onto the wire. The all-Text fast path in input_to_wire
+    // already branches on block type, so text-only messages keep their
+    // historical shape.
+    let has_images = message
+        .content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Image { .. }));
+    if has_images {
+        let parts: Vec<serde_json::Value> = message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => {
+                    Some(serde_json::json!({"type": part_type, "text": text}))
+                }
+                ContentBlock::Image { mime, data } => Some(serde_json::json!({
+                    "type": "input_image",
+                    "image_url": format!("data:{mime};base64,{data}"),
+                })),
+                _ => None,
+            })
+            .collect();
+        items.push(serde_json::json!({
+            "role": role,
+            "content": parts,
+        }));
+        return items;
+    }
     let texts: Vec<&str> = message
         .content
         .iter()
@@ -219,10 +254,6 @@ fn message_to_items(message: &Message) -> Vec<serde_json::Value> {
         })
         .collect();
     if !texts.is_empty() {
-        let (role, part_type) = match message.role {
-            Role::Assistant => ("assistant", "output_text"),
-            _ => ("user", "input_text"),
-        };
         items.push(serde_json::json!({
             "role": role,
             "content": [{"type": part_type, "text": texts.join("\n")}],
@@ -246,6 +277,9 @@ fn message_to_items(message: &Message) -> Vec<serde_json::Value> {
                 "output": content,
             })),
             ContentBlock::Text { .. } => {}
+            // Image-bearing messages returned above; an Image can never
+            // reach this loop (P2a: images only in user messages).
+            ContentBlock::Image { .. } => {}
         }
     }
     items
