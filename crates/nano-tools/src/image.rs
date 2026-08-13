@@ -588,6 +588,19 @@ static COUNT_DECODE_LEN: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static DECODES_FOR_LEN: AtomicUsize = AtomicUsize::new(0);
 
+/// Test hook for the §12 gauge-balance proof: when non-zero, decodes of
+/// the input whose length matches bump `ACTIVE_FOR_LEN` on entry and
+/// decrement it on exit (panic paths included — the decrement rides a
+/// scopeguard). The same length-targeted discipline as `POISON_DECODE_LEN`
+/// — ACTIVE_DECODES is process-global and the harness runs tests on
+/// parallel threads, so an absolute `== 0` gauge read races any concurrent
+/// test's in-flight decode; a length-targeted gauge is attributable to
+/// exactly one fixture.
+#[cfg(test)]
+static ACTIVE_DECODE_LEN: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static ACTIVE_FOR_LEN: AtomicUsize = AtomicUsize::new(0);
+
 /// The §4.3 pipeline, steps 1–6. `claimed_mime` is the sender's ACP
 /// `mimeType` hint — a HINT ONLY; a claim-vs-sniff mismatch is a typed
 /// rejection (§4.1). Pass `None` on the TUI/path path (extension is a
@@ -861,9 +874,16 @@ fn decode_normalize_reencode(
             DECODES_FOR_LEN.fetch_add(1, Ordering::SeqCst);
         }
     }
+    #[cfg(test)]
+    let active_len_guard = {
+        let target = ACTIVE_DECODE_LEN.load(Ordering::SeqCst);
+        scopeguard_active_for_len(target != 0 && target == bytes.len())
+    };
     let guard = scopeguard_decode_counter();
     let out = decode_inner(bytes, format);
     drop(guard);
+    #[cfg(test)]
+    drop(active_len_guard);
     out
 }
 
@@ -875,6 +895,25 @@ fn scopeguard_decode_counter() -> impl Drop {
         }
     }
     Guard
+}
+
+/// The length-targeted active gauge (test-only): increments on creation
+/// when this decode's input matched the armed length, decrements on drop —
+/// unwinding included, so a panicked decode still balances the gauge.
+#[cfg(test)]
+fn scopeguard_active_for_len(matched: bool) -> impl Drop {
+    struct Guard(bool);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            if self.0 {
+                ACTIVE_FOR_LEN.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+    }
+    if matched {
+        ACTIVE_FOR_LEN.fetch_add(1, Ordering::SeqCst);
+    }
+    Guard(matched)
 }
 
 fn decode_inner(bytes: &[u8], format: SniffedFormat) -> Result<LoadedImage, ImageError> {
@@ -1983,13 +2022,24 @@ mod tests {
         let mut png = encode_png_bytes(&image::DynamicImage::ImageRgb8(rgb_image(8, 8, false)));
         png.resize(40_001, 0);
         POISON_DECODE_LEN.store(png.len(), Ordering::SeqCst);
+        // The gauge-balance proof is length-targeted too (the
+        // POISON_DECODE_LEN discipline): ACTIVE_DECODES is process-global,
+        // so an absolute == 0 read races any parallel test's in-flight
+        // decode. ACTIVE_FOR_LEN tracks only decodes of THIS fixture's
+        // length.
+        ACTIVE_DECODE_LEN.store(png.len(), Ordering::SeqCst);
         let err = load_image(&png, None).await.unwrap_err();
         assert_eq!(err.kind, NanoErrorKind::ImageInvalid, "{err}");
-        // Host alive, permit released, counter balanced: the next load works.
-        assert_eq!(ACTIVE_DECODES.load(Ordering::SeqCst), 0);
+        // Host alive, permit released, counter balanced: this fixture's
+        // gauge returned to zero after the contained panic...
+        assert_eq!(ACTIVE_FOR_LEN.load(Ordering::SeqCst), 0);
+        // ...and the next load works (the 1-permit semaphore was
+        // released), balancing the gauge again.
         load_image(&png, None)
             .await
             .expect("loader survives a contained panic");
+        assert_eq!(ACTIVE_FOR_LEN.load(Ordering::SeqCst), 0);
+        ACTIVE_DECODE_LEN.store(0, Ordering::SeqCst);
     }
 
     #[tokio::test]
