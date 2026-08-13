@@ -15,7 +15,8 @@
 //! full-rehash cadence. Re-extraction happens ONLY on hash change.
 //! Entries without a content hash (oversize/overline/unreadable) are
 //! exempt from the full pass: they carry no symbols to go stale and the
-//! per-candidate read bound (≤ `max_file_bytes`) stays honest.
+//! per-candidate read bound (`max_file_bytes` + one detection byte)
+//! stays honest.
 //!
 //! Rename vs duplicate (§5.2): a new path whose hash matches an existing
 //! entry is a RENAME only when the old canonical path no longer exists
@@ -29,7 +30,7 @@
 //! state is impossible by construction.
 
 use std::collections::{BTreeMap, HashSet};
-use std::io::BufRead as _;
+use std::io::{BufRead as _, Read as _};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
@@ -45,7 +46,8 @@ use crate::walk::walk;
 /// overline/per-entry-IO are RECORDED, never fatal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkipReason {
-    /// Larger than `max_file_bytes` — never read (metadata carries size).
+    /// Larger than `max_file_bytes`; metadata or the bounded stream
+    /// observed the oversize condition.
     Oversize,
     /// More than `max_lines` lines — the bounded streaming read STOPPED
     /// at line `max_lines + 1`.
@@ -87,9 +89,12 @@ pub struct IndexStats {
     pub last_refresh_age_ms: Option<u64>,
     /// Files re-extracted (or newly indexed / re-keyed) by the last pass.
     pub refreshed_files: usize,
-    /// Cumulative count of policy-denied paths skipped by the walker.
-    /// Counted, never enumerated (§5.3).
+    /// Policy-denied paths skipped by the last refresh pass. Counted,
+    /// never enumerated (§5.3).
     pub skipped_denied: u64,
+    /// Policy-allowed files omitted by the last refresh pass because
+    /// `IndexOptions::max_files_per_refresh` was reached.
+    pub skipped_over_cap: u64,
 }
 
 /// The per-session store. NOT `Sync`-internally — hosts wrap it (the
@@ -103,6 +108,7 @@ pub struct RepoMap {
     last_refresh: Option<Instant>,
     last_full_hash: Option<Instant>,
     skipped_denied: u64,
+    skipped_over_cap: u64,
     refreshed_files: usize,
 }
 
@@ -141,6 +147,7 @@ impl RepoMap {
             last_refresh: None,
             last_full_hash: None,
             skipped_denied: 0,
+            skipped_over_cap: 0,
             refreshed_files: 0,
         })
     }
@@ -183,6 +190,7 @@ impl RepoMap {
                 .map(|t| u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX)),
             refreshed_files: self.refreshed_files,
             skipped_denied: self.skipped_denied,
+            skipped_over_cap: self.skipped_over_cap,
         }
     }
 
@@ -204,8 +212,14 @@ impl RepoMap {
     /// `full_rehash_interval`), re-extract only on hash change.
     pub fn refresh(&mut self) {
         let now = Instant::now();
-        let walked = walk(&self.root, &self.policy, self.options.respect_gitignore);
-        self.skipped_denied = self.skipped_denied.saturating_add(walked.skipped_denied);
+        let walked = walk(
+            &self.root,
+            &self.policy,
+            self.options.respect_gitignore,
+            self.options.max_files_per_refresh,
+        );
+        self.skipped_denied = walked.skipped_denied;
+        self.skipped_over_cap = walked.skipped_over_cap;
         let full_hash = self
             .last_full_hash
             .is_none_or(|t| t.elapsed() >= self.options.full_rehash_interval);
@@ -308,16 +322,24 @@ impl RepoMap {
         self.entries
             .iter()
             .find(|(k, e)| {
-                !seen_keys.contains(*k) && e.content_hash.as_ref() == Some(hash) && !e.path.exists()
+                !seen_keys.contains(*k)
+                    && e.content_hash.as_ref() == Some(hash)
+                    && stat_proves_not_found(std::fs::symlink_metadata(&e.path))
             })
             .map(|(k, _)| k.clone())
     }
 }
 
+fn stat_proves_not_found(stat: std::io::Result<std::fs::Metadata>) -> bool {
+    stat.is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+}
+
 /// The bounded streaming read (§5.1 r2 codex-F9): lines are counted
 /// WHILE reading and the read STOPS at line `max_lines + 1` — metadata
 /// carries size, not line count, so the line cap cannot be a metadata
-/// check. Files over `max_file_bytes` are never read at all.
+/// check. Known-oversize files are rejected before open; the reader is
+/// independently capped at `max_file_bytes + 1` to detect growth after
+/// stat.
 fn scan_file(path: &Path, len: u64, options: &IndexOptions) -> ScannedFile {
     if len > options.max_file_bytes {
         return ScannedFile::Skipped {
@@ -334,12 +356,20 @@ fn scan_file(path: &Path, len: u64, options: &IndexOptions) -> ScannedFile {
             };
         }
     };
-    let mut reader = std::io::BufReader::new(file);
+    let limit = options.max_file_bytes.saturating_add(1);
+    let mut reader = std::io::BufReader::new(file.take(limit));
     let mut text = String::new();
     let mut lines = 0usize;
     loop {
         let mut buf = String::new();
-        match reader.read_line(&mut buf) {
+        let read = reader.read_line(&mut buf);
+        if reader.get_ref().limit() == 0 {
+            return ScannedFile::Skipped {
+                reason: SkipReason::Oversize,
+                lines_seen: lines + usize::from(read.is_ok_and(|bytes| bytes > 0)),
+            };
+        }
+        match read {
             Ok(0) => break, // EOF
             Ok(_) => {
                 lines += 1;
@@ -478,6 +508,38 @@ mod tests {
             }
             ScannedFile::Content { .. } => panic!("oversize file must never be read"),
         }
+    }
+
+    #[test]
+    fn growth_past_stat_cap_is_cut_and_recorded_oversize() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("grew.rs");
+        std::fs::write(&file, "fn grew_past_the_stat() {}\n").unwrap();
+        let options = IndexOptions {
+            max_file_bytes: 8,
+            ..Default::default()
+        };
+
+        // Simulate a pre-read stat taken before the file grew: metadata
+        // says it is exactly at the cap, while the open file is larger.
+        match scan_file(&file, options.max_file_bytes, &options) {
+            ScannedFile::Skipped { reason, .. } => assert_eq!(reason, SkipReason::Oversize),
+            ScannedFile::Content { .. } => {
+                panic!("growth after stat must be cut and recorded as oversize")
+            }
+        }
+    }
+
+    #[test]
+    fn rename_source_requires_not_found_stat_error() {
+        let not_found = Err(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
+        assert!(stat_proves_not_found(not_found));
+
+        let denied = Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "not proof of disappearance",
+        ));
+        assert!(!stat_proves_not_found(denied));
     }
 
     #[test]

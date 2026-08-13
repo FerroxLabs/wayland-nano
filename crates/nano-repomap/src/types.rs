@@ -5,8 +5,9 @@
 //! in-memory only — P4 design §5.2, rusqlite persistence deferred);
 //! `RepoMap`/`FileSummary` replaced by the keyed store in `store.rs`
 //! (per-session `BTreeMap<PathKey, FileEntry>` with freshness metadata);
-//! `IndexOptions` gains the freshness cadence knobs (design §5.2 r2
-//! codex-F9). `Symbol`/`SymbolKind`/`Language` are near-verbatim.
+//! `IndexOptions` gains the freshness cadence and refresh-bound knobs
+//! (design §5.2 r2 codex-F9 + F-28 MEDIUM-3).
+//! `Symbol`/`SymbolKind`/`Language` are near-verbatim.
 
 use std::path::Path;
 use std::time::Duration;
@@ -107,9 +108,10 @@ impl Language {
 /// (§5.1 caps, §5.2 cadences).
 #[derive(Debug, Clone)]
 pub struct IndexOptions {
-    /// Maximum file size to scan (bytes). Files larger than this are
-    /// RECORDED with empty symbols (never read — metadata carries size).
-    /// Default 5 MB.
+    /// Maximum file size to scan (bytes). Metadata rejects known-large
+    /// files before open; the streaming reader admits one extra byte to
+    /// detect growth after stat. Larger files are recorded with empty
+    /// symbols. Default 5 MB.
     pub max_file_bytes: u64,
     /// Maximum line count to scan. Enforced by a BOUNDED STREAMING read:
     /// lines are counted while reading and the read STOPS at line
@@ -117,6 +119,10 @@ pub struct IndexOptions {
     /// knowable from metadata). Over-line files are recorded with empty
     /// symbols. Default 50_000.
     pub max_lines: usize,
+    /// Maximum policy-allowed files retained and processed by one
+    /// refresh pass. Additional files are counted in
+    /// `IndexStats::skipped_over_cap`. Default 10,000.
+    pub max_files_per_refresh: usize,
     /// If true, respect `.gitignore` files (globset-based approximation —
     /// deviation 8; negation/nesting corner cases of full gitignore
     /// semantics are not guaranteed). `.git` itself is always skipped.
@@ -138,6 +144,7 @@ impl Default for IndexOptions {
         Self {
             max_file_bytes: 5 * 1024 * 1024,
             max_lines: 50_000,
+            max_files_per_refresh: 10_000,
             respect_gitignore: true,
             refresh_throttle: Duration::from_secs(2),
             full_rehash_interval: Duration::from_secs(30),

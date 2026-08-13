@@ -53,12 +53,16 @@ impl RepoMap {
         let exact = text.map(str::trim).filter(|q| !q.is_empty());
 
         let mut scored: Vec<(u8, usize, usize, PathBuf, RepoMapMatch)> = Vec::new();
-        for (key, entry) in self.entries() {
+        for (_, entry) in self.entries() {
             let rel = entry
                 .path
                 .strip_prefix(self.root())
                 .unwrap_or(&entry.path)
                 .to_path_buf();
+            let rel_key = rel
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase();
             if let Some(glob) = path_glob
                 && !glob.is_match(&rel)
             {
@@ -69,7 +73,7 @@ impl RepoMap {
                 let name_lower = sym.name.to_ascii_lowercase();
                 if !tokens
                     .iter()
-                    .all(|t| name_lower.contains(t.as_str()) || key.contains(t.as_str()))
+                    .all(|t| name_lower.contains(t.as_str()) || rel_key.contains(t.as_str()))
                 {
                     continue;
                 }
