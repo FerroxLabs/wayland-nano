@@ -198,6 +198,17 @@ static TOTAL_DECODES: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static POISON_DECODE_LEN: AtomicUsize = AtomicUsize::new(0);
 
+/// Test hook for the §12 decode-count proofs: when non-zero, the decode
+/// body bumps `DECODES_FOR_LEN` for the input whose length matches. The
+/// same length-targeted discipline as `POISON_DECODE_LEN` — TOTAL_DECODES
+/// is process-global and the harness runs tests on parallel threads, so an
+/// absolute counter read races any concurrent test's decode; a
+/// length-targeted count is attributable to exactly one fixture.
+#[cfg(test)]
+static COUNT_DECODE_LEN: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static DECODES_FOR_LEN: AtomicUsize = AtomicUsize::new(0);
+
 /// The §4.3 pipeline, steps 1–6. `claimed_mime` is the sender's ACP
 /// `mimeType` hint — a HINT ONLY; a claim-vs-sniff mismatch is a typed
 /// rejection (§4.1). Pass `None` on the TUI/path path (extension is a
@@ -407,6 +418,13 @@ fn decode_normalize_reencode(
     let active = ACTIVE_DECODES.fetch_add(1, Ordering::SeqCst) + 1;
     MAX_OBSERVED_ACTIVE_DECODES.fetch_max(active, Ordering::SeqCst);
     TOTAL_DECODES.fetch_add(1, Ordering::SeqCst);
+    #[cfg(test)]
+    {
+        let target = COUNT_DECODE_LEN.load(Ordering::SeqCst);
+        if target != 0 && target == bytes.len() {
+            DECODES_FOR_LEN.fetch_add(1, Ordering::SeqCst);
+        }
+    }
     let guard = scopeguard_decode_counter();
     let out = decode_inner(bytes, format);
     drop(guard);
@@ -1125,33 +1143,78 @@ mod tests {
         assert_eq!(err.kind, NanoErrorKind::ImageUnsupportedFormat, "{err}");
     }
 
+    // ── §12 decode-count proofs ─────────────────────────────────────────
+    //
+    // TOTAL_DECODES is process-global and the harness runs tests on
+    // parallel threads, so an ABSOLUTE counter read races any concurrent
+    // test's decode (the macOS CI failure: 21 == 20 in the 1000-frame GIF
+    // proof). The counter-dependent proofs are folded into ONE serialized
+    // body (the flux_key.rs / e863a2b convention for parallel-unsafe
+    // clusters) and every measurement is LENGTH-TARGETED (the
+    // POISON_DECODE_LEN discipline): only a decode of the fixture's unique
+    // padded length bumps DECODES_FOR_LEN, so a parallel test's decode can
+    // never steal or inflate the count. The invariants keep their full
+    // strength: ZERO decodes for rejected input, exactly ONE decode body
+    // for a 1000-frame GIF.
+
+    /// Arm the length-targeted counter for exactly `bytes`' length.
+    fn begin_count_for(bytes: &[u8]) {
+        DECODES_FOR_LEN.store(0, Ordering::SeqCst);
+        COUNT_DECODE_LEN.store(bytes.len(), Ordering::SeqCst);
+    }
+
+    /// Disarm and assert the targeted count.
+    fn assert_counted_decodes(expected: usize, msg: &str) {
+        COUNT_DECODE_LEN.store(0, Ordering::SeqCst);
+        assert_eq!(DECODES_FOR_LEN.load(Ordering::SeqCst), expected, "{msg}");
+    }
+
+    /// Pad with trailing zero bytes (tolerated past the container end —
+    /// the §4.1 polyglot battery proves the decoders stop at the
+    /// terminator) to a length no other fixture uses, so the
+    /// length-targeted counter attributes unambiguously (the poison
+    /// battery's 40_001 precedent). Applied AFTER `materialize` so the
+    /// on-disk fixtures stay unpadded.
+    fn pad_to_unique_len(bytes: &mut Vec<u8>) {
+        bytes.resize(bytes.len() + 31_000_001, 0);
+    }
+
+    /// The serialized decode-count cluster: the former
+    /// `oversize_file_is_too_large_with_zero_decode`,
+    /// `bomb_header_rejected_before_allocation`, and
+    /// `thousand_frame_gif_decodes_first_frame_only` bodies, every
+    /// assertion preserved, the counter reads length-targeted.
     #[tokio::test]
-    async fn oversize_file_is_too_large_with_zero_decode() {
-        let before = TOTAL_DECODES.load(Ordering::SeqCst);
+    async fn decode_count_invariants_are_length_targeted_and_serialized() {
+        // Oversize file: the intake byte ceiling rejects with ZERO decodes.
         let bytes = vec![0u8; (MAX_IMAGE_FILE_BYTES + 1) as usize];
+        begin_count_for(&bytes);
         let err = load_image(&bytes, None).await.unwrap_err();
         assert_eq!(err.kind, NanoErrorKind::ImageTooLarge);
         assert_eq!(err.detail, "file-bytes");
-        assert_eq!(
-            TOTAL_DECODES.load(Ordering::SeqCst),
-            before,
-            "oversize rejection runs ZERO decodes"
-        );
-    }
+        assert_counted_decodes(0, "oversize rejection runs ZERO decodes");
 
-    #[tokio::test]
-    async fn bomb_header_rejected_before_allocation() {
-        // 40,000 × 40,000 = 1.6 Gpx declared over a ~100 B file.
-        let bomb = materialize("bomb-header.png", &png_with_declared_dims(40_000, 40_000));
-        let before = TOTAL_DECODES.load(Ordering::SeqCst);
+        // Bomb header: 40,000 × 40,000 = 1.6 Gpx declared over a ~100 B
+        // file — the header probe rejects BEFORE the decoder allocates.
+        let mut bomb = materialize("bomb-header.png", &png_with_declared_dims(40_000, 40_000));
+        pad_to_unique_len(&mut bomb);
+        begin_count_for(&bomb);
         let err = load_image(&bomb, None).await.unwrap_err();
         assert_eq!(err.kind, NanoErrorKind::ImageTooLarge);
         assert_eq!(err.detail, "decode-pixels");
-        assert_eq!(
-            TOTAL_DECODES.load(Ordering::SeqCst),
-            before,
-            "the header probe rejects BEFORE the decoder allocates"
-        );
+        assert_counted_decodes(0, "the header probe rejects BEFORE the decoder allocates");
+
+        // 1000-frame GIF: exactly ONE decode body runs (no per-frame
+        // decode explosion); the first frame wins.
+        let mut gif = materialize("anim-1000f.gif", &gif_frames(1000));
+        pad_to_unique_len(&mut gif);
+        begin_count_for(&gif);
+        let loaded = load_image(&gif, None).await.expect("gif loads");
+        assert!(loaded.frames_dropped, "999 frames were dropped");
+        assert_eq!(loaded.wire_mime, "image/png");
+        assert_eq!((loaded.width, loaded.height), (1, 1));
+        assert_counted_decodes(1, "ONE decode body ran (no per-frame decode explosion)");
+        assert!(loaded.receipt_line().contains("frames: N -> 1"));
     }
 
     #[tokio::test]
@@ -1344,19 +1407,6 @@ mod tests {
             .expect("trailing JS tolerated");
         assert_eq!(loaded.wire_mime, "image/png", "GIF re-encodes to PNG");
         assert!(!loaded.bytes.windows(5).any(|w| w == b"alert"));
-    }
-
-    #[tokio::test]
-    async fn thousand_frame_gif_decodes_first_frame_only() {
-        let gif = materialize("anim-1000f.gif", &gif_frames(1000));
-        let before = TOTAL_DECODES.load(Ordering::SeqCst);
-        let loaded = load_image(&gif, None).await.expect("gif loads");
-        assert!(loaded.frames_dropped, "999 frames were dropped");
-        assert_eq!(loaded.wire_mime, "image/png");
-        assert_eq!((loaded.width, loaded.height), (1, 1));
-        // ONE decode body ran (no per-frame decode explosion).
-        assert_eq!(TOTAL_DECODES.load(Ordering::SeqCst), before + 1);
-        assert!(loaded.receipt_line().contains("frames: N -> 1"));
     }
 
     #[tokio::test]
