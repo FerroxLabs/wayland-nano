@@ -608,3 +608,34 @@ promotes/closes entries; builders append only.
 - **F-P2B-3 LOW:** rung-3 vision gate is once-per-turn — mid-turn compaction eviction doesn't re-arm until next prompt (fail-closed, self-heals).
 - F-32 LOW-6 independently re-confirmed accurate post-wiring.
 - Alt B decision RECORDED in the manifest (leg 7). Legs 3/4/5/6 PASS on all expressible paths; leg 2 inexpressible under F-P2B-1.
+
+---
+
+# Pending FOLLOWUPS entries — to ride the next merge commit
+
+## F-39: doctor is report-only for attachment GC; design §5.4 says "startup + explicit /doctor" — LOW, reconciliation
+- From agent-159 P2a GC re-proof (all 5 legs PASS, F-34 stays closed). Shipped: sweep at startup only; /doctor reports but does not sweep. Matches F-34's close contract; deviates from P2a design note §5.4's literal text. Fix = either wire a doctor-triggered sweep or amend §5.4 wording. Evidence: .tmp/p2a-reproof/captures/reproof-leg2.json.
+
+## F-40: /doctor sessions-dir-permissions WARN leaks attachment-audit wording — LOW, cosmetic
+- From agent-159. On a sessions-less home, /doctor prints a WARN whose detail contains `GetNamedSecurityInfoW failed` (attachment-audit phrasing); rc stays 0. Cosmetic string hygiene.
+
+## P3 proof findings (agent-154, manifest section at shared/reviews/RC/evidence/CONSOLIDATED-VERIFICATION.md:992)
+- CRITICAL/HIGH going to fix round (feat/p3-fixround): F-P3-1 (OAuth flow dead code — CRITICAL), F-P3-2 (StdioTransport uncontained children — HIGH), F-P3-3 (registration receipt/instance_id/SpecSource absent — HIGH), F-P3-4 (elicitation op-id reset on resume, answer never journaled — HIGH, live-proven), F-P3-7 (user-cancel maps to decline not cancel — acp_mode.rs:3753-3771), F-P3-13 (backpressure battery host-dependent failure — triage).
+- MEDIUM/LOW filed by reference: F-P3-5..F-P3-12 + LOW list live in the manifest section (static tool definitions vs §3.2, shutdown cancel misses, >64-name hydrated union compaction, churn-breaker skip, DCR listener leak, http.rs error leakage, etc.). Unreproduced anomaly: one leg5-timeout rc=1 exit, 2 clean reruns.
+
+## P2b proof findings (agent-160, manifest section at CONSOLIDATED-VERIFICATION.md:1043-1065)
+- **F-P2B-1 HIGH (live-proven both wires):** view_image unreachable in every shipped config — vision_backed conjuncts mutually unsatisfiable (flux leaves bind openai-completions; vision catalog keys are all flux-pinned-*). Unblock options: bless an anthropic:<model> catalog id after live probe, OR wire flux→anthropic compat routing (FluxDriver::anthropic_compat exists, uncalled). DEFER to post-P5-merge wave — the fix surface (provider_router/vision gating) is inside agent-149's active lane.
+- **F-P2B-2 LOW:** ToolResult replay degradation arm emits no operator stderr log (comment claims it at acp_mode.rs:4792-4794; notice cause split correct and test-pinned).
+- **F-P2B-3 LOW:** rung-3 vision gate is once-per-turn — mid-turn compaction eviction doesn't re-arm until next prompt (fail-closed, self-heals).
+- F-32 LOW-6 independently re-confirmed accurate post-wiring.
+- Alt B decision RECORDED in the manifest (leg 7). Legs 3/4/5/6 PASS on all expressible paths; leg 2 inexpressible under F-P2B-1.
+
+## P5 merge-review LOW/INFO (reviewer agent-164, verdict MERGE-OK, 2026-08-13)
+- LOW: auto_routing.rs:880-883 comment claims pin snapshots carry "budget 1", but journal_snapshot always writes attempt_budget: 3 — inert (plan_resume returns None for non-AutoClientSide) but the journaled record contradicts the documented intent. Fix: journal the true per-mode budget or correct the comment.
+- LOW: §8.1's "500-with-format-body resolves terminal" holds only when body evidence reaches classify_attempt; the production wire fold extracts body evidence only for auth_error (flux_common.rs:69-90), so a live 500+format-body cascades. Consistent with probed-live-behavior discipline; untested at the adapter fold layer.
+- INFO: exec auto_client_side refusal builds CandidateInputs with stubs (exec_run.rs:140-160) — safe today (requirements.tools forces empty admission); revisit when the tool-capability catalog lands.
+
+## P3 fixround merge-review LOWs (reviewer agent-167, verdict MERGE-OK, 2026-08-13)
+- LOW: is_https_url (mcp_specs.rs:39) checks only scheme+host — userinfo/query/non-default ports parse. Not exploitable today (HTTP registration typed-refused; origin_of rejects userinfo/query/fragment at login; host-granularity grant model). Tighten at parse time when the §6.1 HTTP binding lands.
+- LOW (wording): "failed login journals nothing" holds only pre-grant — journal-first journals the grant at §6.3 step 3 before the browser handoff (flow.rs:222); an abandoned handoff leaves a token-less grant. Benign (no credentials → 401 → typed AuthorizationRequired on replay) but document the actual semantics.
+- Integrator note: fixround merge had 2 trivial union conflicts (nano-cli/lib.rs + nano-session/lib.rs) resolved by keeping both sides.

@@ -9,13 +9,21 @@
 //! ever reach a model request), journaled hydration with the canonical
 //! digest gate and the churn breaker, and resources v1 (capability-gated
 //! list/read with the fail-closed advertised-URI check).
+//!
+//! P3 §2.7 (F-P3-3): registration mints a STABLE instance identity — an
+//! immutable [`McpRegistrationReceipt`] whose `instance_id`
+//! (`srv_<16 hex of sha256(canonical spec JSON)>`) keys EVERY keyed surface
+//! (hydration journal ops, elicitation bindings, OAuth grant/storage, churn
+//! windows). The display name stays display-only: it renders in notices,
+//! listings, and the model-facing `mcp__<name>__<tool>` wire namespace, and
+//! keys nothing.
 
 use crate::loop_protection::ProgressSignals;
 use crate::turn::ToolExecutor;
 use crate::turn::ToolOutcome;
 use nano_mcp::client::{McpClient, McpError};
 use nano_mcp::dispatcher::{ConnectionOptions, ServerRequestHandler, SlotRetired};
-use nano_mcp::protocol::{McpResourceDescriptor, McpToolDescriptor};
+use nano_mcp::protocol::{McpResourceDescriptor, McpToolDescriptor, NegotiatedCapabilities};
 use nano_model::types::{ToolCall, ToolDefinition};
 use nano_session::{HydrationEntry, NanoErrorKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -200,8 +208,12 @@ fn count_transitions(window: &[String]) -> usize {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolSearchHit {
+    /// The server's §2.7 instance id — the hydration journal key, NOT the
+    /// display name.
     pub server_id: String,
     pub tool: String,
+    /// The model-facing name — display-name based by contract (§2.7 keeps
+    /// the `mcp__<display>__<tool>` wire namespace unchanged).
     pub namespaced: String,
 }
 
@@ -314,26 +326,181 @@ pub struct ElicitationHandlerParts {
 }
 
 /// Factory the elicitation lane installs before registration. Receives the
-/// server name and the registry-owned interrupted-call cell (the executor
-/// sets it to `Some(call.id)` around each dispatched call for
-/// interrupted-call attribution in the elicitation journal record).
+/// server's §2.7 INSTANCE ID (the journaled key), its DISPLAY NAME (ask-card
+/// label only — it keys nothing), and the registry-owned interrupted-call
+/// cell (the executor sets it to `Some(call.id)` around each dispatched call
+/// for interrupted-call attribution in the elicitation journal record).
 pub type ElicitationHandlerFactory =
-    Arc<dyn Fn(&str, Arc<Mutex<Option<String>>>) -> ElicitationHandlerParts + Send + Sync>;
+    Arc<dyn Fn(&str, &str, Arc<Mutex<Option<String>>>) -> ElicitationHandlerParts + Send + Sync>;
+
+// ---------------------------------------------------------------------------
+// §2.7 stable instance identity (F-P3-3): the registration receipt and the
+// instance-id mint. Every keyed surface (hydration journal ops, elicitation
+// bindings, OAuth grant/storage, churn windows) keys on `instance_id`; the
+// display name is display-only.
+// ---------------------------------------------------------------------------
+
+/// §2.7 spec provenance. A ZERO-LOGIC serde type: recorded on the spec and
+/// the receipt and mixed into the instance-id hash; no behavior consumes it
+/// in P3 (the `Marketplace` id is the V2 seam only).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpecSource {
+    /// Operator config / `NANO_MCP_SERVERS`. The serde default: the
+    /// historical source of every pre-§2.7 spec.
+    #[default]
+    Config,
+    Cli,
+    /// The Desktop-published ACP session/new|session/load `mcpServers` param.
+    Desktop,
+    Marketplace(String),
+}
+
+/// §2.7 tool provenance (V2 marketplace seam). A ZERO-LOGIC serde type ONLY:
+/// nothing constructs or consumes it in P3.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSourceId {
+    Builtin,
+    Mcp(String),
+    Plugin(String),
+}
+
+/// §2.7 registration receipt: built ONCE at registration, immutable, held by
+/// the registry (the session state here). `instance_id` is the ONLY server
+/// key on keyed surfaces; the display name never keys anything.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct McpRegistrationReceipt {
+    pub instance_id: String,
+    pub source: SpecSource,
+    /// The connect-time negotiated capabilities record (§2.7 — the enforcing
+    /// record for the §4.2/§5.5 gates).
+    pub negotiated: NegotiatedCapabilities,
+    /// The §3.4 canonical digest of the registered (sanitized, capped) tool
+    /// inventory — the same value hydration journal ops carry.
+    pub tools_digest: String,
+    /// Declared egress origins. EMPTY today (F-P3-1): HTTP specs parse and
+    /// mint identity but registration is a typed refusal until the §6.1
+    /// dispatcher HTTP binding lands, so every minted receipt is a stdio
+    /// server's — an empty vec is the honest value, never a fabricated
+    /// origin.
+    pub egress_origins: Vec<String>,
+    /// Seconds since the Unix epoch at registration — a wall-clock audit
+    /// stamp (no monotonic guarantee; no new clock dependency).
+    pub registered_at: u64,
+}
+
+/// §2.7 instance identity: `srv_` + the first 16 lowercase hex chars of
+/// sha256 over the canonical spec JSON `{source,command|url,args}` — object
+/// keys sorted recursively, no insignificant whitespace (the §3.4
+/// canonical-JSON discipline). Stdio specs hash `command`; HTTP specs
+/// (§6.1, F-P3-1) hash `url` with an EMPTY `args` array, keeping the form's
+/// arity at three fields. The display name is deliberately NOT hashed (it
+/// keys nothing), and neither is `env`: the note's canonical form is
+/// exactly these three fields.
+pub fn mint_instance_id(spec: &McpServerSpec) -> String {
+    let canonical = match &spec.transport {
+        Transport::Stdio { command, args, .. } => canonical_json(&serde_json::json!({
+            "source": &spec.source,
+            "command": command,
+            "args": args,
+        })),
+        Transport::Http { url } => canonical_json(&serde_json::json!({
+            "source": &spec.source,
+            "url": url,
+            "args": Vec::<String>::new(),
+        })),
+    };
+    let digest = sha256_hex(canonical.as_bytes());
+    format!("srv_{}", &digest[..16])
+}
+
+/// Typed registration refusal (§2.7 fail-closed identity rules). The design
+/// note is SILENT on collision policy; we refuse loudly rather than
+/// silently overwrite or alias:
+/// - identical canonical spec JSON mints an identical `instance_id` — the
+///   SAME logical server; re-registration is a typed refusal, never a
+///   silent overwrite of the live entry and its receipt;
+/// - two DIFFERENT specs sharing a display name mint distinct instance ids
+///   but would collide on the model-facing `mcp__<name>__<tool>` namespace
+///   (which stays display-name based, §2.7) — a silent alias on the model
+///   surface is worse than a loud refusal, so the second registration is a
+///   typed refusal too.
+#[derive(Debug, thiserror::Error)]
+pub enum RegisterError {
+    #[error(
+        "MCP server instance {instance_id} is already registered (identical canonical spec); re-registration refused"
+    )]
+    DuplicateInstance { instance_id: String },
+    #[error(
+        "MCP server display name '{name}' is already used by a different server instance; the mcp__{name}__* namespace would collide"
+    )]
+    DuplicateDisplayName { name: String },
+    /// §6.1 (F-P3-1): an HTTP spec parses, mints identity, and its origin
+    /// joins the session egress policy — but the dispatcher-bound HTTP
+    /// connection (with §6.1 auth-header resolution) is NOT wired yet.
+    /// Registration is a typed, loud refusal (`mcp_transport`); a pretend
+    /// connection would violate the honesty rule.
+    #[error(
+        "mcp_transport: MCP server '{name}' is an HTTP server; the dispatcher-bound HTTP connection (§6.1) is not wired yet — registration refused (fail-closed)"
+    )]
+    HttpTransportUnavailable { name: String },
+    #[error(transparent)]
+    Connect(#[from] McpError),
+}
+
+/// Wall-clock seconds since the Unix epoch for the receipt's audit stamp.
+fn now_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// §6.1 (F-P3-1) transport dispatch. Serde stays WIRE-COMPATIBLE with
+/// pre-§6.1 stdio specs: the enum is untagged and the spec flattens it, so
+/// a stdio spec still serializes as top-level `{command, args, env}` and an
+/// HTTP spec as `{url}` — the config shapes `mcp_specs` parses.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum Transport {
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: Vec<(String, String)>,
+    },
+    /// https ONLY — `mcp_specs` refuses a plain-http url with a typed
+    /// InvalidParams rejection at parse, and OAuth discovery rejects
+    /// cleartext again at login (fail-closed at both boundaries).
+    Http { url: String },
+}
+
+/// An MCP server registration spec (§6.1: stdio or HTTP transport). `name`
+/// is DISPLAY-ONLY (§2.7) — keyed surfaces use the receipt's `instance_id`.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct McpServerSpec {
+    pub name: String,
+    /// Stdio command/args/env or the HTTP url (§6.1). Flattened + untagged
+    /// so the stdio serde wire form is unchanged.
+    #[serde(flatten)]
+    pub transport: Transport,
+    /// Where the spec came from (§2.7; rides the instance-id hash).
+    /// Serde-defaulted so pre-§2.7 constructors and fixtures parse unchanged.
+    #[serde(default)]
+    pub source: SpecSource,
+}
 
 // ---------------------------------------------------------------------------
 // The registry
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
-pub struct McpServerSpec {
-    pub name: String,
-    pub command: String,
-    pub args: Vec<String>,
-    pub env: Vec<(String, String)>,
-}
-
 struct ServerEntry {
     spec: McpServerSpec,
+    /// The §2.7 receipt minted at registration (immutable; the instance-id
+    /// authority for every keyed surface).
+    receipt: McpRegistrationReceipt,
     client: McpClient,
     /// Sanitized descriptors (§3.6) — the ONLY form ever served (index,
     /// definitions, listing). Empty when the inventory was blocked.
@@ -417,15 +584,47 @@ impl McpRegistry {
     /// rules. A failed handshake fails the registration, never the runtime.
     /// Returns the number of tools registered (0 when the inventory hit the
     /// hard caps).
-    pub fn register(&mut self, spec: McpServerSpec) -> Result<usize, McpError> {
+    ///
+    /// §2.7 (F-P3-3): identity is checked FIRST, before any child spawns —
+    /// an identical canonical spec (same `instance_id`) or a display name
+    /// already used by a different instance is a TYPED refusal
+    /// ([`RegisterError`]), never a silent overwrite or namespace alias. On
+    /// success the registry builds and holds the immutable
+    /// [`McpRegistrationReceipt`]; every keyed surface keys on its
+    /// `instance_id`, not the display name.
+    pub fn register(&mut self, spec: McpServerSpec) -> Result<usize, RegisterError> {
+        let instance_id = mint_instance_id(&spec);
+        if self
+            .servers
+            .iter()
+            .any(|e| e.receipt.instance_id == instance_id)
+        {
+            return Err(RegisterError::DuplicateInstance { instance_id });
+        }
+        if self.servers.iter().any(|e| e.spec.name == spec.name) {
+            return Err(RegisterError::DuplicateDisplayName {
+                name: spec.name.clone(),
+            });
+        }
         let interrupted_call: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        // §6.1 (F-P3-1): an HTTP spec is identity-valid and egress-armed,
+        // but the dispatcher-bound HTTP connection (with §6.1 auth-header
+        // resolution: static <SERVER>_MCP_TOKEN[_FILE] → stored OAuth token
+        // → typed McpAuthorizationRequired) is not wired — refuse typed and
+        // loud rather than fake a connection. The §5.5 requires-elicitation
+        // refusal runs even earlier, at config parse (mcp_specs).
+        let Transport::Stdio { command, args, env } = &spec.transport else {
+            return Err(RegisterError::HttpTransportUnavailable {
+                name: spec.name.clone(),
+            });
+        };
         let client = match &self.elicitation_factory {
             Some(factory) => {
-                let parts = factory(&spec.name, interrupted_call.clone());
+                let parts = factory(&instance_id, &spec.name, interrupted_call.clone());
                 McpClient::connect_with_options(
-                    &spec.command,
-                    &spec.args,
-                    &spec.env,
+                    command,
+                    args,
+                    env,
                     ConnectionOptions {
                         request_handler: parts.handler,
                         slot_retired_hook: parts.slot_retired_hook,
@@ -433,8 +632,17 @@ impl McpRegistry {
                     },
                 )?
             }
-            None => McpClient::connect(&spec.command, &spec.args, &spec.env)?,
+            None => McpClient::connect(command, args, env)?,
         };
+        // §2.7: the receipt records the connect-time negotiated capabilities.
+        // A completed connect without the record is a protocol defect — fail
+        // the registration rather than minting a receipt with fabricated
+        // capabilities.
+        let negotiated = client.negotiated().ok_or_else(|| {
+            RegisterError::Connect(McpError::Protocol(
+                "initialize completed without a recorded capabilities negotiation".to_string(),
+            ))
+        })?;
         // §2.7 (deviation 3): consume the connect-time tools/list cache —
         // no duplicate wire call.
         let mut truncated_count = 0usize;
@@ -479,8 +687,17 @@ impl McpRegistry {
             InventoryClass::Direct => (ToolExposure::Direct, false, tools),
         };
         let kept = tools.len();
+        let receipt = McpRegistrationReceipt {
+            instance_id,
+            source: spec.source.clone(),
+            negotiated,
+            tools_digest: canonical_tools_digest(&tools),
+            egress_origins: Vec::new(),
+            registered_at: now_unix_seconds(),
+        };
         self.servers.push(ServerEntry {
             spec,
+            receipt,
             client,
             tools,
             tool_count,
@@ -497,6 +714,15 @@ impl McpRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.servers.is_empty()
+    }
+
+    /// The §2.7 receipt for a registered instance (`None`: unknown instance
+    /// id). Receipts are immutable once minted.
+    pub fn receipt(&self, instance_id: &str) -> Option<&McpRegistrationReceipt> {
+        self.servers
+            .iter()
+            .find(|e| e.receipt.instance_id == instance_id)
+            .map(|e| &e.receipt)
     }
 
     /// The MCP tool surface as agent-facing tool definitions, namespaced.
@@ -519,6 +745,10 @@ impl McpRegistry {
     /// §3.4 dispatch-time membership check: is this namespaced tool in the
     /// live direct ∪ hydrated set? A tool never hydrated, dropped at
     /// resume, or on a pinned server is NOT exposed.
+    ///
+    /// The namespaced (display-name) lookup is unambiguous by construction:
+    /// `register` refuses a second registration under a live display name
+    /// (§2.7, [`RegisterError::DuplicateDisplayName`]).
     pub fn is_exposed(&self, namespaced: &str) -> bool {
         let Some((server, tool)) = namespaced
             .strip_prefix("mcp__")
@@ -627,7 +857,7 @@ impl McpRegistry {
                 );
                 if tokens.iter().all(|token| haystack.contains(token)) {
                     matched.push(ToolSearchHit {
-                        server_id: entry.spec.name.clone(),
+                        server_id: entry.receipt.instance_id.clone(),
                         tool: tool.name.clone(),
                         namespaced,
                     });
@@ -641,11 +871,12 @@ impl McpRegistry {
             notices.push(format!("{more} more matches — refine your query"));
         }
         // ONE hydration batch, grouped by server in hit order, capped at
-        // MAX_HYDRATION_ENTRIES (8) servers.
+        // MAX_HYDRATION_ENTRIES (8) servers. Hits carry the §2.7 instance
+        // id, so the batch (and its journal op) is keyed by instance id.
         let (mut hydration, capped) = build_hydration_batch(&hits, |server| {
             self.servers
                 .iter()
-                .find(|e| e.spec.name == server)
+                .find(|e| e.receipt.instance_id == server)
                 .map(|e| canonical_tools_digest(&e.tools))
         });
         if capped {
@@ -676,12 +907,16 @@ impl McpRegistry {
     /// pushes each server's digest onto its churn window (cap 8, drop
     /// oldest), then re-evaluates the churn breaker. Call only AFTER the
     /// journal append succeeded (journal-first ordering).
+    ///
+    /// §2.7 (F-P3-3): entries key on the instance id. An entry whose
+    /// `server_id` matches no registered instance (e.g. a stale
+    /// display-name-keyed entry) is SKIPPED — fail-closed, nothing exposed.
     pub fn apply_hydration(&mut self, entries: &[HydrationEntry]) {
         for entry in entries {
             let Some(index) = self
                 .servers
                 .iter()
-                .position(|e| e.spec.name == entry.server_id)
+                .position(|e| e.receipt.instance_id == entry.server_id)
             else {
                 continue;
             };
@@ -717,6 +952,15 @@ impl McpRegistry {
     /// mismatch drops that server's entries with a loud notice. Journaled
     /// servers absent from the registry are ignored silently. Returns the
     /// notices for the host to surface as session/update lines.
+    ///
+    /// §2.7 KEY FORMAT CHANGE (F-P3-3): the maps are keyed by instance id
+    /// (`srv_<16 hex>`). Journals written BEFORE this change key hydration by
+    /// display name; resumed by this binary those keys simply match no
+    /// registered instance here, so the server is treated as unconfigured and
+    /// its hydration is DROPPED — fail-closed, no phantom exposure. The
+    /// reverse direction (a new journal replayed by a pre-change binary)
+    /// fails closed the same way: instance-id keys match no display name
+    /// there either. Within one journal the key format is consistent.
     pub fn resume_hydration(
         &mut self,
         hydrated: &BTreeMap<String, BTreeSet<String>>,
@@ -725,10 +969,17 @@ impl McpRegistry {
     ) -> Vec<String> {
         let mut notices = Vec::new();
         for (server_id, journaled_digest) in digests {
-            let Some(index) = self.servers.iter().position(|e| e.spec.name == *server_id) else {
-                // Server not configured this session — ignored silently.
+            let Some(index) = self
+                .servers
+                .iter()
+                .position(|e| e.receipt.instance_id == *server_id)
+            else {
+                // Server not configured this session — ignored silently
+                // (this is also the pre-§2.7 display-name-keyed drop leg
+                // documented above).
                 continue;
             };
+            let display = self.servers[index].spec.name.clone();
             let fresh = canonical_tools_digest(&self.servers[index].tools);
             if fresh != *journaled_digest {
                 // Security-relevant inventory change: drop-and-notify.
@@ -736,7 +987,7 @@ impl McpRegistry {
                 self.servers[index].churn_window.clear();
                 let dropped = hydrated.get(server_id).map(|s| s.len()).unwrap_or(0);
                 notices.push(format!(
-                    "MCP server '{server_id}': {dropped} hydrated tools dropped (inventory changed); use tool_search to re-hydrate"
+                    "MCP server '{display}': {dropped} hydrated tools dropped (inventory changed); use tool_search to re-hydrate"
                 ));
                 continue;
             }
@@ -751,7 +1002,7 @@ impl McpRegistry {
                 self.servers[index].pinned = true;
                 self.servers[index].hydrated.clear();
                 notices.push(format!(
-                    "MCP server '{server_id}': tools digest churned (>= {CHURN_TRANSITION_LIMIT} transitions in the restored window); pinned Deferred for the session"
+                    "MCP server '{display}': tools digest churned (>= {CHURN_TRANSITION_LIMIT} transitions in the restored window); pinned Deferred for the session"
                 ));
             }
             self.servers[index].churn_window = window;
@@ -1167,9 +1418,12 @@ done
         let mut registry = McpRegistry::new();
         let registered = registry.register(McpServerSpec {
             name: "fake".into(),
-            command,
-            args,
-            env: vec![],
+            transport: Transport::Stdio {
+                command,
+                args,
+                env: vec![],
+            },
+            source: SpecSource::Config,
         });
         assert_eq!(registered.expect("register"), 1);
         assert_eq!(registry.tool_definitions().len(), 1);

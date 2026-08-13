@@ -60,7 +60,19 @@ pub async fn run(
     if let Some(resolved) = &search {
         executor = executor.with_web_search(resolved.tool.clone(), search_meter.clone());
     }
-    let driver = FluxDriver::new(FluxCompletionsClient::new(EgressClient::flux()), api_key);
+    // MCP: configured servers register below (failures log, never crash the
+    // host). P3 §6.1: every configured HTTP MCP server's ORIGIN also joins
+    // this host's egress policy at construction (inert until the dispatcher
+    // HTTP binding lands; deny-by-default otherwise unchanged).
+    let mcp_specs = nano_cli::mcp_specs::mcp_specs_from_env();
+    let driver_policy = nano_cli::mcp_specs::allow_http_mcp_origins(
+        nano_egress::policy::EgressPolicy::flux_only(),
+        &mcp_specs,
+    );
+    let driver = FluxDriver::new(
+        FluxCompletionsClient::new(EgressClient::new(driver_policy)),
+        api_key,
+    );
 
     // C10: the session-owned tools need a session cell set even here (the
     // protocol host has no ACP session — one fixed id journals todo/plan
@@ -81,28 +93,34 @@ pub async fn run(
         .map_err(std::io::Error::other)?;
     let gate = nano_cli::session_tools::PlanAwareApproval::new(plan.clone(), workspace);
 
-    // MCP: register configured servers (failures log, never crash the host).
-    // P3 §5.2: the elicitation bridge is installed with an auto-decline ask
-    // (this host's gate declares questions Unavailable); the registry is
-    // shared with the session-tool wrapper so tool_search hydration and
-    // resources are visible to both.
-    let mcp_specs = nano_cli::mcp_specs::mcp_specs_from_env();
+    // MCP: register configured servers (parsed above for the §6.1 egress
+    // arm). P3 §5.2: the elicitation bridge is installed with an
+    // auto-decline ask (this host's gate declares questions Unavailable);
+    // the registry is shared with the session-tool wrapper so tool_search
+    // hydration and resources are visible to both.
     let elicitation: Option<nano_agent::mcp::ElicitationHandlerFactory> = (!mcp_specs.is_empty())
         .then(|| {
             let coordinator = coordinator.clone();
-            std::sync::Arc::new(move |server_id: &str, interrupted_call| {
-                let bridge = std::sync::Arc::new(nano_agent::elicitation::ElicitationBridge::new(
-                    server_id.to_string(),
-                    "protocol-host".to_string(),
-                    coordinator.clone(),
-                    interrupted_call,
-                    std::sync::Arc::new(|_| nano_agent::elicitation::ElicitAskOutcome::Unavailable),
-                ));
-                nano_agent::mcp::ElicitationHandlerParts {
-                    handler: bridge.clone(),
-                    slot_retired_hook: bridge.slot_retired_hook(),
-                }
-            }) as nano_agent::mcp::ElicitationHandlerFactory
+            std::sync::Arc::new(
+                move |server_id: &str, display_name: &str, interrupted_call| {
+                    // §2.7 (F-P3-3): server_id is the instance id.
+                    let bridge =
+                        std::sync::Arc::new(nano_agent::elicitation::ElicitationBridge::new(
+                            server_id.to_string(),
+                            display_name.to_string(),
+                            "protocol-host".to_string(),
+                            coordinator.clone(),
+                            interrupted_call,
+                            std::sync::Arc::new(|_| {
+                                nano_agent::elicitation::ElicitAskOutcome::Unavailable
+                            }),
+                        ));
+                    nano_agent::mcp::ElicitationHandlerParts {
+                        handler: bridge.clone(),
+                        slot_retired_hook: bridge.slot_retired_hook(),
+                    }
+                },
+            ) as nano_agent::mcp::ElicitationHandlerFactory
         });
     let mcp_registry = std::sync::Arc::new(std::sync::Mutex::new(
         nano_cli::mcp_specs::register_all_with(mcp_specs, elicitation),

@@ -682,8 +682,9 @@ async fn exec_reaps_mcp_children_on_exit() {
     #[cfg(windows)]
     let spec = nano_agent::mcp::McpServerSpec {
         name: "fake".into(),
-        command: "powershell.exe".into(),
-        args: vec![
+        transport: nano_agent::mcp::Transport::Stdio {
+            command: "powershell.exe".into(),
+            args: vec![
             "-NoProfile".into(),
             "-Command".into(),
             r#"$PID | Out-File -Encoding ascii '@PIDFILE@'
@@ -701,14 +702,17 @@ while ($true) {
 }
 "#
             .replace("@PIDFILE@", &pid_file.display().to_string()),
-        ],
-        env: vec![],
+            ],
+            env: vec![],
+        },
+        source: nano_agent::mcp::SpecSource::Config,
     };
     #[cfg(unix)]
     let spec = nano_agent::mcp::McpServerSpec {
         name: "fake".into(),
-        command: "sh".into(),
-        args: vec![
+        transport: nano_agent::mcp::Transport::Stdio {
+            command: "sh".into(),
+            args: vec![
             "-c".into(),
             r#"echo $$ > @PIDFILE@
 while IFS= read -r line; do
@@ -724,8 +728,10 @@ while IFS= read -r line; do
 done
 "#
             .replace("@PIDFILE@", &pid_file.display().to_string()),
-        ],
-        env: vec![],
+            ],
+            env: vec![],
+        },
+        source: nano_agent::mcp::SpecSource::Config,
     };
 
     let shared = std::sync::Arc::new(Mutex::new(Vec::<u8>::new()));

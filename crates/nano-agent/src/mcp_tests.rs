@@ -386,27 +386,34 @@ fn fake_server(
             marker.to_string_lossy().into_owned(),
         ),
     ];
+    // §2.7 (F-P3-3): the instance id hashes {source, command, args} — NOT
+    // the display name and NOT env. Every fake server shares command + the
+    // script body, so a per-name comment line inside the script arg is what
+    // makes each fake a DISTINCT instance (duplicate instance ids are a
+    // typed registration refusal now).
     #[cfg(windows)]
     let (command, args) = (
         "powershell.exe".to_string(),
         vec![
             "-NoProfile".to_string(),
             "-Command".to_string(),
-            FAKE_SCRIPT.to_string(),
+            format!("{FAKE_SCRIPT}\n# fake-server instance: {name}"),
         ],
     );
     #[cfg(unix)]
     let (command, args) = (
         "sh".to_string(),
-        vec!["-c".to_string(), FAKE_SCRIPT.to_string()],
+        vec![
+            "-c".to_string(),
+            format!("{FAKE_SCRIPT}\n# fake-server instance: {name}"),
+        ],
     );
     FakeServer {
         _dir: dir,
         spec: McpServerSpec {
             name: name.into(),
-            command,
-            args,
-            env,
+            transport: Transport::Stdio { command, args, env },
+            source: SpecSource::Config,
         },
         marker,
     }
@@ -421,10 +428,10 @@ fn stalling_resource_server(name: &str) -> FakeServer {
         &serde_json::json!([{"uri": "mem://alpha", "name": "alpha"}]),
         None,
     );
-    server
-        .spec
-        .env
-        .push(("FAKE_STALL_READ".to_string(), "1".to_string()));
+    let Transport::Stdio { env, .. } = &mut server.spec.transport else {
+        panic!("fake servers are stdio");
+    };
+    env.push(("FAKE_STALL_READ".to_string(), "1".to_string()));
     server
 }
 
@@ -482,6 +489,7 @@ async fn deferred_150_tool_server_searches_hydrates_and_exposes() {
         None,
     );
     let mut registry = McpRegistry::new();
+    let instance_id = mint_instance_id(&server.spec);
     assert_eq!(registry.register(server.spec).expect("register"), 150);
 
     // Deferred: NO tools in any model request; the search gate sees them.
@@ -514,11 +522,13 @@ async fn deferred_150_tool_server_searches_hydrates_and_exposes() {
             .is_empty()
     );
 
-    // ONE hydration batch: one entry, every hit's tool, canonical digest,
-    // valid per the journal bounds.
+    // ONE hydration batch: one entry keyed by the §2.7 INSTANCE ID (never
+    // the display name), every hit's tool, canonical digest, valid per the
+    // journal bounds.
     assert_eq!(outcome.hydration.len(), 1);
     let entry = &outcome.hydration[0];
-    assert_eq!(entry.server_id, "big");
+    assert_eq!(entry.server_id, instance_id);
+    assert!(nano_session::is_mcp_instance_id(&entry.server_id));
     assert_eq!(entry.tool_names.len(), TOOL_SEARCH_LIMIT);
     let fresh = canonical_tools_digest(&registry.servers[0].tools);
     assert_eq!(entry.tools_digest, fresh);
@@ -589,30 +599,46 @@ async fn resume_digest_match_restores_and_mismatch_drops() {
         None,
     );
     let mut registry = McpRegistry::new();
+    let instance_id = mint_instance_id(&server.spec);
     registry.register(server.spec).expect("register");
     let fresh = canonical_tools_digest(&registry.servers[0].tools);
 
-    // Digest match: the hydrated set is re-applied exactly.
+    // Digest match: the hydrated set is re-applied exactly — keyed by the
+    // §2.7 instance id, never the display name.
     let mut hydrated = BTreeMap::new();
     hydrated.insert(
-        "big".to_string(),
+        instance_id.clone(),
         BTreeSet::from(["search_doc_0".to_string()]),
     );
     let mut digests = BTreeMap::new();
-    digests.insert("big".to_string(), fresh.clone());
+    digests.insert(instance_id.clone(), fresh.clone());
     // A journaled server absent from the registry is ignored silently.
     digests.insert("ghost".to_string(), "ab".repeat(32));
+    // F-P3-3 compat leg: a PRE-CHANGE journal keys hydration by display
+    // name. That key matches no registered instance now, so the entry is
+    // dropped fail-closed — if it were honored, `misc_task_0` would expose.
+    hydrated.insert(
+        "big".to_string(),
+        BTreeSet::from(["misc_task_0".to_string()]),
+    );
+    digests.insert("big".to_string(), fresh.clone());
     let mut windows = BTreeMap::new();
-    windows.insert("big".to_string(), vec![fresh.clone()]);
+    windows.insert(instance_id.clone(), vec![fresh.clone()]);
     let notices = registry.resume_hydration(&hydrated, &digests, &windows);
     assert!(notices.is_empty(), "clean resume: {notices:?}");
     assert!(registry.is_exposed("mcp__big__search_doc_0"));
     assert_eq!(registry.tool_definitions().len(), 1);
+    assert!(
+        !registry.is_exposed("mcp__big__misc_task_0"),
+        "stale display-name-keyed entry must never expose tools"
+    );
 
     // Digest mismatch: entries dropped with the loud typed notice; the
-    // tool is uncallable again (stale-call invalidation, §3.4).
+    // tool is uncallable again (stale-call invalidation, §3.4). The notice
+    // names the DISPLAY name (display-only); the lookup key was the
+    // instance id.
     let mut bad_digests = BTreeMap::new();
-    bad_digests.insert("big".to_string(), "cd".repeat(32));
+    bad_digests.insert(instance_id.clone(), "cd".repeat(32));
     let notices = registry.resume_hydration(&hydrated, &bad_digests, &BTreeMap::new());
     assert_eq!(
         notices,
@@ -664,19 +690,20 @@ fn resume_with_three_transition_window_pins_the_server() {
         None,
     );
     let mut registry = McpRegistry::new();
+    let instance_id = mint_instance_id(&server.spec);
     registry.register(server.spec).expect("register");
     let fresh = canonical_tools_digest(&registry.servers[0].tools);
 
     let mut hydrated = BTreeMap::new();
     hydrated.insert(
-        "big".to_string(),
+        instance_id.clone(),
         BTreeSet::from(["search_doc_0".to_string()]),
     );
     let mut digests = BTreeMap::new();
-    digests.insert("big".to_string(), fresh.clone());
+    digests.insert(instance_id.clone(), fresh.clone());
     let mut windows = BTreeMap::new();
     windows.insert(
-        "big".to_string(),
+        instance_id.clone(),
         vec![
             "a".repeat(64),
             "b".repeat(64),
@@ -712,9 +739,11 @@ fn apply_hydration_pushing_a_third_transition_pins() {
         None,
     );
     let mut registry = McpRegistry::new();
+    let instance_id = mint_instance_id(&server.spec);
     registry.register(server.spec).expect("register");
+    // §2.7: hydration entries key on the instance id, not the display name.
     let entry = |digest: &str| HydrationEntry {
-        server_id: "big".into(),
+        server_id: instance_id.clone(),
         tool_names: vec!["search_doc_0".into()],
         tools_digest: digest.to_string(),
     };
@@ -922,15 +951,23 @@ impl ServerRequestHandler for StubHandler {
 
 #[tokio::test]
 async fn elicitation_factory_connects_and_cell_tracks_dispatch() {
-    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let seen_factory = seen.clone();
-    let factory: ElicitationHandlerFactory = Arc::new(move |name: &str, _cell| {
-        seen_factory.lock().unwrap().push(name.to_string());
-        ElicitationHandlerParts {
-            handler: Arc::new(StubHandler),
-            slot_retired_hook: Arc::new(|_| {}),
-        }
-    });
+    // §2.7 (F-P3-3): the factory receives (instance_id, display_name) —
+    // the bridge journals the instance id and labels the card with the
+    // display name. This assertion pinned the display name before the
+    // re-key; pinning the instance id is the fix, not a weakening.
+    let factory: ElicitationHandlerFactory =
+        Arc::new(move |instance_id: &str, display_name: &str, _cell| {
+            seen_factory
+                .lock()
+                .unwrap()
+                .push((instance_id.to_string(), display_name.to_string()));
+            ElicitationHandlerParts {
+                handler: Arc::new(StubHandler),
+                slot_retired_hook: Arc::new(|_| {}),
+            }
+        });
     let server = fake_server(
         "seam",
         &serde_json::json!([tool_entry("echo", "echoes")]),
@@ -939,10 +976,14 @@ async fn elicitation_factory_connects_and_cell_tracks_dispatch() {
         None,
         None,
     );
+    let instance_id = mint_instance_id(&server.spec);
     let mut registry = McpRegistry::new();
     registry.set_elicitation_handler_factory(Some(factory));
     assert_eq!(registry.register(server.spec).expect("register"), 1);
-    assert_eq!(seen.lock().unwrap().as_slice(), &["seam".to_string()]);
+    assert_eq!(
+        seen.lock().unwrap().as_slice(),
+        &[(instance_id, "seam".to_string())]
+    );
 
     // The executor sets the interrupted-call cell around the dispatch and
     // clears it after completion.
@@ -1026,4 +1067,322 @@ fn stalled_resource_read_does_not_block_tool_search() {
     // the kill lands; detachment is safe (the child is dead either way).
     drop(registry);
     drop(reader);
+}
+
+// ---------------------------------------------------------------------------
+// §2.7 instance identity (F-P3-3): minting, the receipt, collision refusals
+// ---------------------------------------------------------------------------
+
+fn identity_spec(name: &str, command: &str, args: &[&str], source: SpecSource) -> McpServerSpec {
+    McpServerSpec {
+        name: name.into(),
+        transport: Transport::Stdio {
+            command: command.into(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            env: vec![("K".to_string(), "V".to_string())],
+        },
+        source,
+    }
+}
+
+#[test]
+fn instance_id_minting_is_deterministic_and_sensitive() {
+    let a = identity_spec("fs", "server-bin", &["--flag", "x"], SpecSource::Config);
+    let id = mint_instance_id(&a);
+    // Shape: srv_ + 16 lowercase hex (the journal vocabulary predicate).
+    assert_eq!(id.len(), 20);
+    assert!(nano_session::is_mcp_instance_id(&id));
+    // Deterministic.
+    assert_eq!(mint_instance_id(&a), id);
+    // Identical spec ⇒ identical id (the same logical server).
+    assert_eq!(
+        mint_instance_id(&identity_spec(
+            "fs",
+            "server-bin",
+            &["--flag", "x"],
+            SpecSource::Config
+        )),
+        id
+    );
+    // The display name is NOT hashed (§2.7: display-only).
+    assert_eq!(
+        mint_instance_id(&identity_spec(
+            "renamed",
+            "server-bin",
+            &["--flag", "x"],
+            SpecSource::Config
+        )),
+        id
+    );
+    // env is NOT hashed (the canonical form is exactly {source, command,
+    // args}).
+    let mut no_env = a.clone();
+    if let Transport::Stdio { env, .. } = &mut no_env.transport {
+        env.clear();
+    }
+    assert_eq!(mint_instance_id(&no_env), id);
+    // command / args / source each move the id.
+    assert_ne!(
+        mint_instance_id(&identity_spec(
+            "fs",
+            "other-bin",
+            &["--flag", "x"],
+            SpecSource::Config
+        )),
+        id
+    );
+    assert_ne!(
+        mint_instance_id(&identity_spec(
+            "fs",
+            "server-bin",
+            &["--flag"],
+            SpecSource::Config
+        )),
+        id
+    );
+    assert_ne!(
+        mint_instance_id(&identity_spec(
+            "fs",
+            "server-bin",
+            &["--flag", "x"],
+            SpecSource::Desktop
+        )),
+        id
+    );
+    // Argument ORDER is significant (it is the server's real argv).
+    assert_ne!(
+        mint_instance_id(&identity_spec(
+            "fs",
+            "server-bin",
+            &["x", "--flag"],
+            SpecSource::Config
+        )),
+        id
+    );
+}
+
+/// The canonical JSON pinned for the hash: object keys sorted, no
+/// insignificant whitespace (the §3.4 discipline). A spec whose serde shape
+/// drifted would change every id — this pins the exact hashed form.
+#[test]
+fn instance_id_canonical_json_form_is_pinned() {
+    let spec = McpServerSpec {
+        name: "display".into(),
+        transport: Transport::Stdio {
+            command: "srv".into(),
+            args: vec!["a".into()],
+            env: vec![],
+        },
+        source: SpecSource::Config,
+    };
+    let Transport::Stdio { command, args, .. } = &spec.transport else {
+        panic!("stdio spec");
+    };
+    let canonical = canonical_json(&serde_json::json!({
+        "source": &spec.source,
+        "command": command,
+        "args": args,
+    }));
+    assert_eq!(
+        canonical,
+        r#"{"args":["a"],"command":"srv","source":"config"}"#
+    );
+    let expected = format!("srv_{}", &sha256_hex(canonical.as_bytes())[..16]);
+    assert_eq!(mint_instance_id(&spec), expected);
+    // Spec serde: source is defaulted for pre-§2.7 serialized specs, and the
+    // untagged+flattened transport keeps the pre-§6.1 wire form parsing.
+    let legacy: McpServerSpec =
+        serde_json::from_str(r#"{"name":"d","command":"c","args":[],"env":[]}"#).unwrap();
+    assert_eq!(legacy.source, SpecSource::Config);
+    assert_eq!(
+        legacy.transport,
+        Transport::Stdio {
+            command: "c".into(),
+            args: vec![],
+            env: vec![],
+        }
+    );
+}
+
+/// §6.1 (F-P3-1): an HTTP spec hashes its `url` (with an empty args array,
+/// arity preserved) — the canonical form is pinned byte-exactly, and the id
+/// is distinct from any stdio spec and from a different url.
+#[test]
+fn http_instance_id_hashes_the_url_canonical_form_pinned() {
+    let spec = McpServerSpec {
+        name: "remote".into(),
+        transport: Transport::Http {
+            url: "https://mcp.example/mcp/".into(),
+        },
+        source: SpecSource::Config,
+    };
+    let canonical = r#"{"args":[],"source":"config","url":"https://mcp.example/mcp/"}"#;
+    let expected = format!("srv_{}", &sha256_hex(canonical.as_bytes())[..16]);
+    assert_eq!(mint_instance_id(&spec), expected);
+    // The url is the hash input: a different url ⇒ a different id.
+    let other = McpServerSpec {
+        transport: Transport::Http {
+            url: "https://mcp.example/other/".into(),
+        },
+        ..spec.clone()
+    };
+    assert_ne!(mint_instance_id(&other), expected);
+    // A stdio spec can never alias an HTTP id (the middle slot differs).
+    assert_ne!(
+        mint_instance_id(&identity_spec(
+            "remote",
+            "https://mcp.example/mcp/",
+            &[],
+            SpecSource::Config
+        )),
+        expected
+    );
+    // The untagged serde form of an HTTP spec is exactly `{url}`.
+    let parsed: McpServerSpec =
+        serde_json::from_str(r#"{"name":"r","url":"https://mcp.example/mcp/"}"#).unwrap();
+    assert_eq!(parsed.transport, spec.transport);
+    assert_eq!(parsed.source, SpecSource::Config);
+}
+
+/// §6.1 (F-P3-1): registering an HTTP spec is a TYPED, LOUD refusal
+/// (`mcp_transport`) until the dispatcher-bound HTTP connection lands —
+/// never a silent skip, never a fake connection, nothing registered.
+#[test]
+fn http_registration_is_a_typed_refusal() {
+    let spec = McpServerSpec {
+        name: "remote".into(),
+        transport: Transport::Http {
+            url: "https://mcp.example/mcp/".into(),
+        },
+        source: SpecSource::Config,
+    };
+    let mut registry = McpRegistry::new();
+    let err = registry
+        .register(spec)
+        .expect_err("HTTP registration must refuse typed");
+    assert!(
+        matches!(err, RegisterError::HttpTransportUnavailable { ref name } if name == "remote"),
+        "err: {err}"
+    );
+    assert!(
+        err.to_string().contains("mcp_transport"),
+        "the refusal names the kind: {err}"
+    );
+    assert!(registry.is_empty(), "nothing registered on a refusal");
+}
+
+#[test]
+fn receipt_built_at_register_and_exposed_by_accessor() {
+    let server = fake_server(
+        "rcpt",
+        &serde_json::json!([tool_entry("echo", "echoes")]),
+        r#"{"tools":{}}"#,
+        &serde_json::json!([]),
+        None,
+        None,
+    );
+    let instance_id = mint_instance_id(&server.spec);
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut registry = McpRegistry::new();
+    registry.register(server.spec).expect("register");
+    let after = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let receipt = registry.receipt(&instance_id).expect("receipt held");
+    assert_eq!(receipt.instance_id, instance_id);
+    assert_eq!(receipt.source, SpecSource::Config);
+    // The connect-time negotiated record (the fake advertises 2025-06-18).
+    assert_eq!(receipt.negotiated.protocol_version, "2025-06-18");
+    assert!(receipt.negotiated.tools);
+    assert!(!receipt.negotiated.elicitation, "no factory installed");
+    // The §3.4 canonical digest of the registered inventory.
+    assert_eq!(
+        receipt.tools_digest,
+        canonical_tools_digest(&registry.servers[0].tools)
+    );
+    // Stdio: honest empty egress origins (HTTP lands with §6.1).
+    assert!(receipt.egress_origins.is_empty());
+    assert!(
+        (before..=after).contains(&receipt.registered_at),
+        "registered_at is the registration wall clock"
+    );
+    // Unknown instance id ⇒ None (never a fabricated receipt).
+    assert!(registry.receipt("srv_0000000000000000").is_none());
+}
+
+#[test]
+fn duplicate_instance_registration_is_a_typed_refusal() {
+    let server = fake_server(
+        "dup",
+        &serde_json::json!([tool_entry("echo", "echoes")]),
+        "{}",
+        &serde_json::json!([]),
+        None,
+        None,
+    );
+    let instance_id = mint_instance_id(&server.spec);
+    let mut registry = McpRegistry::new();
+    registry.register(server.spec.clone()).expect("register");
+    // Identical canonical spec ⇒ identical instance_id ⇒ the SAME logical
+    // server: a typed refusal, never a silent overwrite.
+    let err = registry
+        .register(server.spec)
+        .expect_err("re-registration refused");
+    assert!(
+        matches!(
+            err,
+            RegisterError::DuplicateInstance {
+                instance_id: ref id
+            } if *id == instance_id
+        ),
+        "typed DuplicateInstance: {err}"
+    );
+    assert_eq!(registry.servers.len(), 1, "the live entry was not replaced");
+}
+
+#[test]
+fn duplicate_display_name_is_a_typed_refusal() {
+    let first = fake_server(
+        "samename",
+        &serde_json::json!([tool_entry("echo", "echoes")]),
+        "{}",
+        &serde_json::json!([]),
+        None,
+        None,
+    );
+    let mut second = fake_server(
+        "samename",
+        &serde_json::json!([tool_entry("echo", "echoes")]),
+        "{}",
+        &serde_json::json!([]),
+        None,
+        None,
+    );
+    // A DIFFERENT spec (distinct args ⇒ distinct instance_id) sharing the
+    // display name: the mcp__samename__* namespace would collide.
+    let Transport::Stdio { args, .. } = &mut second.spec.transport else {
+        panic!("fake servers are stdio");
+    };
+    args.last_mut()
+        .expect("script arg")
+        .push_str("\n# variant\n");
+    assert_ne!(
+        mint_instance_id(&first.spec),
+        mint_instance_id(&second.spec)
+    );
+    let mut registry = McpRegistry::new();
+    registry.register(first.spec).expect("register");
+    let err = registry
+        .register(second.spec)
+        .expect_err("display-name collision refused");
+    assert!(
+        matches!(err, RegisterError::DuplicateDisplayName { ref name } if name == "samename"),
+        "typed DuplicateDisplayName: {err}"
+    );
+    assert_eq!(registry.servers.len(), 1);
 }

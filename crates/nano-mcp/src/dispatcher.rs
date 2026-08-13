@@ -3,7 +3,7 @@
 //! One [`Connection`] per connected server:
 //!
 //! ```text
-//!  child stdout → reader thread (owns BufReader<ChildStdout>):
+//!  child stdout → reader thread (owns the buffered stdout pipe):
 //!     read_line (bounded 8 MiB) → parse → validate_frame → classify_frame → route:
 //!       Response      → pending map → waiter oneshot
 //!       ServerRequest → bounded queue (16) → handler thread → priority lane
@@ -30,12 +30,11 @@ use crate::protocol::{
     INTERNAL_ERROR, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, METHOD_NOT_FOUND,
     NegotiatedCapabilities, error_response, result_response,
 };
-use crate::stdio::TransportParts;
+use crate::stdio::{TransportChild, TransportParts};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::process::Child;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{
     self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, TrySendError,
@@ -813,7 +812,7 @@ impl LaneScheduler {
 }
 
 // ---------------------------------------------------------------------------
-// Reader thread (§2.2) — owns BufReader<ChildStdout>
+// Reader thread (§2.2) — owns the buffered stdout pipe
 // ---------------------------------------------------------------------------
 
 enum LineRead {
@@ -1106,7 +1105,7 @@ fn handler_main(shared: &Arc<Shared>, rx: &Receiver<ServerRequest>) {
 }
 
 // ---------------------------------------------------------------------------
-// Writer thread (§2.2/D2) — owns ChildStdin exclusively; no mutex on the pipe
+// Writer thread (§2.2/D2) — owns the child-stdin pipe exclusively; no mutex
 // ---------------------------------------------------------------------------
 
 fn write_frame(shared: &Shared, stdin: &mut impl Write, frame: &str) -> Result<(), String> {
@@ -1187,12 +1186,13 @@ struct SupervisorConfig {
     graceful_shutdown_wait: Duration,
 }
 
-fn kill_child(child: &mut Option<Child>) {
-    // §2.6: the contained spawn lane swaps this bare kill for the job-object
-    // terminate; the supervisor remains the only caller.
+fn kill_child(child: &mut Option<TransportChild>) {
+    // §2.6: under the contained spawn this is the job-object terminate —
+    // it kills the child and all its DIRECT descendants (KILL_ON_JOB_CLOSE
+    // also reaps the tree on host death). The supervisor remains the only
+    // caller (§2.3).
     if let Some(mut child) = child.take() {
-        let _ = child.kill();
-        let _ = child.wait();
+        child.terminate();
     }
 }
 
@@ -1207,7 +1207,7 @@ fn join_all(handles: &mut Option<Vec<JoinHandle<()>>>) {
 fn supervisor_main(
     shared: &Arc<Shared>,
     events_rx: &Receiver<SupEvent>,
-    mut child: Option<Child>,
+    mut child: Option<TransportChild>,
     mut handles: Option<Vec<JoinHandle<()>>>,
     config: &SupervisorConfig,
 ) {
@@ -1219,10 +1219,7 @@ fn supervisor_main(
                 // terminate, then join. No poison — this is a clean close.
                 let deadline = Instant::now() + config.graceful_shutdown_wait;
                 loop {
-                    let exited = child
-                        .as_mut()
-                        .and_then(|c| c.try_wait().ok().flatten())
-                        .is_some();
+                    let exited = child.as_mut().is_some_and(|c| c.try_wait_exited());
                     if exited || Instant::now() >= deadline {
                         break;
                     }
@@ -1257,10 +1254,7 @@ fn supervisor_main(
                 }
                 // Child-exit reaping (§2.3): the supervisor owns the child
                 // handle, so exit is observed here on the watch tick.
-                let exited = child
-                    .as_mut()
-                    .and_then(|c| c.try_wait().ok().flatten())
-                    .is_some();
+                let exited = child.as_mut().is_some_and(|c| c.try_wait_exited());
                 if exited {
                     shared.poison("child process exited");
                     kill_child(&mut child);

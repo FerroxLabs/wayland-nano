@@ -47,6 +47,15 @@ fn main() {
                 }
             }
         }
+        // P3 §6.2/§8 (F-P3-1): OAuth for remote (HTTP) MCP servers.
+        Some("auth") => {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime");
+            let home = nano_home();
+            runtime.block_on(nano_cli::auth_cmds::run(&home, &args[2..]))
+        }
         // C11: headless one-shot execution (JSONL v1 on stdout; the pinned
         // 0/1/2/3/6 exit-code matrix).
         Some("exec") => {
@@ -107,7 +116,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: wayland-nano doctor | protocol-host | acp-host | exec | session fork | sessions | goal | --version"
+                "usage: wayland-nano doctor | protocol-host | acp-host | auth login|status|logout <server> | exec | session fork | sessions | goal | --version"
             );
             2
         }

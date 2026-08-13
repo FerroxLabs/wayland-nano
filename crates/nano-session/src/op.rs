@@ -115,6 +115,8 @@ pub enum GoalOutcome {
 }
 
 /// One server's atomically journaled ToolSearch hydration batch.
+/// `server_id` is the §2.7 stable instance id (`srv_<16 hex>` — see
+/// [`is_mcp_instance_id`]), NEVER the display name (F-P3-3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HydrationEntry {
     pub server_id: String,
@@ -123,6 +125,7 @@ pub struct HydrationEntry {
 }
 
 /// Hydration state carried across a covered compaction prefix.
+/// `server_id` is the §2.7 instance id, as on [`HydrationEntry`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HydrationCarryEntry {
     pub server_id: String,
@@ -185,6 +188,18 @@ pub const MAX_ISSUER_CHARS: usize = 512;
 pub fn is_canonical_digest(value: &str) -> bool {
     value.len() == DIGEST_HEX_CHARS
         && value
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
+/// The §2.7 stable server-instance id shape: `srv_` + the first 16 lowercase
+/// hex chars of sha256 over the canonical spec JSON (minted by nano-agent's
+/// `mcp::mint_instance_id`). Every P3 journaled server key — hydration,
+/// elicitation, OAuth grant — is this id, never a display name.
+pub fn is_mcp_instance_id(value: &str) -> bool {
+    value.len() == 4 + 16
+        && value.starts_with("srv_")
+        && value[4..]
             .chars()
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
@@ -275,14 +290,21 @@ pub fn validate_elicitation(
     Ok(())
 }
 
-/// Validates a `McpOauthGrant` payload (§6.3 bounds). Origin-shape rules
-/// (https-only, host normalization) are enforced by the egress layer's
-/// `host_of`; here only the journal-side caps apply.
+/// Validates a `McpOauthGrant` payload (§6.3 bounds + the §2.7 identity
+/// rule). Origin-shape rules (https-only, host normalization) are enforced
+/// by the egress layer's `host_of`; here the journal-side caps apply, plus
+/// the fail-closed server-id check: the grant keys CREDENTIAL storage
+/// (keyring account = instance id, §6), so a display-name key is refused at
+/// the journal boundary rather than mis-keying stored tokens (F-P3-3).
 pub fn validate_oauth_grant(
+    server_id: &str,
     as_origin: &str,
     issuer: &str,
     endpoints: &[GrantEndpoint],
 ) -> Result<(), &'static str> {
+    if !is_mcp_instance_id(server_id) {
+        return Err("server_id is not a §2.7 instance id (srv_<16 hex>)");
+    }
     if as_origin.is_empty() || as_origin.chars().count() > MAX_AS_ORIGIN_CHARS {
         return Err("as_origin empty or over the cap");
     }
@@ -1085,6 +1107,7 @@ pub enum Op {
     },
     /// P3 §5.6: audit-only bound elicitation decision. Answer content is
     /// deliberately absent; only its canonical digest is durable.
+    /// `server_id` is the §2.7 instance id, never the display name (F-P3-3).
     McpElicitation {
         elicitation_id: String,
         server_id: String,
@@ -1095,7 +1118,9 @@ pub enum Op {
         schema_digest: String,
         answer_digest: String,
     },
-    /// P3 §6.3: exact, replayable OAuth endpoint authority.
+    /// P3 §6.3: exact, replayable OAuth endpoint authority. `server_id` is
+    /// the §2.7 instance id (the credential-storage key), never the display
+    /// name (F-P3-3).
     McpOauthGrant {
         grant_id: String,
         server_id: String,

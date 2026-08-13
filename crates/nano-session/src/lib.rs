@@ -42,7 +42,7 @@ pub use op::{
     MAX_HYDRATION_TOOL_NAME_CHARS, MAX_HYDRATION_TOOL_NAMES, MAX_ISSUER_CHARS, MAX_RECENT_DIGESTS,
     McpElicitationAction, Op, OpEnvelope, RoutingCandidate, RoutingExhaustion, RoutingFailureClass,
     RoutingMode, RoutingOutcome, RoutingUsage, SCHEMA_VERSION, TurnOutcome, TurnUsage, UsageSource,
-    is_canonical_digest, validate_elicitation, validate_hydration_batch,
+    is_canonical_digest, is_mcp_instance_id, validate_elicitation, validate_hydration_batch,
     validate_hydration_carry_entry, validate_hydration_entry, validate_oauth_grant,
 };
 pub use reader::{JournalReport, read_journal};

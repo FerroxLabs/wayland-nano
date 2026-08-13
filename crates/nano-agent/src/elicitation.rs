@@ -20,6 +20,10 @@
 //! - per-designated-call cap 8, per-connection budget 64 (dispatcher-owned);
 //! - answers resolve ONLY through the one-shot [`ElicitationBinding`]'s opaque
 //!   96-bit option ids — never by label text, never a guessed value;
+//! - §2.7 (F-P3-3): the journaled `server_id` is the server's stable
+//!   INSTANCE ID (`srv_<16 hex>`), minted by the registry at registration —
+//!   never the display name. The display name rides separately and is used
+//!   ONLY as the ask-card label ("MCP server '<name>' asks:");
 //! - JOURNAL-FIRST at answer time: the `Op::McpElicitation` decision (digests
 //!   only — answer CONTENT is never journaled) lands via the session's
 //!   `JournalCoordinator` BEFORE the wire reply is computed; an append failure
@@ -344,7 +348,9 @@ impl ElicitationBinding {
 /// the opaque option ids VERBATIM.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElicitQuestion {
-    /// Server-originated marker: "MCP server '<server_id>' asks:".
+    /// Server-originated marker: "MCP server '<display name>' asks:" (the
+    /// display name is a label only — the journaled key is the §2.7
+    /// instance id).
     pub header: String,
     pub message: String,
     /// (opaque id, sanitized label) pairs.
@@ -417,7 +423,11 @@ struct BridgeState {
 /// The §5.2 elicitation bridge: one per server connection, installed as the
 /// dispatcher's [`ServerRequestHandler`].
 pub struct ElicitationBridge {
+    /// The §2.7 instance id — the journaled key (Op::McpElicitation and the
+    /// binding record), NEVER the display name.
     server_id: String,
+    /// Display name: the ask-card label only; keys nothing.
+    display_name: String,
     session_id: String,
     journal: Arc<JournalCoordinator>,
     /// The interrupted ToolCall op's id, written by the host lane when a
@@ -425,8 +435,11 @@ pub struct ElicitationBridge {
     interrupted_call: Arc<Mutex<Option<String>>>,
     ask: Arc<dyn Fn(ElicitQuestion) -> ElicitAskOutcome + Send + Sync>,
     ask_timeout: Duration,
-    /// Monotonic per-bridge counter; the journal idempotence key is
-    /// "{session_id}-elicit-{counter}".
+    /// Monotonic per-session counter; the journal idempotence key is
+    /// "{session_id}-elicit-{counter}". Restored from the durable journal at
+    /// construction (F-P3-4): the bridge is rebuilt fresh on `session/load`,
+    /// and a counter restarting at 0 re-mints already-durable ids — the
+    /// idempotent append then no-ops and the answer would leave unjournaled.
     counter: AtomicU64,
     state: Mutex<BridgeState>,
 }
@@ -440,22 +453,61 @@ impl std::fmt::Debug for ElicitationBridge {
     }
 }
 
+/// F-P3-4: restore the elicitation counter from the durable journal at
+/// bridge construction. The bridge is rebuilt fresh on every
+/// `session/load`; the idempotence key "{session_id}-elicit-{counter}" is
+/// session-scoped, so the counter must resume at the max minted suffix —
+/// otherwise the first post-resume decisions re-mint already-durable ids,
+/// the append becomes an idempotent no-op (`Ok(false)`), and the answer
+/// would reach the wire UNJOURNALED (§5.6 journal-first defeated; the
+/// leg5b live proof). Audit-only ops survive compaction in the append-only
+/// file, so the raw envelope stream is the exact restore source.
+///
+/// A restore failure is NOT fatal here: `decide` re-mints on collision and
+/// fails closed (never wiring an unjournaled answer) if the restored value
+/// undercounts.
+fn restored_counter(journal: &JournalCoordinator, session_id: &str) -> u64 {
+    let prefix = format!("{session_id}-elicit-");
+    match nano_session::read_journal(journal.path()) {
+        Ok(report) => report
+            .envelopes
+            .iter()
+            .filter_map(|env| match &env.op {
+                Op::McpElicitation { elicitation_id, .. } => elicitation_id
+                    .strip_prefix(&prefix)
+                    .and_then(|suffix| suffix.parse::<u64>().ok()),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0),
+        Err(err) => {
+            eprintln!(
+                "wayland-nano mcp elicitation: counter restore failed ({err}); id collisions re-mint/fail closed at append time"
+            );
+            0
+        }
+    }
+}
+
 impl ElicitationBridge {
     pub fn new(
         server_id: String,
+        display_name: String,
         session_id: String,
         journal: Arc<JournalCoordinator>,
         interrupted_call: Arc<Mutex<Option<String>>>,
         ask: Arc<dyn Fn(ElicitQuestion) -> ElicitAskOutcome + Send + Sync>,
     ) -> Self {
+        let counter = restored_counter(&journal, &session_id);
         Self {
             server_id,
+            display_name,
             session_id,
             journal,
             interrupted_call,
             ask,
             ask_timeout: DEFAULT_ASK_TIMEOUT,
-            counter: AtomicU64::new(0),
+            counter: AtomicU64::new(counter),
             state: Mutex::new(BridgeState::default()),
         }
     }
@@ -503,7 +555,10 @@ impl ElicitationBridge {
     /// content is never journaled) must land BEFORE the reply leaves
     /// `handle`. Append failure is the typed `JournalUnavailable` condition:
     /// fail closed with a spec-legal `{"action":"cancel"}` — an unjournaled
-    /// answer must never reach the wire.
+    /// answer must never reach the wire. An idempotent no-op append
+    /// (`Ok(false)` — the minted id is already durable) is NOT success for
+    /// THIS decision (F-P3-4): the id is re-minted a bounded number of
+    /// times, and exhaustion is the same fail-closed cancel.
     fn decide(
         &self,
         request: &ServerRequest,
@@ -513,60 +568,85 @@ impl ElicitationBridge {
         answer_digest: &str,
         content: Option<Value>,
     ) -> Result<Value, (i64, String)> {
-        let elicitation_id = format!(
-            "{}-elicit-{}",
-            self.session_id,
-            self.counter.fetch_add(1, Ordering::SeqCst) + 1
-        );
-        let envelope = OpEnvelope::new(
-            elicitation_id.clone(),
-            "now",
-            Op::McpElicitation {
-                elicitation_id,
-                server_id: self.server_id.clone(),
-                call_id: self.interrupted_call_id(),
-                request_id: request.id.to_string(),
-                card_id,
-                action,
-                schema_digest: schema_digest.to_string(),
-                answer_digest: answer_digest.to_string(),
-            },
-        );
-        let Op::McpElicitation {
-            elicitation_id: ref op_id,
-            ref server_id,
-            ref call_id,
-            ref request_id,
-            ..
-        } = envelope.op
-        else {
-            unreachable!("decide builds only McpElicitation")
-        };
-        // LOW-9/§5.6: an out-of-bounds payload (e.g. a hostile oversized
-        // server request id) is the same fail-closed cancel as an append
-        // failure — never journal it, never answer unjournaled.
-        let valid = nano_session::validate_elicitation(
-            op_id,
-            server_id,
-            call_id,
-            request_id,
-            schema_digest,
-            answer_digest,
-        );
-        if let Err(rule) = valid {
-            eprintln!(
-                "wayland-nano mcp elicitation: decision payload out of bounds ({rule}); fail-closed cancel (decision NOT journaled)"
+        const MAX_REMINTS: u32 = 8;
+        let mut remints = 0u32;
+        let journaled = loop {
+            let elicitation_id = format!(
+                "{}-elicit-{}",
+                self.session_id,
+                self.counter.fetch_add(1, Ordering::SeqCst) + 1
             );
-            return Ok(action_reply(McpElicitationAction::Cancel, None));
-        }
-        match self.journal.append(&envelope) {
-            Ok(_) => Ok(action_reply(action, content)),
-            Err(err) => {
+            let envelope = OpEnvelope::new(
+                elicitation_id.clone(),
+                "now",
+                Op::McpElicitation {
+                    elicitation_id,
+                    server_id: self.server_id.clone(),
+                    call_id: self.interrupted_call_id(),
+                    request_id: request.id.to_string(),
+                    card_id,
+                    action,
+                    schema_digest: schema_digest.to_string(),
+                    answer_digest: answer_digest.to_string(),
+                },
+            );
+            let Op::McpElicitation {
+                elicitation_id: ref op_id,
+                ref server_id,
+                ref call_id,
+                ref request_id,
+                ..
+            } = envelope.op
+            else {
+                unreachable!("decide builds only McpElicitation")
+            };
+            // LOW-9/§5.6: an out-of-bounds payload (e.g. a hostile oversized
+            // server request id) is the same fail-closed cancel as an append
+            // failure — never journal it, never answer unjournaled.
+            let valid = nano_session::validate_elicitation(
+                op_id,
+                server_id,
+                call_id,
+                request_id,
+                schema_digest,
+                answer_digest,
+            );
+            if let Err(rule) = valid {
                 eprintln!(
-                    "wayland-nano mcp elicitation: JournalUnavailable: {err}; fail-closed cancel (decision NOT journaled)"
+                    "wayland-nano mcp elicitation: decision payload out of bounds ({rule}); fail-closed cancel (decision NOT journaled)"
                 );
-                Ok(action_reply(McpElicitationAction::Cancel, None))
+                return Ok(action_reply(McpElicitationAction::Cancel, None));
             }
+            match self.journal.append(&envelope) {
+                Ok(true) => break true,
+                Ok(false) => {
+                    // F-P3-4: the id is already durable — the restored
+                    // counter undercounted (or a concurrent bridge minted
+                    // it). This decision was NOT journaled; re-mint rather
+                    // than wiring an unjournaled answer.
+                    remints += 1;
+                    if remints > MAX_REMINTS {
+                        eprintln!(
+                            "wayland-nano mcp elicitation: elicitation id keeps colliding after {MAX_REMINTS} re-mints; fail-closed cancel (decision NOT journaled)"
+                        );
+                        break false;
+                    }
+                    eprintln!(
+                        "wayland-nano mcp elicitation: elicitation id {op_id} already durable; re-minting (collision {remints}/{MAX_REMINTS})"
+                    );
+                }
+                Err(err) => {
+                    eprintln!(
+                        "wayland-nano mcp elicitation: JournalUnavailable: {err}; fail-closed cancel (decision NOT journaled)"
+                    );
+                    break false;
+                }
+            }
+        };
+        if journaled {
+            Ok(action_reply(action, content))
+        } else {
+            Ok(action_reply(McpElicitationAction::Cancel, None))
         }
     }
 
@@ -756,7 +836,7 @@ impl ElicitationBridge {
                 params.message.clone()
             };
             let question = ElicitQuestion {
-                header: format!("MCP server '{}' asks:", self.server_id),
+                header: format!("MCP server '{}' asks:", self.display_name),
                 message,
                 options,
             };
@@ -1112,6 +1192,7 @@ mod tests {
             Arc::new(JournalCoordinator::open(dir.path().join("j.jsonl")).expect("journal"));
         let bridge = ElicitationBridge::new(
             "fake".into(),
+            "fake".into(),
             "sess".into(),
             journal,
             Arc::new(Mutex::new(Some("call-1".to_string()))),
@@ -1213,6 +1294,7 @@ mod tests {
         ask: Arc<dyn Fn(ElicitQuestion) -> ElicitAskOutcome + Send + Sync>,
     ) -> ElicitationBridge {
         ElicitationBridge::new(
+            "fake".into(),
             "fake".into(),
             "sess".into(),
             Arc::new(JournalCoordinator::open(dir.path().join("j.jsonl")).expect("journal")),
@@ -1392,6 +1474,7 @@ mod tests {
         }));
         let bridge = ElicitationBridge::new(
             "fake".into(),
+            "fake".into(),
             "sess".into(),
             coordinator,
             Arc::new(Mutex::new(Some("call-1".to_string()))),
@@ -1417,6 +1500,131 @@ mod tests {
             journaled_elicitations(&path).is_empty(),
             "nothing was journaled"
         );
+    }
+
+    /// F-P3-4 (the leg5b live proof): pre-kill the session journaled one
+    /// elicitation decision; after `session/load` a FRESH bridge must resume
+    /// the counter from the journal — the second post-resume answer is
+    /// journaled under a fresh id AND answered on the wire. Before the fix
+    /// the counter restarted at 0, the re-minted id collided, the append
+    /// no-oped (`Ok(false)`), and the wire got an unjournaled accept.
+    #[test]
+    fn resume_restores_counter_so_post_resume_decisions_journal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("j.jsonl");
+        let req = request(ELICITATION_CREATE_METHOD, elicit_params(json!({})));
+        let schema_digest = "a".repeat(64);
+        let content = json!({"color": "blue"});
+        let answer_digest = canonical_answer_digest(&content);
+        {
+            // Pre-kill session: one decision journaled as "sess-elicit-1".
+            let bridge = ElicitationBridge::new(
+                "fake".into(),
+                "fake".into(),
+                "sess".into(),
+                Arc::new(JournalCoordinator::open(&path).expect("journal")),
+                Arc::new(Mutex::new(Some("call-1".to_string()))),
+                Arc::new(|_| ElicitAskOutcome::Unavailable),
+            );
+            let reply = bridge
+                .decide(
+                    &req,
+                    McpElicitationAction::Accept,
+                    1,
+                    &schema_digest,
+                    &answer_digest,
+                    Some(content.clone()),
+                )
+                .expect("decision");
+            assert_eq!(reply["action"], "accept");
+        }
+        // Host kill + session/load: every in-memory bridge is gone; the
+        // journal is the only survivor.
+        let bridge = ElicitationBridge::new(
+            "fake".into(),
+            "fake".into(),
+            "sess".into(),
+            Arc::new(JournalCoordinator::open(&path).expect("journal")),
+            Arc::new(Mutex::new(Some("call-1".to_string()))),
+            Arc::new(|_| ElicitAskOutcome::Unavailable),
+        );
+        let reply = bridge
+            .decide(
+                &req,
+                McpElicitationAction::Accept,
+                2,
+                &schema_digest,
+                &answer_digest,
+                Some(content),
+            )
+            .expect("decision");
+        assert_eq!(
+            reply["action"], "accept",
+            "the answer reaches the wire BECAUSE it journaled"
+        );
+        let ops = journaled_elicitations(&path);
+        assert_eq!(ops.len(), 2, "both decisions durable");
+        assert_eq!(ops[0].0, "sess-elicit-1");
+        assert_eq!(ops[1].0, "sess-elicit-2", "no id re-mint after resume");
+    }
+
+    /// F-P3-4 backstop: an id that became durable AFTER the bridge's restore
+    /// (an externally-appended op the restore could not see) collides at
+    /// append time — the idempotent `Ok(false)` must never pass as success.
+    /// The bridge re-mints and journals the decision under a fresh id.
+    #[test]
+    fn id_collision_remints_and_never_wires_an_unjournaled_answer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("j.jsonl");
+        let coordinator = Arc::new(JournalCoordinator::open(&path).expect("journal"));
+        let bridge = ElicitationBridge::new(
+            "fake".into(),
+            "fake".into(),
+            "sess".into(),
+            coordinator.clone(),
+            Arc::new(Mutex::new(Some("call-1".to_string()))),
+            Arc::new(|_| ElicitAskOutcome::Unavailable),
+        );
+        // Land "sess-elicit-1" AFTER construction: the restore (empty
+        // journal) could not know about it.
+        coordinator
+            .append(&OpEnvelope::new(
+                "sess-elicit-1".to_string(),
+                "now",
+                Op::McpElicitation {
+                    elicitation_id: "sess-elicit-1".to_string(),
+                    server_id: "fake".to_string(),
+                    call_id: "call-x".to_string(),
+                    request_id: "7".to_string(),
+                    card_id: 0,
+                    action: McpElicitationAction::Decline,
+                    schema_digest: "s".repeat(64),
+                    answer_digest: String::new(),
+                },
+            ))
+            .expect("external append");
+        let req = request(ELICITATION_CREATE_METHOD, elicit_params(json!({})));
+        let content = json!({"color": "blue"});
+        let answer_digest = canonical_answer_digest(&content);
+        let reply = bridge
+            .decide(
+                &req,
+                McpElicitationAction::Accept,
+                3,
+                &"a".repeat(64),
+                &answer_digest,
+                Some(content),
+            )
+            .expect("decision");
+        assert_eq!(
+            reply["action"], "accept",
+            "the re-minted decision journaled, so the accept may wire"
+        );
+        let ops = journaled_elicitations(&path);
+        assert_eq!(ops.len(), 2, "the collision did not swallow the decision");
+        assert_eq!(ops[0].0, "sess-elicit-1");
+        assert_eq!(ops[1].0, "sess-elicit-2");
+        assert_eq!(ops[1].1, McpElicitationAction::Accept);
     }
 }
 
@@ -1609,6 +1817,7 @@ done
         let asks: Arc<Mutex<Vec<ElicitQuestion>>> = Arc::new(Mutex::new(Vec::new()));
         let seen = asks.clone();
         let bridge = Arc::new(ElicitationBridge::new(
+            "fake".into(),
             "fake".into(),
             "sess".into(),
             coordinator,

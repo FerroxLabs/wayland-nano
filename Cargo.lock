@@ -1516,6 +1516,7 @@ dependencies = [
  "async-trait",
  "base64",
  "nano-egress",
+ "nano-sandbox",
  "pretty_assertions",
  "rand 0.8.7",
  "reqwest",

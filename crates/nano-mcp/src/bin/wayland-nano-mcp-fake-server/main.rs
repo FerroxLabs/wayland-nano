@@ -10,12 +10,13 @@
 //!
 //! Scenarios: echo | threaded | silent | die-on-call | blind | garbage |
 //! bad-envelope | big-line | huge-line | mystery-ids | duplicate |
-//! notify-mid-call | inject-request | inject-bogus | flood | resources
+//! notify-mid-call | inject-request | inject-bogus | flood | resources |
+//! tree
 //!
 //! Env knobs: FAKE_CALL_DELAY_MS, FAKE_GARBAGE_N, FAKE_BAD_KIND
 //! (version|both|float|method), FAKE_BIG_BYTES, FAKE_MYSTERY_N,
 //! FAKE_CANCEL (e.g. "srv-5"), FAKE_NEXT_CURSOR, FAKE_READ_KIND
-//! (text|blob|big).
+//! (text|blob|big), FAKE_TREE_PID_FILE (tree scenario: pid-file path).
 
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
@@ -135,8 +136,41 @@ fn answer_call_later(out: &Out, id: Value, delay: Duration, marker: Value) {
     });
 }
 
+/// F-P3-2 (§2.6) proof scenario: spawn one DIRECT descendant with null
+/// stdio and record both pids in FAKE_TREE_PID_FILE, so the client-side
+/// test can assert via external process inventory that contained teardown
+/// (job terminate / kill-on-close) kills BOTH. The descendant is spawned
+/// plain: as a child of a job member it joins the job automatically (no
+/// BREAKAWAY_OK in the contained job), and the dropped Child handle does
+/// NOT reap it — only job teardown can. The zombie-processes allowance is
+/// the point of the probe: the descendant must OUTLIVE any child-handle
+/// drop so only job containment can kill it.
+#[allow(clippy::zombie_processes)]
+fn spawn_tree_probe() {
+    let descendant = std::process::Command::new("ping.exe")
+        .args(["-t", "127.0.0.1"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("tree scenario descendant spawns");
+    let pid_file = std::env::var("FAKE_TREE_PID_FILE").expect("FAKE_TREE_PID_FILE");
+    std::fs::write(
+        pid_file,
+        format!(
+            "server={}\ndescendant={}\n",
+            std::process::id(),
+            descendant.id()
+        ),
+    )
+    .unwrap();
+}
+
 fn main() {
     let scenario = std::env::args().nth(1).unwrap_or_else(|| "echo".into());
+    if scenario == "tree" {
+        spawn_tree_probe();
+    }
     let out: Out = Arc::new(Mutex::new(std::io::stdout()));
     let call_delay = Duration::from_millis(env_u64("FAKE_CALL_DELAY_MS", 0));
 
@@ -174,13 +208,28 @@ fn main() {
                 );
             }
             "notifications/initialized" => {}
-            "tools/list" => write_frame(
-                &out,
-                &result_reply(
-                    &id,
-                    json!({"tools": [{"name": "echo", "description": "fake echo"}]}),
-                ),
-            ),
+            "tools/list" => {
+                write_frame(
+                    &out,
+                    &result_reply(
+                        &id,
+                        json!({"tools": [{"name": "echo", "description": "fake echo"}]}),
+                    ),
+                );
+                // §12 (j): "blind" never reads stdin again, STARTING NOW —
+                // the client's next (backpressure-probe) frame is never
+                // consumed, so the writer parks mid-frame on any host.
+                // Parking on the tools/call line instead (the old shape)
+                // means READING that line first: a multi-MB probe frame
+                // then transfers in full on a fast host, the writer idles,
+                // no stall ever occurs, and the leg rides the 30s call
+                // timeout instead of the watchdog (F-P3-13).
+                if scenario == "blind" {
+                    loop {
+                        std::thread::sleep(Duration::from_secs(60));
+                    }
+                }
+            }
             "resources/list" | "resources/read" => {
                 handle_resource(&scenario, &out, &id, method, &v)
             }
@@ -316,13 +365,6 @@ fn handle_call(
         }
         "silent" => {}
         "die-on-call" => std::process::exit(2),
-        "blind" => {
-            // Never read stdin again: the client's write side fills the OS
-            // pipe and parks — the §12 (j) backpressure leg.
-            loop {
-                std::thread::sleep(Duration::from_secs(60));
-            }
-        }
         "garbage" => {
             let n = env_u64("FAKE_GARBAGE_N", 1);
             for _ in 0..n {

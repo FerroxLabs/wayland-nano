@@ -353,6 +353,15 @@ impl BootstrapClient {
         let transport = EgressTransport::new(client);
         transport.get_bounded(&url).await
     }
+
+    /// Consume into the transport half (the §6.2 CLI login lane hands it to
+    /// the flow's bootstrap factory, which drives the one allowed fetch
+    /// itself). The policy still caps it to EXACTLY the one RFC 8414
+    /// metadata GET — any other URL or method is `EgressDenied` with zero
+    /// socket activity.
+    pub fn into_transport(self) -> EgressTransport {
+        EgressTransport::new(self.client)
+    }
 }
 
 #[cfg(test)]

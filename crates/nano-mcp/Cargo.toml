@@ -24,9 +24,14 @@ sha2 = "0.10"
 # crate's Windows backend pulls a second windows-sys version, which the
 # workspace pin forbids.
 [target.'cfg(target_os = "windows")'.dependencies]
+# Contained stdio spawn (§2.6, F-P3-2): spawn_process_with_pipes_contained
+# (NO-BREAKAWAY job + KILL_ON_JOB_CLOSE). Windows-only — the unix arm keeps
+# the std spawn (recorded §2.6 deviation, see stdio.rs).
+nano-sandbox = { version = "0.1.0", path = "../nano-sandbox" }
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_Security_Credentials",
+    "Win32_System_Threading",
 ] }
 
 [dev-dependencies]

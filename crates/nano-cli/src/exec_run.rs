@@ -202,10 +202,12 @@ where
                 let coordinator = journal.clone();
                 let session_id = session.session_id.clone();
                 Some(std::sync::Arc::new(
-                    move |server_id: &str, interrupted_call| {
+                    move |server_id: &str, display_name: &str, interrupted_call| {
+                        // §2.7 (F-P3-3): server_id is the instance id.
                         let bridge =
                             std::sync::Arc::new(nano_agent::elicitation::ElicitationBridge::new(
                                 server_id.to_string(),
+                                display_name.to_string(),
                                 session_id.clone(),
                                 coordinator.clone(),
                                 interrupted_call,
@@ -580,10 +582,18 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
     };
     let sessions_dir = nano_home.join("sessions");
     let home = nano_home.to_path_buf();
+    // P3 §6.1: parse the operator MCP specs once — every configured HTTP
+    // MCP server's ORIGIN joins exec's egress policy at construction (inert
+    // until the dispatcher HTTP binding lands; deny-by-default unchanged).
+    let mcp_specs = crate::mcp_specs::mcp_specs_from_env();
+    let driver_policy = crate::mcp_specs::allow_http_mcp_origins(
+        nano_egress::policy::EgressPolicy::flux_only(),
+        &mcp_specs,
+    );
     let make_driver = move || {
         nano_agent::wiring::FluxDriver::new(
             nano_model::flux_completions::FluxCompletionsClient::new(
-                nano_egress::client::EgressClient::flux(),
+                nano_egress::client::EgressClient::new(driver_policy.clone()),
             ),
             api_key.clone(),
         )
@@ -643,7 +653,7 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
         make_tools,
         search_tool.is_some(),
         sandbox_available,
-        &crate::mcp_specs::mcp_specs_from_env(),
+        &mcp_specs,
         &routing,
         std::io::stdout(),
     )
