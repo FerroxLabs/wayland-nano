@@ -473,3 +473,21 @@ promotes/closes entries; builders append only.
 - LOW-8: `unix_sandbox_argv` defined only for linux/macos — other
   cfg(unix) targets fail to compile (fail-closed direction, at least);
   session-cap test is Windows-only.
+
+## F-32: P2b image-results merge-review LOW debt (reviewer agent-137, 2026-08-13) — OPEN
+
+- LOW-5: unavailable-label text diverges from the design's fixed string —
+  `acp_mode.rs:4182-4190` + `image_result.rs:86` render dims instead of
+  "[Image #N from tool <unavailable: unpaired call> — do not describe it
+  from memory]". Fix: emit the fixed label in the None branch.
+- LOW-6: non-view_image image-bearing Live results are silently dropped
+  (turn.rs:1347 gates typed rejection on call.name == "view_image").
+  Fix: reject whenever image_result.is_some() && accepted.is_none().
+- LOW-7: AttachmentStore::sweep's reference-scan contract names only
+  input_blocks manifests (attachment_store.rs:367-369); §3.2 requires
+  covering ToolResult.image_refs when the host scan is wired. Latent —
+  no production caller exists yet; record + extend at wiring.
+- LOW-8 (info): ReplayVerified minted-then-dropped at replay
+  (acp_mode.rs:4222-4236) rather than "carried" per §3.3 (harmless —
+  Message cannot hold it); build_image_tool_result's _call_id unused
+  (binding is via Op.call_id) — cosmetic.
