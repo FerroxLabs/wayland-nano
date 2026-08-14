@@ -1,27 +1,44 @@
 # Wayland Nano — Mac build & Desktop integration handoff
 
-Audience: the macOS build machine. Goal: build `wayland-nano` from source,
-run it standalone, and integrate it into Wayland Desktop as the first-class
-`wnano` agent.
+**Read this first if you have zero context.** This document assumes the
+machine (and the person/agent driving it) has never seen Wayland Nano.
 
-State of the code: master @ `71ba0e7` (post P3 fix-round), CI 6/6 green.
-All RC2 packs merged: P1 (web search + cost metering), P2a (image intake),
-P2b (image tool results), P3 (MCP full-duplex + ToolSearch + resources +
-elicitation + OAuth PKCE), P4 (exec rules DSL, review mode, persistent PTY,
-repomap, session browser), P5 (Flux Auto routing).
+## 0. What this is
 
----
+**Wayland Nano** is a first-party, sandboxed coding agent written in Rust
+(repo: `FerroxLabs/wayland-nano`). It speaks **ACP** (Agent Client Protocol)
+natively over stdio — the same protocol Wayland Desktop uses to talk to
+external CLI agents (Codex, Grok, Kimi, etc.). Nano needs no bridge: Desktop
+spawns `wayland-nano acp-host` and streams JSON-RPC.
 
-## 1. Prereqs
+**Wayland Desktop** (repo: `FerroxLabs/wayland`) is the Electron app. Its
+`feature/wayland-nano` branch already contains complete first-class Nano
+integration: an always-listed `wnano` preset, typed-error rendering, and
+session UI. **No Desktop code changes are needed on the Mac** — the only
+Desktop-side work left is merging one generated-file PR (#954, error table).
 
-- macOS 14+ (arm64 verified in CI; x86_64 also CI-gated on macOS 15)
-- Rust via rustup — the repo pins **1.95.0** in `rust-toolchain.toml`;
-  rustup auto-selects it on first cargo invocation
-- Xcode CLT (`xcode-select --install`)
-- `just` (`brew install just`) for the gate; optional for building
-- Bun for the Desktop repo (`brew install oven-sh/bun/bun` or per Desktop README)
+State of the code: `wayland-nano` master @ `8a2c3ce`, CI 6/6 green. All RC2
+capability packs merged and adversarially proven: web search + cost metering
+(P1), image intake (P2a), MCP/ToolSearch/OAuth (P3), image tool results
+(P2b), exec rules/review mode/PTY/repomap/session browser (P4), Flux Auto
+routing (P5).
 
-## 2. Clone and build
+## 1. Prerequisites on the Mac
+
+```bash
+xcode-select --install                 # C toolchain for Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # rustup
+brew install just bun                  # gate runner + Desktop package manager
+```
+
+- Rust: the Nano repo pins **1.95.0** in `rust-toolchain.toml`; rustup
+  auto-installs/selects it on first cargo command. Do not override.
+- macOS 14+ (Apple Silicon is the CI-proven target; Intel macOS 15 is also
+  CI-gated).
+- GitHub access: both repos are private under FerroxLabs — `gh auth login`
+  or an SSH key with access.
+
+## 2. Build Wayland Nano
 
 ```bash
 git clone https://github.com/FerroxLabs/wayland-nano.git
@@ -29,123 +46,144 @@ cd wayland-nano
 cargo build --release
 ```
 
-Binary: `target/release/wayland-nano`. Smoke checks:
+Binary lands at `target/release/wayland-nano`. Smoke checks:
 
 ```bash
-./target/release/wayland-nano --version
-./target/release/wayland-nano            # bare run prints usage, exit 2 (expected)
+./target/release/wayland-nano --version   # prints version, exit 0
+./target/release/wayland-nano             # bare run prints usage, exit 2 (EXPECTED)
 ```
 
-Full local gate (fmt + clippy -D warnings + workspace tests), optional but
-recommended once:
+Optional full local gate (fmt + clippy `-D warnings` + workspace tests,
+~several minutes):
 
 ```bash
 just gate-all
 ```
 
-## 3. Put it on PATH
+## 3. Install the binary on PATH
 
-Desktop spawns `wayland-nano` via the `wnano` preset with
-`cliCommand: 'wayland-nano'`, `acpArgs: ['acp-host']` — it must resolve on
-PATH:
+Desktop spawns `wayland-nano` by name (preset `cliCommand`), resolved via
+PATH at spawn time:
 
 ```bash
 sudo install -m 755 target/release/wayland-nano /usr/local/bin/wayland-nano
-# or: ln -s "$(pwd)/target/release/wayland-nano" /usr/local/bin/wayland-nano
+which wayland-nano && wayland-nano --version
 ```
 
-Verify: `which wayland-nano && wayland-nano --version`.
+Use `/usr/local/bin`, not a user-local dir: if Desktop is ever launched from
+Finder/Dock (GUI PATH ≠ shell PATH), the binary must be in a system location.
+When running Desktop dev from a terminal it inherits your shell PATH, but
+`/usr/local/bin` is safe in both cases.
 
-No Gatekeeper/notarization issue — locally built binaries run fine.
+No Gatekeeper/notarization issue — locally built binaries run as-is.
 
 ## 4. Credentials
 
 Nano draws on the providers connected in Wayland Desktop
-(`authRequired: false` in the preset). For standalone/CLI use:
+(`authRequired: false` in the preset). For standalone CLI/TUI use:
 
-- Flux: `export FLUX_API_KEY=<key>` (or `FLUX_TEST_KEY`, or
-  `FLUX_API_KEY_FILE=<path to owner-only file>`). Resolution order is
-  `crates/nano-cli/src/flux_key.rs`.
-- Other catalog providers: canonical env var per provider (or `<VAR>_FILE`),
-  per `crates/nano-cli/src/provider_key.rs` and the vendored catalog at
-  `crates/nano-model/data/providerCatalog.vendored.json`.
+- **Flux** (primary): `export FLUX_API_KEY=<key>` — or `FLUX_TEST_KEY`, or
+  `FLUX_API_KEY_FILE=<path>` pointing at an owner-only (`chmod 600`) file.
+- **Other providers** (OpenAI, Anthropic, xAI, OpenRouter, DeepSeek, …):
+  the canonical env var per provider (or `<VAR>_FILE`), per the vendored
+  catalog `crates/nano-model/data/providerCatalog.vendored.json`.
 
-Never commit keys. Key files must be `chmod 600`.
+Never commit keys; never echo them into logs.
 
-## 5. Containment on macOS
+## 5. Containment on macOS (nothing to set up)
 
-Seatbelt (`sandbox-exec`) backend with ported `.sbpl` policies —
-CI-gated + runtime-gated on macOS 14 arm64. No provisioning step is needed
-on macOS (that's the Windows `NanoSandbox*` account machinery). If the
-sandbox cannot be applied, Nano fails closed with `SANDBOX_UNAVAILABLE` —
-there is no silent unsandboxed fallback.
+Nano's OS containment on macOS is **Seatbelt** (`sandbox-exec` with ported
+`.sbpl` policies), CI-gated + runtime-gated on macOS 14 arm64. Unlike
+Windows there is **no provisioning step** — no service accounts, no WFP.
+If Seatbelt cannot be applied, Nano fails closed with
+`SANDBOX_UNAVAILABLE`; there is no silent unsandboxed fallback.
 
-## 6. Desktop integration
+## 6. Desktop: checkout + merge the error-table PR
 
 ```bash
 git clone https://github.com/FerroxLabs/wayland.git
 cd wayland
 git checkout feature/wayland-nano
+gh pr merge 954        # feat(acp): nano error table — RC2 surface (57 kinds)
 ```
 
-Then merge the error-table PR (open at time of writing):
+PR #954 regenerates `src/common/types/nanoErrorCodes.ts` (+ JSON parity
+copy) to the 57-kind RC2 error surface. It touches two generated files
+only. Note: this branch line has pre-existing red CI from an unrelated
+constitution-fs pin issue (PRs #950–953) — that is NOT caused by #954.
 
-- PR #954 `feat/nano-error-table-rc2` → `feature/wayland-nano`:
-  regenerates `src/common/types/nanoErrorCodes.ts` (+ JSON parity copy) to
-  the 57-kind RC2 surface. Merge via GitHub or `gh pr merge 954`.
-
-The `wnano` preset is already first-class on this branch
-(`src/common/types/acpTypes.ts`): listed in the agent registry, streaming
-enabled, spawns `wayland-nano acp-host` over stdio. No config-writing needed.
-
-Run Desktop dev:
+## 7. Run Desktop dev and pick Nano
 
 ```bash
 bun install
-bun run dev   # or the repo's documented dev command
+bun run start          # electron-vite dev — launches the Electron app
 ```
 
-Pick **Wayland Nano** in the agent picker. First turn exercises:
-initialize → session/new → streamed response. If the picker errors, check
-`which wayland-nano` in the same shell Desktop was launched from (GUI apps
-on macOS have a different PATH — if launched from Finder/Dock, symlink into
-`/usr/local/bin` specifically, not a user-local dir, or launch Desktop from
-the terminal).
+In the UI: open the agent picker → **Wayland Nano** is always listed
+(built-in, like Wayland Core — it shows even if the binary were missing).
+Select it, start a session.
 
-## 7. What to verify (smoke list)
+How it works under the hood (for debugging): Desktop's `AgentRegistry`
+registers `wnano` (`src/common/types/acpTypes.ts` → `acpArgs: ['acp-host']`,
+streaming on). At spawn, `AcpAgentManager` runs
+`wayland-nano acp-host` and speaks ACP JSON-RPC over stdio:
+initialize → session/new → session/prompt with `session/update` stream
+chunks.
 
-1. `wayland-nano --version` in a fresh terminal
-2. Desktop agent picker lists Wayland Nano; selecting it starts a session
-3. A simple prompt streams a response ( Flux key present in env or Desktop
-   provider config)
-4. A file-write request triggers a permission prompt; Allow once writes
-5. Cancel mid-turn leaves the session alive
-6. Quit + relaunch Desktop → session/load resumes history
+## 8. Smoke list (what "working" looks like)
 
-## 8. Known deferrals (not bugs)
+1. `wayland-nano --version` works in a fresh terminal.
+2. Picker lists Wayland Nano; selecting it opens a session without error.
+3. A simple prompt streams a response (Flux key in env or a provider
+   connected in Desktop).
+4. A file-write request triggers a permission prompt; "Allow once" writes.
+5. Cancel mid-turn leaves the session alive.
+6. Quit + relaunch Desktop → the session resumes history
+   (`session/load`).
 
-- **Auto routing on tool-bearing turns**: production Auto turns currently
-  refuse pre-dispatch with `capability_empty` (the tool-capability catalog
-  doesn't exist yet — the ladder is wired but unreachable on tool-bearing
-  turns, i.e. all ACP/exec turns). Pinned/alias models work; explicit Auto
-  is proven at the seam. Design-§3-compliant; a known gap, not a regression.
-- **F-P2B-1**: `view_image` tool unreachable (vision_backed conjuncts
-  mutually unsatisfiable). Unblock = bless an `anthropic:` catalog id after
-  live probe, or wire `FluxDriver::anthropic_compat`. Post-merge wave item.
-- **Review-mode advertisement**: `nanoExtensions` review capability is
-  pinned OFF until the P4 proof's §14 leg-2 live run flips it.
-- macOS notarized distribution, Windows ARM64 provisioning: not claimed.
+If step 2/3 fails: confirm `which wayland-nano` **in the same terminal that
+launched Desktop**, and check Desktop's dev console for spawn errors.
 
-## 9. Pending on the Windows side (not blockers for Mac bring-up)
+## 9. Standalone TUI (optional)
 
-- P3 leg-6 OAuth live re-proof, P4 adversarial proof, P5 adversarial proof
-  (briefs in `.tmp/p4-proof/ASSIGNMENT.md`, `.tmp/p5-proof/ASSIGNMENT.md`)
-- Desktop repo has pre-existing red CI from a constitution-fs pin issue on
-  PRs #950-953 — unrelated to Nano; owner-side fix.
+Nano has its own terminal UI (ratatui-based), like Codex/Claude Code:
 
-## 10. If something breaks
+```bash
+wayland-nano             # usage
+wayland-nano tui         # interactive TUI (if built with default features)
+```
 
-- `docs/STATUS.md` — sprint state and known issues
-- `docs/COMPATIBILITY.md` — what is claimed vs not claimed per platform
-- `docs/FOLLOWUPS.md` — filed findings register
+## 10. Known deferrals (not bugs — don't chase them)
+
+- **Flux Auto routing on tool-bearing turns**: explicit `Auto` currently
+  refuses pre-dispatch with `capability_empty` (tool-capability catalog not
+  built yet; ladder is wired but unreachable on tool-bearing turns — all
+  ACP turns). Pinned models and Flux aliases work fine. Known gap,
+  design-compliant.
+- **F-P2B-1**: the `view_image` tool is unreachable (vision-capable leaf
+  not yet blessed in the catalog). Image INTAKE (attachments into a
+  vision-capable pinned model) works; image-returning tools are the gap.
+- **Review mode advertisement**: being flipped on in the in-flight P4 fix
+  round (branch `feat/p4-fixround`); if your master predates that merge,
+  `/review` works but the capability isn't advertised.
+- **Not claimed**: macOS notarized distribution, Windows ARM64
+  provisioning, non-Ubuntu Linux.
+
+## 11. Where things are (wayland-nano repo)
+
+- `docs/STATUS.md` — sprint state, known issues
+- `docs/COMPATIBILITY.md` — per-platform support levels (what's proven vs
+  claimed)
+- `docs/FOLLOWUPS.md` — findings register (deferred debt)
 - `docs/release/EVIDENCE-BUNDLE.md` — release evidence index
+- `ARCHITECTURE.md` — system constitution; `UPSTREAM.md` — donor
+  provenance ledger
+- Error table source of truth: `crates/nano-session/src/error_codes.rs`
+  (Desktop mirror is generated — never hand-edit either side)
+
+## 12. Pending on the Windows side (not blockers for Mac bring-up)
+
+- P4 fix round in flight (`feat/p4-fixround`): wires the exec-rules DSL
+  (allow/prompt/deny rule auto-approval) into the gate + Windows ACL seam;
+  flips review-mode advertisement on.
+- P5 adversarial proof (Auto routing) — the last RC2 completion item.
