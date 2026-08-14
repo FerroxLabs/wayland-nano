@@ -632,9 +632,11 @@ mod tests {
     use std::io::Write;
     use std::net::TcpStream;
     use std::sync::Arc;
+    use std::time::Duration;
 
     /// Scripted OAuthTransport: URL-keyed responses; every call recorded;
-    /// form bodies logged for the PKCE assertion.
+    /// form bodies logged for the PKCE assertion; JSON bodies logged so a
+    /// failure-path test can recover the bound redirect_uri.
     #[derive(Default)]
     struct Script {
         gets: Mutex<Vec<(String, u16, Vec<u8>)>>,
@@ -642,6 +644,7 @@ mod tests {
         jsons: Mutex<Vec<(String, u16, Vec<u8>)>>,
         calls: Mutex<Vec<String>>,
         form_log: Mutex<Vec<Vec<(String, String)>>>,
+        json_log: Mutex<Vec<serde_json::Value>>,
     }
 
     impl Script {
@@ -697,9 +700,10 @@ mod tests {
         async fn post_json(
             &self,
             url: &str,
-            _body: &serde_json::Value,
+            body: &serde_json::Value,
         ) -> Result<(u16, Vec<u8>), OAuthError> {
             self.calls.lock().unwrap().push(format!("JSON {url}"));
+            self.json_log.lock().unwrap().push(body.clone());
             Ok(Script::lookup(&self.jsons, url))
         }
     }
@@ -1018,6 +1022,69 @@ mod tests {
         assert_eq!(*rig.scoped_builds.lock().unwrap(), 0);
         assert!(rig.scoped.call_log().is_empty());
         assert!(rig.opened.lock().unwrap().is_empty(), "no browser launch");
+    }
+
+    /// F-P3-11 regression pin: the loopback listener binds BEFORE DCR (the
+    /// registration needs the redirect_uri), so a DCR failure is the
+    /// early-failure path that used to hold the port until the 180s expiry.
+    /// The failure must tear the listener down promptly: the binding drops
+    /// with the failed attempt, its cancel flag stops the accept loop, and
+    /// the port refuses connections right away.
+    #[tokio::test]
+    async fn dcr_failure_releases_the_listener_port_promptly() {
+        let rig = Rig {
+            scoped: Arc::new(
+                Script::default()
+                    .with_json(
+                        "https://as.example/tenant1/register",
+                        500,
+                        r#"{"error":"server_error"}"#,
+                    )
+                    .with_form(
+                        "https://as.example/tenant1/token",
+                        200,
+                        r#"{"access_token":"x","token_type":"Bearer"}"#,
+                    ),
+            ),
+            ..Rig::new()
+        };
+        let err = rig.run("srvtest-dcrfail").await.expect_err("typed");
+        assert!(matches!(
+            err,
+            OAuthError::Failed {
+                reason: FailReason::RegistrationFailed(_)
+            }
+        ));
+        // Recover the bound port from the DCR request body the scoped
+        // client carried, then probe it: the listener must be gone.
+        let redirect = {
+            let bodies = rig.scoped.json_log.lock().unwrap();
+            let register = bodies
+                .iter()
+                .find(|b| b.get("redirect_uris").is_some())
+                .expect("the DCR call carried the redirect_uris");
+            register["redirect_uris"][0]
+                .as_str()
+                .expect("redirect uri")
+                .to_string()
+        };
+        let addr = redirect
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .expect("host:port")
+            .to_string();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if TcpStream::connect(&addr).is_err() {
+                return; // port released promptly
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "loopback listener port still bound after the DCR failure"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// §12: no 9728 metadata ⇒ typed, zero stored, bootstrap never built.

@@ -583,6 +583,40 @@ fn graceful_shutdown_cancels_pending_and_returns() {
         .expect("server saw notifications/cancelled with reason=shutdown");
 }
 
+/// F-P3-6 regression battery: the close sweep runs CONCURRENT with the
+/// writer's closing-drain. Pre-fix, closing was set before the cancels were
+/// enqueued and a fast writer drain-exited on one 25ms quiet tick, killing
+/// the cancel in the lane. Every round has a call pending at close time, so
+/// the sweep ALWAYS owes a cancel and the wire observation is asserted every
+/// round (12 rounds: the pre-fix race surfaces under scheduler load).
+#[test]
+fn cancel_race_at_close_never_loses_the_cancel() {
+    for round in 0..12 {
+        let collect = Collect::default();
+        let options = ConnectionOptions {
+            notification_sink: collect.sink(),
+            graceful_shutdown_wait: Duration::from_millis(500),
+            supervisor_tick: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let client = connect("echo", &[("FAKE_CALL_DELAY_MS", "5000")], options);
+        let call_client = client.clone();
+        let call = std::thread::spawn(move || call_client.call_tool("echo", serde_json::json!({})));
+        std::thread::sleep(Duration::from_millis(100));
+        client.close();
+        let err = call.join().unwrap().expect_err("call fails typed at close");
+        assert!(
+            matches!(&err, McpError::Transport(r) if r.contains("shut down")),
+            "round {round}: the pending waiter fails typed, got {err}"
+        );
+        collect
+            .wait_for(|v| is_cancel_obs(v, "shutdown"), Duration::from_secs(2))
+            .unwrap_or_else(|| {
+                panic!("round {round}: pending id swept but the cancel never reached the wire")
+            });
+    }
+}
+
 // ---------------------------------------------------------------------------
 // §4 resources v1: list/read over the dispatcher, capability gate, bounds
 // ---------------------------------------------------------------------------
