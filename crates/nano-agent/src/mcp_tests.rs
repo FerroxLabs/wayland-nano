@@ -729,6 +729,36 @@ fn resume_with_three_transition_window_pins_the_server() {
 }
 
 #[test]
+fn resume_digest_mismatch_counts_churn_and_pins() {
+    let server = fake_server(
+        "big",
+        &big_inventory(),
+        "{}",
+        &serde_json::json!([]),
+        None,
+        None,
+    );
+    let mut registry = McpRegistry::new();
+    let instance_id = mint_instance_id(&server.spec);
+    registry.register(server.spec).expect("register");
+    let fresh = canonical_tools_digest(&registry.servers[0].tools);
+    let stale = "d".repeat(64);
+    let digests = BTreeMap::from([(instance_id.clone(), stale.clone())]);
+    let windows = BTreeMap::from([(
+        instance_id.clone(),
+        vec!["a".repeat(64), "b".repeat(64), "a".repeat(64)],
+    )]);
+
+    registry.resume_hydration(&BTreeMap::new(), &digests, &windows);
+
+    assert!(registry.servers[0].pinned);
+    assert_eq!(
+        registry.servers[0].churn_window,
+        vec!["a".repeat(64), "b".repeat(64), "a".repeat(64), stale, fresh]
+    );
+}
+
+#[test]
 fn apply_hydration_pushing_a_third_transition_pins() {
     let server = fake_server(
         "big",
@@ -1269,6 +1299,73 @@ fn http_registration_is_a_typed_refusal() {
         "the refusal names the kind: {err}"
     );
     assert!(registry.is_empty(), "nothing registered on a refusal");
+}
+
+#[test]
+fn http_registration_round_trips_through_armed_egress() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback MCP");
+    let addr = listener.local_addr().expect("loopback addr");
+    let server = std::thread::spawn(move || {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut chunk).expect("read request");
+                request.extend_from_slice(&chunk[..n]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request_text = String::from_utf8_lossy(&request);
+            let body = if request_text.contains("initialize") {
+                Some(
+                    r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{}}}"#,
+                )
+            } else if request_text.contains("tools/list") {
+                Some(r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}"#)
+            } else {
+                None
+            };
+            if let Some(body) = body {
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .expect("response");
+            } else {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .expect("notification response");
+            }
+        }
+    });
+    let url = format!("http://{addr}/mcp");
+    let spec = McpServerSpec {
+        name: "loopback-http".to_string(),
+        transport: Transport::Http { url: url.clone() },
+        source: SpecSource::Config,
+    };
+    let egress = nano_egress::client::EgressClient::new(
+        nano_egress::policy::EgressPolicy::new().allow_host_with_http("127.0.0.1"),
+    );
+    let mut registry = McpRegistry::new();
+    let count = registry
+        .register_with_http(spec, Some((egress, nano_mcp::http::AuthHeader::None)))
+        .expect("HTTP registration");
+    assert_eq!(count, 0);
+    assert_eq!(
+        registry.servers[0].receipt.egress_origins,
+        vec![format!("http://{addr}")]
+    );
+    server.join().expect("server join");
 }
 
 #[test]
