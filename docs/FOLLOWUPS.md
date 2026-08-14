@@ -817,6 +817,15 @@ promotes/closes entries; builders append only.
 
 # Plugin substrate follow-ups (S8)
 
+# S9 computer-use follow-ups
+
+- Complete macOS CGEvent/CGDisplay dispatch and record the live TCC proof before advertising computer use.
+- Complete Linux X11 XTest input/capture and run the two `xvfb-run` live legs before advertising computer use.
+- Route Wayland `wlrctl`/`grim` fixed argv through a concrete `nano-platform` `SpawnSpec`; restricted compositors must remain unregistered.
+- Complete Windows `type`, `key`, and `scroll` `SendInput` dispatch plus live focus-invariance, landing, and 100%/150% HiDPI evidence.
+- Add the integrator-owned `nano-session` CUA journal/error/resume vocabulary and `nano-agent`/`nano-tools` approval, permission-mode, cancellation, panic-containment, attachment, and registration seams.
+- Add the six-target cross-platform battery; capability flags remain false until each platform's live proof is recorded.
+
 - Git-subprocess registry sources require an OS-containment and nano-egress design.
 - ACP-host skill activation requires a skill-context consumer; protocol-host is the v1 consumer.
 - HTTP-transport MCP plugin entries remain blocked on the §6.1 dispatcher HTTP binding.
