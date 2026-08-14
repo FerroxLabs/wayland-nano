@@ -22,10 +22,13 @@ pub fn is_sensitive_path(path: &Path) -> bool {
     {
         return true;
     }
-    if name.starts_with(".env.") {
+    // Case-insensitive to match the basename equality checks above: on
+    // case-insensitive filesystems (Windows, the primary platform)
+    // `.ENV.PRODUCTION` names the same credential store as `.env.production`.
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with(".env.") {
         return true;
     }
-    let lower = name.to_ascii_lowercase();
     SENSITIVE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
 }
 
@@ -42,5 +45,22 @@ mod tests {
         assert!(is_sensitive_path(Path::new("/certs/server.pem")));
         assert!(!is_sensitive_path(Path::new("/repo/notes.txt")));
         assert!(!is_sensitive_path(Path::new("/repo/environment.rs")));
+    }
+
+    #[test]
+    fn env_prefix_is_case_insensitive() {
+        // F-28 LOW-8: the `.env.` prefix check must match the case-insensitive
+        // basename equality — `.ENV.PRODUCTION` is the same file as
+        // `.env.production` on case-insensitive filesystems (Windows).
+        assert!(is_sensitive_path(Path::new("/repo/.ENV.PRODUCTION")));
+        assert!(is_sensitive_path(Path::new("/repo/.Env.Production")));
+        assert!(is_sensitive_path(Path::new("/repo/.env.LOCAL")));
+        assert!(is_sensitive_path(Path::new("C:\\repo\\.EnV.Staging")));
+        // Tightening only: near-misses that were never caught stay clear.
+        assert!(!is_sensitive_path(Path::new("/repo/.ENVRC")));
+        assert!(!is_sensitive_path(Path::new("/repo/.ENVIRONMENT")));
+        assert!(!is_sensitive_path(Path::new("/repo/env.production")));
+        // Basename equality arm was already case-insensitive.
+        assert!(is_sensitive_path(Path::new("/repo/.ENV")));
     }
 }
