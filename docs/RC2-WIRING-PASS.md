@@ -84,3 +84,37 @@ currently journal NOTHING. Implement at the acp_mode session layer: checked
 `flow::GrantEndpoint` → `op::GrantEndpoint` conversion (reject Unknown),
 `validate_oauth_grant`, append via the session coordinator. Without this the
 P3 OAuth replay surface (`SessionState.mcp_oauth_grants`) is dead.
+
+## 8. Rules-lane wiring (F-P4-1/F-P4-2 — landed in feat/p4-fixround)
+
+The P4 adversarial proof (leg 1/2) found the execrules engine
+wholesale UNWIRED and untracked here — this entry retroactively records the
+obligation. What the wiring owed (all landed in the fix round):
+
+1. **Gate arm** — `AcpApproval::approve` consults the session's shared
+   `RuleSet` cell STRICTLY INSIDE the Default/FullAuto arms for the literal
+   `shell` name: Allow skips the default-mode prompt, Deny is the typed
+   `ShellRuleDenied` (via the new `ApprovalGate::typed_denial` channel —
+   the journaled ToolResult carries the kind), Prompt/no-match keeps the
+   baseline prompt. read_only's arm precedes rule consultation.
+2. **Exec gate** — `exec_gate_decision` takes the session-start ruleset:
+   Allow ⇒ approve (an explicit rule IS the approval on a non-interactive
+   surface), Deny ⇒ typed, everything else keeps would-prompt ⇒ auto-deny.
+   `TaskApproval` never consults rules (children don't inherit widening).
+3. **Card options** — `request_shell_permission_request` adds
+   `allow_always_exact` / `allow_always_prefix` with the disclosed scope
+   text in the option NAME; Complex commands get the plain allow/deny pair.
+4. **Session-start load** — `session/new` + `session/load` (and exec/cron)
+   load `rules.toml` fail-closed: invalid ⇒ zero rules + loud typed
+   `RuleFileInvalid` warning on stderr.
+5. **Journal op** — `Op::ShellRuleAmended` (audit-only on replay; ordering:
+   file append+rename → op → cell swap).
+6. **Error kinds** — `ShellRuleDenied` + `RuleFileInvalid` (57 → 59, table
+   regenerated).
+7. **CLI/doctor** — `wayland-nano rules` (read-only table printer) and the
+   `/doctor` rules-file line.
+8. **F-P4-2 (Windows)** — execrules' interim "install the P2a ACL audit
+   helper" refusal is replaced by the ported P2a §5.5 DACL audit
+   (nano-core keeps no nano-session dependency; the amendment writer pins a
+   current-user-only DACL before rename, so amended files pass the audit).
+

@@ -18,14 +18,17 @@ toml = "0.8"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-# Pinned workspace version (0.52, per AGENTS.md). Used solely for
-# GetFileInformationByHandle: the hard-link alias write check needs
-# BY_HANDLE_FILE_INFORMATION.nNumberOfLinks, which stable std does not expose
-# (`windows_by_handle` is still unstable).
+# Pinned workspace version (0.52, per AGENTS.md). Win32_Storage_FileSystem /
+# Win32_System_IO serve the hard-link alias write check and the rules-file
+# sidecar lock; Win32_Security*/Win32_System_Threading serve the rules-file
+# owner-only DACL audit + ACL pin (the P2a §5.5 helper ported in-module).
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
 ] }
 
 [dev-dependencies]

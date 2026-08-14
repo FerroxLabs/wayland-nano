@@ -305,6 +305,16 @@ pub trait ApprovalGate: Debug + Send + Sync {
     fn can_prompt_image_clamp(&self) -> bool {
         false
     }
+    /// P4 §2.6/§8: when the LAST `approve` denial came from a typed source
+    /// more specific than the mode/host (today: a matched shell `Deny`
+    /// rule), the gate hands the engine the typed kind plus a bounded,
+    /// static-safe presentation; the denial's journaled `ToolResult` then
+    /// carries THAT kind (e.g. `shell_rule_denied`) instead of the generic
+    /// `approval_denied`. Read once, right after `approve` returns `Deny`,
+    /// by the one turn loop that called it. Default: no typed denial.
+    fn typed_denial(&self) -> Option<(NanoErrorKind, String)> {
+        None
+    }
     /// Structured mid-turn question channel (C10 §5): `ask_user` calls and
     /// the plan-exit approval round-trip route here — the ONE question
     /// channel, reused, never parallel machinery. The argument is the raw
@@ -1296,15 +1306,35 @@ impl<'a> TurnEngine<'a> {
                     if clamp_denial || gate.approve(call) == ApprovalDecision::Deny {
                         // C2: a mode-categorical denial names the mode so the
                         // model stops retrying variants of the forbidden call.
-                        let text = match (clamp_denial, gate.denial_reason()) {
-                            (true, _) => "denied by approval gate: image-influenced protected mutation requires interactive approval".to_string(),
-                            (false, Some(reason)) => format!("denied by approval gate: {reason}"),
-                            (false, None) => "denied by approval gate".to_string(),
+                        // P4 §2.6/§8: a typed gate denial (a matched shell
+                        // Deny rule) carries its own kind + bounded message
+                        // instead of the generic approval_denied.
+                        let typed = if clamp_denial {
+                            None
+                        } else {
+                            gate.typed_denial()
+                        };
+                        let (text, denial_kind) = match (clamp_denial, typed, gate.denial_reason())
+                        {
+                            (true, _, _) => (
+                                "denied by approval gate: image-influenced protected mutation requires interactive approval".to_string(),
+                                NanoErrorKind::ApprovalDenied,
+                            ),
+                            (false, Some((kind, message)), _) => (message, kind),
+                            (false, None, Some(reason)) => (
+                                format!("denied by approval gate: {reason}"),
+                                NanoErrorKind::ApprovalDenied,
+                            ),
+                            (false, None, None) => (
+                                "denied by approval gate".to_string(),
+                                NanoErrorKind::ApprovalDenied,
+                            ),
                         };
                         // D4: the denial is a journaled, framed failed
-                        // ToolResult (kind approval_denied) — and a denial
-                        // whose journal append fails is a turn-fatal journal
-                        // error, never a silently-dropped call.
+                        // ToolResult (kind approval_denied, or the typed
+                        // gate-denial kind) — and a denial whose journal
+                        // append fails is a turn-fatal journal error, never
+                        // a silently-dropped call.
                         if !emit(
                             &mut ops,
                             Op::ToolResult {
@@ -1312,7 +1342,7 @@ impl<'a> TurnEngine<'a> {
                                 ok: false,
                                 output_digest: format!("len:{}", text.len()),
                                 changed_files: vec![],
-                                error_kind: Some(NanoErrorKind::ApprovalDenied),
+                                error_kind: Some(denial_kind),
                                 image_refs: vec![],
                             },
                         ) {

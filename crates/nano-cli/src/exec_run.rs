@@ -265,6 +265,13 @@ where
         ));
     }
 
+    // P4 §2.6/§11: session-start rules load, fail-closed — an invalid or
+    // insecurely configured rules.toml runs this exec with zero user rules
+    // and a loud stderr warning, never a partial trust.
+    let (rules, rules_warning) = crate::shell_rules::load_session_rules(nano_home);
+    if let Some(warning) = rules_warning {
+        eprintln!("wayland-nano: {warning}");
+    }
     let gate = ExecApproval {
         mode: params.mode,
         policy,
@@ -275,6 +282,8 @@ where
         // image-influenced session clamps protected trust mutations to
         // DENY on this non-interactive surface.
         image_influenced: crate::acp_mode::image_influenced_from_envelopes(&session.envelopes),
+        rules,
+        rule_denial: std::sync::Arc::new(std::sync::Mutex::new(None)),
     };
 
     let live_goal = session

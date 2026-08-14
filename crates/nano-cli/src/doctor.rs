@@ -105,6 +105,41 @@ pub fn run(nano_home: &std::path::Path, out: &mut dyn std::io::Write) -> std::io
         detail: sessions_report.detail,
     });
 
+    // P4 §9 (F-P4-1): the rules-file status line. The load applies every
+    // §2.5 fail-closed gate (containment, non-symlink, owner-only
+    // 0600/ACL-audit, strict parse); a failure means every session runs
+    // with zero saved rules — Fail, the same posture as the attachment
+    // store's insecure-configuration line. An ABSENT file is the normal
+    // empty-rule state (Pass).
+    match nano_core::execrules::configured_rules_path(nano_home) {
+        Ok(path) if !path.exists() => checks.push(Check {
+            name: "rules-file",
+            status: CheckStatus::Pass,
+            detail: format!("no saved rules ({} absent)", path.display()),
+        }),
+        Ok(path) => match nano_core::execrules::load_configured_rules(nano_home) {
+            Ok(rules) => checks.push(Check {
+                name: "rules-file",
+                status: CheckStatus::Pass,
+                detail: format!(
+                    "{} rule(s), owner-only verified ({})",
+                    rules.rules().len(),
+                    path.display()
+                ),
+            }),
+            Err(err) => checks.push(Check {
+                name: "rules-file",
+                status: CheckStatus::Fail,
+                detail: format!("{err}"),
+            }),
+        },
+        Err(err) => checks.push(Check {
+            name: "rules-file",
+            status: CheckStatus::Fail,
+            detail: format!("{err}"),
+        }),
+    }
+
     // P2a §5.4 (F-34): the attachment-store report (size, blob count). The
     // store's open carries the fail-closed §5.5 permission audit, so an
     // insecurely configured store reports Fail, never a silent pass.

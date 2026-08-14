@@ -79,6 +79,15 @@ pub enum NanoErrorKind {
     /// failed the strict JSON parse AND the plain-text fallback (empty).
     /// Never retryable — the model output will not improve on resend.
     ReviewParseFailed,
+    /// P4 §8/§2.6: a `Deny` shell rule matched the command (any segment,
+    /// any mode). Never retryable — resending the identical call denies
+    /// again; the operator edits rules.toml to change the outcome.
+    ShellRuleDenied,
+    /// P4 §8/§2.5: `rules.toml` failed the fail-closed load gates (strict
+    /// parse, §2.1 validation, ownership/ACL audit, non-symlink,
+    /// containment) at load or amendment; the session runs with zero saved
+    /// rules. Never retryable — the file must be fixed or removed.
+    RuleFileInvalid,
     // ── engine stops (turn-fatal, NOT user cancels) ─────────────────────
     BudgetExhausted,
     /// P1 §4.1: the session token cap stopped the turn (a zero output

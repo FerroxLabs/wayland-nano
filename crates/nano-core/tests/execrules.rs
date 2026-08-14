@@ -811,30 +811,14 @@ exact = false
     ));
 }
 
+/// F-P4-2: the interim "ACL helper unavailable" refusal is gone — the
+/// ported P2a §5.5 DACL audit now backs the Windows load path. A file
+/// written by the amendment writer (explicit current-user-only DACL) loads;
+/// a hand-widened DACL fails closed (covered by the in-module unit test
+/// `windows_acl_audit_loads_pinned_file_and_refuses_widened_dacl`).
 #[cfg(windows)]
 #[test]
-fn windows_without_acl_helper_refuses_existing_rules_file() {
-    let temp = tempfile::tempdir().unwrap();
-    write_owner_only(
-        &temp.path().join("rules.toml"),
-        r#"[[rule]]
-pattern = ["git"]
-decision = "allow"
-exact = false
-"#,
-    );
-    let error = load_rules(temp.path(), None).unwrap_err();
-    assert!(matches!(error, RuleStoreError::RuleFileInvalid { .. }));
-    assert!(
-        error
-            .to_string()
-            .contains("ACL verification is unavailable")
-    );
-}
-
-#[cfg(windows)]
-#[test]
-fn windows_without_acl_helper_refuses_amendment_before_writing() {
+fn windows_acl_audit_loads_amendment_written_rules_file() {
     let temp = tempfile::tempdir().unwrap();
     let amendment = mint_amendment(
         "git status",
@@ -844,13 +828,44 @@ fn windows_without_acl_helper_refuses_amendment_before_writing() {
         added_at(),
     )
     .unwrap();
-    let result = append_amendment(temp.path(), None, &amendment);
-    assert!(
-        matches!(result, Err(RuleStoreError::RuleFileInvalid { .. })),
-        "unexpected amendment result: {result:?}"
+    append_amendment(temp.path(), None, &amendment).unwrap();
+    let loaded = load_rules(temp.path(), None).unwrap();
+    assert_eq!(loaded.rules().len(), 1);
+    assert_eq!(
+        loaded.evaluate(ShellGrammar::CmdExe, "git status"),
+        RuleVerdict::Allow
     );
-    assert!(!temp.path().join("rules.toml").exists());
-    assert!(!temp.path().join("rules.toml.lock").exists());
+}
+
+/// F-P4-2: amendments write on Windows now (the stub refused before any
+/// I/O); the sidecar lock is released afterward and the file reloads.
+#[cfg(windows)]
+#[test]
+fn windows_amendment_writes_reloads_and_releases_the_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    let amendment = mint_amendment(
+        "git status",
+        ShellGrammar::CmdExe,
+        AmendmentKind::Exact,
+        None,
+        added_at(),
+    )
+    .unwrap();
+    let loaded = append_amendment(temp.path(), None, &amendment).unwrap();
+    assert_eq!(loaded.rules().len(), 1);
+    assert!(temp.path().join("rules.toml").exists());
+    // The lock is a sidecar that survives as a file but must be RELEASABLE:
+    // a second amendment succeeds (a held lock would be LockBusy).
+    let second = mint_amendment(
+        "cargo test",
+        ShellGrammar::CmdExe,
+        AmendmentKind::Exact,
+        None,
+        added_at(),
+    )
+    .unwrap();
+    let loaded = append_amendment(temp.path(), None, &second).unwrap();
+    assert_eq!(loaded.rules().len(), 2);
 }
 
 #[cfg(unix)]
@@ -883,7 +898,9 @@ fn append_is_atomic_owner_only_and_refuses_an_invalid_base() {
     assert_eq!(fs::read(&path).unwrap(), before);
 }
 
-#[cfg(unix)]
+// Runs on Windows too since F-P4-2: the sidecar lock + ACL-pinned amendment
+// writer are platform-covered; this is the two-writer lost-update leg.
+#[cfg(any(unix, windows))]
 #[test]
 fn concurrent_amendments_preserve_the_union() {
     let temp = tempfile::tempdir().unwrap();
@@ -923,7 +940,7 @@ fn concurrent_amendments_preserve_the_union() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn concurrent_amendment_child_process() {
     let Some(home) = std::env::var_os("NANO_RULE_APPEND_CHILD_HOME") else {

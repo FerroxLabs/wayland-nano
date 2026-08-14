@@ -74,14 +74,14 @@ use nano_model::flux_completions::FluxCompletionsClient;
 use nano_model::provider_catalog::WireKind;
 use nano_model::types::{ContentBlock, Message, ModelObservation, Role, ToolCall};
 use nano_protocol::acp::{
-    AvailableModel, JsonRpcNotification, JsonRpcResponse, NanoErrorExtras, PLAN_MODE_ID,
-    acp_blocks_to_content_blocks, agent_capabilities, agent_message_chunk,
+    AvailableModel, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, NanoErrorExtras,
+    PLAN_MODE_ID, acp_blocks_to_content_blocks, agent_capabilities, agent_message_chunk,
     attachment_missing_notice, budget_clamp_notice, budget_notice, budget_warn_notice,
     compaction_notice, error_presentation, param_inert_notice, prompt_result, rate_limit_notice,
-    reconnect_notice, request_permission_request, request_question_request, session_load_result,
-    session_modes_value, session_new_result, set_model_result, steer_dropped_notice,
-    steer_queued_result, tool_call_diff, tool_call_done, tool_call_replay, tool_call_update,
-    user_message_chunk,
+    reconnect_notice, request_permission_request, request_question_request,
+    request_shell_permission_request, session_load_result, session_modes_value, session_new_result,
+    set_model_result, steer_dropped_notice, steer_queued_result, tool_call_diff, tool_call_done,
+    tool_call_replay, tool_call_update, user_message_chunk,
 };
 use nano_protocol::permission_mode::PermissionMode;
 use nano_session::NanoErrorKind;
@@ -209,6 +209,11 @@ struct Session {
     /// live session's direct-descendant tree; session replacement calls
     /// `terminate_all` explicitly (the tasks-registry discipline).
     pty: Arc<nano_tools::pty::PtySessionManager>,
+    /// P4 §2.6/§11: the session's shell rules — CONFIG re-read from
+    /// rules.toml at session start (fail-closed: an invalid file is zero
+    /// rules + a loud typed warning), amended in place via the journaled
+    /// approval-card flow. Never folded from the journal.
+    rules: crate::shell_rules::SharedRules,
 }
 
 /// P4 §3.4: the review completion watcher. Polls the registry's C6
@@ -1438,6 +1443,17 @@ where
                             // per session; never shared across sessions).
                             let pty =
                                 Arc::new(nano_tools::pty::PtySessionManager::new(&cwd));
+                            // P4 §2.5/§11: session-start rules load —
+                            // fail-closed: an invalid or insecurely
+                            // configured rules.toml is ZERO user rules + a
+                            // loud stderr warning, never a partial trust.
+                            let (session_rules, rules_warning) =
+                                crate::shell_rules::load_session_rules(config.attachment_home);
+                            if let Some(warning) = rules_warning {
+                                eprintln!("wayland-nano: {warning}");
+                            }
+                            let rules =
+                                std::sync::Arc::new(std::sync::RwLock::new(session_rules));
                             session = Some(Session {
                                 id: session_id.clone(),
                                 workspace: cwd,
@@ -1461,6 +1477,7 @@ where
                                 // P2a §9.1: a fresh session starts clean.
                                 image_influenced,
                                 pty,
+                                rules,
                             });
                             write_out(
                                 &out,
@@ -1794,6 +1811,16 @@ where
                             // processes never survive the owning host).
                             let pty =
                                 Arc::new(nano_tools::pty::PtySessionManager::new(&cwd));
+                            // P4 §2.5/§11: session/load re-reads the rules
+                            // config exactly like session/new (fail-closed,
+                            // never folded from the journal).
+                            let (session_rules, rules_warning) =
+                                crate::shell_rules::load_session_rules(config.attachment_home);
+                            if let Some(warning) = rules_warning {
+                                eprintln!("wayland-nano: {warning}");
+                            }
+                            let rules =
+                                std::sync::Arc::new(std::sync::RwLock::new(session_rules));
                             session = Some(Session {
                                 id: session_id.to_string(),
                                 workspace: cwd,
@@ -1833,6 +1860,7 @@ where
                                 // clamp on resume.
                                 image_influenced,
                                 pty,
+                                rules,
                             });
                             write_out(
                                 &out,
@@ -2953,6 +2981,11 @@ where
                             // (todo/plan/question execution).
                             let plan_cell = active.plan.clone();
                             let todos_cell = active.todos.clone();
+                            // P4 §2.6: the session's shared rules cell —
+                            // cloned HERE (outside the turn future) like
+                            // every other session cell, so the future
+                            // captures owned values only.
+                            let turn_rules = active.rules.clone();
                             let plan_file = active
                                 .plan
                                 .lock()
@@ -3174,6 +3207,15 @@ where
                                     // the human prompt while set, in every
                                     // mode including full_auto.
                                     image_influenced: gate_image_influenced.clone(),
+                                    // P4 §2.6: the session's shared rules
+                                    // cell (rule arm in Default/FullAuto),
+                                    // the amendment target home, and the
+                                    // session coordinator (the audit op's
+                                    // single append authority).
+                                    rules: turn_rules.clone(),
+                                    rule_denial: Mutex::new(None),
+                                    nano_home: config.attachment_home.to_path_buf(),
+                                    coordinator: turn_coordinator.clone(),
                                 };
                                 // C10: the session-owned tools (todo / plan /
                                 // ask_user) wrap the MCP-merged executor and
@@ -4825,6 +4867,22 @@ struct AcpApproval<W: Write> {
     /// including full_auto — auto-approve paths are bypassed. Read-only and
     /// ordinary workspace-scoped calls keep their normal mode semantics.
     image_influenced: Arc<std::sync::atomic::AtomicBool>,
+    /// P4 §2.6: the session's shared shell-rules cell, loaded at session
+    /// start (§11: config re-read per session) and swapped in place by the
+    /// journaled amendment flow. Consulted ONLY inside the Default/FullAuto
+    /// mode arms for the literal `shell` tool — the read_only arm returns
+    /// its categorical denial before rules are ever read (narrow-only arm
+    /// order, regression-pinned).
+    rules: crate::shell_rules::SharedRules,
+    /// The last rule-driven denial's bounded message. Cleared at the top of
+    /// every `approve`; the turn loop reads it via `typed_denial` only right
+    /// after a Deny (single-threaded per turn, like `denial_reason`).
+    rule_denial: Mutex<Option<String>>,
+    /// The nano_home the amendment flow writes rules.toml under (§2.5
+    /// containment enforced engine-side) and the session's journal
+    /// coordinator — the audit op's single append authority.
+    nano_home: std::path::PathBuf,
+    coordinator: Arc<nano_session::JournalCoordinator>,
 }
 
 struct AcpImageReadApprover<W: Write> {
@@ -4923,6 +4981,9 @@ impl<W: Write> std::fmt::Debug for AcpApproval<W> {
 
 impl<W: Write + Send> ApprovalGate for AcpApproval<W> {
     fn approve(&self, call: &ToolCall) -> ApprovalDecision {
+        // A fresh check clears any previous rule denial (the turn loop reads
+        // `typed_denial` only right after this call returns Deny).
+        *self.rule_denial.lock().unwrap_or_else(|p| p.into_inner()) = None;
         // 1. Read-only fast-path: unchanged in every mode.
         if is_read_only_tool(&call.name) {
             return ApprovalDecision::Approve;
@@ -5009,10 +5070,31 @@ impl<W: Write + Send> ApprovalGate for AcpApproval<W> {
         }
         match self.effective_mode() {
             // 2. read_only: categorical denial, no prompt (panel ruling Q3).
-            //    The read_only() tool-layer profile backstops this.
+            //    The read_only() tool-layer profile backstops this. This arm
+            //    precedes ALL rule consultation (P4 §2.6's narrow-only arm
+            //    order): a rule can never re-widen a read_only session.
             PermissionMode::ReadOnly => ApprovalDecision::Deny,
-            // 3. default: today's behavior — everything else asks the host.
-            PermissionMode::Default => self.prompt_host(call),
+            // 3. default: everything else asks the host — except a `shell`
+            //    command the session's rules decide (P4 §2.6): Allow skips
+            //    the prompt, Deny is the typed ShellRuleDenied refusal, and
+            //    Prompt/no-match keeps today's prompt (the card then carries
+            //    the disclosed-scope allow_always_* options when amendable).
+            PermissionMode::Default => {
+                match crate::shell_rules::evaluate(&self.rules, call)
+                    .as_ref()
+                    .map(|evaluation| evaluation.verdict())
+                {
+                    Some(nano_core::execrules::RuleVerdict::Allow) => ApprovalDecision::Approve,
+                    Some(nano_core::execrules::RuleVerdict::Deny) => self.deny_by_rule(call),
+                    _ => {
+                        if call.name == "shell" {
+                            self.prompt_shell(call)
+                        } else {
+                            self.prompt_host(call)
+                        }
+                    }
+                }
+            }
             PermissionMode::FullAuto => match call.name.as_str() {
                 // 4a. Contained fs writes auto-approve. Missing/unparseable
                 //     path or an uncontained target falls THROUGH to the
@@ -5036,9 +5118,21 @@ impl<W: Write + Send> ApprovalGate for AcpApproval<W> {
                 // 4b. Shell auto-approves only behind a probed sandbox
                 //     backend; the spawn-time transform fails closed with
                 //     SandboxUnavailable regardless of this cached value.
+                //     P4 §2.6: a Deny rule refuses even here (typed), while
+                //     an Allow rule leaves the sandbox-probed baseline
+                //     UNCHANGED (Q7: rules narrow, never redefine).
                 "shell" => {
+                    let evaluation = crate::shell_rules::evaluate(&self.rules, call);
+                    if evaluation
+                        .as_ref()
+                        .is_some_and(|e| e.verdict() == nano_core::execrules::RuleVerdict::Deny)
+                    {
+                        return self.deny_by_rule(call);
+                    }
                     if self.sandbox_available {
                         ApprovalDecision::Approve
+                    } else if evaluation.is_some() {
+                        self.prompt_shell(call)
                     } else {
                         self.prompt_host(call)
                     }
@@ -5062,6 +5156,17 @@ impl<W: Write + Send> ApprovalGate for AcpApproval<W> {
         }
         (self.effective_mode() == PermissionMode::ReadOnly)
             .then_some("session is in read_only mode")
+    }
+
+    /// P4 §2.6/§8: a rule-driven denial carries `shell_rule_denied` + the
+    /// bounded "Denied by shell rule #N (`prefix`)." message; every other
+    /// denial keeps the generic approval_denied kind.
+    fn typed_denial(&self) -> Option<(NanoErrorKind, String)> {
+        self.rule_denial
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .map(|message| (NanoErrorKind::ShellRuleDenied, message))
     }
 
     /// C10 §5: the structured question channel. Mints `opt_{i}` wire ids
@@ -5156,30 +5261,105 @@ impl<W: Write> AcpApproval<W> {
     /// The `default`-mode path and the full_auto fall-through: ask the host.
     fn prompt_host(&self, call: &ToolCall) -> ApprovalDecision {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let request =
+            request_permission_request(id, &self.session_id, &call.id, &call.name, &call.arguments);
+        self.prompt_exchange(id, &request).0
+    }
+
+    /// P4 §2.6: the shell prompt. When the command is amendable the card
+    /// carries the two persistent options whose names disclose the PRECISE
+    /// future match scope in words (never a bare "always allow"); a Complex
+    /// command gets the plain allow/deny pair. An `allow_always_*` selection
+    /// runs the journaled amendment flow — the ONLY writer of rules.toml.
+    fn prompt_shell(&self, call: &ToolCall) -> ApprovalDecision {
+        let command = call
+            .arguments
+            .get("command")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let evaluation = crate::shell_rules::evaluate(&self.rules, call);
+        let (exact_scope, prefix_scope) = evaluation
+            .as_ref()
+            .map(|e| crate::shell_rules::card_scopes(command, e))
+            .unwrap_or((None, None));
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let request = request_shell_permission_request(
+            id,
+            &self.session_id,
+            &call.id,
+            &call.name,
+            &call.arguments,
+            exact_scope.as_deref(),
+            prefix_scope.as_deref(),
+        );
+        let (decision, option) = self.prompt_exchange(id, &request);
+        if decision == ApprovalDecision::Approve
+            && let Some(choice) = option
+                .as_deref()
+                .and_then(crate::shell_rules::choice_for_option)
+        {
+            // §2.6/§11: file append+rename, then the audit op, then the cell
+            // swap. A failure is LOUD (typed, bounded) and persists nothing
+            // beyond the one-shot approval the user already granted.
+            if let Err(err) = crate::shell_rules::amend(
+                &self.nano_home,
+                &self.rules,
+                &self.coordinator,
+                &self.session_id,
+                command,
+                choice,
+            ) {
+                eprintln!("wayland-nano: shell rule amendment failed: {err}");
+            }
+        }
+        decision
+    }
+
+    /// P4 §2.6/§8: a matched Deny rule ⇒ typed refusal naming the rule; the
+    /// turn loop picks the kind + message up via `typed_denial`.
+    fn deny_by_rule(&self, call: &ToolCall) -> ApprovalDecision {
+        if let Some(evaluation) = crate::shell_rules::evaluate(&self.rules, call) {
+            *self.rule_denial.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some(crate::shell_rules::denial_message(&evaluation));
+        }
+        ApprovalDecision::Deny
+    }
+
+    /// The prompt round-trip core: pending-map discipline, cancel poll, and
+    /// fail-closed defaults. Returns the decision AND the selected option id
+    /// (the amendment flow distinguishes `allow_always_*` from `allow`).
+    fn prompt_exchange(
+        &self,
+        id: u64,
+        request: &JsonRpcRequest,
+    ) -> (ApprovalDecision, Option<String>) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(id, tx);
-        let request =
-            request_permission_request(id, &self.session_id, &call.id, &call.name, &call.arguments);
-        if write_out(&self.out, &request).is_err() {
+        if write_out(&self.out, request).is_err() {
             self.pending
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .remove(&id);
-            return ApprovalDecision::Deny; // cannot even ask: fail closed
+            return (ApprovalDecision::Deny, None); // cannot even ask: fail closed
         }
-        let decision = loop {
+        let outcome = loop {
             match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                Ok(response) => break decision_from_response(&response),
+                Ok(response) => {
+                    break (
+                        decision_from_response(&response),
+                        selected_option_id(&response),
+                    );
+                }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     if self.cancel.load(Ordering::SeqCst) {
-                        break ApprovalDecision::Deny;
+                        break (ApprovalDecision::Deny, None);
                     }
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    break ApprovalDecision::Deny;
+                    break (ApprovalDecision::Deny, None);
                 }
             }
         };
@@ -5187,7 +5367,7 @@ impl<W: Write> AcpApproval<W> {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&id);
-        decision
+        outcome
     }
 }
 
@@ -5235,6 +5415,18 @@ fn decision_from_response(value: &serde_json::Value) -> ApprovalDecision {
         Some(option) if option.starts_with("allow") => ApprovalDecision::Approve,
         _ => ApprovalDecision::Deny,
     }
+}
+
+/// The selected option id of a `session/request_permission` response (P4
+/// §2.6: the amendment flow distinguishes `allow_always_exact` /
+/// `allow_always_prefix` from plain `allow`). None unless a `selected`
+/// outcome carries a string id.
+fn selected_option_id(value: &serde_json::Value) -> Option<String> {
+    let outcome = value.get("result")?.get("outcome")?;
+    if outcome.get("outcome")?.as_str()? != "selected" {
+        return None;
+    }
+    outcome.get("optionId")?.as_str().map(str::to_string)
 }
 
 /// Interprets a QUESTION response (C10 §5): the answer-channel counterpart
@@ -5909,6 +6101,9 @@ mod tests {
         responder: Option<std::thread::JoinHandle<()>>,
         /// P2a §9.1: the image-influenced cell wired into the gate.
         image_influenced: Arc<std::sync::atomic::AtomicBool>,
+        /// P4 §2.6: the gate's nano_home (amendments write
+        /// `<home>/rules.toml`; the test journal is `<home>/test.jsonl`).
+        home: tempfile::TempDir,
     }
 
     impl TestGate {
@@ -5917,6 +6112,24 @@ mod tests {
             workspace: &std::path::Path,
             sandbox_available: bool,
             answer: Option<&'static str>,
+        ) -> Self {
+            Self::with_rules(
+                captured,
+                workspace,
+                sandbox_available,
+                answer,
+                nano_core::execrules::RuleSet::default(),
+            )
+        }
+
+        /// P4 §2.6: a rig carrying a real ruleset (the session-start load's
+        /// in-memory half) so the rule arms are exercisable.
+        fn with_rules(
+            captured: PermissionMode,
+            workspace: &std::path::Path,
+            sandbox_available: bool,
+            answer: Option<&'static str>,
+            rules: nano_core::execrules::RuleSet,
         ) -> Self {
             let out: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
             let pending: PendingMap = Arc::new(Mutex::new(std::collections::HashMap::new()));
@@ -5952,6 +6165,11 @@ mod tests {
             });
             let plan = test_posture(workspace);
             let image_influenced = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let home = tempfile::tempdir().expect("gate home");
+            let coordinator = Arc::new(
+                nano_session::JournalCoordinator::open(home.path().join("test.jsonl"))
+                    .expect("test journal"),
+            );
             let gate = AcpApproval {
                 session_id: "test-session".into(),
                 out: out.clone(),
@@ -5965,6 +6183,10 @@ mod tests {
                 sandbox_available,
                 plan: plan.clone(),
                 image_influenced: image_influenced.clone(),
+                rules: std::sync::Arc::new(std::sync::RwLock::new(rules)),
+                rule_denial: Mutex::new(None),
+                nano_home: home.path().to_path_buf(),
+                coordinator,
             };
             Self {
                 gate,
@@ -5974,6 +6196,7 @@ mod tests {
                 stop,
                 responder,
                 image_influenced,
+                home,
             }
         }
 
@@ -6290,6 +6513,7 @@ mod tests {
                 &PermissionProfile::workspace_write().file_system_sandbox_policy(),
                 std::path::Path::new("."),
                 false,
+                &nano_core::execrules::RuleSet::default(),
             );
             assert_eq!(
                 decision,
@@ -6305,6 +6529,353 @@ mod tests {
                 "{name} must never be a read-only fast-path name"
             );
         }
+    }
+
+    // ── P4 §2.6/§13: the shell-rules gate matrix (F-P4-1 wiring) ────────
+
+    fn rule(
+        program: &str,
+        decision: nano_core::execrules::RuleDecision,
+    ) -> nano_core::execrules::PrefixRule {
+        nano_core::execrules::PrefixRule {
+            pattern: vec![nano_core::execrules::PatternToken::Single(program.into())],
+            exact: false,
+            decision,
+            justification: None,
+            added_at: None,
+            source: None,
+        }
+    }
+
+    fn rule_set(rules: Vec<nano_core::execrules::PrefixRule>) -> nano_core::execrules::RuleSet {
+        nano_core::execrules::RuleSet::new(rules).expect("valid rules")
+    }
+
+    fn shell_call(command: &str) -> ToolCall {
+        call("shell", serde_json::json!({"command": command}))
+    }
+
+    /// (a) An Allow-matched shell argv auto-approves in default mode WITHOUT
+    /// a session/request_permission frame on the wire. (The rig's responder
+    /// is None: any prompt would hang the test loudly.)
+    #[test]
+    fn shell_rule_allow_auto_approves_default_without_permission_frame() {
+        let ws = workspace();
+        let rules = rule_set(vec![rule(
+            "echo",
+            nano_core::execrules::RuleDecision::Allow,
+        )]);
+        let rig = TestGate::with_rules(PermissionMode::Default, &ws.0, false, None, rules);
+        assert_eq!(
+            rig.gate.approve(&shell_call("echo hi")),
+            ApprovalDecision::Approve
+        );
+        assert_eq!(rig.prompt_count(), 0, "an Allow rule skips the prompt");
+        assert!(rig.gate.rule_denial.lock().unwrap().is_none());
+    }
+
+    /// The exact-anchor pin (§2.6/F2): an exact rule for `echo hi` does NOT
+    /// authorize `echo hi --force` — the suffixed variant prompts again.
+    #[test]
+    fn shell_rule_exact_anchor_does_not_widen() {
+        let ws = workspace();
+        let mut exact = rule("echo", nano_core::execrules::RuleDecision::Allow);
+        exact
+            .pattern
+            .push(nano_core::execrules::PatternToken::Single("hi".into()));
+        exact.exact = true;
+        let rig = TestGate::with_rules(
+            PermissionMode::Default,
+            &ws.0,
+            false,
+            Some("deny"),
+            rule_set(vec![exact]),
+        );
+        assert_eq!(
+            rig.gate.approve(&shell_call("echo hi --force")),
+            ApprovalDecision::Deny,
+            "the exact rule must not authorize the trailing-token variant"
+        );
+        assert_eq!(rig.prompt_count(), 1, "the variant prompted the host");
+    }
+
+    /// (b) A Deny-matched command is refused in EVERY mode — typed
+    /// `shell_rule_denied` naming the rule, zero permission frames, and the
+    /// full_auto sandbox fast path cannot override it. read_only's
+    /// categorical arm precedes rules (no typed rule denial there).
+    #[test]
+    fn shell_rule_deny_is_typed_in_every_mode() {
+        let ws = workspace();
+        for (mode, sandbox, expect_typed) in [
+            (PermissionMode::Default, false, true),
+            (PermissionMode::Default, true, true),
+            (PermissionMode::FullAuto, true, true),
+            (PermissionMode::FullAuto, false, true),
+            (PermissionMode::ReadOnly, true, false),
+        ] {
+            let rules = rule_set(vec![rule(
+                "denyme",
+                nano_core::execrules::RuleDecision::Deny,
+            )]);
+            let rig = TestGate::with_rules(mode, &ws.0, sandbox, None, rules);
+            assert_eq!(
+                rig.gate.approve(&shell_call("denyme /f x")),
+                ApprovalDecision::Deny,
+                "{mode:?} sandbox={sandbox}: the Deny rule refuses"
+            );
+            assert_eq!(
+                rig.prompt_count(),
+                0,
+                "{mode:?}: a rule denial never prompts"
+            );
+            let typed = rig.gate.typed_denial();
+            if expect_typed {
+                let (kind, message) = typed.expect("rule denial is typed");
+                assert_eq!(kind, NanoErrorKind::ShellRuleDenied, "{mode:?}");
+                assert!(
+                    message.contains("denyme"),
+                    "{mode:?}: the bounded message names the matched prefix: {message}"
+                );
+            } else {
+                assert!(
+                    typed.is_none(),
+                    "read_only's categorical denial precedes rule consultation"
+                );
+            }
+        }
+    }
+
+    /// (c) A non-matching command prompts exactly as before the wiring.
+    #[test]
+    fn shell_rule_no_match_prompts_as_before() {
+        let ws = workspace();
+        let rules = rule_set(vec![rule(
+            "echo",
+            nano_core::execrules::RuleDecision::Allow,
+        )]);
+        let rig = TestGate::with_rules(PermissionMode::Default, &ws.0, false, Some("allow"), rules);
+        assert_eq!(
+            rig.gate.approve(&shell_call("whoami")),
+            ApprovalDecision::Approve
+        );
+        assert_eq!(
+            rig.prompt_count(),
+            1,
+            "no rule match ⇒ the host prompt stands"
+        );
+        assert!(rig.gate.typed_denial().is_none());
+    }
+
+    /// (f/exact) An `allow_always_exact` selection mints the exact rule
+    /// through the JOURNALED amendment path: rules.toml gains the rule, the
+    /// journal carries Op::ShellRuleAmended (exact, bounded prefix, the
+    /// post-append file digest), the live cell swaps (the second identical
+    /// call emits no frame), and a trailing-flag variant still prompts.
+    #[test]
+    fn allow_always_exact_amendment_is_journaled_and_live() {
+        use sha2::Digest;
+        let ws = workspace();
+        let rig = TestGate::with_rules(
+            PermissionMode::Default,
+            &ws.0,
+            false,
+            Some("allow_always_exact"),
+            nano_core::execrules::RuleSet::default(),
+        );
+        assert_eq!(
+            rig.gate.approve(&shell_call("git status")),
+            ApprovalDecision::Approve
+        );
+        assert_eq!(rig.prompt_count(), 1);
+        // The card carried the disclosed scope text.
+        let wire = String::from_utf8_lossy(&rig.out.lock().unwrap()).to_string();
+        assert!(
+            wire.contains("only this exact argv: git status"),
+            "the exact option discloses its scope: {wire}"
+        );
+        // File: one exact, card-sourced rule.
+        let loaded =
+            nano_core::execrules::load_rules(rig.home.path(), None).expect("rules.toml loads");
+        assert_eq!(loaded.rules().len(), 1);
+        assert!(loaded.rules()[0].exact);
+        assert_eq!(
+            loaded.rules()[0].source,
+            Some(nano_core::execrules::RuleSource::ApprovalCard)
+        );
+        // Journal: the audit op carries the post-append digest.
+        let report = read_journal(&rig.home.path().join("test.jsonl")).unwrap();
+        let amendments: Vec<_> = report
+            .envelopes
+            .iter()
+            .filter_map(|envelope| match &envelope.op {
+                Op::ShellRuleAmended {
+                    prefix,
+                    exact,
+                    rule_digest,
+                    ..
+                } => Some((prefix, *exact, rule_digest)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            amendments.len(),
+            1,
+            "exactly one audit op: {:?}",
+            report.envelopes
+        );
+        let (prefix, exact, digest) = amendments[0];
+        assert_eq!(prefix, &["git".to_string(), "status".to_string()]);
+        assert!(exact);
+        let bytes = std::fs::read(rig.home.path().join("rules.toml")).unwrap();
+        let actual: String = sha2::Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(
+            digest, &actual,
+            "the journaled digest is the post-append file"
+        );
+        // The live cell swapped: the identical command needs no frame.
+        assert_eq!(
+            rig.gate.approve(&shell_call("git status")),
+            ApprovalDecision::Approve
+        );
+        assert_eq!(rig.prompt_count(), 1, "the second call auto-approved");
+    }
+
+    /// (f/prefix) An `allow_always_prefix` selection mints the unanchored
+    /// first-token rule with the disclosed scope text on the card; a
+    /// suffixed variant later runs unprompted (the deliberate widening).
+    #[test]
+    fn allow_always_prefix_amendment_discloses_and_widens() {
+        let ws = workspace();
+        let rig = TestGate::with_rules(
+            PermissionMode::Default,
+            &ws.0,
+            false,
+            Some("allow_always_prefix"),
+            nano_core::execrules::RuleSet::default(),
+        );
+        assert_eq!(
+            rig.gate.approve(&shell_call("git push origin main")),
+            ApprovalDecision::Approve
+        );
+        let wire = String::from_utf8_lossy(&rig.out.lock().unwrap()).to_string();
+        assert!(
+            wire.contains("any future `git` command"),
+            "the prefix option discloses its scope: {wire}"
+        );
+        let loaded =
+            nano_core::execrules::load_rules(rig.home.path(), None).expect("rules.toml loads");
+        assert_eq!(loaded.rules().len(), 1);
+        assert!(!loaded.rules()[0].exact, "the prefix rule is unanchored");
+        assert_eq!(
+            loaded.rules()[0].pattern,
+            vec![nano_core::execrules::PatternToken::Single("git".into())]
+        );
+        // The disclosed widening: a suffixed variant auto-approves now.
+        assert_eq!(
+            rig.gate.approve(&shell_call("git log --oneline")),
+            ApprovalDecision::Approve
+        );
+        assert_eq!(rig.prompt_count(), 1, "the widened match needed no frame");
+    }
+
+    /// A Complex command ($-expansion is outside both Clean grammars) gets
+    /// the PLAIN card — no allow_always options — and nothing can persist.
+    #[test]
+    fn complex_command_card_omits_always_options() {
+        let ws = workspace();
+        let rig = TestGate::with_rules(
+            PermissionMode::Default,
+            &ws.0,
+            false,
+            Some("allow_always_exact"),
+            nano_core::execrules::RuleSet::default(),
+        );
+        assert_eq!(
+            rig.gate.approve(&shell_call("echo $HOME")),
+            ApprovalDecision::Approve,
+            "the host's allow* answer still approves the one shot"
+        );
+        let wire = String::from_utf8_lossy(&rig.out.lock().unwrap()).to_string();
+        assert!(
+            !wire.contains("allow_always"),
+            "a Complex command's card carries no always options: {wire}"
+        );
+        assert!(
+            !rig.home.path().join("rules.toml").exists(),
+            "a Complex command can never be persisted (§2.4/§2.6)"
+        );
+    }
+
+    /// P2a §9.1 × P4 §2.6: under the image-influenced clamp the shell prompt
+    /// is the PLAIN card (prompt_host) — a protected trust mutation never
+    /// offers rule persistence, so a prompt-injected turn cannot plant a
+    /// durable auto-approval.
+    #[test]
+    fn image_clamp_shell_prompt_offers_no_rule_persistence() {
+        let ws = workspace();
+        let rig = TestGate::with_rules(
+            PermissionMode::Default,
+            &ws.0,
+            false,
+            Some("allow_always_exact"),
+            nano_core::execrules::RuleSet::default(),
+        );
+        rig.set_image_influenced(true);
+        assert_eq!(
+            rig.gate.approve(&shell_call("git status")),
+            ApprovalDecision::Approve
+        );
+        assert_eq!(rig.prompt_count(), 1);
+        let wire = String::from_utf8_lossy(&rig.out.lock().unwrap()).to_string();
+        assert!(
+            !wire.contains("allow_always"),
+            "the clamped card is the plain allow/deny pair: {wire}"
+        );
+        assert!(
+            !rig.home.path().join("rules.toml").exists(),
+            "no amendment under the clamp"
+        );
+    }
+
+    /// (d) A tampered rules.toml fails CLOSED at the session-start load:
+    /// zero rules + the typed RuleFileInvalid warning; the gate then prompts
+    /// as if no file existed (never a partial trust).
+    #[test]
+    fn tampered_rules_file_loads_zero_rules_with_typed_warning() {
+        let home = tempfile::tempdir().unwrap();
+        // Create a VALID file through the real amendment writer (owner-only
+        // 0600 on unix, the pinned current-user-only DACL on Windows), then
+        // corrupt the CONTENT in place — permissions persist, so this leg
+        // isolates the strict-parse gate (the ownership/ACL gates have
+        // their own engine-level tests).
+        let amendment = nano_core::execrules::mint_amendment(
+            "git status",
+            crate::shell_rules::platform_grammar().expect("test platform has a rule grammar"),
+            nano_core::execrules::AmendmentKind::Exact,
+            None,
+            "2026-08-14T00:00:00Z".into(),
+        )
+        .unwrap();
+        nano_core::execrules::append_amendment(home.path(), None, &amendment).unwrap();
+        std::fs::write(home.path().join("rules.toml"), "garbage = [").unwrap();
+        let (rules, warning) = crate::shell_rules::load_session_rules(home.path());
+        assert_eq!(rules.rules().len(), 0, "a tampered file is ZERO rules");
+        let warning = warning.expect("the failure is loud");
+        assert!(
+            warning.contains("invalid or insecurely configured"),
+            "the RuleFileInvalid presentation: {warning}"
+        );
+        // And the gate built on it prompts (no silent approval).
+        let ws = workspace();
+        let rig = TestGate::with_rules(PermissionMode::Default, &ws.0, false, Some("deny"), rules);
+        assert_eq!(
+            rig.gate.approve(&shell_call("echo hi")),
+            ApprovalDecision::Deny
+        );
+        assert_eq!(rig.prompt_count(), 1);
     }
 
     /// F-36 (P3 §6.3): the OAuth grant producer — checked conversion,

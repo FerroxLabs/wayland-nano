@@ -218,7 +218,12 @@ pub fn agent_capabilities(
                 // P4 session browser: the bounded derived listing (dispatch
                 // in acp_mode, implementation in nano-cli's
                 // session_browser). Discovered, never probed.
-                "_wayland/session/list": { "version": 1 }
+                "_wayland/session/list": { "version": 1 },
+                // P4 review mode §9: advertised since the §14 leg-2 live
+                // proof passed (the P4 adversarial proof's leg 7, post-merge
+                // @ 3f9bf87 — all review legs green). The advertisement was
+                // pinned OFF until that proof; the pin test now asserts ON.
+                "_wayland/session/review": { "version": 1 }
             }
         },
         "agentInfo": {
@@ -1201,6 +1206,59 @@ pub fn request_permission_request(
                 { "optionId": "allow", "kind": "allow_once", "name": "Allow once" },
                 { "optionId": "deny", "kind": "reject_once", "name": "Deny" }
             ]
+        })),
+    }
+}
+
+/// The shell approval card's persistent-option ids (P4 §2.6/§9). Both are
+/// `allow*`-prefixed, so the existing `decision_from_response` resolver
+/// approves them; the host distinguishes the amendment scope by exact id.
+pub const ALLOW_ALWAYS_EXACT_ID: &str = "allow_always_exact";
+pub const ALLOW_ALWAYS_PREFIX_ID: &str = "allow_always_prefix";
+
+/// session/request_permission for a SHELL call (P4 §2.6): the plain
+/// allow/deny pair plus, when the command is amendable, the two persistent
+/// options whose names carry the disclosed future-match scope in words
+/// ("only this exact argv: …" / "any future command whose argv starts with
+/// …") — never a bare "always allow". `None` labels (a Complex/unamendable
+/// command) omit the option entirely; minting is refused engine-side.
+pub fn request_shell_permission_request(
+    id: u64,
+    session_id: &str,
+    call_id: &str,
+    title: &str,
+    args: &serde_json::Value,
+    exact_scope: Option<&str>,
+    prefix_scope: Option<&str>,
+) -> JsonRpcRequest {
+    let mut options = vec![
+        serde_json::json!({ "optionId": "allow", "kind": "allow_once", "name": "Allow once" }),
+    ];
+    if let Some(scope) = exact_scope {
+        options.push(serde_json::json!({
+            "optionId": ALLOW_ALWAYS_EXACT_ID, "kind": "allow_always",
+            "name": format!("Always allow: {scope}")
+        }));
+    }
+    if let Some(scope) = prefix_scope {
+        options.push(serde_json::json!({
+            "optionId": ALLOW_ALWAYS_PREFIX_ID, "kind": "allow_always",
+            "name": format!("Always allow: {scope}")
+        }));
+    }
+    options.push(serde_json::json!({ "optionId": "deny", "kind": "reject_once", "name": "Deny" }));
+    JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: serde_json::json!(id),
+        method: "session/request_permission".into(),
+        params: Some(serde_json::json!({
+            "sessionId": session_id,
+            "toolCall": {
+                "toolCallId": call_id,
+                "title": title,
+                "rawInput": args
+            },
+            "options": options
         })),
     }
 }

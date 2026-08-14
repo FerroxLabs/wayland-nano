@@ -113,20 +113,20 @@ fn review_requires_a_session_and_takes_no_params() {
     host.shutdown();
 }
 
-/// The honesty rule (§9): the `nanoExtensions` advertisement flips ONLY
-/// with the §14 leg-2 live proof. Until the integrator lands that proof
-/// and flips the advertisement, this pin asserts the method is NOT
-/// advertised — the flip intentionally touches this test.
+/// The honesty rule (§9), now satisfied: the `nanoExtensions` advertisement
+/// was pinned OFF until the §14 leg-2 live proof — the P4 adversarial
+/// proof's leg 7 (post-merge @ 3f9bf87) ran every review-mode leg GREEN, so
+/// the pin flipped. This pin now asserts the advertisement is PRESENT and
+/// versioned — a regression that drops it fails here.
 #[test]
-fn review_advertisement_waits_for_live_proof() {
+fn review_advertised_after_live_proof() {
     let home = tempfile::tempdir().unwrap();
     let mut host = Host::spawn(home.path());
     let initialize = host.initialize();
-    assert!(
-        initialize["result"]["agentCapabilities"]["nanoExtensions"]
-            .get("_wayland/session/review")
-            .is_none(),
-        "advertised before the live proof — honesty rule violation: {initialize}"
+    assert_eq!(
+        initialize["result"]["agentCapabilities"]["nanoExtensions"]["_wayland/session/review"],
+        serde_json::json!({ "version": 1 }),
+        "the review extension is advertised (live-proven): {initialize}"
     );
     host.shutdown();
 }

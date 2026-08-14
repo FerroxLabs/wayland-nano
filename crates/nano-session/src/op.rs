@@ -179,6 +179,9 @@ pub const MAX_RECENT_DIGESTS: usize = 8;
 pub const DIGEST_HEX_CHARS: usize = 64;
 /// A journaled OAuth grant names at most this many exact endpoint pairs.
 pub const MAX_GRANT_ENDPOINTS: usize = 4;
+/// P4 §2.6: a `ShellRuleAmended` op's `prefix` payload caps.
+pub const MAX_RULE_AMEND_TOKENS: usize = 8;
+pub const MAX_RULE_AMEND_TOKEN_CHARS: usize = 128;
 /// `as_origin` is an https origin only, capped.
 pub const MAX_AS_ORIGIN_CHARS: usize = 256;
 /// The validated issuer string cap.
@@ -324,6 +327,33 @@ pub fn validate_oauth_grant(
         {
             return Err("grant endpoint path invalid");
         }
+    }
+    Ok(())
+}
+
+/// Validates a `ShellRuleAmended` payload (P4 §2.6 bounds). The journal-side
+/// caps are checked BEFORE the op is appended (the wiring validates at mint
+/// time, so an over-bounds amendment never reaches the append); the digest
+/// must be the canonical sha256-hex form.
+pub fn validate_shell_rule_amended(
+    amendment_id: &str,
+    prefix: &[String],
+    rule_digest: &str,
+) -> Result<(), &'static str> {
+    if amendment_id.is_empty() || amendment_id.chars().count() > MAX_ISSUER_CHARS {
+        return Err("amendment_id empty or over the cap");
+    }
+    if prefix.is_empty() || prefix.len() > MAX_RULE_AMEND_TOKENS {
+        return Err("amended prefix empty or over the token cap");
+    }
+    if prefix
+        .iter()
+        .any(|token| token.is_empty() || token.chars().count() > MAX_RULE_AMEND_TOKEN_CHARS)
+    {
+        return Err("amended token empty or over the char cap");
+    }
+    if !is_canonical_digest(rule_digest) {
+        return Err("rule_digest is not canonical sha256 hex");
     }
     Ok(())
 }
@@ -1198,6 +1228,32 @@ pub enum Op {
         /// The bounded rejection reason for `Rejected` outcomes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rejection: Option<CandidateRejection>,
+    },
+    /// A shell-rules amendment minted by the approval card's
+    /// `allow_always_*` selection (P4 §2.6) — JOURNAL-MIGRATION REVIEW FLAG
+    /// (rides the SAME coordinated RC2 journal-migration review as the
+    /// P1/P2a/P3/P5 additions above): additive variant, `SCHEMA_VERSION`
+    /// stays 1, old readers skip it via `Unknown`. AUDIT-ONLY on replay
+    /// (the `ModeSet` discipline): the rules themselves are config re-read
+    /// from `rules.toml` at session start, never folded from the journal;
+    /// replay never trusts this op over the file. The op exists so an
+    /// audited session can prove WHEN its prompt surface narrowed and to
+    /// exactly what file state. Ordering pinned (§11): file append+rename,
+    /// THEN this op, then the in-memory cell swap — a kill between leaves a
+    /// rule without its audit op (the SAFE direction).
+    ShellRuleAmended {
+        /// Idempotence key (`{session_id}-rule-{nanos}-{segment}`).
+        amendment_id: String,
+        /// The amended argv tokens (≤ 8 tokens, ≤ 128 chars each —
+        /// `validate_shell_rule_amended`). Command tokens are
+        /// journal-consistent content (`ToolCall.args` already journals the
+        /// full command verbatim).
+        prefix: Vec<String>,
+        /// The end-of-argv anchor state of the minted rule (exact vs
+        /// prefix widening).
+        exact: bool,
+        /// 64-hex sha256 of `rules.toml` AFTER the append.
+        rule_digest: String,
     },
     /// Forward tolerance: any Op type this build does not know. Skipped on
     /// replay; the raw line stays in the journal for future readers.

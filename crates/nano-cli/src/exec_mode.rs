@@ -197,6 +197,16 @@ pub struct ExecApproval<W: Write + Send> {
     /// mutations are DENIED outright (approval is impossible; fail closed).
     /// Set from the journaled sticky-OR fold when exec resumes a session.
     pub image_influenced: bool,
+    /// P4 §2.6: the session-start ruleset (§11: config, re-read per
+    /// session). An explicit Allow rule IS the approval on this
+    /// non-interactive surface; a Deny rule produces the typed
+    /// `shell_rule_denied` denial; everything else keeps the would-prompt
+    /// ⇒ auto-deny doctrine. Exec never amends (no card), so a plain set,
+    /// not the shared cell.
+    pub rules: nano_core::execrules::RuleSet,
+    /// The last rule-driven denial's bounded message (read by the turn
+    /// loop via `typed_denial` right after `approve` denies).
+    pub rule_denial: Arc<Mutex<Option<String>>>,
 }
 
 impl<W: Write + Send> std::fmt::Debug for ExecApproval<W> {
@@ -210,13 +220,16 @@ impl<W: Write + Send> std::fmt::Debug for ExecApproval<W> {
 
 /// The gate decision core, split from the event sink so tests (and the cron
 /// fire path, which shares the auto-deny discipline) can drive it without
-/// stdout.
+/// stdout. P4 §2.6: `rules` is the session-start ruleset — consulted for
+/// `shell` inside the Default/FullAuto arms only (read_only's categorical
+/// denial precedes rule consultation, same arm order as the ACP gate).
 pub fn exec_gate_decision(
     call: &ToolCall,
     mode: PermissionMode,
     policy: &nano_core::permissions::FileSystemSandboxPolicy,
     cwd: &Path,
     sandbox_available: bool,
+    rules: &nano_core::execrules::RuleSet,
 ) -> ApprovalDecision {
     if crate::acp_mode::is_read_only_tool(&call.name) || is_control_tool(&call.name) {
         return ApprovalDecision::Approve;
@@ -240,9 +253,17 @@ pub fn exec_gate_decision(
     if nano_agent::wiring::PTY_TOOL_NAMES.contains(&call.name.as_str()) {
         return ApprovalDecision::Deny;
     }
+    let rule_verdict =
+        crate::shell_rules::evaluate_set(rules, call).map(|evaluation| evaluation.verdict());
     match mode {
         PermissionMode::ReadOnly => ApprovalDecision::Deny,
-        PermissionMode::Default => ApprovalDecision::Deny, // would prompt → auto-deny
+        PermissionMode::Default => match rule_verdict {
+            // P4 §2.6: exec is non-interactive; an explicit user Allow rule
+            // IS the approval. Everything else keeps the would-prompt ⇒
+            // auto-deny doctrine.
+            Some(nano_core::execrules::RuleVerdict::Allow) => ApprovalDecision::Approve,
+            _ => ApprovalDecision::Deny,
+        },
         PermissionMode::FullAuto => match call.name.as_str() {
             "fs_write" | "fs_edit" => {
                 let contained = call
@@ -256,13 +277,17 @@ pub fn exec_gate_decision(
                     ApprovalDecision::Deny
                 }
             }
-            "shell" => {
-                if sandbox_available {
-                    ApprovalDecision::Approve
-                } else {
-                    ApprovalDecision::Deny
+            "shell" => match rule_verdict {
+                Some(nano_core::execrules::RuleVerdict::Allow) => ApprovalDecision::Approve,
+                Some(nano_core::execrules::RuleVerdict::Deny) => ApprovalDecision::Deny,
+                _ => {
+                    if sandbox_available {
+                        ApprovalDecision::Approve
+                    } else {
+                        ApprovalDecision::Deny
+                    }
                 }
-            }
+            },
             // cronjob create prompts even in full_auto (§5.5) — and exec can
             // never prompt, so it auto-denies. mcp__* likewise.
             _ => ApprovalDecision::Deny,
@@ -272,6 +297,9 @@ pub fn exec_gate_decision(
 
 impl<W: Write + Send> ApprovalGate for ExecApproval<W> {
     fn approve(&self, call: &ToolCall) -> ApprovalDecision {
+        // A fresh check clears any previous rule denial (the turn loop reads
+        // `typed_denial` only right after this call returns Deny).
+        *self.rule_denial.lock().unwrap_or_else(|p| p.into_inner()) = None;
         // P2a §9.1: on an image-influenced turn a protected trust mutation
         // requires explicit human approval — impossible on this
         // non-interactive surface, so it is DENIED (fail closed), exactly
@@ -286,15 +314,36 @@ impl<W: Write + Send> ApprovalGate for ExecApproval<W> {
                     &self.policy,
                     &self.cwd,
                     self.sandbox_available,
+                    &self.rules,
                 )
             };
         if decision == ApprovalDecision::Deny {
+            // P4 §2.6/§8: a Deny RULE's denial is typed (`shell_rule_denied`)
+            // and names the rule; mode/host denials stay `approval_denied`.
+            // The image clamp precedes rules, so a clamp denial never sets
+            // this; read_only's categorical arm precedes rule consultation.
+            if !self.image_influenced
+                && self.mode != PermissionMode::ReadOnly
+                && let Some(evaluation) = crate::shell_rules::evaluate_set(&self.rules, call)
+                && evaluation.verdict() == nano_core::execrules::RuleVerdict::Deny
+            {
+                *self.rule_denial.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some(crate::shell_rules::denial_message(&evaluation));
+            }
             self.events
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .approval_denied(&call.id, &call.name, self.mode);
         }
         decision
+    }
+
+    fn typed_denial(&self) -> Option<(nano_session::NanoErrorKind, String)> {
+        self.rule_denial
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .map(|message| (nano_session::NanoErrorKind::ShellRuleDenied, message))
     }
 
     fn denial_reason(&self) -> Option<&'static str> {

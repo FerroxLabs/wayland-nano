@@ -229,6 +229,19 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
         NanoErrorKind::ReviewParseFailed => {
             card("The review finished but its report couldn't be parsed", "")
         }
+        // P4 §8: a Deny rule matched — the static card names the kind; the
+        // bounded rule index + matched prefix ride the tool-result text.
+        NanoErrorKind::ShellRuleDenied => card(
+            "Denied by a shell rule",
+            "The saved rules.toml denies this command; edit or remove the rule",
+        ),
+        // P4 §8: session-start/amendment load refusal (§2.5). The session
+        // continues with zero saved rules; the presentation is the loud
+        // half of the fail-closed posture (also the /doctor line's detail).
+        NanoErrorKind::RuleFileInvalid => card(
+            "Shell rules file is invalid or insecurely configured; running with no saved rules",
+            "Fix or remove rules.toml (strict TOML, owner-only permissions)",
+        ),
         NanoErrorKind::BudgetExhausted => response(
             -32603,
             false,
@@ -388,6 +401,8 @@ pub const ALL_KINDS: &[NanoErrorKind] = &[
     NanoErrorKind::ApprovalDenied,
     NanoErrorKind::PtySessionGone,
     NanoErrorKind::ReviewParseFailed,
+    NanoErrorKind::ShellRuleDenied,
+    NanoErrorKind::RuleFileInvalid,
     NanoErrorKind::BudgetExhausted,
     NanoErrorKind::BudgetExceeded,
     NanoErrorKind::NoProgress,
@@ -526,10 +541,11 @@ mod tests {
     /// P2a §7 added the seven vision-intake kinds (41 → 48); P3 §7 added the
     /// seven MCP-ecosystem kinds (48 → 55); the RC2 wiring pass added P4's
     /// PtySessionGone (55 → 56); the P4 review-mode merge added
-    /// ReviewParseFailed (56 → 57).
+    /// ReviewParseFailed (56 → 57); the P4 rules wiring (F-P4-1) added
+    /// ShellRuleDenied + RuleFileInvalid (57 → 59).
     #[test]
     fn all_kinds_count_is_pinned() {
-        assert_eq!(ALL_KINDS.len(), 57);
+        assert_eq!(ALL_KINDS.len(), 59);
     }
 
     /// P3 §12 [r2 codex-F16]: symbolic wire names are the compatibility
@@ -626,6 +642,31 @@ mod tests {
         let spec = spec(NanoErrorKind::PtySessionGone);
         assert!(!spec.retryable);
         assert_eq!(spec.surface, ErrorSurface::ToolCard);
+    }
+
+    /// P4 §8 (F-P4-1 rules wiring): the two rule-DSL kinds are pinned —
+    /// non-retryable tool cards named `shell_rule_denied` /
+    /// `rule_file_invalid`.
+    #[test]
+    fn p4_rule_kinds_are_pinned() {
+        for (kind, wire_name) in [
+            (NanoErrorKind::ShellRuleDenied, "shell_rule_denied"),
+            (NanoErrorKind::RuleFileInvalid, "rule_file_invalid"),
+        ] {
+            let wire = serde_json::to_value(kind)
+                .expect("kind serializes")
+                .as_str()
+                .expect("kind is a string")
+                .to_string();
+            assert_eq!(wire, wire_name);
+            assert_eq!(
+                serde_json::from_str::<NanoErrorKind>(&format!("\"{wire_name}\"")).unwrap(),
+                kind
+            );
+            let spec = spec(kind);
+            assert!(!spec.retryable, "{wire_name} must not be retryable");
+            assert_eq!(spec.surface, ErrorSurface::ToolCard, "{wire_name} surface");
+        }
     }
 
     /// The drift alarm: the committed JSON artifact must be byte-identical
