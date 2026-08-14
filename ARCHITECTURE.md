@@ -21,8 +21,8 @@ Shared contracts, fixtures, and the scorecard live in `../shared/`.
 - Security is two layers: in-process egress chokepoint + OS containment.
   Fail closed everywhere. `SANDBOX_UNAVAILABLE`, never silent downgrade.
 - Sessions are an append-only Op journal; no remote compaction.
-- Subagents are temporary bounded helpers (default 4 children / depth 2,
-  hard max 8), never organizations.
+- Subagents are temporary bounded helpers (fan-out 4, spawn depth 1 — no
+  nested subagents; crates/nano-agent/src/tasks.rs), never organizations.
 
 ## Windows
 

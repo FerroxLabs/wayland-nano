@@ -1,5 +1,16 @@
 # Wayland Nano (Track B) status
 
+## 2026-08-14
+
+- **v0.1.0-rc.0 published to npm** — dist-tag `next`, 5-target matrix,
+  Sigstore provenance; tag `v0.1.0-rc.0` at `4ad5a8d`.
+- **Budget notices moved to extension notifications** — `_wayland/session/budget*`
+  ext notifications replace the previous sessionUpdate kinds (Desktop SDK drops
+  unknown sessionUpdate kinds with -32602); merge `822ec44`.
+- **Post-RC2 audit:** `../shared/reviews/post-rc2-audit/AUDIT-FINAL.md`.
+- **Battle plan:** `../shared/reviews/BATTLE-PLAN-STABLE.md` supersedes the
+  RC2 program.
+
 ## Current position
 
 ### RC2 MERGE WAVE (2026-08-13, integrator state)
