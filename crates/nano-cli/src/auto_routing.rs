@@ -1046,6 +1046,9 @@ pub trait CandidateTransport: Send + Sync + std::fmt::Debug {
 
 /// Production adapter: one routing attempt = exactly one physical attempt
 /// (the candidate's driver was built with `RetryConfig::single_attempt`).
+/// F-P5-3: the driver's error path (ModelError) carries NO usage, so
+/// `failed_usage` stays None here — the ladder folds None into the honest
+/// zero-token/unpriced/unreported §6 record rather than journaling nothing.
 #[derive(Debug)]
 pub struct DriverTransport<D>(pub D);
 
@@ -1273,15 +1276,32 @@ impl<T: CandidateTransport> Ladder<T> {
                     } else {
                         None
                     };
-                    // §6: a failed attempt's provider-reported usage is
-                    // retained and charged — failover never makes a consumed
-                    // attempt free.
-                    let failed_usage = outcome.failed_usage.as_ref().map(|usage| RoutingUsage {
-                        input_tokens: usage.input_tokens,
-                        output_tokens: usage.output_tokens,
-                        microcents: 0,
-                        priced: false,
-                        reported: true,
+                    // §6 (F-P5-3): EVERY failed physical attempt carries a
+                    // usage record — failover never makes a consumed attempt
+                    // silently free. Provider-reported usage on failure
+                    // (when the transport observed it) is retained verbatim
+                    // and charged (priced=false: no trustworthy leaf-price
+                    // exists for a failed attempt). When the wire reported
+                    // NOTHING — the production DriverTransport path, whose
+                    // ModelError carries no usage — the attempt is recorded
+                    // with the honest zero shape (priced=false,
+                    // reported=false, zero tokens): explicit, never
+                    // fabricated, never absent.
+                    let failed_usage = Some(match &outcome.failed_usage {
+                        Some(usage) => RoutingUsage {
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                            microcents: 0,
+                            priced: false,
+                            reported: true,
+                        },
+                        None => RoutingUsage {
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            microcents: 0,
+                            priced: false,
+                            reported: false,
+                        },
                     });
                     self.journal(
                         &format!("receipt-{ordinal}"),

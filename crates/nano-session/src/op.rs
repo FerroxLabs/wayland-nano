@@ -813,8 +813,10 @@ pub enum LeafProvenance {
 }
 
 /// Per-attempt usage summary journaled on a receipt (P5 §6): numbers and
-/// flags only. `reported: false` marks the §3.5 conservative estimate (the
-/// killed-attempt charge) — never zero, never provider-attributed.
+/// flags only. `reported: false` marks a non-provider-reported charge: the
+/// §3.5 conservative estimate (the killed-attempt charge — never zero) or,
+/// for a failed attempt whose wire reported nothing (F-P5-3), the honest
+/// zero-token/unpriced record (explicit zeros, never fabricated numbers).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutingUsage {
     #[serde(default)]
@@ -830,7 +832,9 @@ pub struct RoutingUsage {
     /// not established) — the P1 honesty flag, AND-accumulated on rollup.
     #[serde(default = "default_priced")]
     pub priced: bool,
-    /// True = provider-reported on the wire; false = §3.5 estimate.
+    /// True = provider-reported on the wire; false = no wire usage — either
+    /// the §3.5 estimate (never zero) or the F-P5-3 honest zero record for a
+    /// failed attempt the wire metered nothing for.
     #[serde(default)]
     pub reported: bool,
 }
@@ -838,9 +842,20 @@ pub struct RoutingUsage {
 impl RoutingUsage {
     /// Fold into the turn/session usage sum (P5 §6 rollup): provider-reported
     /// usage keeps its provenance; the §3.5 estimate charge is marked
-    /// `estimated` with the pinned formula version, never zero.
+    /// `estimated` with the pinned formula version, never zero. An
+    /// UNREPORTED all-zero record (F-P5-3: a failed attempt whose wire
+    /// carried no usage) folds to NOTHING — it is an explicit journal
+    /// record, not a usage measurement; folding it would stamp the sum
+    /// `estimated` (and AND its unpriced flag in) over zero tokens.
     pub fn to_turn_usage(&self) -> TurnUsage {
         let mut sum = TurnUsage::default();
+        if !self.reported
+            && self.input_tokens == 0
+            && self.output_tokens == 0
+            && self.microcents == 0
+        {
+            return sum;
+        }
         if self.reported {
             sum.add_provider_reported(
                 self.input_tokens,

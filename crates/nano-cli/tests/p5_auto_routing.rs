@@ -1407,6 +1407,59 @@ fn provider_404_journals_model_not_found_and_closes_terminal() {
     );
 }
 
+/// F-P5-3: a failed attempt whose wire carried NO usage (the production
+/// DriverTransport path — ModelError has no usage payload) still journals
+/// an EXPLICIT per-attempt usage record: zero tokens, priced=false,
+/// reported=false — honest, never fabricated, never silently absent.
+#[test]
+fn failed_attempt_without_wire_usage_journals_honest_zero_record() {
+    let a = ScriptedTransport::fails(
+        ModelError::Server {
+            status: 503,
+            message: String::new(),
+        },
+        1,
+        None, // the production shape: the wire reported nothing
+    );
+    let b = ScriptedTransport::succeeds(Some("gpt-a"), Usage::default());
+    let sink = Arc::new(CollectSink::default());
+    let ladder = ladder_with(
+        vec![
+            (candidate(0, "openai", "gpt-a", CandidateKind::Leaf), a),
+            (candidate(1, "openai", "gpt-a", CandidateKind::Leaf), b),
+        ],
+        sink.clone(),
+    );
+    block_on(ladder.complete_observed(&text_request(), &CallHooks::none()))
+        .expect("rung 2 succeeds");
+    let ops = sink.ops();
+    let failed = ops.iter().find_map(|op| match op {
+        Op::RoutingReceipt {
+            ordinal: 0, usage, ..
+        } => *usage,
+        _ => None,
+    });
+    let failed = failed.expect("the failed rung carries an explicit usage record");
+    assert_eq!(
+        (failed.input_tokens, failed.output_tokens, failed.microcents),
+        (0, 0, 0),
+        "zero tokens — the wire reported nothing, nothing is fabricated"
+    );
+    assert!(!failed.priced, "unpriced, never a fake $0");
+    assert!(
+        !failed.reported,
+        "reported=false: explicitly NOT provider-reported"
+    );
+    // The rollup fold is a no-op for the zero record: no tokens to add and
+    // the sum must NOT be mislabeled `estimated` over nothing.
+    let folded = failed.to_turn_usage();
+    assert_eq!(folded.input_tokens + folded.output_tokens, 0);
+    assert_eq!(
+        folded.usage_source,
+        nano_session::op::UsageSource::default()
+    );
+}
+
 #[test]
 fn receipt_completeness_and_secret_canary() {
     // §8.1: every receipt carries the mandated fields; no credential ever
