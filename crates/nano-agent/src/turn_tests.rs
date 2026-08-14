@@ -1209,42 +1209,6 @@ mod tests {
         ]);
         let tools = FixedOutputTools {
             output: "A".repeat(raw_len),
-
-    /// F-17: a cancel issued while the model call is IN FLIGHT aborts the
-    /// turn promptly (sub-second, one 25ms watcher poll) with the SAME
-    /// terminal semantics as a boundary cancel — Stopped(user_cancelled) +
-    /// journaled TurnEnd(cancelled) — never waiting for the parked provider
-    /// response (pre-F-17 worst case: the whole in-flight response, 46.8s
-    /// observed).
-    #[tokio::test]
-    async fn cancel_mid_call_aborts_inflight_response_promptly() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        #[derive(Debug)]
-        struct ParkedModel {
-            entered: Arc<tokio::sync::Notify>,
-            release: Arc<tokio::sync::Notify>,
-        }
-
-        #[async_trait::async_trait]
-        impl ModelDriver for ParkedModel {
-            async fn complete(&self, _request: &ModelRequest) -> Result<ModelResponse, ModelError> {
-                self.entered.notify_one();
-                self.release.notified().await;
-                Ok(text_response("never observed"))
-            }
-        }
-
-        let entered = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
-        let model = ParkedModel {
-            entered: entered.clone(),
-            release: release.clone(),
-        };
-        let tools = RecordingTools {
-            calls: Mutex::new(Vec::new()),
-            progress: ProgressSignals::default(),
         };
         let engine = TurnEngine {
             model: &model,
@@ -1346,6 +1310,54 @@ mod tests {
                 ..
             } if call_id == "s1" && output_digest == "len:17"
         )));
+    }
+
+    /// F-17: a cancel issued while the model call is IN FLIGHT aborts the
+    /// turn promptly (sub-second, one 25ms watcher poll) with the SAME
+    /// terminal semantics as a boundary cancel — Stopped(user_cancelled) +
+    /// journaled TurnEnd(cancelled) — never waiting for the parked provider
+    /// response (pre-F-17 worst case: the whole in-flight response, 46.8s
+    /// observed).
+    #[tokio::test]
+    async fn cancel_mid_call_aborts_inflight_response_promptly() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        #[derive(Debug)]
+        struct ParkedModel {
+            entered: Arc<tokio::sync::Notify>,
+            release: Arc<tokio::sync::Notify>,
+        }
+
+        #[async_trait::async_trait]
+        impl ModelDriver for ParkedModel {
+            async fn complete(&self, _request: &ModelRequest) -> Result<ModelResponse, ModelError> {
+                self.entered.notify_one();
+                self.release.notified().await;
+                Ok(text_response("never observed"))
+            }
+        }
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let model = ParkedModel {
+            entered: entered.clone(),
+            release: release.clone(),
+        };
+        let tools = RecordingTools {
+            calls: Mutex::new(Vec::new()),
+            progress: ProgressSignals::default(),
+        };
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            model_name: "mock".into(),
+            tool_definitions: vec![],
+            approval: None,
+            compaction: None,
+            robustness: Default::default(),
+        };
 
         let flag = Arc::new(AtomicBool::new(false));
 
