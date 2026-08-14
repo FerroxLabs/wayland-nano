@@ -740,3 +740,14 @@ promotes/closes entries; builders append only.
   boundary excluded it. Close means: acquire `SessionOwnership`
   (`session_guard_registry().try_own`) at protocol-host startup, fail
   closed with a typed busy when a second protocol-host is already running.
+
+# Plugin substrate follow-ups (S8)
+
+- Git-subprocess registry sources require an OS-containment and nano-egress design.
+- ACP-host skill activation requires a skill-context consumer; protocol-host is the v1 consumer.
+- HTTP-transport MCP plugin entries remain blocked on the §6.1 dispatcher HTTP binding.
+- WASM/subprocess sandboxed plugins are outside the declarative v1 substrate.
+- Manifest signing and verified publisher identity are post-v1 trust work.
+- Paid marketplace accounts and account credential flows are post-v1.
+- Add a real `plugin update` transaction; v1 update is remove plus freshly consented install.
+- Add `${VAR}` environment indirection for MCP plugin specs without adding a credential channel.

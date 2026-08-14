@@ -32,6 +32,7 @@ nano-egress = { version = "0.1.0", path = "../nano-egress" }
 # nano-mcp's flow::GrantRecord into the journaled Op::McpOauthGrant.
 nano-mcp = { version = "0.1.0", path = "../nano-mcp" }
 nano-model = { version = "0.1.0", path = "../nano-model" }
+nano-plugins = { version = "0.1.0", path = "../nano-plugins" }
 nano-protocol = { version = "0.1.0", path = "../nano-protocol" }
 nano-sandbox = { version = "0.1.0", path = "../nano-sandbox" }
 nano-session = { version = "0.1.0", path = "../nano-session" }
