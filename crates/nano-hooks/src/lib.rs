@@ -445,13 +445,18 @@ async fn execute_command(
     #[cfg(unix)]
     let mut child = command.spawn().map_err(|_| RunError::Spawn)?;
     let payload = serde_json::to_vec(payload).map_err(|_| RunError::Spawn)?;
-    child
-        .stdin
-        .take()
-        .ok_or(RunError::Spawn)?
-        .write_all(&payload)
-        .await
-        .map_err(|_| RunError::Spawn)?;
+    let mut stdin = child.stdin.take().ok_or(RunError::Spawn)?;
+    if let Err(_err) = stdin.write_all(&payload).await {
+        // A hook that exits without reading stdin (e.g. `exit 0`) closes the
+        // pipe first — EPIPE here means a COMPLETED hook, not a spawn
+        // failure. This is a real race on fast-exiting hooks with payloads
+        // larger than the pipe buffer (CI ubuntu legs, 2026-08-14). Only a
+        // still-running child makes the write failure meaningful.
+        if child.try_wait().map_err(|_| RunError::Spawn)?.is_none() {
+            return Err(RunError::Spawn);
+        }
+    }
+    drop(stdin);
     let mut stdout = child.stdout.take().ok_or(RunError::Spawn)?;
     let mut stderr = child.stderr.take().ok_or(RunError::Spawn)?;
     let stdout_task = tokio::spawn(async move { drain_pipe_capped(&mut stdout).await });

@@ -77,6 +77,27 @@ hooks = [{ command = "exit 0" }, { command = "exit 0" }]
     assert!(run.decisions.iter().all(|d| d.outcome == HookOutcome::Pass));
 }
 
+/// Regression (CI unix legs, 2026-08-14): a hook that exits without reading
+/// stdin (`exit 0`) closes the pipe first; a payload larger than the pipe
+/// buffer then fails write_all with EPIPE. That is a COMPLETED hook, not a
+/// spawn failure — the decision must be Pass, and a blocking event must not
+/// stop the batch.
+#[tokio::test]
+async fn fast_exit_hook_with_oversized_payload_still_passes() {
+    let big_payload = serde_json::json!({ "blob": "x".repeat(8 * 1024 * 1024) });
+    let engine = load(
+        r#"
+[[hooks.UserPromptSubmit]]
+hooks = [{ command = "exit 0" }, { command = "exit 0" }]
+"#,
+    );
+    let run = engine
+        .run(HookEvent::UserPromptSubmit, None, &big_payload)
+        .await;
+    assert_eq!(run.decisions.len(), 2);
+    assert!(run.decisions.iter().all(|d| d.outcome == HookOutcome::Pass));
+}
+
 #[tokio::test]
 async fn blocking_invalid_output_fails_closed() {
     let command = if cfg!(windows) {
