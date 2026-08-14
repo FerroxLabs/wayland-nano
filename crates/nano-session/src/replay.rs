@@ -366,6 +366,10 @@ impl SessionState {
             // Mode changes are audit history only (C2): context-neutral on
             // replay, never restored into session state.
             Op::ModeSet { .. } => {}
+            // Shell-rule amendments are audit history only (P4 §2.6): the
+            // rules live in rules.toml (config, re-read at session start);
+            // replay never trusts the op over the file.
+            Op::ShellRuleAmended { .. } => {}
             // Todo lists are CONTENT (C10 §2): replayed last-write-wins so a
             // resumed session restores the list.
             Op::TodoSet { items } => {

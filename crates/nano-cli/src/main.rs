@@ -110,13 +110,20 @@ fn main() {
             let mut out = std::io::stdout();
             nano_cli::session_browser::print_sessions(&sessions_dir, &mut out)
         }
+        // P4 §9: the shell-rule table (read-only; codex's `execpolicy
+        // check` debugging surface, minimal form).
+        Some("rules") => {
+            let home = nano_home();
+            let mut out = std::io::stdout();
+            nano_cli::rules_cmds::run(&home, &mut out)
+        }
         Some("--version") | Some("-V") => {
             println!("wayland-nano {}", env!("CARGO_PKG_VERSION"));
             0
         }
         _ => {
             eprintln!(
-                "usage: wayland-nano doctor | protocol-host | acp-host | auth login|status|logout <server> | exec | session fork | sessions | goal | --version"
+                "usage: wayland-nano doctor | protocol-host | acp-host | auth login|status|logout <server> | exec | session fork | sessions | rules | goal | --version"
             );
             2
         }

@@ -117,6 +117,12 @@ where
             Vec::new(), // a cron fire has no stdout stream; events sink to void
             session.session_id.clone(),
         )));
+        // P4 §2.6: a cron fire rides the exec gate, which consults the
+        // session-start ruleset — same fail-closed load as exec.
+        let (rules, rules_warning) = crate::shell_rules::load_session_rules(&self.nano_home);
+        if let Some(warning) = rules_warning {
+            eprintln!("wayland-nano: {warning}");
+        }
         let gate = crate::exec_mode::ExecApproval {
             mode,
             policy,
@@ -127,6 +133,8 @@ where
             // session's cron fires deny protected trust mutations (no human
             // is present to approve them).
             image_influenced: crate::acp_mode::image_influenced_from_envelopes(&session.envelopes),
+            rules,
+            rule_denial: Arc::new(Mutex::new(None)),
         };
         // Provenance: the transcript and journal show the input as
         // scheduled, never as the interactive user.

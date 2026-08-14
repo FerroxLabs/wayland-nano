@@ -15,10 +15,12 @@ pub mod model_params;
 pub mod provider_key;
 pub mod provider_router;
 pub mod review_diff;
+pub mod rules_cmds;
 pub mod search_specs;
 pub mod session_browser;
 pub mod session_cmds;
 pub mod session_tools;
+pub mod shell_rules;
 
 #[cfg(test)]
 #[path = "exec_tests.rs"]

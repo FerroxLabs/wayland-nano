@@ -759,3 +759,66 @@ fn p3_hostile_payloads_fold_without_panic() {
     // Hostile grants fold latest-wins keyed by (server, origin).
     assert_eq!(state.mcp_oauth_grants.len(), 1);
 }
+
+/// P4 §2.6/§13 (journal/schema battery): `Op::ShellRuleAmended` round-trips
+/// byte-exact through the journal, replays AUDIT-ONLY (the fold is
+/// bit-identical to the same journal without it — rules are config, never
+/// journal-folded), and the payload bounds validator rejects over-cap
+/// prefixes and non-canonical digests.
+#[test]
+fn p4_shell_rule_amended_round_trips_audit_only() {
+    let digest = "a".repeat(64);
+    let amended = env(
+        "r2",
+        Op::ShellRuleAmended {
+            amendment_id: "s1-rule-1-0".into(),
+            prefix: vec!["git".into(), "status".into()],
+            exact: true,
+            rule_digest: digest.clone(),
+        },
+    );
+    let ops = vec![
+        env(
+            "r1",
+            Op::SessionBegin {
+                session_id: "s1".into(),
+                cwd: "C:\repo".into(),
+            },
+        ),
+        amended.clone(),
+    ];
+    let (bytes, _, _) = serialize_lines(&ops);
+    let report = parse_journal_bytes(&bytes).expect("parses");
+    assert_eq!(report.envelopes, ops, "the op round-trips byte-exact");
+    // Audit-only: the fold equals the same journal carrying a KNOWN
+    // audit-only op (ModeSet) in its place — same envelope count, same
+    // bookkeeping, and zero semantic difference.
+    let reference = vec![
+        ops[0].clone(),
+        env(
+            "r2",
+            Op::ModeSet {
+                mode: "default".into(),
+            },
+        ),
+    ];
+    let with = SessionState::fold(&report.envelopes);
+    let without = SessionState::fold(&reference);
+    assert_eq!(
+        format!("{with:?}"),
+        format!("{without:?}"),
+        "ShellRuleAmended must be context-neutral on replay (ModeSet parity)"
+    );
+    // Bounds (§2.6: ≤ 8 tokens, ≤ 128 chars each, canonical digest).
+    use nano_session::op::validate_shell_rule_amended;
+    assert!(validate_shell_rule_amended("s1-rule-1-0", &["git".into()], &digest).is_ok());
+    let nine = vec!["t".to_string(); 9];
+    assert!(validate_shell_rule_amended("x", &nine, &digest).is_err());
+    let long_token = vec!["t".repeat(129)];
+    assert!(validate_shell_rule_amended("x", &long_token, &digest).is_err());
+    let empty: Vec<String> = vec![];
+    assert!(validate_shell_rule_amended("x", &empty, &digest).is_err());
+    assert!(validate_shell_rule_amended("x", &["git".into()], "not-hex").is_err());
+    assert!(validate_shell_rule_amended("x", &["git".into()], &"A".repeat(64)).is_err());
+    assert!(validate_shell_rule_amended("", &["git".into()], &digest).is_err());
+}

@@ -33,6 +33,35 @@ fn tmpdir(tag: &str) -> PathBuf {
     dir
 }
 
+/// Most exec-gate legs predate the rules lane: an empty ruleset (no rule
+/// can match, so behavior is exactly the pre-rules baseline).
+fn no_rules() -> nano_core::execrules::RuleSet {
+    nano_core::execrules::RuleSet::default()
+}
+
+/// A ruleset parsed from rule lines (the engine's validator applies).
+fn rules_with(rules: Vec<nano_core::execrules::PrefixRule>) -> nano_core::execrules::RuleSet {
+    nano_core::execrules::RuleSet::new(rules).expect("valid rules")
+}
+
+fn allow_rule(program: &str) -> nano_core::execrules::PrefixRule {
+    nano_core::execrules::PrefixRule {
+        pattern: vec![nano_core::execrules::PatternToken::Single(program.into())],
+        exact: false,
+        decision: nano_core::execrules::RuleDecision::Allow,
+        justification: None,
+        added_at: None,
+        source: None,
+    }
+}
+
+fn deny_rule(program: &str) -> nano_core::execrules::PrefixRule {
+    nano_core::execrules::PrefixRule {
+        decision: nano_core::execrules::RuleDecision::Deny,
+        ..allow_rule(program)
+    }
+}
+
 /// A scripted model: each queued response is returned in order. Clones
 /// share the queue (the per-turn driver factory hands out clones).
 #[derive(Debug, Default, Clone)]
@@ -252,13 +281,13 @@ fn p4_exec_gate_pty_denied_repo_map_read_only() {
     ] {
         for name in nano_agent::wiring::PTY_TOOL_NAMES {
             assert_eq!(
-                exec_gate_decision(&call(name), mode, &policy, &dir, true),
+                exec_gate_decision(&call(name), mode, &policy, &dir, true, &no_rules()),
                 ApprovalDecision::Deny,
                 "{mode:?}: {name} auto-denies in exec"
             );
         }
         assert_eq!(
-            exec_gate_decision(&call("repo_map"), mode, &policy, &dir, false),
+            exec_gate_decision(&call("repo_map"), mode, &policy, &dir, false, &no_rules()),
             ApprovalDecision::Approve,
             "{mode:?}: repo_map is read-only in exec"
         );
@@ -284,13 +313,20 @@ fn p3_exec_gate_mcp_classes() {
         PermissionMode::FullAuto,
     ] {
         assert_eq!(
-            exec_gate_decision(&call("tool_search"), mode, &policy, &dir, false),
+            exec_gate_decision(
+                &call("tool_search"),
+                mode,
+                &policy,
+                &dir,
+                false,
+                &no_rules()
+            ),
             ApprovalDecision::Approve,
             "{mode:?}: tool_search approves (DiscoveryLocal, no server contact)"
         );
         for name in ["mcp_list_resources", "mcp_read_resource"] {
             assert_eq!(
-                exec_gate_decision(&call(name), mode, &policy, &dir, true),
+                exec_gate_decision(&call(name), mode, &policy, &dir, true, &no_rules()),
                 ApprovalDecision::Deny,
                 "{mode:?}: {name} would prompt ⇒ exec auto-denies"
             );
@@ -298,7 +334,7 @@ fn p3_exec_gate_mcp_classes() {
         // The mcp__ catch-all stays strict: every mode denies in exec
         // (default/read_only categorically, full_auto would prompt).
         assert_eq!(
-            exec_gate_decision(&call("mcp__s__t"), mode, &policy, &dir, true),
+            exec_gate_decision(&call("mcp__s__t"), mode, &policy, &dir, true, &no_rules()),
             ApprovalDecision::Deny,
             "{mode:?}: mcp__ never auto-approves in exec"
         );
@@ -346,17 +382,38 @@ fn full_auto_gate_decision_matrix() {
         arguments: serde_json::json!({"path": dir.join("ok.txt").to_string_lossy(), "content": "x"}),
     };
     assert_eq!(
-        exec_gate_decision(&contained, PermissionMode::FullAuto, &policy, &dir, false),
+        exec_gate_decision(
+            &contained,
+            PermissionMode::FullAuto,
+            &policy,
+            &dir,
+            false,
+            &no_rules()
+        ),
         ApprovalDecision::Approve,
         "contained writes auto-approve in full_auto"
     );
     assert_eq!(
-        exec_gate_decision(&contained, PermissionMode::Default, &policy, &dir, false),
+        exec_gate_decision(
+            &contained,
+            PermissionMode::Default,
+            &policy,
+            &dir,
+            false,
+            &no_rules()
+        ),
         ApprovalDecision::Deny,
         "default mode: promptable → auto-deny"
     );
     assert_eq!(
-        exec_gate_decision(&contained, PermissionMode::ReadOnly, &policy, &dir, false),
+        exec_gate_decision(
+            &contained,
+            PermissionMode::ReadOnly,
+            &policy,
+            &dir,
+            false,
+            &no_rules()
+        ),
         ApprovalDecision::Deny
     );
     let shell = ToolCall {
@@ -365,12 +422,26 @@ fn full_auto_gate_decision_matrix() {
         arguments: serde_json::json!({"command": "echo"}),
     };
     assert_eq!(
-        exec_gate_decision(&shell, PermissionMode::FullAuto, &policy, &dir, false),
+        exec_gate_decision(
+            &shell,
+            PermissionMode::FullAuto,
+            &policy,
+            &dir,
+            false,
+            &no_rules()
+        ),
         ApprovalDecision::Deny,
         "no sandbox backend → deny (never prompt in exec)"
     );
     assert_eq!(
-        exec_gate_decision(&shell, PermissionMode::FullAuto, &policy, &dir, true),
+        exec_gate_decision(
+            &shell,
+            PermissionMode::FullAuto,
+            &policy,
+            &dir,
+            true,
+            &no_rules()
+        ),
         ApprovalDecision::Approve
     );
     // cronjob create is NOT in full_auto's auto-approve set (§5.5): it
@@ -381,21 +452,91 @@ fn full_auto_gate_decision_matrix() {
         arguments: serde_json::json!({"action": "create"}),
     };
     assert_eq!(
-        exec_gate_decision(&cronjob, PermissionMode::FullAuto, &policy, &dir, true),
+        exec_gate_decision(
+            &cronjob,
+            PermissionMode::FullAuto,
+            &policy,
+            &dir,
+            true,
+            &no_rules()
+        ),
         ApprovalDecision::Deny
     );
-    // Read-only + control tools always approve.
-    for name in ["fs_read", "goal_complete"] {
-        let call = ToolCall {
-            id: "c".into(),
-            name: name.into(),
-            arguments: serde_json::json!({}),
-        };
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// P4 §2.6 + §13 gate matrix, exec surface: an Allow rule IS the approval
+/// (default AND full_auto, sandbox or not — exec is non-interactive); a
+/// Deny rule auto-denies in every mode including full_auto-with-sandbox; a
+/// non-matching command keeps the would-prompt ⇒ auto-deny baseline; and
+/// read_only categorically denies even an Allow-matched command (rules are
+/// consulted strictly inside the Default/FullAuto arms).
+#[test]
+fn p4_exec_gate_rules() {
+    let dir = tmpdir("gate-rules");
+    let policy = fake_policy();
+    let shell = |command: &str| ToolCall {
+        id: "c".into(),
+        name: "shell".into(),
+        arguments: serde_json::json!({"command": command}),
+    };
+    let rules = rules_with(vec![allow_rule("echo"), deny_rule("denyme")]);
+    for mode in [PermissionMode::Default, PermissionMode::FullAuto] {
+        for sandbox in [true, false] {
+            assert_eq!(
+                exec_gate_decision(&shell("echo hi"), mode, &policy, &dir, sandbox, &rules),
+                ApprovalDecision::Approve,
+                "{mode:?} sandbox={sandbox}: an Allow rule is the approval"
+            );
+            assert_eq!(
+                exec_gate_decision(&shell("denyme /f x"), mode, &policy, &dir, sandbox, &rules),
+                ApprovalDecision::Deny,
+                "{mode:?} sandbox={sandbox}: a Deny rule refuses"
+            );
+        }
+        // No match: default auto-denies (would prompt); full_auto keeps its
+        // sandbox baseline (Q7: rules narrow, never redefine).
         assert_eq!(
-            exec_gate_decision(&call, PermissionMode::ReadOnly, &policy, &dir, false),
-            ApprovalDecision::Approve
+            exec_gate_decision(&shell("whoami"), mode, &policy, &dir, false, &rules),
+            ApprovalDecision::Deny
+        );
+        assert_eq!(
+            exec_gate_decision(&shell("whoami"), mode, &policy, &dir, true, &rules),
+            match mode {
+                PermissionMode::FullAuto => ApprovalDecision::Approve,
+                _ => ApprovalDecision::Deny,
+            },
+            "{mode:?}: the no-match baseline is unchanged"
         );
     }
+    // read_only: even an Allow-matched command denies — the mode arm
+    // precedes rule consultation (the narrow-only arm order).
+    assert_eq!(
+        exec_gate_decision(
+            &shell("echo hi"),
+            PermissionMode::ReadOnly,
+            &policy,
+            &dir,
+            true,
+            &rules
+        ),
+        ApprovalDecision::Deny,
+        "read_only must deny even a rule-allowed command"
+    );
+    // The compound strictest-wins rule applies through the gate: an allow
+    // on segment 1 cannot launder a denied segment 2.
+    assert_eq!(
+        exec_gate_decision(
+            &shell("echo hi && denyme /f x"),
+            PermissionMode::FullAuto,
+            &policy,
+            &dir,
+            true,
+            &rules
+        ),
+        ApprovalDecision::Deny,
+        "compound: one denied segment denies the whole command"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

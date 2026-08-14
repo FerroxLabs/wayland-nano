@@ -452,6 +452,89 @@ mod tests {
         );
     }
 
+    /// P4 §2.6/§8: a typed gate denial (a matched shell Deny rule) journals
+    /// its OWN kind on the ToolResult — not the generic approval_denied —
+    /// the bounded rule message reaches the model, and the call never
+    /// executes.
+    #[tokio::test]
+    async fn typed_gate_denial_journals_its_kind_and_never_executes() {
+        use crate::turn::{ApprovalDecision, ApprovalGate};
+        use nano_session::NanoErrorKind;
+        use nano_session::op::Op;
+
+        #[derive(Debug)]
+        struct RuleDenyGate;
+        impl ApprovalGate for RuleDenyGate {
+            fn approve(&self, _call: &ToolCall) -> ApprovalDecision {
+                ApprovalDecision::Deny
+            }
+            fn typed_denial(&self) -> Option<(NanoErrorKind, String)> {
+                Some((
+                    NanoErrorKind::ShellRuleDenied,
+                    "Denied by shell rule #0 (`denyme`).".to_string(),
+                ))
+            }
+        }
+
+        let model = ScriptedModel::new(vec![
+            tool_response(ToolCall {
+                id: "c1".into(),
+                name: "shell".into(),
+                arguments: serde_json::json!({"command": "denyme /f x"}),
+            }),
+            text_response("the rule denied it"),
+        ]);
+        let tools = RecordingTools {
+            calls: Mutex::new(Vec::new()),
+            progress: ProgressSignals::default(),
+        };
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            model_name: "mock".into(),
+            tool_definitions: vec![],
+            approval: Some(&RuleDenyGate),
+            compaction: None,
+            robustness: Default::default(),
+        };
+
+        let result = engine.run_turn("t-rules", "run denyme").await;
+
+        assert_eq!(result.state, TurnState::Complete);
+        // Never executed...
+        assert!(tools.calls.lock().unwrap().is_empty());
+        // ...journaled with the TYPED kind (not approval_denied)...
+        assert!(
+            result.ops.iter().any(|envelope| matches!(
+                &envelope.op,
+                Op::ToolResult {
+                    ok: false,
+                    error_kind: Some(NanoErrorKind::ShellRuleDenied),
+                    ..
+                }
+            )),
+            "the typed kind must reach the journaled ToolResult: {:?}",
+            result.ops
+        );
+        // ...and the model sees the bounded rule message.
+        let requests = model.requests.lock().unwrap();
+        let carried = requests[1].messages.iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(
+                    block,
+                    nano_model::types::ContentBlock::ToolResult { content, .. }
+                    if content.contains("Denied by shell rule #0")
+                )
+            })
+        });
+        assert!(
+            carried,
+            "denial must name the rule: {:?}",
+            requests[1].messages
+        );
+    }
+
     /// C10 §5: the default `ApprovalGate::ask` is `Unavailable` — a gate
     /// that never learned questions (ApproveAll, DenyAll child gates, test
     /// doubles) fails closed to the typed unavailability, never a block.
