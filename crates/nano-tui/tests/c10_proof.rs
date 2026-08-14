@@ -163,14 +163,13 @@ fn c10_tui_question_modal_round_trip() {
     world.finish();
 }
 
-/// FINDING F-C10-2 (pinned, minor): the question modal's scroll window is
-/// computed in ITEMS (render.rs:303-307, `skip(start).take(visible)` with
-/// `start` derived from the selected index) while each option renders as
-/// TWO rows (name + kind description), so with 4 options (3 minted +
-/// Dismiss) the Dismiss row is clipped out of the 5-row viewport and never
-/// becomes visible — even when selected. The option still WORKS blind (and
-/// Esc maps to the reject id), proven here: Down×3 selects the invisible
-/// Dismiss and the reject id rides the wire.
+/// FINDING F-C10-2 (FIXED): the question modal's scroll window was
+/// computed in ITEMS (render.rs, `skip(start).take(visible)` with `start`
+/// derived from the selected index) while each option renders as TWO rows
+/// (name + kind description), so with 4 options (3 minted + Dismiss) the
+/// Dismiss row was clipped out of the 5-row viewport even when selected.
+/// The viewport is now row-aware (render.rs): after Down×3 the selected
+/// Dismiss option RENDERS, and its reject id still rides the wire.
 #[test]
 fn c10_tui_question_dismiss_viewport_pin() {
     lint_fixture(DISMISS_JOURNEY, &[RECORDED], &[])
@@ -185,15 +184,15 @@ fn c10_tui_question_dismiss_viewport_pin() {
     world.key(KeyCode::Down);
     let screen = world.screen();
     assert!(
-        !screen.contains("Dismiss"),
-        "F-C10-2 pinned: the 4th option never renders in the viewport"
+        screen.contains("Dismiss"),
+        "F-C10-2 fixed: the 4th option renders in the viewport when selected"
     );
-    world.key(KeyCode::Enter); // blind-select the invisible Dismiss
+    world.key(KeyCode::Enter);
     let decisions = &world.conn.host.decisions;
     assert_eq!(decisions.len(), 1);
     assert_eq!(
         decisions[0].option_id, "reject",
-        "the invisible Dismiss still answers correctly"
+        "the Dismiss answer still rides the wire"
     );
     let screen = world.screen();
     assert!(

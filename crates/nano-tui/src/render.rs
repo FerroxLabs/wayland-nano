@@ -265,7 +265,15 @@ fn render_modal(
     detail: Option<&str>,
     area: Rect,
 ) {
-    let rows = view.items.len().max(1) as u16;
+    // F-10: each item renders as one name row plus one row per
+    // description, so the modal height is computed over RENDERED rows,
+    // not item indices.
+    let rendered_rows: usize = view
+        .items
+        .iter()
+        .map(|item| 1 + usize::from(item.description.is_some()))
+        .sum();
+    let rows = rendered_rows.max(1) as u16;
     let detail_rows = u16::from(detail.is_some());
     let height = (rows + 4 + detail_rows)
         .min(area.height.saturating_sub(2))
@@ -302,9 +310,17 @@ fn render_modal(
 
     let visible = list_area.height as usize;
     let selected = view.selected_index();
-    let start = selected.saturating_sub(visible.saturating_sub(1));
+    // F-10: the scroll window is row-aware — an item's name row and its
+    // description row scroll together, and the window always contains the
+    // selected item's rows (previously the window was item-indexed, which
+    // clipped two-row options such as the ask_user Dismiss row).
     let mut lines = Vec::new();
-    for (index, item) in view.items.iter().enumerate().skip(start).take(visible) {
+    let mut selected_start = 0usize;
+    let mut selected_rows = 1usize;
+    for (index, item) in view.items.iter().enumerate() {
+        if index == selected {
+            selected_start = lines.len();
+        }
         let selected_row = view.has_selection() && index == selected;
         let marker = if selected_row { "› " } else { "  " };
         let name_style = if selected_row {
@@ -329,7 +345,18 @@ fn render_modal(
                 Style::default().fg(Color::DarkGray),
             )));
         }
+        if index == selected {
+            selected_rows = lines.len() - selected_start;
+        }
     }
+    let start_row = if selected_rows >= visible {
+        // The selected item alone fills/exceeds the viewport: show its
+        // first row.
+        selected_start
+    } else {
+        (selected_start + selected_rows).saturating_sub(visible)
+    };
+    let lines: Vec<Line> = lines.into_iter().skip(start_row).take(visible).collect();
     frame.render_widget(Paragraph::new(lines), list_area);
 
     let hint = match kind {
@@ -344,4 +371,86 @@ fn render_modal(
         ))),
         hint_area,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modal::ListItem;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn two_row_option(id: &str, name: &str) -> ListItem {
+        ListItem {
+            id: id.into(),
+            name: name.into(),
+            description: Some("kind".into()),
+            is_current: false,
+        }
+    }
+
+    fn question_view() -> ListSelectionView {
+        // The F-10 scenario: 3 minted options + Dismiss, each rendered as
+        // TWO rows (name + kind).
+        ListSelectionView::new(
+            "Pick a color?",
+            vec![
+                two_row_option("opt_0", "Red"),
+                two_row_option("opt_1", "Green"),
+                two_row_option("opt_2", "Blue"),
+                two_row_option("reject", "Dismiss"),
+            ],
+        )
+    }
+
+    fn screen_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let area = buffer.area;
+        let mut text = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    /// F-10 regression: in a short terminal the viewport must scroll by
+    /// rendered rows so the selected last option (with its two rows) is
+    /// visible. Previously the window was item-indexed and the Dismiss row
+    /// was clipped out even when selected.
+    #[test]
+    fn modal_viewport_keeps_selected_two_row_option_visible() {
+        let mut view = question_view();
+        for _ in 0..3 {
+            view.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("terminal");
+        terminal
+            .draw(|frame| render_modal(frame, "question", &view, None, frame.area()))
+            .expect("draw");
+        let screen = screen_text(&terminal);
+        assert!(screen.contains("Dismiss"), "selected option: {screen}");
+        assert!(
+            screen.contains("› Dismiss"),
+            "selection marker on the last option: {screen}"
+        );
+    }
+
+    /// F-10 companion: the modal height is computed over rendered rows, so
+    /// in a tall terminal all four two-row options render without clipping.
+    #[test]
+    fn modal_height_counts_rendered_rows() {
+        let view = question_view();
+        let mut terminal = Terminal::new(TestBackend::new(60, 30)).expect("terminal");
+        terminal
+            .draw(|frame| render_modal(frame, "question", &view, None, frame.area()))
+            .expect("draw");
+        let screen = screen_text(&terminal);
+        for name in ["Red", "Green", "Blue", "Dismiss"] {
+            assert!(screen.contains(name), "{name} visible: {screen}");
+        }
+    }
 }

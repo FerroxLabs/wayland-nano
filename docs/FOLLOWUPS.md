@@ -133,7 +133,7 @@ promotes/closes entries; builders append only.
   prompt time in acp_mode, or amend design §4 to state the one-turn
   lag explicitly. Prompt-tier data only — no policy impact.
 
-## F-10: TUI question modal clips the 4th option (C10 proof, F-C10-2)
+## F-10: TUI question modal clips the 4th option (C10 proof, F-C10-2) — FIXED at 405f0e2
 
 - **Filed:** 2026-08-12, from the C10 adversarial proof (pinned by
   `c10_tui_question_dismiss_viewport_pin`).
@@ -146,6 +146,15 @@ promotes/closes entries; builders append only.
   permission cards) unaffected.
 - **Close means:** make the viewport row-aware (scroll by rendered
   rows, not item index) so the selected row is always visible.
+- **Fix (405f0e2):** the modal height now counts rendered rows (one per
+  item plus one per description) and the scroll window is row-aware, so
+  the selected item's rows are always in the viewport
+  (`crates/nano-tui/src/render.rs`). Verified by two TestBackend unit
+  tests (`modal_viewport_keeps_selected_two_row_option_visible`,
+  `modal_height_counts_rendered_rows`), the flipped bug-pin
+  `c10_tui_question_dismiss_viewport_pin`, and the regenerated
+  approval-modal snapshot (the old one had captured the clipped render —
+  every two-row approval option's kind line was being clipped too).
 
 ## F-11: Doc deviation — failed read-before-overwrite emits an add-style diff (C10 proof, F-C10-3)
 
@@ -411,7 +420,7 @@ promotes/closes entries; builders append only.
 - **Close means:** each item fixed or explicitly waived with the reason
   recorded here.
 
-## F-28: P4 repomap merge-review debt (reviewer agent-135, verdict MERGE-OK, 2026-08-13) — MEDIUM-2 CLOSED at a7065e0 (three-gate registration + agreement tests landed in the wiring pass); MEDIUM-1/3 + LOWs FIXED at 02b538a; LOW-7/8 remain OPEN
+## F-28: P4 repomap merge-review debt (reviewer agent-135, verdict MERGE-OK, 2026-08-13) — MEDIUM-2 CLOSED at a7065e0 (three-gate registration + agreement tests landed in the wiring pass); MEDIUM-1/3 + LOWs FIXED at 02b538a; LOW-8 FIXED at 405f0e2; LOW-7 remains OPEN
 
 - **MEDIUM-1 (cost-bound TOCTOU) — FIXED at 02b538a:**
   `nano-repomap/src/store.rs:321-345`
@@ -436,9 +445,14 @@ promotes/closes entries; builders append only.
 - **LOW-7:** Windows battery owes a unicode-name case and (where the
   volume permits) a >MAX_PATH case; the real-D:\ harness remains a §14
   leg-4 proof obligation outside the branch.
-- **LOW-8 (pre-existing, relocated by this branch):**
-  `nano-core/src/sensitive_path.rs:25` `.env.` prefix check is
-  case-sensitive; `.ENV.PRODUCTION` slips on case-insensitive filesystems.
+- **LOW-8 (pre-existing, relocated by this branch) — FIXED at 405f0e2:**
+  the `.env.` prefix check is now case-insensitive, matching the basename
+  equality arms, with adversarial tests for `.ENV.PRODUCTION` /
+  `.Env.Production` / `.env.LOCAL`; tightening only (near-misses like
+  `.envrc` / `env.production` stay clear). Original text:
+  `nano-core/src/sensitive_path.rs:25` `.env.` prefix check was
+  case-sensitive; `.ENV.PRODUCTION` slipped on case-insensitive
+  filesystems.
 
 ## F-29: P4 rules merge-review LOW debt (reviewer agent-133, 2026-08-13) — OPEN
 

@@ -1,5 +1,6 @@
 ---
 source: crates/nano-tui/tests/l1_snapshots.rs
+assertion_line: 72
 expression: "render_to_test_backend(&world.app, 80, 24)"
 ---
 "· nano-tui — connecting to wayland-nano acp-host                                "
@@ -9,15 +10,15 @@ expression: "render_to_test_backend(&world.app, 80, 24)"
 "                                                                                "
 "                                                                                "
 "                                                                                "
-"                                                                                "
 "    ┌ Approve? fs_write ───────────────────────────────────────────────────┐    "
 "    │{"content":"hello","path":"note.txt"}                                 │    "
 "    │› Allow once                                                          │    "
 "    │    allow_once                                                        │    "
 "    │  Deny                                                                │    "
+"    │    reject_once                                                       │    "
+"    │                                                                      │    "
 "    │ Enter decides · Esc denies                                           │    "
 "    └──────────────────────────────────────────────────────────────────────┘    "
-"                                                                                "
 "                                                                                "
 "                                                                                "
 "                                                                                "
