@@ -100,7 +100,9 @@ pub struct PermissionOption {
     pub name: String,
 }
 
-/// Parsed session/update notification payloads the TUI renders.
+/// Parsed notification payloads the TUI renders: session/update kinds plus
+/// the `_wayland/session/budget*` ext notifications (P1 — the Desktop ACP
+/// SDK drops unknown sessionUpdate kinds before dispatch).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionUpdate {
     AgentChunk(String),
@@ -261,6 +263,21 @@ pub fn classify(frame: &Value) -> Inbound {
             Some(update) => Inbound::Update(update),
             None => Inbound::MalformedFrame("session/update without update object".into()),
         },
+        // P1 budget notices ride `_wayland/session/*` ext notifications, not
+        // session/update: the Desktop ACP SDK validates session/update against
+        // zSessionNotification before dispatch and drops unknown sessionUpdate
+        // kinds. `params` carries sessionId plus the payload fields flattened.
+        (
+            Some(
+                method @ ("_wayland/session/budget"
+                | "_wayland/session/budget-warn"
+                | "_wayland/session/budget-clamp"),
+            ),
+            None,
+        ) => match frame.get("params") {
+            Some(params) => Inbound::Update(parse_budget_ext(method, params)),
+            None => Inbound::MalformedFrame(format!("{method} without params")),
+        },
         (Some(method), None) => Inbound::UnknownNotification {
             method: method.to_string(),
         },
@@ -411,31 +428,6 @@ fn parse_session_update(update: &Value) -> SessionUpdate {
                 tokens_limit: field("tokens_limit"),
             }
         }
-        "budget" => SessionUpdate::Budget {
-            session_tokens: update
-                .get("session_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
-            microcents: update
-                .get("microcents")
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
-            priced: update
-                .get("priced")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            limit: update.get("limit").and_then(Value::as_u64),
-            observed: update.get("observed").and_then(Value::as_u64),
-        },
-        "budget_warn" => SessionUpdate::BudgetWarn {
-            limit: update.get("limit").and_then(Value::as_u64).unwrap_or(0),
-            observed: update.get("observed").and_then(Value::as_u64).unwrap_or(0),
-            pct_used: update.get("pct_used").and_then(Value::as_u64).unwrap_or(0),
-        },
-        "budget_clamp" => SessionUpdate::BudgetClamp {
-            requested: update.get("requested").and_then(Value::as_u64).unwrap_or(0),
-            granted: update.get("granted").and_then(Value::as_u64).unwrap_or(0),
-        },
         "review_result" => SessionUpdate::ReviewResult {
             task_id: update
                 .get("taskId")
@@ -464,6 +456,39 @@ fn parse_session_update(update: &Value) -> SessionUpdate {
             }),
         },
         other => SessionUpdate::Unknown(other.to_string()),
+    }
+}
+
+/// Parse the `_wayland/session/budget*` ext-notification params into the
+/// same typed updates the retired session/update kinds produced. Field
+/// names are unchanged — only the frame shape moved (params flattened).
+fn parse_budget_ext(method: &str, params: &Value) -> SessionUpdate {
+    match method {
+        "_wayland/session/budget" => SessionUpdate::Budget {
+            session_tokens: params
+                .get("session_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            microcents: params
+                .get("microcents")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            priced: params
+                .get("priced")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            limit: params.get("limit").and_then(Value::as_u64),
+            observed: params.get("observed").and_then(Value::as_u64),
+        },
+        "_wayland/session/budget-warn" => SessionUpdate::BudgetWarn {
+            limit: params.get("limit").and_then(Value::as_u64).unwrap_or(0),
+            observed: params.get("observed").and_then(Value::as_u64).unwrap_or(0),
+            pct_used: params.get("pct_used").and_then(Value::as_u64).unwrap_or(0),
+        },
+        _ => SessionUpdate::BudgetClamp {
+            requested: params.get("requested").and_then(Value::as_u64).unwrap_or(0),
+            granted: params.get("granted").and_then(Value::as_u64).unwrap_or(0),
+        },
     }
 }
 
@@ -1003,13 +1028,14 @@ mod tests {
         assert_eq!(ids.alloc(), 2);
     }
 
-    /// P1 §5: the budget session/update notices parse into typed updates.
+    /// P1 §5: the budget ext notifications parse into the same typed updates
+    /// the retired session/update kinds produced (params flattened).
     #[test]
     fn classify_budget_update_variants() {
-        let budget = json!({"jsonrpc":"2.0","method":"session/update","params":{
-            "sessionId":"s","update":{"sessionUpdate":"budget",
+        let budget = json!({"jsonrpc":"2.0","method":"_wayland/session/budget","params":{
+            "sessionId":"s",
             "session_tokens":12300,"microcents":0,"priced":false,
-            "limit":100,"observed":90}}});
+            "limit":100,"observed":90}});
         assert_eq!(
             classify(&budget),
             Inbound::Update(SessionUpdate::Budget {
@@ -1021,9 +1047,8 @@ mod tests {
             })
         );
 
-        let warn = json!({"jsonrpc":"2.0","method":"session/update","params":{
-            "sessionId":"s","update":{"sessionUpdate":"budget_warn",
-            "limit":100,"observed":90,"pct_used":90}}});
+        let warn = json!({"jsonrpc":"2.0","method":"_wayland/session/budget-warn","params":{
+            "sessionId":"s","limit":100,"observed":90,"pct_used":90}});
         assert_eq!(
             classify(&warn),
             Inbound::Update(SessionUpdate::BudgetWarn {
@@ -1033,9 +1058,8 @@ mod tests {
             })
         );
 
-        let clamp = json!({"jsonrpc":"2.0","method":"session/update","params":{
-            "sessionId":"s","update":{"sessionUpdate":"budget_clamp",
-            "requested":4096,"granted":10}}});
+        let clamp = json!({"jsonrpc":"2.0","method":"_wayland/session/budget-clamp","params":{
+            "sessionId":"s","requested":4096,"granted":10}});
         assert_eq!(
             classify(&clamp),
             Inbound::Update(SessionUpdate::BudgetClamp {
@@ -1045,10 +1069,10 @@ mod tests {
         );
 
         // Uncapped sessions carry null cap fields.
-        let uncapped = json!({"jsonrpc":"2.0","method":"session/update","params":{
-            "sessionId":"s","update":{"sessionUpdate":"budget",
+        let uncapped = json!({"jsonrpc":"2.0","method":"_wayland/session/budget","params":{
+            "sessionId":"s",
             "session_tokens":5,"microcents":0,"priced":true,
-            "limit":null,"observed":null}}});
+            "limit":null,"observed":null}});
         assert_eq!(
             classify(&uncapped),
             Inbound::Update(SessionUpdate::Budget {
