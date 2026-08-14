@@ -19,7 +19,9 @@
 //!       uncompacted.
 
 use crate::compact::compacted_prefix;
-use crate::op::{HydrationCarryEntry, OpEnvelope, validate_hydration_carry_entry};
+use crate::op::{
+    HydrationCarryEntry, MAX_HYDRATION_TOOL_NAMES, OpEnvelope, validate_hydration_carry_entry,
+};
 use crate::replay::SessionState;
 use crate::writer::JournalWriter;
 use std::io;
@@ -136,6 +138,12 @@ fn check_journal_path(path: &Path) -> io::Result<()> {
 /// the manual path's full-prefix watermark and the in-turn path's
 /// turn-scoped watermark — replay's clear-and-install carry arm replaces the
 /// fold of any surviving hydration ops with this full at-W state.
+///
+/// F-P3-8 degradation: when a server's hydrated UNION exceeds
+/// `MAX_HYDRATION_TOOL_NAMES` (legal — the cap is per op, the union is
+/// not), the entry degrades to digest/summary form (names dropped, digest +
+/// churn window carried) rather than aborting the compaction forever;
+/// resume re-exposes nothing for that server and tool_search re-hydrates.
 pub fn hydration_carry_at(
     envelopes: &[OpEnvelope],
 ) -> io::Result<Option<Vec<HydrationCarryEntry>>> {
@@ -158,7 +166,7 @@ pub fn hydration_carry_at(
     server_ids.dedup();
     let mut carry = Vec::with_capacity(server_ids.len());
     for server_id in server_ids {
-        let entry = HydrationCarryEntry {
+        let mut entry = HydrationCarryEntry {
             server_id: server_id.clone(),
             tool_names: state
                 .mcp_hydrated
@@ -176,6 +184,17 @@ pub fn hydration_carry_at(
                 .cloned()
                 .unwrap_or_default(),
         };
+        // F-P3-8: the per-server union across hydration ops can exceed the
+        // per-entry name cap even though every journaled op was legal, and
+        // aborting here bricks EVERY later compaction against the same wall.
+        // Overflow degrades to the digest/summary form instead: the names
+        // are dropped (never a silently truncated subset), the tools_digest
+        // and churn window ride, and resume treats the server as
+        // digest-verified with nothing hydrated — the tools defer and
+        // tool_search re-hydrates. Compaction never bricks.
+        if entry.tool_names.len() > MAX_HYDRATION_TOOL_NAMES {
+            entry.tool_names = Vec::new();
+        }
         // The carry must itself be a legal journal payload: a state that
         // cannot be re-journaled bounded aborts the compaction fail-safe
         // (typed error — the caller publishes nothing), never silently
@@ -299,6 +318,85 @@ mod tests {
         let web = carry.iter().find(|e| e.server_id == "web").expect("web");
         assert_eq!(web.tool_names, vec!["fetch"]);
         assert_eq!(web.recent_digests, vec![digest(3)]);
+    }
+
+    /// F-P3-8 regression pin: two legal hydration ops (≤ 64 names each)
+    /// whose per-server UNION is 70 names. Pre-fix the carry validated
+    /// against the per-op cap, failed, and every later compaction hit the
+    /// same wall. Now the entry degrades to digest/summary form, the
+    /// compaction proceeds, replay stays consistent, and the NEXT
+    /// compaction carries again.
+    #[test]
+    fn carry_degrades_when_hydrated_union_exceeds_the_name_cap() {
+        let first: Vec<String> = (0..40).map(|i| format!("tool_{i:03}")).collect();
+        let second: Vec<String> = (30..70).map(|i| format!("tool_{i:03}")).collect();
+        let envelopes = vec![
+            OpEnvelope::new(
+                "1",
+                "now",
+                Op::SessionBegin {
+                    session_id: "s".into(),
+                    cwd: "/tmp".into(),
+                },
+            ),
+            hydration(
+                "2",
+                "fs",
+                &first.iter().map(String::as_str).collect::<Vec<_>>(),
+                &digest(1),
+            ),
+            hydration(
+                "3",
+                "fs",
+                &second.iter().map(String::as_str).collect::<Vec<_>>(),
+                &digest(2),
+            ),
+        ];
+        let carry = hydration_carry_at(&envelopes)
+            .expect("overflow must degrade, never brick the compaction")
+            .expect("present");
+        assert_eq!(carry.len(), 1);
+        let entry = &carry[0];
+        assert!(
+            entry.tool_names.is_empty(),
+            "overflow drops the names (never a truncated subset)"
+        );
+        assert_eq!(entry.tools_digest, digest(2));
+        assert_eq!(entry.recent_digests, vec![digest(1), digest(2)]);
+        validate_hydration_carry_entry(entry).expect("degraded carry is a legal payload");
+
+        // Replay consistency: the compaction arm installs the carry, so the
+        // folded post-compaction state IS the degraded carry — digest +
+        // churn window ride, no names are phantom-exposed.
+        let complete = OpEnvelope::new(
+            "4",
+            "now",
+            Op::CompactionComplete {
+                compaction_id: "c1".into(),
+                summary: "s".into(),
+                covers_op_ids: vec!["1".into(), "2".into(), "3".into()],
+                changed_files: vec![],
+                image_influenced: false,
+                mcp_hydration: Some(carry.clone()),
+            },
+        );
+        let mut journal = envelopes.clone();
+        journal.push(complete);
+        let state = SessionState::fold(&journal);
+        assert!(
+            state.mcp_hydrated.get("fs").expect("fs").is_empty(),
+            "no phantom exposure after the degraded carry"
+        );
+        assert_eq!(state.mcp_tools_digest.get("fs").expect("fs"), &digest(2));
+        assert_eq!(
+            state.mcp_recent_digests.get("fs").expect("fs"),
+            &vec![digest(1), digest(2)]
+        );
+        // The next compaction over the compacted journal carries again.
+        let second_carry = hydration_carry_at(&journal)
+            .expect("the next compaction must not brick either")
+            .expect("present");
+        assert_eq!(second_carry, carry, "carry feeding carry stays stable");
     }
 
     #[test]
