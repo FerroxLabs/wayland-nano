@@ -936,3 +936,210 @@ async fn created_job_survives_compaction_and_fires() {
     assert_eq!(spy.calls.lock().unwrap().len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── F-8 data-integrity half (sev-2, split per SEVERITY-SIGNOFF-2026-08-14) ──
+
+/// F-8 defect 2: a journal failure AT FIRE TIME aborts the fire with a typed
+/// error — no execution, no cache mutation (pattern sibling:
+/// `cronjob_create_journal_failure_leaves_cache_untouched`). The swap to a
+/// directory is injected through the `live_mode` callback, which the runner
+/// invokes after the guard and the under-lock re-check, immediately before
+/// opening the journal for the CronFired reservation — the exact fire-time
+/// journal window. Journal-first is the constitution: no unjournaled
+/// execution, and the reverse window (cache advanced, reservation missing)
+/// is impossible because the cache persist runs only after a durable append.
+#[tokio::test]
+async fn fire_time_journal_failure_aborts_no_execution_no_cache_mutation() {
+    let dir = tmpdir("firejf");
+    let sessions = dir.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    make_session(&sessions, "s1");
+    let store = MemStore::default();
+    store
+        .jobs
+        .lock()
+        .unwrap()
+        .push(job("s1", "* * * * *", None));
+    let clock = TestClock::new(T0 + 61_000);
+    let spy = FireSpy::default();
+    // Fire-time journal failure: the journal path stops naming a regular
+    // file between the under-lock re-check and the reservation open (the
+    // pattern-sibling torn-path injection).
+    let swap_sessions = sessions.clone();
+    let swap = move |_session_id: &str| {
+        let journal = swap_sessions.join("s1.jsonl");
+        let _ = std::fs::remove_file(&journal);
+        let _ = std::fs::create_dir(&journal);
+        None
+    };
+    let outcomes = runner(sessions.clone(), &clock, &swap)
+        .tick(&store, &spy)
+        .await
+        .unwrap();
+    match &outcomes[0] {
+        JobTickOutcome::Error { error, .. } => {
+            assert!(error.contains("journal"), "typed journal error: {error}");
+        }
+        other => panic!("journal failure at fire time must be a typed Error, got {other:?}"),
+    }
+    assert!(
+        spy.calls.lock().unwrap().is_empty(),
+        "no execution without a durable reservation"
+    );
+    let jobs = store.jobs.lock().unwrap();
+    assert!(
+        jobs[0].last_fired.is_none() && jobs[0].next_fire.is_none(),
+        "journal-first: append failure ⇒ cache untouched: {jobs:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The fixture child's fire executor: each fire appends one line to the
+/// shared fired-log (the cross-process oracle — external state, never
+/// self-report).
+#[derive(Debug)]
+struct FireLogExecutor {
+    path: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl CronFireExecutor for FireLogExecutor {
+    async fn fire(
+        &self,
+        _job: &CronJob,
+        _turn_id: &str,
+        occurrence: &str,
+        _mode: &str,
+    ) -> Result<(), CronFireError> {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .map_err(|err| CronFireError::Failed(err.to_string()))?;
+        writeln!(file, "FIRED {occurrence}")
+            .and_then(|()| file.sync_data())
+            .map_err(|err| CronFireError::Failed(err.to_string()))
+    }
+}
+
+/// Fixture child (the `ownership_holder_fixture` pattern): one cron tick
+/// against the SHARED sessions dir + jobs cache named by the env, at a fixed
+/// TestClock so both children compute the identical due occurrence. Writes
+/// its tick outcome to its own result file; fires go to the shared log.
+#[test]
+fn cron_cross_process_fixture() {
+    let Some(sessions) = std::env::var_os("NANO_CRON_FIXTURE_SESSIONS") else {
+        return;
+    };
+    let home = PathBuf::from(std::env::var_os("NANO_CRON_FIXTURE_HOME").expect("home"));
+    let go = PathBuf::from(std::env::var_os("NANO_CRON_FIXTURE_GO").expect("go"));
+    let result = PathBuf::from(std::env::var_os("NANO_CRON_FIXTURE_RESULT").expect("result"));
+    let fired = PathBuf::from(std::env::var_os("NANO_CRON_FIXTURE_FIRED").expect("fired"));
+    // Bounded wait for the parent's go signal so both children tick
+    // concurrently (the contended claim the fix serializes).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !go.exists() {
+        if std::time::Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    runtime.block_on(async move {
+        let clock = TestClock::new(T0 + 61_000); // one occurrence due: 10:41
+        let store = JsonCronStore::new(&home);
+        let executor = FireLogExecutor { path: fired };
+        let summary = match runner(PathBuf::from(sessions), &clock, &|_| None)
+            .tick(&store, &executor)
+            .await
+        {
+            Ok(outcomes) => format!("{outcomes:?}"),
+            Err(err) => format!("TickError:{err}"),
+        };
+        std::fs::write(&result, summary).unwrap();
+    });
+}
+
+/// F-8 defect 1, the two-process proof: two REAL host processes sharing one
+/// NANO_HOME discover the same due occurrence and tick concurrently.
+/// Claim-before-fire (the under-guard re-fold over the S3 lock machinery)
+/// makes the same-occurrence double-fire impossible: exactly ONE fire lands
+/// in the shared log and exactly ONE CronFired reservation in the journal;
+/// the loser sees Busy (guard contention, deferred) or AlreadyReserved (the
+/// winner's durable claim observed under the lock) — never a second fire.
+#[test]
+fn cross_process_same_occurrence_fires_exactly_once() {
+    let dir = tmpdir("xprocfire");
+    let sessions = dir.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    make_session(&sessions, "s1");
+    let home = dir.join("home");
+    JsonCronStore::new(&home)
+        .save(&[job("s1", "* * * * *", None)])
+        .unwrap();
+    let go = dir.join("go");
+    let fired = dir.join("fired.log");
+
+    let spawn = |tag: &str| {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cron_tests::cron_cross_process_fixture",
+                "--nocapture",
+            ])
+            .env("NANO_CRON_FIXTURE_SESSIONS", &sessions)
+            .env("NANO_CRON_FIXTURE_HOME", &home)
+            .env("NANO_CRON_FIXTURE_GO", &go)
+            .env(
+                "NANO_CRON_FIXTURE_RESULT",
+                dir.join(format!("result-{tag}")),
+            )
+            .env("NANO_CRON_FIXTURE_FIRED", &fired)
+            .spawn()
+            .unwrap()
+    };
+    let mut child_a = spawn("a");
+    let mut child_b = spawn("b");
+    std::fs::write(&go, b"go").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    for child in [&mut child_a, &mut child_b] {
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                panic!("fixture child did not finish in time");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
+    // The oracle is external state: the shared fired-log (host-side effect)
+    // and the session journal (the durable reservation).
+    let fired_lines = std::fs::read_to_string(&fired).unwrap_or_default();
+    let fires: Vec<&str> = fired_lines.lines().collect();
+    assert_eq!(
+        fires,
+        ["FIRED job1:2026-08-12T10:41:00Z"],
+        "exactly one cross-process fire of the occurrence; child outcomes: a={} b={}",
+        std::fs::read_to_string(dir.join("result-a")).unwrap_or_else(|e| format!("<{e}>")),
+        std::fs::read_to_string(dir.join("result-b")).unwrap_or_else(|e| format!("<{e}>")),
+    );
+    let report = read_journal(&sessions.join("s1.jsonl")).unwrap();
+    let reservations: Vec<&OpEnvelope> = report
+        .envelopes
+        .iter()
+        .filter(|e| matches!(&e.op, Op::CronFired { occurrence_id, .. } if occurrence_id == "job1:2026-08-12T10:41:00Z"))
+        .collect();
+    assert_eq!(
+        reservations.len(),
+        1,
+        "exactly one durable CronFired reservation for the occurrence"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

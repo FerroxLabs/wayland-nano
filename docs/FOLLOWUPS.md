@@ -141,7 +141,7 @@ promotes/closes entries; builders append only.
   gate's wait off the synchronous path (queued approvals) — design
   decision, not a patch.
 
-## F-8: C11 hardening candidates (C11 proof, F-C11-1/2/4/5)
+## F-8: C11 hardening candidates (C11 proof, F-C11-1/2/4/5) — DATA-INTEGRITY HALF FIXED (W2 cron lane, commit on branch fix/w2-cron); scope half (F-C11-2 protocol-host cron wiring) still OPEN
 
 - **Filed:** 2026-08-12, documented-not-patched per proof discipline.
 - **Items:** cron idempotency check runs outside the SessionGuard
@@ -152,6 +152,33 @@ promotes/closes entries; builders append only.
 - **Close means:** one hardening pass against the journal-first
   discipline; each site either journals fail-closed or documents why
   the degradation is the intended semantics.
+- **Split (SEVERITY-SIGNOFF-2026-08-14):** the sev-2 data-integrity
+  half (cross-process cron double-fire window + continued execution
+  after a failed journal append) is FIXED on branch `fix/w2-cron`:
+  - Double-fire window: `tick_one` now re-folds the session journal
+    UNDER the session guard (the S3 in-process mutex + OS file lock, or
+    the lifetime ownership lock it stands in for) and re-checks both the
+    tombstone set and the occurrence reservation before journaling
+    `CronFired` — check-and-reserve is atomic across processes. Proven
+    by `cross_process_same_occurrence_fires_exactly_once`: two real
+    child processes sharing one NANO_HOME tick the same due occurrence
+    concurrently; exactly one fire lands in the shared fired-log and
+    exactly one `CronFired` reservation in the journal.
+  - That proof also exposed a second cross-process defect: the store's
+    fixed tmp name (`jobs.jsonl.tmp`) let a concurrent host's save
+    clobber the winner's post-reservation persist (durable reservation,
+    aborted fire — a lost occurrence). Fixed: per-process tmp name in
+    `JsonCronStore::save`.
+  - Failed journal append at fire time: verified the fire path already
+    aborts BEFORE the cache is touched (`cannot journal CronFired`
+    typed `JobTickOutcome::Error`, no injection); pinned by
+    `fire_time_journal_failure_aborts_no_execution_no_cache_mutation`
+    (torn-path injection at fire time ⇒ no execution, typed error,
+    `last_fired`/`next_fire` untouched).
+  - NOT in this half (unchanged): protocol-host cron wiring (F-C11-2,
+    scope question), goal-driver `let _ =` journal swallow, exec
+    mid-turn append failure — those remain open under the original
+    items above.
 
 ## F-9: AGENTS.md mid-session edits picked up one turn late in acp_mode (C10 proof, F-C10-1)
 

@@ -11,6 +11,11 @@
 //! - A fire = a journal-first `CronFired` reservation keyed by a stable
 //!   occurrence id (`{job_id}:{scheduled_fire_time}`, RFC3339 UTC minute
 //!   resolution), flushed BEFORE any prompt injection or model call.
+//!   Claim-before-fire (F-8 data-integrity): the occurrence idempotency
+//!   check is REPEATED under the session guard (in-process mutex + OS
+//!   file lock, or the lifetime ownership lock it stands in for), so two
+//!   hosts sharing one NANO_HOME cannot both reserve the same occurrence
+//!   — the check-and-reserve is atomic across processes.
 //! - Missed-while-dead fires coalesce to ONE with `coalesced: n` journaled
 //!   (Q4 RULED) — never catch-up storms.
 //! - `mode_at_fire = min(session_mode_at_fire, default)` — ONE authoritative
@@ -414,7 +419,13 @@ impl CronStoreLike for JsonCronStore {
         }
         let bytes = serde_json::to_vec_pretty(&jobs)
             .map_err(|err| CronStoreError::Corrupt(err.to_string()))?;
-        let tmp = self.path.with_extension("jsonl.tmp");
+        // Per-process tmp name: two hosts sharing one NANO_HOME write
+        // through this same path, and a fixed tmp name lets one host's
+        // rename fail under the other's truncate (F-8 two-process proof:
+        // the collision aborted a fire AFTER its reservation was durable).
+        let tmp = self
+            .path
+            .with_extension(format!("jsonl.{}.tmp", std::process::id()));
         {
             let mut options = std::fs::OpenOptions::new();
             options.write(true).create(true).truncate(true);
@@ -459,8 +470,9 @@ pub enum JobTickOutcome {
         coalesced: u32,
         mode_at_fire: String,
     },
-    /// The occurrence was already journaled (a prior crash interrupted the
-    /// injection) — reconciled forward, NOT re-fired.
+    /// The occurrence was already journaled — a prior crash interrupted the
+    /// injection, or a concurrent host claimed the occurrence first (F-8)
+    /// — reconciled forward, NOT re-fired.
     AlreadyReserved {
         job_id: String,
         occurrence_id: String,
@@ -775,6 +787,42 @@ impl CronRunner<'_> {
                 job_id: job.job_id.clone(),
             };
         };
+
+        // ── Claim-before-fire (F-8 data-integrity) ──
+        // The idempotency fold above ran BEFORE any exclusion was held: a
+        // concurrent host sharing this NANO_HOME could have journaled this
+        // very occurrence — or a delete — in between, and a stale pass here
+        // would double-fire. Every journal writer holds this same exclusion
+        // (the guard's OS layer, or the lifetime ownership lock it stands
+        // in for on sessions this process owns), so a re-fold UNDER the
+        // guard observes every durable reservation: check-and-reserve is
+        // atomic across processes and the double-fire window is closed.
+        let locked_state = match read_journal(&journal_path) {
+            Ok(report) => SessionState::fold(&report.envelopes),
+            Err(err) => return fail(format!("session journal unreadable under guard: {err}")),
+        };
+        if locked_state.cron_tombstones.contains(&job.job_id)
+            && !locked_state.cron_jobs.contains_key(&job.job_id)
+        {
+            tombstoned.push(job.job_id.clone());
+            return JobTickOutcome::Idle {
+                job_id: job.job_id.clone(),
+            };
+        }
+        if locked_state
+            .cron_fired_occurrences
+            .contains(&occurrence_key)
+        {
+            if job.last_fired.as_deref() != Some(rfc3339_minute(latest_due).as_str()) {
+                job.last_fired = Some(rfc3339_minute(latest_due));
+                job.next_fire = schedule.next_after(latest_due).map(rfc3339_minute);
+                *dirty = true;
+            }
+            return JobTickOutcome::AlreadyReserved {
+                job_id: job.job_id.clone(),
+                occurrence_id: occurrence_key,
+            };
+        }
 
         // ── Step 3: journal-first reservation, THEN the cache ──
         let mode = mode_at_fire((self.live_mode)(&job.session_id));
