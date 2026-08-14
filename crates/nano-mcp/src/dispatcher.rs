@@ -431,6 +431,12 @@ struct ConnState {
     poison: Option<String>,
     /// Graceful close in progress: refuse new requests, drain, exit.
     closing: bool,
+    /// F-P3-6: set by the shutdown sweep AFTER every pending id's
+    /// `notifications/cancelled` is on the priority lane. The writer's
+    /// closing-drain may not exit on a quiet tick until this is set —
+    /// closing is set BEFORE the sweep enqueues, so a fast writer would
+    /// otherwise drain-exit first and the cancels would die in the lane.
+    cancels_queued: bool,
 }
 
 struct Shared {
@@ -486,6 +492,15 @@ impl Shared {
 
     fn set_closing(&self) {
         lock(&self.state).closing = true;
+    }
+
+    /// F-P3-6: has the shutdown sweep finished enqueueing the cancels?
+    fn cancels_queued(&self) -> bool {
+        lock(&self.state).cancels_queued
+    }
+
+    fn set_cancels_queued(&self) {
+        lock(&self.state).cancels_queued = true;
     }
 
     // --- pending map enforcing functions (§2.2) --------------------------
@@ -1142,6 +1157,14 @@ fn writer_main(
                     quiet_observed = false;
                     frame
                 }
+                // F-P3-6: closing is set BEFORE the shutdown sweep enqueues
+                // the per-pending cancels — an empty lane here can simply
+                // mean the sweep hasn't run yet. Hold (never exit) until it
+                // signals completion, or those cancels die in the lane.
+                None if !shared.cancels_queued() => {
+                    std::thread::sleep(WRITER_IDLE_TICK);
+                    continue;
+                }
                 None if quiet_observed => break,
                 None => {
                     quiet_observed = true;
@@ -1298,6 +1321,7 @@ impl Connection {
             state: Mutex::new(ConnState {
                 poison: None,
                 closing: false,
+                cancels_queued: false,
             }),
             pending: Mutex::new(PendingState::default()),
             cancelled_requests: Mutex::new(HashSet::new()),
@@ -1450,7 +1474,11 @@ impl Connection {
     /// Graceful shutdown (§2.6): refuse new requests, send
     /// `notifications/cancelled` for each pending id (best-effort), close
     /// stdin via the writer's drain-exit, bounded wait, then the supervisor
-    /// terminates the child and joins the threads. Idempotent.
+    /// terminates the child and joins the threads. Idempotent. The writer's
+    /// drain-exit is held until `set_cancels_queued` below — the sweep
+    /// enqueues AFTER closing is set, so without the hold the writer could
+    /// finish its quiet-tick drain first and the cancels would never reach
+    /// the wire (F-P3-6).
     pub fn shutdown(&self) {
         self.shared.set_closing();
         // Retire each pending id (so the late response is a retired
@@ -1469,6 +1497,7 @@ impl Connection {
                 serde_json::to_string(&notification).expect("notification serializes"),
             );
         }
+        self.shared.set_cancels_queued();
         let _ = self.shared.events_tx.send(SupEvent::Shutdown);
         if let Some(handle) = lock(&self.supervisor).take() {
             let _ = handle.join();
@@ -1651,6 +1680,87 @@ mod tests {
         drop(nt);
         assert_eq!(s.next_frame(&pr, &nr, &never).as_deref(), Some("p1"));
         assert!(s.next_frame(&pr, &nr, &never).is_none());
+    }
+
+    // --- writer closing-drain (F-P3-6: hold until the cancel sweep lands) ---
+
+    struct SharedSink {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+    impl Write for SharedSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.buf.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn bare_shared() -> (Arc<Shared>, Receiver<String>, Receiver<String>) {
+        let (prio_tx, prio_rx) = mpsc::sync_channel::<String>(PRIORITY_LANE_CAP);
+        let (normal_tx, normal_rx) = mpsc::sync_channel::<String>(NORMAL_LANE_CAP);
+        let (server_req_tx, _server_req_rx) =
+            mpsc::sync_channel::<ServerRequest>(SERVER_REQUEST_QUEUE_CAP);
+        let (events_tx, _events_rx) = mpsc::channel::<SupEvent>();
+        let shared = Arc::new(Shared {
+            state: Mutex::new(ConnState {
+                poison: None,
+                closing: false,
+                cancels_queued: false,
+            }),
+            pending: Mutex::new(PendingState::default()),
+            cancelled_requests: Mutex::new(HashSet::new()),
+            next_id: AtomicU64::new(1),
+            violations: AtomicUsize::new(0),
+            overflow_replies: AtomicU64::new(0),
+            elicitations_handled: AtomicU64::new(0),
+            write_started_ms: AtomicU64::new(0),
+            epoch: Instant::now(),
+            prio_tx,
+            normal_tx,
+            server_req_tx,
+            events_tx,
+            sink: Arc::new(|_| {}),
+            handler: Arc::new(NoServerRequests),
+            slot_retired_hook: Arc::new(|_| {}),
+            reader_panic_after_frames: None,
+        });
+        (shared, prio_rx, normal_rx)
+    }
+
+    /// F-P3-6 regression pin: closing is set BEFORE the shutdown sweep
+    /// enqueues the cancels. The writer must hold its closing-drain (never
+    /// quiet-exit) until the sweep signals `cancels_queued`, then write the
+    /// late-arriving cancel before exit. Pre-fix this writer exited after
+    /// one 25ms quiet tick and the cancel died in the lane.
+    #[test]
+    fn writer_holds_close_drain_until_cancels_queued() {
+        let (shared, prio_rx, normal_rx) = bare_shared();
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = SharedSink { buf: buf.clone() };
+        let writer_shared = shared.clone();
+        let writer =
+            std::thread::spawn(move || writer_main(&writer_shared, &prio_rx, &normal_rx, sink));
+        // Graceful close begins; the sweep has not enqueued yet.
+        shared.set_closing();
+        // Many quiet ticks: pre-fix the writer drain-exited inside 50ms.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            !writer.is_finished(),
+            "writer drain-exited before the cancel sweep completed"
+        );
+        // The sweep's cancel lands, then the sweep signals completion.
+        shared
+            .enqueue_priority("cancel-frame".to_string())
+            .expect("priority enqueue");
+        shared.set_cancels_queued();
+        writer.join().expect("writer exits after the held drain");
+        assert_eq!(
+            buf.lock().unwrap().as_slice(),
+            b"cancel-frame\n",
+            "the cancel reached the wire before the writer exited"
+        );
     }
 
     // --- DeadlineCell (§2.4 rule 1: set once, extended at most once) --------
