@@ -539,7 +539,18 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     // session policy at construction (https hosts set; inert until the
     // dispatcher HTTP binding lands — HTTP registration is a typed refusal
     // — and deny-by-default is otherwise unchanged).
-    let env_mcp_specs = crate::mcp_specs::mcp_specs_from_env();
+    let mut env_mcp_specs = crate::mcp_specs::mcp_specs_from_env();
+    // S8 activation: installed MCP plugins merge into the SAME registry
+    // path as every other source (session_mcp_registry chains this list).
+    // A corrupt plugin store is a typed startup refusal (fail closed); an
+    // absent store resolves empty.
+    match crate::plugin_cmds::plugin_mcp_specs(nano_home) {
+        Ok(specs) => env_mcp_specs.extend(specs),
+        Err(err) => {
+            eprintln!("wayland-nano: plugin store unreadable; refusing to start: {err}");
+            return Ok(2);
+        }
+    }
     let policy = crate::mcp_specs::allow_http_mcp_origins(policy, &env_mcp_specs);
 
     let reader = std::io::BufReader::new(std::io::stdin());
