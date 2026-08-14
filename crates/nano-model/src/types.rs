@@ -320,6 +320,14 @@ pub enum ModelError {
     Entitlement(String),
     #[error("server error {status}: {message}")]
     Server { status: u16, message: String },
+    /// F-18: the provider answered HTTP 404 — the addressed model id is
+    /// retired/unknown at the endpoint (the advertised snapshot is stale).
+    /// A distinct typed class so kind-keyed fallback/retirement logic
+    /// (NanoErrorKind::ModelNotFound on the wire, RoutingFailureClass::
+    /// ModelNotFound in the routing journal) cannot miss it — pre-fix it
+    /// surfaced as the undifferentiated model_server_4xx bucket.
+    #[error("model not found (http_status={status}): {message}")]
+    ModelNotFound { status: u16, message: String },
     /// The provider rejected the request FORMAT (F-P5-1): the live Flux
     /// edge answers a malformed request body with HTTP 5xx whose body
     /// carries `error.type == "invalid_request_error"`. Terminal for

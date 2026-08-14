@@ -1595,6 +1595,10 @@ mod tests {
         routes: Mutex<std::collections::HashMap<String, std::collections::VecDeque<ModelResponse>>>,
         block_keys: Vec<String>,
         release: Option<Arc<std::sync::atomic::AtomicBool>>,
+        /// Set (when present) the moment a BLOCKED call is entered — the
+        /// wedge/park proof a cancelling test must wait on, so the cancel
+        /// never races a child that has not started its model call yet.
+        parked: Option<Arc<std::sync::atomic::AtomicBool>>,
         /// P1: tool names advertised on each request (child-surface pin).
         seen_defs: Arc<Mutex<Vec<String>>>,
     }
@@ -1626,6 +1630,9 @@ mod tests {
             if let Some(release) = &self.release
                 && self.block_keys.contains(&key)
             {
+                if let Some(parked) = &self.parked {
+                    parked.store(true, Ordering::SeqCst);
+                }
                 while !release.load(Ordering::SeqCst) {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
@@ -1878,6 +1885,7 @@ mod tests {
                 routes: Mutex::new(routes),
                 block_keys: vec![],
                 release: None,
+                parked: None,
                 seen_defs: Default::default(),
             },
         );
@@ -1929,6 +1937,7 @@ mod tests {
                 routes: Mutex::new(routes),
                 block_keys: vec!["slow job".to_string()],
                 release: Some(release.clone()),
+                parked: None,
                 seen_defs: Default::default(),
             },
         );
@@ -1949,6 +1958,7 @@ mod tests {
         // Child A: wedged forever (release never fires) — the bounded
         // teardown must detach it within ~5s. Child B: completes normally.
         let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let parked = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut routes: std::collections::HashMap<
             String,
             std::collections::VecDeque<ModelResponse>,
@@ -1967,12 +1977,26 @@ mod tests {
                 routes: Mutex::new(routes),
                 block_keys: vec!["wedged job".to_string()],
                 release: Some(release.clone()),
+                parked: Some(parked.clone()),
                 seen_defs: Default::default(),
             },
         );
         let wedged = registry.spawn("wedged job", None).unwrap();
         let quick = registry.spawn("quick job", None).unwrap();
         assert_eq!(wait_terminal(&registry, &quick), "done (no label, 0 steps)");
+        // Deterministic wedge: cancel only AFTER the wedged child is REALLY
+        // parked inside its blocked model call. Without this the cancel can
+        // win the spawn race under load and the child ends at the turn's
+        // loop-top flag check (cancelled) instead of exercising the bounded
+        // teardown this test pins (flaked on the 2026-08-14 wave-2 gates).
+        let deadline = std::time::Instant::now() + TEARDOWN_WAIT;
+        while !parked.load(Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "wedged child never parked inside the driver"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
 
         // Cancel ONLY the wedged child: bounded wait trips, detach, and the
         // OTHER child is untouched.
@@ -2012,6 +2036,7 @@ mod tests {
                 routes: Mutex::new(routes),
                 block_keys: vec!["job one".to_string(), "job two".to_string()],
                 release: Some(release.clone()),
+                parked: None,
                 seen_defs: Default::default(),
             },
         );
@@ -2048,6 +2073,7 @@ mod tests {
                 routes: Mutex::new(routes),
                 block_keys: vec![],
                 release: None,
+                parked: None,
                 seen_defs: Default::default(),
             },
         );
@@ -2396,6 +2422,7 @@ mod tests {
             )])),
             block_keys: vec![seed.clone()],
             release: Some(release.clone()),
+            parked: None,
             seen_defs: Default::default(),
         };
         let registry = registry(&dirs, driver);

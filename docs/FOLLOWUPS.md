@@ -276,7 +276,7 @@ promotes/closes entries; builders append only.
 - **Close means:** either give the task/memory families typed kinds
   (preferred — one table) or surface the refusal text on the card.
 
-## F-17: Wire-contract note — session/cancel with a JSON-RPC id never fires (C6 proof leg 14)
+## F-17: Wire-contract note — session/cancel with a JSON-RPC id never fires (C6 proof leg 14) — cancel-latency half FIXED at 56d23a8
 
 - **Filed:** 2026-08-12, fidelity observation, spec-conformant
   behavior.
@@ -286,11 +286,31 @@ promotes/closes entries; builders append only.
   notification) are unaffected. Also observed: a mid-stream cancel
   answers after the in-flight streaming response completes (flag
   checked at step boundaries; 46.8s worst case in the drive).
-- **Close means:** document both behaviors in the ACP extension notes
-  for third-party client authors; optionally detect + warn on an
-  id-carrying cancel.
+- **Cancel-latency half FIXED (2026-08-14, wave-2 fix lane, sev-2 per
+  the 2026-08-14 severity adjudication):** the turn loop now races
+  every in-flight `complete_observed` against the cancel flag
+  (`cancel_raced`, turn.rs — 25ms watcher, `tokio::select!`); a fired
+  flag drops the in-flight future (cancelling the HTTP request) and
+  the new `Err(ModelError::Cancelled)` arm maps it to the SAME
+  terminal semantics as a boundary cancel — Stopped(user_cancelled) +
+  journaled TurnEnd(cancelled) → stopReason "cancelled" — with the
+  in-flight reservation settled conservatively first (P1 §3.5). A
+  driver-reported boundary cancel now also journals TurnEnd(cancelled)
+  (previously it took the generic failure arm with no TurnEnd).
+- **Verified by:** engine pin
+  `cancel_mid_call_aborts_inflight_response_promptly` (parked driver,
+  never released, sub-second abort, TurnEnd(cancelled) journaled) and
+  ACP proof `cancel_mid_stream_aborts_inflight_response_and_session_survives`
+  (cancel mid-stream answers stopReason "cancelled" in <1s with the
+  model never released; the session serves the next prompt).
+  Cancel-at-boundary regression
+  (`cancel_mid_turn_answers_cancelled_and_stops_stream`) unchanged and
+  green.
+- **Still open (the documentation half):** document both wire-contract
+  behaviors in the ACP extension notes for third-party client authors;
+  optionally detect + warn on an id-carrying cancel.
 
-## F-18: Provider-side 404 (retired model) surfaces as model_server_4xx, not model_not_found (provider live proofs)
+## F-18: Provider-side 404 (retired model) surfaces as model_server_4xx, not model_not_found (provider live proofs) — FIXED at e6a6dca
 
 - **Filed:** 2026-08-12, from the live provider-proof matrix (cerebras,
   fireworks: retired model ids returned provider 404s).
@@ -298,11 +318,24 @@ promotes/closes entries; builders append only.
   error (unknown namespaced id). A provider that 404s a retired model
   mid-turn surfaces as `model_server_4xx{status:404}`. Callers keying
   fallback/model-retirement logic off the KIND will miss it.
-- **Close means:** either map provider 404-with-model-not-found bodies
-  to `model_not_found` at classify time, or document that fallback
-  logic must check `status == 404` on `model_server_4xx`.
+- **Fix (2026-08-14, wave-2 fix lane):** `flux_common::classify_status`
+  folds HTTP 404 into the new typed `ModelError::ModelNotFound`
+  variant. Consumers wired end to end: `kind_of_model` →
+  `NanoErrorKind::ModelNotFound` (wire kind `model_not_found`, 404 as
+  the closed status extra); the P5 ladder signal fold → terminal
+  `RoutingFailureClass::ModelNotFound` with the status journaled;
+  `model_error_of_failure_class` reconstructs the typed variant. The
+  class stays TERMINAL per the P5 §4 design (a stale advertisement
+  fails closed, never cascades) — the fix is the kind mapping, not a
+  cascade-semantics change.
+- **Verified by:** `flux_common::tests::provider_404_classifies_as_model_not_found`,
+  `auto_routing::tests::provider_404_folds_to_typed_model_not_found_end_to_end`,
+  the error_map typed-extras pin, and the ladder-level
+  `provider_404_journals_model_not_found_and_closes_terminal`
+  (journaled failure kind model_not_found, zero calls to the next
+  candidate).
 
-## F-19: A ':' inside a WAYLAND_NANO_PROVIDERS model entry bricks the whole payload (provider live proofs)
+## F-19: A ':' inside a WAYLAND_NANO_PROVIDERS model entry bricks the whole payload (provider live proofs) — FIXED at 05103a2
 
 - **Filed:** 2026-08-12, from the live provider-proof matrix
   (OpenRouter's live /models list carries ids like
@@ -312,9 +345,19 @@ promotes/closes entries; builders append only.
   fail-closed (Flux-only fallback; with no Flux key the host exits at
   startup). Naive passthrough of OpenRouter's /models list into the
   payload bricks routing.
-- **Close means:** host-side normalization — strip `:suffix` tags (or
-  reject only the offending entry, keeping the rest of the payload).
-  Fail-closed on the whole payload is too blunt for a single bad id.
+- **Fix (2026-08-14, wave-2 fix lane):** per-entry malformation
+  (empty, namespaced, overlong, or non-string model id) now drops only
+  the offending entry with a loud typed `payload_entry_invalid`
+  warning, collected on the router (`payload_warnings()`) and surfaced
+  on startup stderr (from_env's diagnostic channel) and as a doctor
+  `provider-payload` WARN line. Structural malformation (bad JSON,
+  wrong entry shapes, oversize bytes/entries/models-per-provider)
+  stays wholesale-fatal (`payload_invalid`, Flux-only fallback).
+- **Verified by:** `f19_one_bad_model_entry_drops_the_rest_survives`
+  (mixed payload keeps its good entries with three typed warnings; a
+  structurally malformed payload stays fatal) and the updated
+  `payload_validation_battery` (overlong id: drop-with-warning, no
+  longer wholesale rejection).
 
 ## F-20: Provider model-id freshness — live lists churn (provider live proofs)
 
@@ -707,7 +750,7 @@ promotes/closes entries; builders append only.
 - Verdict: 10/13 PASS, 2 FAIL (both MEDIUM — filed here, no fix round per process), 1 PASS-with-definitive-negative. §6 provenance-only rule CANNOT lift: 16/16 live calls echo the requested alias; actual-leaf identity absent; buffered + SSE alike.
 - **F-P5-1 MEDIUM:** 500-with-format-body cascades — §8.1 conflict class holds only in a pure-function unit fed a synthetic `body:` signal production never populates (`signals_of_model_error` hardcodes `body: None`, auto_routing.rs:566-620; `flux_common::classify_status` folds only auth_error, flux_common.rs:63-86). Repro: `.tmp/p5-proof/adv` `adv_500_with_format_body_must_be_terminal`.
 - **F-P5-2 MEDIUM:** chained kill-resume budget leak — `journal_snapshot` hardcodes `attempt_budget: ATTEMPT_BUDGET` (auto_routing.rs:873); ACP resume re-journals through it (acp_mode.rs:2748-2755), so a second kill replays `3 − consumed-this-turn` instead of the true remainder (1+1+2 = 4 physical attempts across one logical routed turn). Repro: `adv_double_kill_budget_leak`.
-- **F-P5-3 LOW:** failed-attempt usage capture seam-only (`failed_usage: None` hardcoded, auto_routing.rs:966-972); §6 "meter failed attempts" unwired in production.
+- **F-P5-3 LOW:** failed-attempt usage capture seam-only (`failed_usage: None` hardcoded, auto_routing.rs:966-972); §6 "meter failed attempts" unwired in production. **FIXED at 6bc5b67 (2026-08-14, wave-2 fix lane):** the driver error path carries no usage (ModelError has no usage payload), so the ladder now journals an EXPLICIT record for every failed attempt — provider-reported failure usage retained verbatim when observed, else the honest zero shape (zero tokens, priced=false, reported=false; never fabricated). `RoutingUsage::to_turn_usage` folds the unreported all-zero record to nothing so the session sum is never mislabeled `estimated` over zero tokens. Pinned by `failed_attempt_without_wire_usage_journals_honest_zero_record`.
 - **F-P5-4 LOW:** merged live leg-1 test writes its fixture one `..` too many (p5_auto_routing.rs:2531-2534 → outside workspace). Prover relocated the canary-clean fixture to shared/fixtures/flux/auto-routing/ and removed the stray tree; the test path bug remains.
 - **F-P5-5 LOW:** pin/implicit turn frames drop the response-reported model (engine meters the configured reference, turn.rs:1121; no TurnEnd model field). Moot while alias-echo stands.
 - Confirmed live, NOT a finding (design-§3-compliant known gap): production Auto refuses `capability_empty` pre-dispatch on tool-bearing turns (acp_mode.rs:2602 forces tools=true) until the tool-capability catalog lands.

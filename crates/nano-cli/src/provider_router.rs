@@ -7,9 +7,14 @@
 //! It may only REFERENCE provider ids present in the vendored catalog
 //! (nano_model::provider_catalog — the SOLE endpoint authority) and supply
 //! `{models, hasKey}` annotations. It can never introduce, override, or
-//! redirect an endpoint; unknown provider ids are ignored; a malformed or
-//! oversize payload is ignored wholesale with a secret-free diagnostic
-//! (`payload_invalid`) and the host falls back to Flux-only advertisement.
+//! redirect an endpoint; unknown provider ids are ignored. A STRUCTURALLY
+//! malformed or oversize payload is ignored wholesale with a secret-free
+//! diagnostic (`payload_invalid`) and the host falls back to Flux-only
+//! advertisement — fail-closed. F-19: a single malformed MODEL ENTRY
+//! (empty, namespaced, overlong, or non-string id) no longer bricks the
+//! whole payload — that one entry is dropped with a loud typed
+//! `payload_entry_invalid` warning (startup stderr + doctor) and the rest
+//! of the payload survives.
 //!
 //! Typed error kinds (C7 SSOT rows, pinned by the C8 design §8; wire codes
 //! ride in `error.data` per C7 D2 — the integrator folds these constants
@@ -28,6 +33,11 @@ pub const KIND_PROVIDER_KEY_MISSING: &str = "provider_key_missing";
 pub const KIND_PROVIDER_UNPROVEN: &str = "provider_unproven";
 pub const KIND_OAUTH_EXPIRED: &str = "oauth_expired";
 pub const KIND_PAYLOAD_INVALID: &str = "payload_invalid";
+/// F-19: one malformed model ENTRY (empty/namespaced/overlong/non-string
+/// id) is dropped with this typed warning — the rest of the payload
+/// survives. Distinct from `payload_invalid`, which stays wholesale-fatal
+/// for structural malformation.
+pub const KIND_PAYLOAD_ENTRY_INVALID: &str = "payload_entry_invalid";
 /// P5 §1 step 5: NOTHING routable resolves a credential — distinct from the
 /// §5 capability-empty refusal (different kind, different remedy: configure
 /// a credential). The integrator folds this constant into C7's
@@ -173,6 +183,10 @@ pub struct ProviderRouter {
     /// override it in-memory to exercise the routing matrix's success arm.
     /// Production code never sets this.
     proven_overrides: std::collections::BTreeSet<String>,
+    /// F-19: one typed `payload_entry_invalid` warning per dropped
+    /// malformed model entry, in payload order. Secret-free by construction
+    /// (provider ids and shape descriptions, never entry VALUES).
+    payload_warnings: Vec<String>,
 }
 
 impl ProviderRouter {
@@ -195,9 +209,12 @@ impl ProviderRouter {
     }
 
     /// Parse + validate the raw `WAYLAND_NANO_PROVIDERS` value. `None` (env
-    /// unset) is a valid empty router — Flux-only. A malformed or oversize
-    /// payload returns Err with a secret-free diagnostic reason and the
-    /// caller ignores it WHOLESALE (Flux-only fallback, never a crash).
+    /// unset) is a valid empty router — Flux-only. A STRUCTURALLY malformed
+    /// or oversize payload returns Err with a secret-free diagnostic reason
+    /// and the caller ignores it WHOLESALE (Flux-only fallback, never a
+    /// crash). F-19: malformed individual MODEL ENTRIES (empty, namespaced,
+    /// overlong, or non-string ids) are dropped ONE AT A TIME with a typed
+    /// [`Self::payload_warnings`] entry — the rest of the payload survives.
     pub fn from_payload(raw: Option<&str>) -> Result<Self, String> {
         let Some(raw) = raw else {
             return Ok(Self::default());
@@ -221,6 +238,7 @@ impl ProviderRouter {
         // Merge per provider id (first occurrence of each model wins).
         let mut merged: std::collections::BTreeMap<String, (Vec<String>, bool)> =
             std::collections::BTreeMap::new();
+        let mut warnings: Vec<String> = Vec::new();
         for entry in entries {
             let Some(obj) = entry.as_object() else {
                 return Err(format!(
@@ -258,24 +276,34 @@ impl ProviderRouter {
             let slot = merged.entry(spec.id.to_string()).or_default();
             slot.1 = has_key;
             for model in models {
+                // F-19: a malformed model ENTRY (non-string, overlong,
+                // empty, or namespaced id) is dropped ONE AT A TIME with a
+                // loud typed warning — the rest of the payload survives.
+                // (Pre-fix any of these rejected the WHOLE payload
+                // fail-closed; one `openai/gpt-5-mini:batch` from a live
+                // OpenRouter /models list bricked all routing.)
                 let Some(model) = model.as_str() else {
-                    return Err(format!(
-                        "{KIND_PAYLOAD_INVALID}: model ids must be strings; ignoring it (Flux-only)"
-                    ));
-                };
-                if model.chars().count() > MAX_MODEL_ID_CHARS {
-                    return Err(format!(
-                        "{KIND_PAYLOAD_INVALID}: a model id for {} exceeds {MAX_MODEL_ID_CHARS} chars; ignoring it (Flux-only)",
+                    warnings.push(format!(
+                        "{KIND_PAYLOAD_ENTRY_INVALID}: a model entry for {} is not a string; dropping that entry (rest of payload kept)",
                         spec.id
                     ));
+                    continue;
+                };
+                if model.chars().count() > MAX_MODEL_ID_CHARS {
+                    warnings.push(format!(
+                        "{KIND_PAYLOAD_ENTRY_INVALID}: a model entry for {} exceeds {MAX_MODEL_ID_CHARS} chars; dropping that entry (rest of payload kept)",
+                        spec.id
+                    ));
+                    continue;
                 }
                 // A payload model id must be a bare id — never namespaced
                 // (the host adds the namespace) and never empty.
                 if model.is_empty() || model.contains(':') {
-                    return Err(format!(
-                        "{KIND_PAYLOAD_INVALID}: invalid model id for {}; ignoring it (Flux-only)",
+                    warnings.push(format!(
+                        "{KIND_PAYLOAD_ENTRY_INVALID}: invalid model entry for {} (empty or namespaced id); dropping that entry (rest of payload kept)",
                         spec.id
                     ));
+                    continue;
                 }
                 if !slot.0.iter().any(|m| m == model) {
                     slot.0.push(model.to_string());
@@ -296,17 +324,35 @@ impl ProviderRouter {
         Ok(Self {
             providers,
             proven_overrides: std::collections::BTreeSet::new(),
+            payload_warnings: warnings,
         })
+    }
+
+    /// F-19: the typed `payload_entry_invalid` warnings collected during
+    /// validation — one per dropped malformed model entry, payload order.
+    pub fn payload_warnings(&self) -> &[String] {
+        &self.payload_warnings
     }
 
     /// Production entry: read + validate `WAYLAND_NANO_PROVIDERS`; a
     /// diagnostic reason is returned alongside the (possibly Flux-only)
     /// router for the caller to report on stderr — secret-free by
-    /// construction.
+    /// construction. F-19: the diagnostic is the fatal `payload_invalid`
+    /// reason for structural malformation, or the joined
+    /// `payload_entry_invalid` warnings when individual entries were
+    /// dropped but the rest of the payload survived.
     pub fn from_env() -> (Self, Option<String>) {
         match std::env::var("WAYLAND_NANO_PROVIDERS") {
             Ok(raw) if !raw.trim().is_empty() => match Self::from_payload(Some(&raw)) {
-                Ok(router) => (router, None),
+                Ok(router) => {
+                    let warnings = router.payload_warnings();
+                    if warnings.is_empty() {
+                        (router, None)
+                    } else {
+                        let diag = warnings.join("\n");
+                        (router, Some(diag))
+                    }
+                }
                 Err(reason) => (Self::default(), Some(reason)),
             },
             _ => (Self::default(), None),

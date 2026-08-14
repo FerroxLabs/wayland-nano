@@ -16,6 +16,9 @@ pub fn kind_of_model(err: &ModelError) -> NanoErrorKind {
         ModelError::ContextOverflow(_) => NanoErrorKind::ModelContextOverflow,
         ModelError::Entitlement(_) => NanoErrorKind::ModelEntitlement,
         ModelError::Server { status, .. } => kind_of_status(*status),
+        // F-18: a provider 404 is the typed model_not_found kind on the
+        // wire, not the model_server_4xx bucket.
+        ModelError::ModelNotFound { .. } => NanoErrorKind::ModelNotFound,
         // F-P5-1: a format rejection is request-side (4xx semantics) even
         // when the edge mislabeled it 5xx; terminal, never retryable.
         ModelError::InvalidRequest { .. } => NanoErrorKind::ModelServer4xx,
@@ -43,6 +46,10 @@ pub fn typed_error_of_model(err: &ModelError) -> TypedError {
             typed.retry_after_ms = *retry_after_ms;
         }
         ModelError::Server { status, .. } => {
+            typed.status = Some(*status);
+        }
+        // F-18: the 404 status rides as the closed typed extra.
+        ModelError::ModelNotFound { status, .. } => {
             typed.status = Some(*status);
         }
         ModelError::InvalidRequest { status, .. } => {
@@ -186,6 +193,17 @@ mod tests {
         let typed = typed_error_of_model(&err);
         assert_eq!(typed.kind, NanoErrorKind::ModelServer5xx);
         assert_eq!(typed.status, Some(503));
+
+        // F-18: a provider 404 surfaces as the typed model_not_found kind
+        // (the wire shape Desktop's fallback keys on), with the 404 status
+        // as the closed extra — never the model_server_4xx bucket.
+        let err = ModelError::ModelNotFound {
+            status: 404,
+            message: "retired upstream".into(),
+        };
+        let typed = typed_error_of_model(&err);
+        assert_eq!(typed.kind, NanoErrorKind::ModelNotFound);
+        assert_eq!(typed.status, Some(404));
     }
 
     /// Variant pins for the tool-side families (compile-time exhaustive

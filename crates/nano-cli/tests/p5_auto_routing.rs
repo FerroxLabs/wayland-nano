@@ -1349,6 +1349,117 @@ fn failed_and_successful_attempt_usage_rolls_up_with_provenance() {
     assert!(usage.priced && usage.microcents > 0, "actual-leaf pricing");
 }
 
+/// F-18: a provider 404 arrives from the adapter as the TYPED
+/// ModelError::ModelNotFound — the ladder journals failure model_not_found
+/// (status 404) and closes TERMINAL (§4: a stale snapshot fails closed,
+/// never cascades); the kind-keyed record is what fallback/retirement
+/// logic consumes.
+#[test]
+fn provider_404_journals_model_not_found_and_closes_terminal() {
+    let a = ScriptedTransport::fails(
+        nano_model::flux_common::classify_status(
+            404,
+            r#"{"error":{"message":"model retired upstream"}}"#.to_string(),
+        ),
+        1,
+        None,
+    );
+    let a_calls = a.calls.clone();
+    let b = ScriptedTransport::succeeds(Some("gpt-b"), Usage::default());
+    let b_calls = b.calls.clone();
+    let sink = Arc::new(CollectSink::default());
+    let ladder = ladder_with(
+        vec![
+            (candidate(0, "openai", "gpt-a", CandidateKind::Leaf), a),
+            (candidate(1, "openai", "gpt-b", CandidateKind::Leaf), b),
+        ],
+        sink.clone(),
+    );
+    let err = block_on(ladder.complete_observed(&text_request(), &CallHooks::none()))
+        .expect_err("the 404 fails the turn");
+    assert!(
+        matches!(err, ModelError::ModelNotFound { status: 404, .. }),
+        "the surfaced error is the typed model-not-found: {err:?}"
+    );
+    assert_eq!(a_calls.lock().unwrap().len(), 1);
+    assert!(
+        b_calls.lock().unwrap().is_empty(),
+        "terminal class: the next candidate is never dispatched"
+    );
+    let ops = sink.ops();
+    let receipt = ops.iter().find_map(|op| match op {
+        Op::RoutingReceipt {
+            outcome,
+            failure,
+            status,
+            ..
+        } => Some((*outcome, *failure, *status)),
+        _ => None,
+    });
+    assert_eq!(
+        receipt,
+        Some((
+            RoutingOutcome::TerminalFailure,
+            Some(nano_session::RoutingFailureClass::ModelNotFound),
+            Some(404)
+        )),
+        "the journaled receipt carries the model_not_found kind"
+    );
+}
+
+/// F-P5-3: a failed attempt whose wire carried NO usage (the production
+/// DriverTransport path — ModelError has no usage payload) still journals
+/// an EXPLICIT per-attempt usage record: zero tokens, priced=false,
+/// reported=false — honest, never fabricated, never silently absent.
+#[test]
+fn failed_attempt_without_wire_usage_journals_honest_zero_record() {
+    let a = ScriptedTransport::fails(
+        ModelError::Server {
+            status: 503,
+            message: String::new(),
+        },
+        1,
+        None, // the production shape: the wire reported nothing
+    );
+    let b = ScriptedTransport::succeeds(Some("gpt-a"), Usage::default());
+    let sink = Arc::new(CollectSink::default());
+    let ladder = ladder_with(
+        vec![
+            (candidate(0, "openai", "gpt-a", CandidateKind::Leaf), a),
+            (candidate(1, "openai", "gpt-a", CandidateKind::Leaf), b),
+        ],
+        sink.clone(),
+    );
+    block_on(ladder.complete_observed(&text_request(), &CallHooks::none()))
+        .expect("rung 2 succeeds");
+    let ops = sink.ops();
+    let failed = ops.iter().find_map(|op| match op {
+        Op::RoutingReceipt {
+            ordinal: 0, usage, ..
+        } => *usage,
+        _ => None,
+    });
+    let failed = failed.expect("the failed rung carries an explicit usage record");
+    assert_eq!(
+        (failed.input_tokens, failed.output_tokens, failed.microcents),
+        (0, 0, 0),
+        "zero tokens — the wire reported nothing, nothing is fabricated"
+    );
+    assert!(!failed.priced, "unpriced, never a fake $0");
+    assert!(
+        !failed.reported,
+        "reported=false: explicitly NOT provider-reported"
+    );
+    // The rollup fold is a no-op for the zero record: no tokens to add and
+    // the sum must NOT be mislabeled `estimated` over nothing.
+    let folded = failed.to_turn_usage();
+    assert_eq!(folded.input_tokens + folded.output_tokens, 0);
+    assert_eq!(
+        folded.usage_source,
+        nano_session::op::UsageSource::default()
+    );
+}
+
 #[test]
 fn receipt_completeness_and_secret_canary() {
     // §8.1: every receipt carries the mandated fields; no credential ever

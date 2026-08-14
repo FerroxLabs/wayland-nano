@@ -209,6 +209,50 @@ pub fn run(nano_home: &std::path::Path, out: &mut dyn std::io::Write) -> std::io
         },
     });
 
+    // F-19: the provider-payload line. A STRUCTURALLY malformed
+    // WAYLAND_NANO_PROVIDERS stays wholesale-fatal (payload_invalid,
+    // Flux-only fallback — Warn, matching the startup posture); malformed
+    // individual model entries are dropped one at a time with typed
+    // payload_entry_invalid warnings while the rest of the payload
+    // survives.
+    match std::env::var("WAYLAND_NANO_PROVIDERS") {
+        Ok(raw) if !raw.trim().is_empty() => {
+            match nano_cli::provider_router::ProviderRouter::from_payload(Some(&raw)) {
+                Ok(router) => {
+                    let warnings = router.payload_warnings();
+                    checks.push(Check {
+                        name: "provider-payload",
+                        status: if warnings.is_empty() {
+                            CheckStatus::Pass
+                        } else {
+                            CheckStatus::Warn
+                        },
+                        detail: if warnings.is_empty() {
+                            format!("{} payload provider(s) validated", router.providers().len())
+                        } else {
+                            format!(
+                                "{} malformed model entr{} dropped: {}",
+                                warnings.len(),
+                                if warnings.len() == 1 { "y" } else { "ies" },
+                                warnings.join(" | ")
+                            )
+                        },
+                    });
+                }
+                Err(reason) => checks.push(Check {
+                    name: "provider-payload",
+                    status: CheckStatus::Warn,
+                    detail: reason,
+                }),
+            }
+        }
+        _ => checks.push(Check {
+            name: "provider-payload",
+            status: CheckStatus::Pass,
+            detail: "WAYLAND_NANO_PROVIDERS unset (Flux-only)".into(),
+        }),
+    }
+
     let mut failures = 0;
     let mut warnings = 0;
     writeln!(out, "wayland-nano doctor — {}", env!("CARGO_PKG_VERSION"))?;
