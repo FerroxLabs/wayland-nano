@@ -26,6 +26,9 @@ use std::io::BufReader;
 use std::io::Read;
 use std::io::Write;
 use std::process::Child;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 
 /// The owned halves of a spawned child, one per dispatcher thread:
 /// the writer thread owns `stdin`, the reader thread owns `stdout`, and the
@@ -42,6 +45,9 @@ pub struct TransportParts {
 pub enum TransportChild {
     /// Uncontained std child: unix v1 (see module doc) and unit-test pipes.
     Std(Child),
+    /// Streamable HTTP pump. The supervisor owns the sole shutdown sender;
+    /// dropping/sending it tears down the pump and closes both virtual pipes.
+    Http(HttpChild),
     /// Windows contained spawn (`spawn_process_with_pipes_contained`):
     /// terminate is `JobObject::terminate` on a NO-BREAKAWAY job with
     /// KILL_ON_JOB_CLOSE.
@@ -54,6 +60,7 @@ impl TransportChild {
     pub fn try_wait_exited(&mut self) -> bool {
         match self {
             Self::Std(child) => child.try_wait().ok().flatten().is_some(),
+            Self::Http(child) => child.exited.load(Ordering::Acquire),
             #[cfg(target_os = "windows")]
             Self::Contained(child) => child.try_wait_exited(),
         }
@@ -67,10 +74,18 @@ impl TransportChild {
                 let _ = child.kill();
                 let _ = child.wait();
             }
+            Self::Http(child) => {
+                let _ = child.shutdown.send(());
+            }
             #[cfg(target_os = "windows")]
             Self::Contained(child) => child.terminate(),
         }
     }
+}
+
+pub struct HttpChild {
+    pub(crate) shutdown: Sender<()>,
+    pub(crate) exited: Arc<AtomicBool>,
 }
 
 /// Windows contained child: the NO-BREAKAWAY job object (kill authority,

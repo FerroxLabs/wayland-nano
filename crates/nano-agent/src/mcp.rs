@@ -445,6 +445,10 @@ pub enum RegisterError {
         "mcp_transport: MCP server '{name}' is an HTTP server; the dispatcher-bound HTTP connection (§6.1) is not wired yet — registration refused (fail-closed)"
     )]
     HttpTransportUnavailable { name: String },
+    #[error("mcp_authorization_required: MCP server '{name}' needs authentication")]
+    McpAuthorizationRequired { name: String },
+    #[error("mcp_credential_unavailable: credentials for MCP server '{name}' are unavailable")]
+    McpCredentialUnavailable { name: String },
     #[error(transparent)]
     Connect(#[from] McpError),
 }
@@ -455,6 +459,80 @@ fn now_unix_seconds() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn resolve_http_auth(spec: &McpServerSpec) -> Result<nano_mcp::http::AuthHeader, RegisterError> {
+    use nano_mcp::oauth::storage::{CredentialStore, TokenStorage};
+
+    let stem: String = spec
+        .name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let token_var = format!("{stem}_MCP_TOKEN");
+    let file_var = format!("{stem}_MCP_TOKEN_FILE");
+    let static_token = if let Some(token) = std::env::var(&token_var)
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        Some(token)
+    } else if let Some(path) = std::env::var_os(&file_var) {
+        Some(
+            read_owner_only_token(std::path::Path::new(&path)).map_err(|_| {
+                RegisterError::McpCredentialUnavailable {
+                    name: spec.name.clone(),
+                }
+            })?,
+        )
+    } else {
+        None
+    };
+    if let Some(token) = static_token {
+        nano_egress::redact::register_credential(&token);
+        return Ok(nano_mcp::http::AuthHeader::Bearer(token));
+    }
+
+    let instance_id = mint_instance_id(spec);
+    let tokens = CredentialStore::new().load(&instance_id).map_err(|_| {
+        RegisterError::McpCredentialUnavailable {
+            name: spec.name.clone(),
+        }
+    })?;
+    let access = tokens
+        .and_then(|tokens| tokens.access_token)
+        .ok_or_else(|| RegisterError::McpAuthorizationRequired {
+            name: spec.name.clone(),
+        })?;
+    nano_egress::redact::register_credential(&access);
+    Ok(nano_mcp::http::AuthHeader::Bearer(access))
+}
+
+fn read_owner_only_token(path: &std::path::Path) -> Result<String, std::io::Error> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if std::fs::metadata(path)?.mode() & 0o077 != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "credential file must be owner-only",
+            ));
+        }
+    }
+    let token = std::fs::read_to_string(path)?.trim().to_string();
+    if token.is_empty() {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "credential file is empty",
+        ))
+    } else {
+        Ok(token)
+    }
 }
 
 /// §6.1 (F-P3-1) transport dispatch. Serde stays WIRE-COMPATIBLE with
@@ -593,6 +671,29 @@ impl McpRegistry {
     /// [`McpRegistrationReceipt`]; every keyed surface keys on its
     /// `instance_id`, not the display name.
     pub fn register(&mut self, spec: McpServerSpec) -> Result<usize, RegisterError> {
+        self.register_with_http(spec, None)
+    }
+
+    /// HTTP registration seam for the integrator: the caller supplies the
+    /// already-armed per-session egress client and resolved, redaction-
+    /// registered authorization header. Stdio callers pass through `register`.
+    pub fn register_http(
+        &mut self,
+        spec: McpServerSpec,
+        egress: nano_egress::client::EgressClient,
+    ) -> Result<usize, RegisterError> {
+        let auth = resolve_http_auth(&spec)?;
+        self.register_with_http(spec, Some((egress, auth)))
+    }
+
+    fn register_with_http(
+        &mut self,
+        spec: McpServerSpec,
+        http: Option<(
+            nano_egress::client::EgressClient,
+            nano_mcp::http::AuthHeader,
+        )>,
+    ) -> Result<usize, RegisterError> {
         let instance_id = mint_instance_id(&spec);
         if self
             .servers
@@ -607,32 +708,35 @@ impl McpRegistry {
             });
         }
         let interrupted_call: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        // §6.1 (F-P3-1): an HTTP spec is identity-valid and egress-armed,
-        // but the dispatcher-bound HTTP connection (with §6.1 auth-header
-        // resolution: static <SERVER>_MCP_TOKEN[_FILE] → stored OAuth token
-        // → typed McpAuthorizationRequired) is not wired — refuse typed and
-        // loud rather than fake a connection. The §5.5 requires-elicitation
-        // refusal runs even earlier, at config parse (mcp_specs).
-        let Transport::Stdio { command, args, env } = &spec.transport else {
-            return Err(RegisterError::HttpTransportUnavailable {
-                name: spec.name.clone(),
-            });
-        };
-        let client = match &self.elicitation_factory {
+        let options = match &self.elicitation_factory {
             Some(factory) => {
                 let parts = factory(&instance_id, &spec.name, interrupted_call.clone());
-                McpClient::connect_with_options(
-                    command,
-                    args,
-                    env,
-                    ConnectionOptions {
-                        request_handler: parts.handler,
-                        slot_retired_hook: parts.slot_retired_hook,
-                        ..ConnectionOptions::default()
-                    },
-                )?
+                ConnectionOptions {
+                    request_handler: parts.handler,
+                    slot_retired_hook: parts.slot_retired_hook,
+                    ..ConnectionOptions::default()
+                }
             }
-            None => McpClient::connect(command, args, env)?,
+            None => ConnectionOptions::default(),
+        };
+        let (client, egress_origins) = match &spec.transport {
+            Transport::Stdio { command, args, env } => (
+                McpClient::connect_with_options(command, args, env, options)?,
+                Vec::new(),
+            ),
+            Transport::Http { url } => {
+                let Some((egress, auth)) = http else {
+                    return Err(RegisterError::HttpTransportUnavailable {
+                        name: spec.name.clone(),
+                    });
+                };
+                let origin = nano_mcp::http::HttpTransport::endpoint_origin(url)?;
+                let transport = nano_mcp::http::HttpTransport::new(egress, url, auth);
+                (
+                    McpClient::connect_http_with_options(transport, options)?,
+                    vec![origin],
+                )
+            }
         };
         // §2.7: the receipt records the connect-time negotiated capabilities.
         // A completed connect without the record is a protocol defect — fail
@@ -692,7 +796,7 @@ impl McpRegistry {
             source: spec.source.clone(),
             negotiated,
             tools_digest: canonical_tools_digest(&tools),
-            egress_origins: Vec::new(),
+            egress_origins,
             registered_at: now_unix_seconds(),
         };
         self.servers.push(ServerEntry {
@@ -984,7 +1088,16 @@ impl McpRegistry {
             if fresh != *journaled_digest {
                 // Security-relevant inventory change: drop-and-notify.
                 self.servers[index].hydrated.clear();
-                self.servers[index].churn_window.clear();
+                let mut window = windows.get(server_id).cloned().unwrap_or_default();
+                window.push(journaled_digest.clone());
+                window.push(fresh);
+                if window.len() > nano_session::MAX_RECENT_DIGESTS {
+                    window.drain(..window.len() - nano_session::MAX_RECENT_DIGESTS);
+                }
+                if count_transitions(&window) >= CHURN_TRANSITION_LIMIT {
+                    self.servers[index].pinned = true;
+                }
+                self.servers[index].churn_window = window;
                 let dropped = hydrated.get(server_id).map(|s| s.len()).unwrap_or(0);
                 notices.push(format!(
                     "MCP server '{display}': {dropped} hydrated tools dropped (inventory changed); use tool_search to re-hydrate"

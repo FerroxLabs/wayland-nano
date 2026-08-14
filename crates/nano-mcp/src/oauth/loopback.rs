@@ -18,6 +18,8 @@ use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
 use std::net::TcpStream;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 use std::time::Instant;
@@ -52,6 +54,7 @@ pub struct LoopbackBinding {
     pub state: String,
     expires_at: Instant,
     receiver: mpsc::Receiver<CallbackOutcome>,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl LoopbackBinding {
@@ -75,6 +78,12 @@ impl LoopbackBinding {
             CallbackOutcome::Code(code) => Ok(code),
             CallbackOutcome::Failed(reason) => Err(OAuthError::Failed { reason }),
         }
+    }
+}
+
+impl Drop for LoopbackBinding {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
     }
 }
 
@@ -113,12 +122,24 @@ pub(crate) fn bind_with_timeout(
         random_token_128(),
     );
     let (tx, rx) = mpsc::channel();
+    let cancelled = Arc::new(AtomicBool::new(false));
     {
         let (_, origin, path, state) = &binding_values;
         let host_header = origin.trim_start_matches("http://").to_string();
         let path = path.clone();
         let state = state.clone();
-        std::thread::spawn(move || accept_loop(listener, tx, host_header, path, state, expires_at));
+        let cancelled = Arc::clone(&cancelled);
+        std::thread::spawn(move || {
+            accept_loop(
+                listener,
+                tx,
+                host_header,
+                path,
+                state,
+                expires_at,
+                &cancelled,
+            )
+        });
     }
     Ok(LoopbackBinding {
         attempt_id: binding_values.0,
@@ -128,6 +149,7 @@ pub(crate) fn bind_with_timeout(
         state: binding_values.3,
         expires_at,
         receiver: rx,
+        cancelled,
     })
 }
 
@@ -144,8 +166,12 @@ fn accept_loop(
     path: String,
     state: String,
     expires_at: Instant,
+    cancelled: &AtomicBool,
 ) {
     loop {
+        if cancelled.load(Ordering::Acquire) {
+            return;
+        }
         if Instant::now() >= expires_at {
             drop(listener);
             let _ = tx.send(CallbackOutcome::Failed(FailReason::CallbackTimeout));
@@ -460,6 +486,21 @@ mod tests {
             .callback_origin
             .trim_start_matches("http://")
             .to_string()
+    }
+
+    #[test]
+    fn dropping_binding_tears_down_listener_promptly() {
+        let binding = bind_with_timeout("srv_drop", Duration::from_secs(10)).expect("bind");
+        let addr = addr_of(&binding);
+        drop(binding);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            if TcpStream::connect(&addr).is_err() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("loopback listener remained bound after its owner was dropped");
     }
 
     #[test]

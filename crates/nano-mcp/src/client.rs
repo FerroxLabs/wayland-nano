@@ -14,6 +14,7 @@
 use crate::dispatcher::{
     Connection, ConnectionOptions, DeadlineCell, PendingSlot, ServerRequestHandler,
 };
+use crate::http::HttpTransport;
 use crate::protocol::{
     JsonRpcNotification, JsonRpcRequest, McpResourceContent, McpResourceDescriptor,
     McpResourceListResult, McpResourceReadResult, McpToolDescriptor, NegotiatedCapabilities,
@@ -71,6 +72,28 @@ pub struct McpClient {
 }
 
 impl McpClient {
+    pub fn connect_http(transport: HttpTransport) -> Result<Self, McpError> {
+        Self::connect_http_with_options(transport, ConnectionOptions::default())
+    }
+
+    pub fn connect_http_with_options(
+        transport: HttpTransport,
+        options: ConnectionOptions,
+    ) -> Result<Self, McpError> {
+        let conn = Connection::spawn(transport.into_parts()?, options);
+        let client = Self {
+            conn,
+            timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
+            cached_tools: Arc::new(Vec::new()),
+        };
+        client.initialize()?;
+        let tools = client.list_tools_inner()?;
+        Ok(Self {
+            cached_tools: Arc::new(tools),
+            ..client
+        })
+    }
+
     /// Spawns a server, performs the initialize handshake, records the
     /// negotiated capabilities (§2.7), and caches tools/list once (§2.7
     /// kills the duplicate list at the registry).
