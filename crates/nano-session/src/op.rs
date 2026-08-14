@@ -914,6 +914,7 @@ pub enum HookOutcome {
     Blocked,
     Failed,
     Timeout,
+    BoundedOutput,
     #[serde(other)]
     Unknown,
 }

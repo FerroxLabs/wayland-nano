@@ -539,6 +539,9 @@ fn emit_compaction_hook_decisions(
                 nano_hooks::HookOutcome::Blocked => nano_session::op::HookOutcome::Blocked,
                 nano_hooks::HookOutcome::Failed => nano_session::op::HookOutcome::Failed,
                 nano_hooks::HookOutcome::Timeout => nano_session::op::HookOutcome::Timeout,
+                nano_hooks::HookOutcome::BoundedOutput => {
+                    nano_session::op::HookOutcome::BoundedOutput
+                }
             },
             duration_ms: decision.duration_ms,
         });
