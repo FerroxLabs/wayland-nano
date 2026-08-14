@@ -321,19 +321,31 @@ fn resolve_linux_sandbox_exe() -> Option<std::path::PathBuf> {
 /// The guardian is the session/process-group leader. It keeps the sandboxed
 /// server in the same group, watches the Nano host PID externally, and kills
 /// the complete group if the host disappears.
+///
+/// Structure constraint: the server must run in the FOREGROUND (`exec "$@"`),
+/// never backgrounded with `&`. A non-interactive POSIX shell (dash, macOS
+/// bash-as-sh) assigns /dev/null to the stdin of an asynchronous command
+/// BEFORE applying explicit redirections, so a backgrounded server sees an
+/// instant stdin EOF and exits — the host's stdin pipe never reaches it, and
+/// even `<&0` cannot recover it (it dups the already-reassigned fd). The
+/// host-death watcher therefore moves into a backgrounded SUBSHELL (its own
+/// stdin is irrelevant): it polls the host pid and the group-leader pid
+/// (`$$`, which `exec` reuses for the sandboxed command), SIGKILLs the whole
+/// process group when the host vanishes, and exits quietly when the server
+/// finishes first.
 #[cfg(unix)]
 const UNIX_GUARDIAN: &str = r#"
 parent=$1
 shift
-"$@" &
-child=$!
-while kill -0 "$parent" 2>/dev/null && kill -0 "$child" 2>/dev/null; do
-  sleep 0.05
-done
-if ! kill -0 "$parent" 2>/dev/null; then
-  kill -KILL -$$
-fi
-wait "$child"
+(
+  while kill -0 "$parent" 2>/dev/null && kill -0 "$$" 2>/dev/null; do
+    sleep 0.05
+  done
+  if ! kill -0 "$parent" 2>/dev/null; then
+    kill -KILL -$$
+  fi
+) &
+exec "$@"
 "#;
 
 /// Unix contained spawn. There is no raw-Command fallback.

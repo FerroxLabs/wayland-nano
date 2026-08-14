@@ -356,7 +356,17 @@ fn fake_server(
     next_cursor: Option<&str>,
     blob_uri: Option<&str>,
 ) -> FakeServer {
-    let dir = tempfile::tempdir().expect("tempdir");
+    // The unix contained spawn (seatbelt/bwrap workspace-write) may only
+    // write under the host process cwd — the workspace root — so fixture
+    // scratch dirs live under target/, not the OS temp dir: a /tmp marker
+    // would be a DENIED write, silently turning the wire-log assertions
+    // vacuous on unix.
+    let scratch = std::env::current_dir().expect("cwd").join("target");
+    std::fs::create_dir_all(&scratch).expect("fixture scratch root");
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("nano-agent-fake-server-{name}-"))
+        .tempdir_in(&scratch)
+        .expect("fixture dir");
     let tools_file = dir.path().join("tools.json");
     std::fs::write(&tools_file, serde_json::to_string(tools).unwrap()).expect("write tools");
     let resources_file = dir.path().join("resources.json");
