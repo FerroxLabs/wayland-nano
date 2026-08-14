@@ -99,9 +99,6 @@ fn payload_validation_battery() {
         r#"[{"provider":"openai","models":"gpt-5.6-terra","hasKey":true}]"#,
         r#"[{"provider":"openai","models":["m"],"hasKey":"yes"}]"#,
         r#"[{"models":["m"],"hasKey":true}]"#,
-        // namespaced/empty model ids are invalid in the payload
-        r#"[{"provider":"openai","models":["openai:gpt"],"hasKey":true}]"#,
-        r#"[{"provider":"openai","models":[""],"hasKey":true}]"#,
     ] {
         assert!(
             ProviderRouter::from_payload(Some(bad)).is_err(),
@@ -109,7 +106,7 @@ fn payload_validation_battery() {
         );
     }
 
-    // Limits: 32 KiB total, 64 entries, 256 models/provider, 128 chars/id.
+    // Limits: 32 KiB total, 64 entries, 256 models/provider.
     let oversize = format!(
         r#"[{{"provider":"openai","models":["{}"],"hasKey":true}}]"#,
         "m".repeat(33 * 1024)
@@ -131,11 +128,23 @@ fn payload_validation_battery() {
             .join(",")
     );
     assert!(ProviderRouter::from_payload(Some(&too_many_models)).is_err());
+    // F-19: an overlong model id is ONE malformed entry — dropped with a
+    // typed warning, no longer wholesale-fatal.
     let long_id = format!(
         r#"[{{"provider":"openai","models":["{}"],"hasKey":true}}]"#,
         "m".repeat(129)
     );
-    assert!(ProviderRouter::from_payload(Some(&long_id)).is_err());
+    let router = ProviderRouter::from_payload(Some(&long_id))
+        .expect("a lone overlong id drops, the payload survives");
+    assert_eq!(router.payload_warnings().len(), 1);
+    assert!(
+        router.payload_warnings()[0]
+            .starts_with(nano_cli::provider_router::KIND_PAYLOAD_ENTRY_INVALID),
+        "typed warning: {}",
+        router.payload_warnings()[0]
+    );
+    // The provider entry survives with zero models (nothing advertised).
+    assert!(router.advertised_models().is_empty());
 
     // Dedup: first occurrence wins.
     let router = ProviderRouter::from_payload(Some(
@@ -180,6 +189,45 @@ fn payload_validation_battery() {
         .map(|m| m.name.clone())
         .collect();
     assert_eq!(names, ["gpt-5.6-terra (OpenAI)", "grok-9 (xAI)"]);
+}
+
+/// F-19: ONE colon-bearing (or empty/non-string) model entry no longer
+/// bricks the whole payload — the bad entry drops with a typed
+/// `payload_entry_invalid` warning, the rest of the payload survives.
+/// (The live-proof matrix hit this via OpenRouter's live /models list
+/// carrying ids like `openai/gpt-5-mini:batch` / `:free`.) A structurally
+/// malformed payload stays wholesale-fatal.
+#[test]
+fn f19_one_bad_model_entry_drops_the_rest_survives() {
+    let router = ProviderRouter::from_payload(Some(
+        r#"[
+            {"provider":"openai","models":["gpt-5.6-terra","openai/gpt-5-mini:batch",""],"hasKey":true},
+            {"provider":"xai","models":[42,"grok-9"],"hasKey":true}
+        ]"#,
+    ))
+    .expect("one bad entry must not brick the payload");
+    // The three malformed entries dropped; the two good ids survived.
+    assert_eq!(router.payload_warnings().len(), 3);
+    for warning in router.payload_warnings() {
+        assert!(
+            warning.starts_with(nano_cli::provider_router::KIND_PAYLOAD_ENTRY_INVALID),
+            "typed warning: {warning}"
+        );
+    }
+    let ids: Vec<String> = router
+        .advertised_models()
+        .iter()
+        .map(|m| m.id.clone())
+        .collect();
+    assert_eq!(ids, ["openai:gpt-5.6-terra", "xai:grok-9"]);
+
+    // The fully-malformed CATALOG stays fatal (fail-closed wholesale).
+    let err = ProviderRouter::from_payload(Some(r#"[{"provider":"openai"}]"#))
+        .expect_err("structural malformation stays wholesale-fatal");
+    assert!(
+        err.starts_with(nano_cli::provider_router::KIND_PAYLOAD_INVALID),
+        "typed fatal diagnostic: {err}"
+    );
 }
 
 // ── namespace parser (Q2) ───────────────────────────────────────────────

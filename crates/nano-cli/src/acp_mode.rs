@@ -504,8 +504,10 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     let flux_key = crate::flux_key::flux_api_key();
     let (router, payload_diag) = crate::provider_router::ProviderRouter::from_env();
     if let Some(diag) = payload_diag {
-        // payload_invalid: diagnostic-only, never suppresses an otherwise
-        // usable Flux startup (codex r2) — and secret-free by construction.
+        // payload_invalid / payload_entry_invalid: diagnostic-only, never
+        // suppresses an otherwise usable Flux startup (codex r2) — and
+        // secret-free by construction. F-19: dropped-entry warnings ride
+        // the same channel (the rest of the payload stayed live).
         eprintln!("wayland-nano: {diag}");
     }
     let credentialed = router.credentialed_providers(&env_reader, now);
