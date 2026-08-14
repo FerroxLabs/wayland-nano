@@ -290,6 +290,144 @@ mod tests {
     fn rejects_neither_json_nor_sse() {
         assert!(parse_response_body("<html>404</html>").is_err());
     }
+
+    // --- F-P3-12: the error surface never carries bodies or credentials ----
+
+    /// Read one full request (head + Content-Length body — draining it so
+    /// the response close is FIN-ordered, never RST), then answer.
+    fn serve_once(listener: std::net::TcpListener, status: &str, body: String) {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let mut need = usize::MAX;
+        loop {
+            let n = stream.read(&mut chunk).expect("read");
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if need == usize::MAX
+                && let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n")
+            {
+                let head = String::from_utf8_lossy(&buf[..end]);
+                let len = head
+                    .lines()
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(String::from)
+                    })
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                need = end + 4 + len;
+            }
+            if buf.len() >= need {
+                break;
+            }
+        }
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).expect("write");
+        stream.flush().expect("flush");
+    }
+
+    fn loopback_egress() -> EgressClient {
+        let policy = nano_egress::policy::EgressPolicy::new().allow_host_with_http("127.0.0.1");
+        EgressClient::new(policy)
+    }
+
+    /// F-P3-12 regression pin: `McpError::Transport` reaches model-visible
+    /// tool results (nano-agent `resource_error_of_mcp` stringifies it), so
+    /// it must carry neither the response body, nor credentials, nor the
+    /// full request URL — per the nano-egress redaction discipline
+    /// (`sanitize_transport_error`).
+    #[tokio::test]
+    async fn http_error_surface_carries_no_body_or_credentials() {
+        let body_marker = "FAKE-SECRET-MARKER-7c1d9e";
+        let bearer_marker = "FAKE-BEARER-MARKER-3b8a41";
+        let query_marker = "FAKE-QUERY-MARKER-51f0c2";
+        let userinfo_marker = "FAKE-USERINFO-MARKER-a94d07";
+
+        // Leg A: a non-200 status carries NO body — the marker and the
+        // 64 KiB pad in the response body must not reach the error, and the
+        // presented bearer credential must not either.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let body = format!("{{\"error\":\"{body_marker}\"}}{}", "x".repeat(64 * 1024));
+        std::thread::spawn(move || serve_once(listener, "500 Internal Server Error", body));
+        let mut transport = HttpTransport::new(
+            loopback_egress(),
+            format!("http://127.0.0.1:{port}/mcp"),
+            AuthHeader::Bearer(bearer_marker.to_string()),
+        );
+        let err = transport
+            .round_trip("{}")
+            .await
+            .expect_err("500 is an error");
+        let rendered = err.to_string();
+        assert!(!rendered.contains(body_marker), "body leaked: {rendered}");
+        assert!(
+            !rendered.contains(bearer_marker),
+            "credential leaked: {rendered}"
+        );
+        assert!(
+            rendered.len() <= 256,
+            "error text stays bounded: {rendered}"
+        );
+        assert!(rendered.contains("500"), "the status survives: {rendered}");
+
+        // Leg B: a 200 whose body is garbage — the parse failure names the
+        // defect class, never the body.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let body = format!("{body_marker}{}", "y".repeat(64 * 1024));
+        std::thread::spawn(move || serve_once(listener, "200 OK", body));
+        let mut transport = HttpTransport::new(
+            loopback_egress(),
+            format!("http://127.0.0.1:{port}/mcp"),
+            AuthHeader::Bearer(bearer_marker.to_string()),
+        );
+        let err = transport
+            .round_trip("{}")
+            .await
+            .expect_err("garbage 200 is an error");
+        let rendered = err.to_string();
+        assert!(!rendered.contains(body_marker), "body leaked: {rendered}");
+        assert!(
+            !rendered.contains(bearer_marker),
+            "credential leaked: {rendered}"
+        );
+
+        // Leg C: a reqwest transport failure (connection refused) carries
+        // the request URL in its Display — the sanitizer must strip query
+        // and userinfo. (A policy denial instead is equally clean: host +
+        // hashed path only.)
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let closed_port = closed.local_addr().expect("addr").port();
+        drop(closed);
+        let mut transport = HttpTransport::new(
+            loopback_egress(),
+            format!(
+                "http://user:{userinfo_marker}@127.0.0.1:{closed_port}/mcp?session={query_marker}"
+            ),
+            AuthHeader::None,
+        );
+        let err = transport
+            .round_trip("{}")
+            .await
+            .expect_err("closed port is an error");
+        let rendered = err.to_string();
+        assert!(
+            !rendered.contains(query_marker),
+            "query leaked into the error: {rendered}"
+        );
+        assert!(
+            !rendered.contains(userinfo_marker),
+            "userinfo leaked into the error: {rendered}"
+        );
+    }
 }
 
 #[cfg(test)]
