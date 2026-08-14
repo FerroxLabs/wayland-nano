@@ -1121,6 +1121,12 @@ pub fn rate_limit_notice(session_id: &str, snapshot: serde_json::Value) -> JsonR
 /// totals + honesty label + the cap position when one is configured.
 /// `microcents`/`priced` come from the meter (the budget authority) —
 /// `priced: false` renders `unpriced`, NEVER $0.000.
+///
+/// Emitted as the `_wayland/session/budget` ext notification, NOT
+/// session/update: Desktop's ACP SDK validates session/update against
+/// zSessionNotification before dispatch and drops unknown sessionUpdate
+/// kinds with -32602, so a custom "budget" kind would never reach the
+/// client. Ext notifications route through extNotification unvalidated.
 pub fn budget_notice(
     session_id: &str,
     session_tokens: u64,
@@ -1130,23 +1136,21 @@ pub fn budget_notice(
     observed: Option<u64>,
 ) -> JsonRpcNotification {
     JsonRpcNotification::new(
-        "session/update",
+        "_wayland/session/budget",
         serde_json::json!({
             "sessionId": session_id,
-            "update": {
-                "sessionUpdate": "budget",
-                "session_tokens": session_tokens,
-                "microcents": microcents,
-                "priced": priced,
-                "limit": limit,
-                "observed": observed
-            }
+            "session_tokens": session_tokens,
+            "microcents": microcents,
+            "priced": priced,
+            "limit": limit,
+            "observed": observed
         }),
     )
 }
 
 /// P1 §4.1: the typed 80% BudgetWarn notice `{limit, observed, pct_used}`
-/// (C7 vocabulary; latest-wins, fires once per crossing).
+/// (C7 vocabulary; latest-wins, fires once per crossing). Ext notification
+/// (see [`budget_notice`] — the SDK drops unknown sessionUpdate kinds).
 pub fn budget_warn_notice(
     session_id: &str,
     limit: u64,
@@ -1154,31 +1158,26 @@ pub fn budget_warn_notice(
     pct_used: u64,
 ) -> JsonRpcNotification {
     JsonRpcNotification::new(
-        "session/update",
+        "_wayland/session/budget-warn",
         serde_json::json!({
             "sessionId": session_id,
-            "update": {
-                "sessionUpdate": "budget_warn",
-                "limit": limit,
-                "observed": observed,
-                "pct_used": pct_used
-            }
+            "limit": limit,
+            "observed": observed,
+            "pct_used": pct_used
         }),
     )
 }
 
 /// P1 §4.2: the typed clamp notice — a request's `max_tokens` was clamped
-/// to the reserved output allowance. Logged, never silent.
+/// to the reserved output allowance. Logged, never silent. Ext notification
+/// (see [`budget_notice`] — the SDK drops unknown sessionUpdate kinds).
 pub fn budget_clamp_notice(session_id: &str, requested: u64, granted: u64) -> JsonRpcNotification {
     JsonRpcNotification::new(
-        "session/update",
+        "_wayland/session/budget-clamp",
         serde_json::json!({
             "sessionId": session_id,
-            "update": {
-                "sessionUpdate": "budget_clamp",
-                "requested": requested,
-                "granted": granted
-            }
+            "requested": requested,
+            "granted": granted
         }),
     )
 }
