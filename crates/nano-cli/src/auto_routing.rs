@@ -11,8 +11,9 @@
 //!   only for `routing_mode = auto_client_side`.
 //! - §3: candidate construction is deterministic and filtered BEFORE any
 //!   network attempt (advertised + credentialed + live-proven + capability);
-//!   the tool-capability catalog is a hard prerequisite — until it exists,
-//!   tool-bearing Auto turns fail closed with the typed capability error.
+//!   the tool-capability catalog (`nano_model::tool_capability`, vendored,
+//!   parse-time proof enforcement) gates tool-bearing turns — unproven
+//!   candidates fail closed with the typed capability error.
 //! - §4: at most three physical provider attempts per Auto turn, at most one
 //!   attempt per candidate; cascade ONLY on 408/429/5xx, typed
 //!   rate-limit/overload, and pre-commit transport failures; the first
@@ -406,9 +407,9 @@ pub fn construct_candidates(inputs: &CandidateInputs<'_>) -> CandidatePlan {
     };
 
     // ── Rung 1: the Flux router alias passthrough. Admitted when Flux is
-    // credentialed AND the turn's required capabilities can be proven for
-    // alias routing (§3) — tool/image capability on an alias is unprovable
-    // until the capability catalogs bless it.
+    // credentialed AND the turn's required capabilities are proven for
+    // alias routing (§3): S1 blessed the alias for TOOLS (recorded proof —
+    // Flux routes internally); IMAGES stay unblessed on aliases (P2a D6).
     let alias_rejection = if !inputs.flux_credentialed {
         Some(CandidateRejection::ProviderUncredentialed)
     } else {
