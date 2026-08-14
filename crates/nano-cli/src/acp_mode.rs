@@ -606,6 +606,17 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
+    // S1 evidence-capture arm (NANO_AUTO_TOOLS_PROBE): same fail-closed
+    // typed parse discipline — malformed is a config error, never a default.
+    let tools_probe = match crate::auto_routing::parse_tools_probe(
+        std::env::var(crate::auto_routing::AUTO_TOOLS_PROBE_ENV).ok(),
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("wayland-nano: {err}");
+            return Ok(2);
+        }
+    };
     // A configured default is a PIN (§1 step 2): validate it against the
     // advertised set at startup — a misconfigured default fails loudly here,
     // never silently reroutes to `flux-auto` or the fallback.
@@ -621,6 +632,7 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     let routing_config = crate::auto_routing::RoutingConfig {
         auto_opt_in,
         configured_default,
+        tools_probe,
     };
     // B2: the deterministic initial binding. A configured default PIN wins
     // (P5 §1 step 2); otherwise Flux when its credential resolves
@@ -1116,6 +1128,21 @@ where
 {
     let out = Arc::new(Mutex::new(writer));
     let pending: PendingMap = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    // P5 §5/S1: the production tool-capability catalog — vendored (parse-
+    // time proof enforcement), layered with the evidence-capture probe arm
+    // from the routing config. Fail-closed at startup: an unloadable
+    // vendored catalog is a host error, never a silent all-false fallback
+    // (absent ⇒ false happens per KEY, not per catalog).
+    let tool_catalog = match nano_model::tool_capability::ToolCapabilityCatalog::vendored() {
+        Ok(catalog) => crate::auto_routing::ProbeToolCatalog {
+            inner: catalog,
+            probe: config.routing.tools_probe,
+        },
+        Err(err) => {
+            eprintln!("wayland-nano: tool capability catalog unavailable: {err}");
+            return Ok(2);
+        }
+    };
     // The active session's cancel flag, shared with the reader thread so a
     // session/cancel lands IMMEDIATELY — the main loop cannot relay it while
     // the turn future is mid-poll (tool execution runs synchronously).
@@ -2653,8 +2680,6 @@ where
                                             .iter()
                                             .map(|m| m.id.clone())
                                             .collect();
-                                        let tool_catalog =
-                                            crate::auto_routing::EmptyToolCapabilityCatalog;
                                         let candidate_inputs =
                                             crate::auto_routing::CandidateInputs {
                                                 router: config.router,
@@ -2694,7 +2719,7 @@ where
                                 let mut journal_failed = false;
                                 if resume_plan.is_some() {
                                     let vision = config.vision_catalog;
-                                    let tools = crate::auto_routing::EmptyToolCapabilityCatalog;
+                                    let tools = &tool_catalog;
                                     let mut kept = Vec::new();
                                     let mut dropped = Vec::new();
                                     for candidate in admitted {
@@ -2713,7 +2738,7 @@ where
                                             && !vision.image_in(&vision_key))
                                             || (requirements.tools
                                                 && !crate::auto_routing::ToolCapabilityCatalog::tool_use_proven(
-                                                    &tools,
+                                                    tools,
                                                     &candidate.provider_id,
                                                     &candidate.candidate,
                                                 ));

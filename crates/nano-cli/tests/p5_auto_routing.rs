@@ -2166,11 +2166,13 @@ use acp_harness::Host;
 static NO_AUTO: auto_routing::RoutingConfig = auto_routing::RoutingConfig {
     auto_opt_in: false,
     configured_default: None,
+    tools_probe: false,
 };
 
 static AUTO_OPT_IN: auto_routing::RoutingConfig = auto_routing::RoutingConfig {
     auto_opt_in: true,
     configured_default: None,
+    tools_probe: false,
 };
 
 fn configured_default(reference: &str) -> &'static auto_routing::RoutingConfig {
@@ -2178,6 +2180,7 @@ fn configured_default(reference: &str) -> &'static auto_routing::RoutingConfig {
     Box::leak(Box::new(auto_routing::RoutingConfig {
         auto_opt_in: false,
         configured_default: Some(reference.to_string()),
+        tools_probe: false,
     }))
 }
 

@@ -118,11 +118,14 @@ where
         }
     }
 
-    // P5 §5/§3: the auto_client_side fail-closed refusal. Exec turns always
-    // advertise the v1 tool surface, and the exact-leaf tool-capability
-    // catalog does not exist yet — so no admissible candidates exist and the
-    // turn fails with the typed capability-empty refusal BEFORE any
-    // transmission (journaled: the snapshot carries the rejected rungs).
+    // P5 §5/§3: auto_client_side turns run the §4 ladder over the
+    // catalog-admitted candidates. Exec turns always advertise the v1 tool
+    // surface, so capability proof comes from the vendored tool-capability
+    // catalog (layered with the S1 evidence-capture probe arm). When NO
+    // candidate is admissible the turn fails closed with the typed
+    // capability-empty refusal BEFORE any transmission (journaled: the
+    // snapshot carries the rejected rungs).
+    let mut auto_plan: Option<crate::auto_routing::CandidatePlan> = None;
     if routing.mode == nano_session::RoutingMode::AutoClientSide {
         let requirements = crate::auto_routing::requirements_of(
             &[],
@@ -140,6 +143,16 @@ where
                 return 2;
             }
         };
+        let tool_catalog = match nano_model::tool_capability::ToolCapabilityCatalog::vendored() {
+            Ok(catalog) => crate::auto_routing::ProbeToolCatalog {
+                inner: catalog,
+                probe: routing.tools_probe,
+            },
+            Err(err) => {
+                eprintln!("wayland-nano: tool capability catalog unavailable: {err}");
+                return 2;
+            }
+        };
         let router = crate::provider_router::ProviderRouter::default();
         let candidate_inputs = crate::auto_routing::CandidateInputs {
             router: &router,
@@ -148,7 +161,7 @@ where
             flux_credentialed: true, // run() resolved the Flux key
             flux_advertised: &[],
             vision: &vision,
-            tools: &crate::auto_routing::EmptyToolCapabilityCatalog,
+            tools: &tool_catalog,
             approved_leaves: &[],
             requirements,
         };
@@ -170,17 +183,30 @@ where
                 .error("cannot journal the routing snapshot");
             return 2;
         }
-        let err = crate::provider_router::ProviderError::capability_empty(if requirements.tools {
-            "tool-use"
-        } else {
-            "image_in"
-        });
-        events
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .error(&nano_egress::redact::sanitize_text(&err.message));
-        // A pre-dispatch routing refusal is a model-class failure (exit 1).
-        return finish_exec(1, &params.output_last_message, "", &events);
+        if plan.admitted.is_empty() {
+            let err =
+                crate::provider_router::ProviderError::capability_empty(if requirements.tools {
+                    "tool-use"
+                } else {
+                    "image_in"
+                });
+            events
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .error(&nano_egress::redact::sanitize_text(&err.message));
+            // A pre-dispatch routing refusal is a model-class failure (exit 1).
+            return finish_exec(1, &params.output_last_message, "", &events);
+        }
+        if params.goal.is_some() {
+            // Goal-mode Auto needs a PER-TURN ladder (the §4 budget is per
+            // Auto turn); v1 builds the ladder for plain turns only. Typed
+            // usage refusal, never a silent budget share across goal turns.
+            eprintln!(
+                "wayland-nano: --auto routing is not supported with --goal yet (plain exec turns only)"
+            );
+            return 2;
+        }
+        auto_plan = Some(plan);
     }
 
     // 3. Executor stack: core tools → cronjob store tool → MCP merge.
@@ -296,8 +322,46 @@ where
     // 4a. Plain exec (no --goal): one turn to completion. A live paused
     // goal stays paused — only `exec --goal` resumes it.
     if params.goal.is_none() {
+        // P5 §4: an auto turn rides the ladder built from the journaled
+        // snapshot's admitted candidates (one single-attempt driver per
+        // candidate — the driver reads the model id from the request,
+        // which the ladder rewrites per rung); pins/implicit dispatch
+        // exactly like pre-P5. The ladder turn id is the turn's id (both
+        // derive from turn_counter + 1 — the turn has not advanced since
+        // the snapshot was journaled above).
+        let driver = match &auto_plan {
+            Some(plan) => {
+                let turn_id = format!("{}-turn-{}", session.session_id, session.turn_counter + 1);
+                let routing_sink = crate::auto_routing::CoordinatorRoutingSink(journal.clone());
+                let ladder_candidates = plan
+                    .admitted
+                    .iter()
+                    .map(|candidate| crate::auto_routing::LadderCandidate {
+                        plan: candidate.clone(),
+                        transport: crate::auto_routing::DriverTransport(make_driver()),
+                    })
+                    .collect();
+                let ladder = crate::auto_routing::Ladder::new(
+                    &turn_id,
+                    routing.mode,
+                    &routing.reference,
+                    ladder_candidates,
+                    Arc::new(routing_sink),
+                    // Exec wires no pricing catalog; the §6 alias
+                    // provenance-only rule stands (unpriced).
+                    None,
+                    false,
+                    crate::auto_routing::ATTEMPT_BUDGET,
+                    0,
+                );
+                crate::auto_routing::PromptDriver::Auto(crate::auto_routing::AutoDriver::new(
+                    ladder,
+                ))
+            }
+            None => crate::auto_routing::PromptDriver::Pinned(make_driver()),
+        };
         let outcome = run_plain_turn(
-            &make_driver,
+            &driver,
             &with_mcp,
             &gate,
             model_name,
@@ -468,8 +532,8 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_plain_turn<FD, D, T, W>(
-    make_driver: &FD,
+async fn run_plain_turn<D, T, W>(
+    driver: &D,
     executor: &T,
     gate: &ExecApproval<W>,
     model_name: &str,
@@ -483,15 +547,13 @@ async fn run_plain_turn<FD, D, T, W>(
     routing_mode: nano_session::RoutingMode,
 ) -> crate::exec_mode::ExecTurnOutcome
 where
-    FD: Fn() -> D,
     D: nano_agent::turn::ModelDriver,
     T: nano_agent::turn::ToolExecutor,
     W: Write + Send,
 {
-    let driver = make_driver();
     let turn_id = format!("{}-turn-{}", session.session_id, session.turn_counter + 1);
     run_exec_turn(
-        &driver,
+        driver,
         executor,
         gate,
         model_name,
@@ -572,6 +634,17 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
             return 2;
         }
     };
+    // S1 evidence-capture arm (NANO_AUTO_TOOLS_PROBE): same fail-closed
+    // typed parse discipline — malformed is a config error, never a default.
+    let tools_probe = match crate::auto_routing::parse_tools_probe(
+        std::env::var(crate::auto_routing::AUTO_TOOLS_PROBE_ENV).ok(),
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("wayland-nano: {err}");
+            return 2;
+        }
+    };
     let (source, reference) = match (&params.model, &configured_default) {
         (Some(model), _) => match bare_only(model, "--model") {
             Ok(model) => (crate::auto_routing::ModelSource::ExplicitPin, model),
@@ -589,6 +662,7 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
     let routing = crate::exec_mode::ExecRouting {
         mode: crate::auto_routing::resolve_routing(source, &reference, auto_opt_in).mode,
         reference: reference.clone(),
+        tools_probe,
     };
     let sessions_dir = nano_home.join("sessions");
     let home = nano_home.to_path_buf();

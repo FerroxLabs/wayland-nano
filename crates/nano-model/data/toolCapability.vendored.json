@@ -1,0 +1,74 @@
+{
+ "version": 1,
+ "notes": "P5 §5/S1 static tool-capability catalog — fail-closed, keyed by EXACT provider:leaf (no wildcard/prefix matching), absent ⇒ false. Every tool_use:true entry MUST name a recorded proof fixture under shared/fixtures/flux/tools/ (enforced at parse time — an unproven true can never load; AGENTS.md 'evidence before claims'). Overrides are TIGHTENING-ONLY (a config override may turn a proven entry off; false→true is a typed config error). Rationale for blessing the flux-auto ALIAS for tools (unlike vision, which keeps aliases unblessed): Flux routes internally and tool-calls on aliases are already proven on the live wire (see shared/fixtures/flux/tool-calls/ — alias tool-call round-trips predate this catalog); the S1 probes add three consecutive flux-auto alias trials plus one integrated exec turn under shared/fixtures/flux/tools/. The alias-echo identity gap stays quarantined: §6 metering of alias-candidate leaves remains provenance-only (unpriced) — capability admission is NOT identity attribution. Leaves ship tool_use:false until their own recorded probes flip them; v1 production passes an empty approved-leaf manifest (panel Q3), so rung-2/rung-3 blessings would have no dispatch effect yet.",
+ "entries": {
+  "flux-router:flux-auto": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-standard": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-fast": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-reasoning": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-pinned-claude-opus": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-pinned-claude-sonnet": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-pinned-claude-haiku": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-pinned-gpt-5": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-pinned-gpt-5-mini": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-pinned-grok-4": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-pinned-kimi-k2-5": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-pinned-mistral-large": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-pinned-mistral-medium": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-pinned-mistral-small": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-pinned-nova-pro": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-pinned-nova-lite": {
+   "tool_use": false,
+   "proven": null
+  },
+  "flux-router:flux-pinned-codestral": {
+   "tool_use": false,
+   "proven": null
+  }
+ }
+}

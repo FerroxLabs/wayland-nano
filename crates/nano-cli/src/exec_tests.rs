@@ -18,6 +18,7 @@ use std::path::PathBuf;
 const IMPLICIT_ROUTING: ExecRouting = ExecRouting {
     mode: nano_session::RoutingMode::ImplicitAliasPassthrough,
     reference: String::new(),
+    tools_probe: false,
 };
 use std::sync::Mutex;
 
