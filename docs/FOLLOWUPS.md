@@ -903,3 +903,35 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
 - **FIXED F-P3-8 at cea3778** (>64 hydrated union bricked compaction): `hydration_carry_at` (nano-session/src/coordinator.rs) degrades an over-cap entry to digest/summary form — tool_names dropped whole (never a truncated subset), tools_digest + churn window carried. Resume re-exposes nothing for that server; tool_search re-hydrates. Compaction never bricks. Pin: `carry_degrades_when_hydrated_union_exceeds_the_name_cap` (70-name union, replay consistency, second compaction carries).
 - **FIXED F-P3-11 at 697099d** (OAuth listener held ~180s after early failure): mechanism shipped with S5's ad87b4c (binding Drop cancels the accept loop); bind-before-DCR stands because registration needs the redirect_uri. This commit pins the flow-level evidence: `dcr_failure_releases_the_listener_port_promptly` recovers the bound port from the DCR request body and probes it released within 2s of the typed RegistrationFailed.
 - **FIXED F-P3-12 at a48ead5** (unsanitized HTTP error surface): S5's 20be621 routed all `McpError::Transport` construction through `nano_egress::client::sanitize_transport_error` / status-only strings. This commit pins the redaction end-to-end: `http_error_surface_carries_no_body_or_credentials` (500 with a 64 KiB secret-marked body, garbage 200 body, connection-refused with query+userinfo markers, presented bearer) — none reach the error, text stays ≤ 256 chars. **Sev-1 check: NEGATIVE** — no credential material reaches model/card/log paths (AuthHeader values only ever become request headers; `resource_error_of_mcp` stringifies the sanitized text only).
+
+## F-42: nano-cua live-desktop proofs (S9 §7.2) — capability flags stay FALSE until they land
+
+- **Filed:** 2026-08-14, S9 completion lane (feat/s9-cua). The crate shipped
+  headless-complete: policy battery, coordinate mapping, gate matrix, journal
+  shapes, Wayland probe fixtures, redaction fixtures, and all four backends
+  compile (Windows tested natively; macOS via `--target aarch64-apple-darwin`
+  check+clippy; Linux via WSL test+clippy, both with and without the `x11`
+  feature). Live dispatch is proven on NO platform: WSL on this host has no
+  xvfb/X server, so even the CI-provable X11 leg ran self-skipped.
+- **Gap:** the §7.2 battery in `crates/nano-cua/tests/live.rs` self-skips
+  behind `NANO_CUA_LIVE=1` with reason strings. Until each platform's proof
+  is run and recorded, `Capabilities.computer_use` stays FALSE per platform
+  (honesty rule; the donor's `27-C2(b)` advertise-from-linkage defect is the
+  anti-precedent). Do NOT wire advertisement at integration.
+- **Close means:** per platform — Windows: focus-invariance + SendInput
+  landing + HiDPI at 100%/150% on an interactive window station (owner-run);
+  macOS: TCC-granted CGEvent/CGDisplay run on a logged-in GUI session;
+  Linux X11: `xvfb-run cargo test -p nano-cua --test live` with
+  `NANO_CUA_LIVE=1` (CI-automatable on the ubuntu legs); Linux Wayland: a
+  live sway/river seat. Then, and only then, flip that platform's flag.
+
+## F-43: reroute Wayland CUA helpers through nano-platform SpawnSpec
+
+- **Filed:** 2026-08-14, S9 completion lane. nano-platform is a 5-line stub
+  (no SpawnSpec exists), so `nano-cua/src/backends/linux_wayland.rs` shells
+  out to `wlrctl`/`grim` directly in argv mode — the precedent S5 shipped in
+  `nano-mcp/src/stdio.rs` (fixed program, separate argv entries, no shell).
+  Design §2.6 prefers SpawnSpec routing once it exists.
+- **Close means:** nano-platform lands SpawnSpec; the `run_argv` helper in
+  linux_wayland.rs (and the `osascript`/`xdotool` frontmost probes) route
+  through it, with the fixed-argv/no-model-interpolation contract kept.

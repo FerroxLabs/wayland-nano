@@ -10,6 +10,8 @@ pub enum CuaErrorKind {
     BackendUnavailable,
     CoordinateOutOfRange,
     Backend,
+    /// Maps to the integrator's existing `UserCancelled` journal kind.
+    Cancelled,
 }
 
 #[derive(Debug, Error)]
@@ -40,7 +42,8 @@ impl CuaError {
             Self::OsPermissionDenied { .. } => CuaErrorKind::OsPermissionDenied,
             Self::BackendUnavailable { .. } => CuaErrorKind::BackendUnavailable,
             Self::CoordinateOutOfRange => CuaErrorKind::CoordinateOutOfRange,
-            Self::Backend | Self::Cancelled => CuaErrorKind::Backend,
+            Self::Backend => CuaErrorKind::Backend,
+            Self::Cancelled => CuaErrorKind::Cancelled,
         }
     }
 }
