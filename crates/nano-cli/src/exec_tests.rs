@@ -163,6 +163,7 @@ async fn run_fake_shared(tag: &str, model: FakeModel, params: &ExecParams) -> (E
     std::fs::create_dir_all(&workspace).unwrap();
     let shared = std::sync::Arc::new(Mutex::new(Vec::<u8>::new()));
     let writer = SharedWriter(shared.clone());
+    let ladder_model = model.clone();
     let exit = run_exec_with(
         &sessions,
         &dir,
@@ -170,6 +171,7 @@ async fn run_fake_shared(tag: &str, model: FakeModel, params: &ExecParams) -> (E
         params,
         "fake-model",
         move || model.clone(),
+        move || ladder_model.clone(),
         move |_, _| (FakeTools::default(), fake_policy()),
         false,
         false,
@@ -592,6 +594,7 @@ async fn resume_restarts_seq_and_continues_journal() {
         &params("first"),
         "fake-model",
         || FakeModel::with(vec![text_response("one")]),
+        || FakeModel::with(vec![text_response("one")]),
         move |_, _| (FakeTools::default(), fake_policy()),
         false,
         false,
@@ -620,6 +623,7 @@ async fn resume_restarts_seq_and_continues_journal() {
         &workspace,
         &resumed_params,
         "fake-model",
+        || FakeModel::with(vec![text_response("two")]),
         || FakeModel::with(vec![text_response("two")]),
         move |_, _| (FakeTools::default(), fake_policy()),
         false,
@@ -883,6 +887,7 @@ done
         &workspace,
         &params("hello"),
         "fake-model",
+        || FakeModel::with(vec![text_response("hi")]),
         || FakeModel::with(vec![text_response("hi")]),
         move |_, _| (FakeTools::default(), fake_policy()),
         false,

@@ -1688,6 +1688,20 @@ mod tests {
     fn vendored_tool_catalog_implements_the_seam() {
         let catalog =
             nano_model::tool_capability::ToolCapabilityCatalog::vendored().expect("vendored");
+        // The S1 blessing: the flux-auto alias is proven for tools, citing
+        // the recorded fixture tree (parse-time enforced).
+        assert!(ToolCapabilityCatalog::tool_use_proven(
+            &catalog,
+            "flux-router",
+            FLUX_AUTO
+        ));
+        let proven = catalog
+            .proven("flux-router", FLUX_AUTO)
+            .expect("proof cited");
+        assert!(
+            proven.starts_with(nano_model::tool_capability::PROOF_ARTIFACT_PREFIX),
+            "{proven}"
+        );
         // Unknown equals false through the trait; a never-proven pair.
         assert!(!ToolCapabilityCatalog::tool_use_proven(
             &catalog,

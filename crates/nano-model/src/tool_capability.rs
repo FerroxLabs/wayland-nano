@@ -200,12 +200,19 @@ mod tests {
     fn vendored_catalog_parses() {
         let catalog = ToolCapabilityCatalog::vendored().expect("vendored catalog parses");
         assert!(!catalog.is_empty());
-        // Aliases are listed explicitly for reviewability; their blessed
-        // state is whatever the vendored file records (probe-evidenced).
-        for alias in ["flux-auto", "flux-standard", "flux-fast", "flux-reasoning"] {
+        // S1 blessing: the flux-auto alias is proven for tools (recorded
+        // probe fixtures cited in `proven`); the other aliases and every
+        // leaf stay unproven until their own recorded probes flip them.
+        assert!(catalog.tool_use("flux-router", "flux-auto"));
+        assert!(
+            catalog
+                .proven("flux-router", "flux-auto")
+                .is_some_and(|p| p.starts_with(PROOF_ARTIFACT_PREFIX))
+        );
+        for alias in ["flux-standard", "flux-fast", "flux-reasoning"] {
             assert!(
-                catalog.proven("flux-router", alias).is_none()
-                    || catalog.tool_use("flux-router", alias)
+                !catalog.tool_use("flux-router", alias),
+                "alias {alias} is unproven"
             );
         }
     }

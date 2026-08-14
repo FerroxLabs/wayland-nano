@@ -24,13 +24,18 @@ use std::sync::{Arc, Mutex};
 
 /// The full exec run. Returns the exit code (§2.2 matrix).
 #[allow(clippy::too_many_arguments)]
-pub async fn run_exec_with<W, FD, FT, D, T>(
+pub async fn run_exec_with<W, FD, FD2, FT, D, T>(
     sessions_dir: &Path,
     nano_home: &Path,
     workspace: &Path,
     params: &ExecParams,
     model_name: &str,
     make_driver: FD,
+    // P5 §4: the ladder's per-candidate factory — SAME driver output type,
+    // but production builds it with `RetryConfig::single_attempt` so every
+    // physical attempt is visible to (and countable against) the global
+    // three-attempt budget. Pins/implicit/goal turns keep `make_driver`.
+    make_ladder_driver: FD2,
     make_tools: FT,
     // P1: whether the executor stack carries a resolved web_search backend
     // (the make_tools closure attached it) — the advertised surface must
@@ -46,6 +51,7 @@ pub async fn run_exec_with<W, FD, FT, D, T>(
 where
     W: Write + Send,
     FD: Fn() -> D,
+    FD2: Fn() -> D,
     FT: Fn(&Path, PermissionMode) -> (T, nano_core::permissions::FileSystemSandboxPolicy),
     D: nano_agent::turn::ModelDriver,
     T: nano_agent::turn::ToolExecutor,
@@ -338,7 +344,9 @@ where
                     .iter()
                     .map(|candidate| crate::auto_routing::LadderCandidate {
                         plan: candidate.clone(),
-                        transport: crate::auto_routing::DriverTransport(make_driver()),
+                        // §4: single-attempt retry posture — every physical
+                        // attempt is visible to the budget.
+                        transport: crate::auto_routing::DriverTransport(make_ladder_driver()),
                     })
                     .collect();
                 let ladder = crate::auto_routing::Ladder::new(
@@ -674,12 +682,26 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
         nano_egress::policy::EgressPolicy::flux_only(),
         &mcp_specs,
     );
+    let ladder_policy = driver_policy.clone();
+    let ladder_key = api_key.clone();
     let make_driver = move || {
         nano_agent::wiring::FluxDriver::new(
             nano_model::flux_completions::FluxCompletionsClient::new(
                 nano_egress::client::EgressClient::new(driver_policy.clone()),
             ),
             api_key.clone(),
+        )
+    };
+    // P5 §4: ladder candidates dispatch with a single-attempt retry
+    // posture — every physical attempt is visible to (and countable
+    // against) the global three-attempt budget.
+    let make_ladder_driver = move || {
+        nano_agent::wiring::FluxDriver::new(
+            nano_model::flux_completions::FluxCompletionsClient::new(
+                nano_egress::client::EgressClient::new(ladder_policy.clone()),
+            )
+            .with_retry_config(nano_model::retry::RetryConfig::single_attempt()),
+            ladder_key.clone(),
         )
     };
     // P1: web_search — the key-gated ladder, resolved ONCE at host start.
@@ -734,6 +756,7 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
         params,
         &routing.reference,
         make_driver,
+        make_ladder_driver,
         make_tools,
         search_tool.is_some(),
         sandbox_available,
