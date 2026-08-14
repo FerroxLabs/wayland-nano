@@ -146,12 +146,18 @@ launched Desktop**, and check Desktop's dev console for spawn errors.
 
 ## 9. Standalone TUI (optional)
 
-Nano has its own terminal UI (ratatui-based), like Codex/Claude Code:
+Nano has its own terminal UI (ratatui-based), like Codex/Claude Code. It is
+a SEPARATE binary, not a subcommand:
 
 ```bash
-wayland-nano             # usage
-wayland-nano tui         # interactive TUI (if built with default features)
+cargo build --release -p nano-tui
+sudo install -m 755 target/release/nano-tui /usr/local/bin/nano-tui
+nano-tui
 ```
+
+`wayland-nano` itself is the headless CLI: `doctor | protocol-host |
+acp-host | auth login|status|logout <server> | exec | session fork |
+sessions | goal | --version` (bare run prints usage, exit 2).
 
 ## 10. Known deferrals (not bugs — don't chase them)
 
