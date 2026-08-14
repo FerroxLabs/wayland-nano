@@ -39,8 +39,34 @@ pub fn classify_transport(err: reqwest::Error, response_started: bool) -> ModelE
     }
 }
 
-pub async fn read_error_body(response: reqwest::Response) -> String {
-    response.text().await.unwrap_or_default()
+/// F-14 (sev-2, 2026-08-14 adjudication): the provider error body is
+/// provider-controlled — read it BOUNDED. `response.text()` would allocate
+/// whatever a hostile/misbehaving endpoint sends; the cap keeps the
+/// classification inputs (a small JSON error object) intact while refusing
+/// unbounded allocation. Truncated JSON simply falls through to the generic
+/// status-class arms in `classify_status`.
+pub const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+pub async fn read_error_body(mut response: reqwest::Response) -> String {
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(bytes)) => {
+                let room = MAX_ERROR_BODY_BYTES.saturating_sub(buf.len());
+                if room == 0 {
+                    break;
+                }
+                let take = bytes.len().min(room);
+                buf.extend_from_slice(&bytes[..take]);
+                if take < bytes.len() {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 /// Classify an HTTP error status + body into a typed ModelError.
@@ -143,6 +169,32 @@ pub fn context_window_for(model_id: &str, catalog: &[crate::flux_models::FluxMod
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F-14: provider-controlled error bodies are read BOUNDED — a hostile
+    /// endpoint streaming gigabytes must not allocate them. The classification
+    /// input (a small JSON error object) is unaffected.
+    #[tokio::test]
+    async fn error_body_read_is_bounded() {
+        let big = vec![b'x'; MAX_ERROR_BODY_BYTES + 128 * 1024];
+        let response = reqwest::Response::from(
+            http::Response::builder()
+                .status(500)
+                .body(reqwest::Body::from(big))
+                .unwrap(),
+        );
+        let body = read_error_body(response).await;
+        assert_eq!(body.len(), MAX_ERROR_BODY_BYTES);
+
+        let small = br#"{"error":{"type":"invalid_request_error"}}"#.to_vec();
+        let response = reqwest::Response::from(
+            http::Response::builder()
+                .status(500)
+                .body(reqwest::Body::from(small.clone()))
+                .unwrap(),
+        );
+        let body = read_error_body(response).await;
+        assert_eq!(body.as_bytes(), small.as_slice());
+    }
 
     /// F-18: a provider 404 (retired/unknown model id at the endpoint —
     /// the live-proof matrix hit this on cerebras/fireworks) classifies as

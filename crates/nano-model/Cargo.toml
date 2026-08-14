@@ -24,3 +24,4 @@ serde_json = "1"
 
 [dev-dependencies]
 pretty_assertions = "1"
+http = "1"

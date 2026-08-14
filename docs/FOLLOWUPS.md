@@ -255,7 +255,11 @@ promotes/closes entries; builders append only.
   against a prompt arriving while a question card is open (queue,
   reject with a typed error, or disable the input mid-question).
 
-## F-14: Provider error bodies read unbounded (C7 proof, F-C7-1, severity low)
+## F-14: Provider error bodies read unbounded (C7 proof, F-C7-1, severity low) — FIXED (wave-2, sev-2 per 2026-08-14 adjudication)
+
+- **Fixed:** `read_error_body` (`flux_common.rs`) reads bounded at 64 KiB
+  via chunked copy; `error_body_read_is_bounded` pins the cap and the
+  small-body path. Truncated JSON falls through to generic status arms.
 
 - **Filed:** 2026-08-12, from the C7 adversarial proof (1 MiB body leg).
 - **Gap:** `read_error_body` (`flux_common.rs:40-42`) reads the error
