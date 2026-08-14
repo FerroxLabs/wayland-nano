@@ -426,7 +426,10 @@ async fn execute_command(
             let _ = job.terminate();
             #[cfg(unix)]
             unsafe {
-                libc::kill(-(child.id() as i32), libc::SIGKILL);
+                // tokio Child::id() is Option<u32>; Some while running.
+                if let Some(id) = child.id() {
+                    libc::kill(-(id as i32), libc::SIGKILL);
+                }
             }
             let _ = child.wait().await;
             stdout_task.abort();
