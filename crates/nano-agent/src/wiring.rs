@@ -367,6 +367,54 @@ pub const SESSION_TOOL_NAMES: [&str; 4] = ["todo", "ask_user", "enter_plan_mode"
 pub const MCP_SESSION_TOOL_NAMES: [&str; 3] =
     ["tool_search", "mcp_list_resources", "mcp_read_resource"];
 
+/// Workspace checkpoint tools are session-owned but deliberately excluded
+/// from the auto-approve-coupled SESSION_TOOL_NAMES set.
+pub const CHECKPOINT_TOOL_NAMES: [&str; 3] =
+    ["checkpoint_create", "checkpoint_list", "checkpoint_restore"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckpointApprovalClass {
+    Create,
+    List,
+    Restore,
+}
+
+pub fn checkpoint_approval_class(name: &str) -> Option<CheckpointApprovalClass> {
+    match name {
+        "checkpoint_create" => Some(CheckpointApprovalClass::Create),
+        "checkpoint_list" => Some(CheckpointApprovalClass::List),
+        "checkpoint_restore" => Some(CheckpointApprovalClass::Restore),
+        _ => None,
+    }
+}
+
+pub fn checkpoint_tool_definitions() -> Vec<ToolDefinition> {
+    vec![
+        ToolDefinition {
+            name: "checkpoint_create".into(),
+            description: "Create a bounded workspace checkpoint in local nano_home state. Sensitive and ignored paths are never captured. Auto-approved in every permission mode. Args: optional label.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"label": {"type": "string"}}
+            }),
+        },
+        ToolDefinition {
+            name: "checkpoint_list".into(),
+            description: "List bounded workspace checkpoint metadata from local nano_home state; never returns file content. Auto-approved in every permission mode. No args.".into(),
+            input_schema: serde_json::json!({"type": "object", "properties": {}}),
+        },
+        ToolDefinition {
+            name: "checkpoint_restore".into(),
+            description: "Restore workspace files from a checkpoint after first creating an undoable safety checkpoint. Sensitive paths are never written or deleted. Denied in read_only and plan posture, prompts in default, and auto-approves only in full_auto; image-influenced turns always prompt. Args: checkpoint_id.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"checkpoint_id": {"type": "string"}},
+                "required": ["checkpoint_id"]
+            }),
+        },
+    ]
+}
+
 /// P4 §4.3/§4.4: the five PTY tools. SESSION-owned like
 /// [`SESSION_TOOL_NAMES`] but deliberately NOT in it — that list is
 /// name-coupled to an auto-approval arm (AcpApproval::approve step 1b), and
@@ -475,6 +523,7 @@ pub fn child_tool_definitions(web_search_backed: bool, vision_backed: bool) -> V
         // excluded by this EXPLICIT filter — decoupled from the
         // auto-approve-coupled SESSION_TOOL_NAMES list.
         .filter(|def| !MCP_SESSION_TOOL_NAMES.contains(&def.name.as_str()))
+        .filter(|def| !CHECKPOINT_TOOL_NAMES.contains(&def.name.as_str()))
         .collect()
 }
 
@@ -1197,6 +1246,7 @@ impl RealToolExecutor {
             // wrapper too; reaching the base executor is the same loud
             // mis-wiring error.
             name if MCP_SESSION_TOOL_NAMES.contains(&name) => miswired_session_tool(name),
+            name if CHECKPOINT_TOOL_NAMES.contains(&name) => miswired_session_tool(name),
             // P4: the PTY tools are session-owned (the session's
             // PtySessionManager); the base executor must never see them.
             name if PTY_TOOL_NAMES.contains(&name) => miswired_session_tool(name),
@@ -1693,6 +1743,22 @@ mod tests {
                 !child.iter().any(|d| d.name == name),
                 "{name} must be absent from the child tool surface"
             );
+        }
+    }
+
+    #[test]
+    fn checkpoint_names_are_decoupled_and_child_excluded() {
+        for name in CHECKPOINT_TOOL_NAMES {
+            assert!(!SESSION_TOOL_NAMES.contains(&name));
+            assert!(checkpoint_approval_class(name).is_some());
+        }
+        let definitions = checkpoint_tool_definitions();
+        assert_eq!(definitions.len(), CHECKPOINT_TOOL_NAMES.len());
+        let mut child = v1_tool_definitions(false, false);
+        child.extend(definitions);
+        child.retain(|def| !CHECKPOINT_TOOL_NAMES.contains(&def.name.as_str()));
+        for name in CHECKPOINT_TOOL_NAMES {
+            assert!(!child.iter().any(|def| def.name == name));
         }
     }
 

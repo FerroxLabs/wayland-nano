@@ -5,6 +5,7 @@
 //! detection, failure streaks, budgets.
 
 pub mod bootstrap;
+pub mod checkpoint_tools;
 pub mod clock;
 pub mod compact;
 pub mod cost;

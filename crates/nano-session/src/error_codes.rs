@@ -350,6 +350,18 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
             "The attachment store is unavailable or insecurely configured",
             "",
         ),
+        NanoErrorKind::CheckpointUnavailable => card(
+            "Workspace checkpoints are unavailable",
+            "Check system Git, checkpoint storage permissions, and store contention",
+        ),
+        NanoErrorKind::CheckpointNotFound => card(
+            "Checkpoint not found",
+            "It may have been evicted by checkpoint retention",
+        ),
+        NanoErrorKind::CheckpointRestoreFailed => card(
+            "Checkpoint restore did not complete",
+            "Resume the session to run checkpoint recovery",
+        ),
         // Unknown kinds classify TERMINAL in both clients and never retry
         // (design §2/D2 forward-compat rule).
         NanoErrorKind::Unknown => response(
@@ -423,6 +435,9 @@ pub const ALL_KINDS: &[NanoErrorKind] = &[
     NanoErrorKind::ImageTooMany,
     NanoErrorKind::AttachmentMissing,
     NanoErrorKind::AttachmentStoreError,
+    NanoErrorKind::CheckpointUnavailable,
+    NanoErrorKind::CheckpointNotFound,
+    NanoErrorKind::CheckpointRestoreFailed,
 ];
 
 /// The static, provider-free presentation for one kind: title plus the
@@ -545,7 +560,7 @@ mod tests {
     /// ShellRuleDenied + RuleFileInvalid (57 → 59).
     #[test]
     fn all_kinds_count_is_pinned() {
-        assert_eq!(ALL_KINDS.len(), 59);
+        assert_eq!(ALL_KINDS.len(), 62);
     }
 
     /// P3 §12 [r2 codex-F16]: symbolic wire names are the compatibility

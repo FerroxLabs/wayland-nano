@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/nano-core",
     "crates/nano-agent",
+    "crates/nano-checkpoints",
     "crates/nano-model",
     "crates/nano-repomap",
     "crates/nano-tools",

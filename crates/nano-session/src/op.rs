@@ -877,12 +877,100 @@ pub enum RoutingExhaustion {
     Unknown,
 }
 
+/// Audit-safe terminal state of a checkpoint restore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckpointRestoreOutcome {
+    Applied,
+    RolledBack,
+    Failed,
+    #[serde(other)]
+    Unknown,
+}
+
+pub const MAX_CHECKPOINT_ID_CHARS: usize = 128;
+pub const WORKSPACE_KEY_HEX_CHARS: usize = 16;
+
+pub fn is_workspace_key(value: &str) -> bool {
+    value.len() == WORKSPACE_KEY_HEX_CHARS
+        && value
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
+pub fn validate_checkpoint_id(value: &str) -> Result<(), &'static str> {
+    if value.is_empty() || value.chars().count() > MAX_CHECKPOINT_ID_CHARS {
+        Err("checkpoint id empty or over the cap")
+    } else {
+        Ok(())
+    }
+}
+
+pub fn validate_checkpoint_created(
+    checkpoint_id: &str,
+    workspace_key: &str,
+    parent: Option<&str>,
+    tree_digest: &str,
+) -> Result<(), &'static str> {
+    validate_checkpoint_id(checkpoint_id)?;
+    if !is_workspace_key(workspace_key) {
+        return Err("workspace key is not canonical 16-hex");
+    }
+    if let Some(parent) = parent {
+        validate_checkpoint_id(parent)?;
+    }
+    if !is_canonical_digest(tree_digest) {
+        return Err("tree digest is not canonical sha256 hex");
+    }
+    Ok(())
+}
+
+pub fn validate_checkpoint_restore_begin(
+    checkpoint_id: &str,
+    safety_checkpoint_id: &str,
+    tree_digest: &str,
+) -> Result<(), &'static str> {
+    validate_checkpoint_id(checkpoint_id)?;
+    validate_checkpoint_id(safety_checkpoint_id)?;
+    if !is_canonical_digest(tree_digest) {
+        return Err("tree digest is not canonical sha256 hex");
+    }
+    Ok(())
+}
+
+pub fn validate_checkpoint_restore_end(checkpoint_id: &str) -> Result<(), &'static str> {
+    validate_checkpoint_id(checkpoint_id)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Op {
     SessionBegin {
         session_id: String,
         cwd: String,
+    },
+    /// Workspace checkpoint metadata only; no paths or file content.
+    CheckpointCreated {
+        checkpoint_id: String,
+        workspace_key: String,
+        parent: Option<String>,
+        file_count: u32,
+        total_bytes: u64,
+        tree_digest: String,
+        evicted: u32,
+    },
+    /// Durable phase-one marker written before restore staging/apply.
+    CheckpointRestoreBegin {
+        checkpoint_id: String,
+        safety_checkpoint_id: String,
+        file_count: u32,
+        tree_digest: String,
+    },
+    /// Durable restore terminal marker. Recovery writes this with recovered=true.
+    CheckpointRestoreEnd {
+        checkpoint_id: String,
+        outcome: CheckpointRestoreOutcome,
+        recovered: bool,
     },
     TurnBegin {
         turn_id: String,
@@ -1310,5 +1398,38 @@ impl TodoStatus {
     /// Counts toward the open work the status line reports.
     pub fn is_open(self) -> bool {
         matches!(self, TodoStatus::Pending | TodoStatus::InProgress)
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_payload_bounds_are_pinned() {
+        let digest = "a".repeat(64);
+        assert!(validate_checkpoint_created("id", "0123456789abcdef", None, &digest).is_ok());
+        assert!(validate_checkpoint_created("id", "0123456789abcdeG", None, &digest).is_err());
+        assert!(validate_checkpoint_created("id", "0123456789abcdef", None, "bad").is_err());
+        assert!(validate_checkpoint_restore_begin("id", "safety", &digest).is_ok());
+        assert!(validate_checkpoint_restore_end("").is_err());
+    }
+
+    #[test]
+    fn checkpoint_ops_serialize_without_path_or_content_fields() {
+        let value = serde_json::to_value(Op::CheckpointCreated {
+            checkpoint_id: "id".into(),
+            workspace_key: "0123456789abcdef".into(),
+            parent: None,
+            file_count: 1,
+            total_bytes: 2,
+            tree_digest: "a".repeat(64),
+            evicted: 0,
+        })
+        .unwrap();
+        let object = value.as_object().unwrap();
+        for forbidden in ["path", "paths", "content", "manifest", "bytes"] {
+            assert!(!object.contains_key(forbidden));
+        }
     }
 }
