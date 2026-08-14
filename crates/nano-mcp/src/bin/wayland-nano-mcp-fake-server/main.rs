@@ -145,6 +145,11 @@ fn answer_call_later(out: &Out, id: Value, delay: Duration, marker: Value) {
 /// NOT reap it — only job teardown can. The zombie-processes allowance is
 /// the point of the probe: the descendant must OUTLIVE any child-handle
 /// drop so only job containment can kill it.
+///
+/// Note: under bwrap `--unshare-pid` these are NAMESPACE-local pids (the
+/// sandbox's fresh /proc hides the outer values); the unix test maps them
+/// to host pids from the host side. macOS has no pid namespace, so the
+/// recorded pids are host-real there.
 #[allow(clippy::zombie_processes)]
 fn spawn_tree_probe() {
     #[cfg(target_os = "windows")]
