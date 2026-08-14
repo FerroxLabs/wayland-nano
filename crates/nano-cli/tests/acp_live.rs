@@ -649,6 +649,62 @@ fn cancel_mid_turn_answers_cancelled_and_stops_stream() {
     );
 }
 
+/// F-17: cancel MID-STREAM — the provider response is in flight (the model
+/// is parked and NEVER released). Pre-fix the answer waited for the whole
+/// in-flight response (46.8s worst case in the C6 drive); the cancel race
+/// must abort it sub-second, answer stopReason "cancelled", and leave the
+/// session alive for the next prompt.
+#[test]
+fn cancel_mid_stream_aborts_inflight_response_and_session_survives() {
+    let mut client = Harness::spawn(vec![
+        Step::WaitForRelease(text_response("never observed")),
+        Step::Respond(text_response("second turn fine")),
+    ]);
+    let session_id = client.session_id.clone();
+    let prompt_id = client.send_prompt(&session_id, "first");
+
+    // The engine is REALLY parked inside the first model call.
+    client.wait_for_driver_calls(1);
+
+    let started = std::time::Instant::now();
+    client.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "session/cancel",
+        "params": { "sessionId": session_id },
+    }));
+    // NO release_model() here: the answer must arrive on the cancel race
+    // alone, with the provider response still in flight.
+    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id));
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "cancel mid-stream must abort the in-flight response sub-second, took {elapsed:?}"
+    );
+    assert_eq!(
+        frames.last().unwrap()["result"]["stopReason"],
+        "cancelled",
+        "cancelled prompt must answer stopReason cancelled: {}",
+        frames.last().unwrap()
+    );
+    assert_eq!(
+        client.driver_calls.load(Ordering::SeqCst),
+        1,
+        "the parked call was aborted; no further dispatch happened"
+    );
+
+    // Session stays alive: release the (long-dropped) parked future's gate
+    // and run a second prompt to a normal end_turn.
+    client.release_model();
+    let second_id = client.send_prompt(&session_id, "second");
+    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(second_id));
+    assert_eq!(
+        frames.last().unwrap()["result"]["stopReason"],
+        "end_turn",
+        "the session survives a mid-stream cancel: {}",
+        frames.last().unwrap()
+    );
+}
+
 #[test]
 fn permission_round_trip_denies_write_and_skips_reads() {
     let mut client = Harness::spawn(vec![

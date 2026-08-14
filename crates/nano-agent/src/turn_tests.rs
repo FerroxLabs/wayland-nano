@@ -1140,4 +1140,97 @@ mod tests {
             } if call_id == "w1"
         )));
     }
+
+    /// F-17: a cancel issued while the model call is IN FLIGHT aborts the
+    /// turn promptly (sub-second, one 25ms watcher poll) with the SAME
+    /// terminal semantics as a boundary cancel — Stopped(user_cancelled) +
+    /// journaled TurnEnd(cancelled) — never waiting for the parked provider
+    /// response (pre-F-17 worst case: the whole in-flight response, 46.8s
+    /// observed).
+    #[tokio::test]
+    async fn cancel_mid_call_aborts_inflight_response_promptly() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        #[derive(Debug)]
+        struct ParkedModel {
+            entered: Arc<tokio::sync::Notify>,
+            release: Arc<tokio::sync::Notify>,
+        }
+
+        #[async_trait::async_trait]
+        impl ModelDriver for ParkedModel {
+            async fn complete(&self, _request: &ModelRequest) -> Result<ModelResponse, ModelError> {
+                self.entered.notify_one();
+                self.release.notified().await;
+                Ok(text_response("never observed"))
+            }
+        }
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let model = ParkedModel {
+            entered: entered.clone(),
+            release: release.clone(),
+        };
+        let tools = RecordingTools {
+            calls: Mutex::new(Vec::new()),
+            progress: ProgressSignals::default(),
+        };
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            model_name: "mock".into(),
+            tool_definitions: vec![],
+            approval: None,
+            compaction: None,
+            robustness: Default::default(),
+        };
+        let flag = Arc::new(AtomicBool::new(false));
+
+        let canceller = {
+            let entered = entered.clone();
+            let flag = flag.clone();
+            async move {
+                // Fire only once the engine is REALLY parked inside the
+                // model call — never before it (that would be the boundary
+                // path this test must distinguish from).
+                entered.notified().await;
+                flag.store(true, Ordering::SeqCst);
+            }
+        };
+        let started = std::time::Instant::now();
+        let (result, ()) = tokio::join!(
+            engine.run_turn_cancellable("t1", "go", Some(flag.as_ref())),
+            canceller
+        );
+        let elapsed = started.elapsed();
+        // The parked model was NEVER released: the abort came from the
+        // cancel race, not the response.
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "cancel mid-call must abort sub-second, took {elapsed:?}"
+        );
+        assert!(
+            matches!(
+                result.state,
+                TurnState::Stopped(ref info)
+                    if info.kind == nano_session::NanoErrorKind::UserCancelled
+            ),
+            "mid-call cancel ends Stopped(user_cancelled): {:?}",
+            result.state
+        );
+        assert!(
+            matches!(
+                result.ops.iter().map(|e| &e.op).next_back(),
+                Some(nano_session::op::Op::TurnEnd {
+                    outcome: nano_session::op::TurnOutcome::Cancelled,
+                    ..
+                })
+            ),
+            "the cancelled turn journals TurnEnd(cancelled): {:?}",
+            result.ops.last().map(|e| &e.op)
+        );
+    }
 }

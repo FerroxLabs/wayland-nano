@@ -44,6 +44,37 @@ fn drain_extra_usage(
     }
 }
 
+/// F-17: race one in-flight model call against the cancel flag. Without
+/// this the flag is honored only at step boundaries (the loop top and the
+/// retry-loop's per-attempt check), so a cancel issued while a provider
+/// RESPONSE was in flight waited for the whole call to finish (46.8s worst
+/// case observed in the C6 drive). A fired flag aborts the call promptly —
+/// dropping the future cancels the underlying HTTP request — and surfaces
+/// `ModelError::Cancelled`, which the caller maps to the SAME terminal
+/// semantics as a boundary cancel (Stopped(user_cancelled) + journaled
+/// TurnEnd(cancelled)). The 25ms poll keeps the abort sub-second; with no
+/// flag wired the call runs unraced.
+async fn cancel_raced<F>(
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    call: F,
+) -> Result<ModelResponse, ModelError>
+where
+    F: std::future::Future<Output = Result<ModelResponse, ModelError>>,
+{
+    let Some(flag) = cancel else {
+        return call.await;
+    };
+    let watcher = async {
+        while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    };
+    tokio::select! {
+        result = call => result,
+        _ = watcher => Err(ModelError::Cancelled),
+    }
+}
+
 /// P1 §3.4: build the `TurnEnd` op carrying the turn-scoped usage SUM
 /// across every `record_usage` call in the turn (explicitly NOT the last
 /// response's usage) — partial usage for EVERY terminal outcome, omitted
@@ -533,10 +564,11 @@ impl<'a> TurnEngine<'a> {
         .await
     }
 
-    /// Runs a turn, checking the cancellation flag between steps. A fired
-    /// flag stops the turn at the next boundary with a typed reason — never
-    /// mid-tool-execution (side effects already applied stay applied and are
-    /// journaled).
+    /// Runs a turn, checking the cancellation flag between steps AND racing
+    /// it against each in-flight model call (F-17). A fired flag stops the
+    /// turn at the next boundary — or aborts the in-flight provider response
+    /// within one 25ms poll — with a typed reason — never mid-tool-execution
+    /// (side effects already applied stay applied and are journaled).
     pub async fn run_turn_cancellable(
         &self,
         turn_id: &str,
@@ -1056,32 +1088,70 @@ impl<'a> TurnEngine<'a> {
                 cancel,
                 observer: Some(&observing),
             };
-            let response = match self.model.complete_observed(&request, &hooks).await {
-                // C9 §2.4 one-shot 401 seam (Q5 RULED): exactly one retry
-                // of the same byte-identical request, only after a
-                // successful refresh, only for HTTP 401. 403, non-HTTP auth
-                // errors, a second 401, a refresh failure, and the
-                // static-key (no provider) case are all terminal.
-                Err(
-                    err @ ModelError::Auth {
-                        status: Some(401), ..
-                    },
-                ) if !auth_retry_used => {
-                    auth_retry_used = true;
-                    match self.robustness.auth_refresh {
-                        Some(provider) => match provider.refresh().await {
-                            RefreshOutcome::Refreshed => {
-                                self.model.complete_observed(&request, &hooks).await
-                            }
-                            RefreshOutcome::NotRefreshable | RefreshOutcome::Failed(_) => Err(err),
+            let response =
+                match cancel_raced(cancel, self.model.complete_observed(&request, &hooks)).await {
+                    // C9 §2.4 one-shot 401 seam (Q5 RULED): exactly one retry
+                    // of the same byte-identical request, only after a
+                    // successful refresh, only for HTTP 401. 403, non-HTTP auth
+                    // errors, a second 401, a refresh failure, and the
+                    // static-key (no provider) case are all terminal.
+                    Err(
+                        err @ ModelError::Auth {
+                            status: Some(401), ..
                         },
-                        None => Err(err),
+                    ) if !auth_retry_used => {
+                        auth_retry_used = true;
+                        match self.robustness.auth_refresh {
+                            Some(provider) => match provider.refresh().await {
+                                RefreshOutcome::Refreshed => {
+                                    cancel_raced(
+                                        cancel,
+                                        self.model.complete_observed(&request, &hooks),
+                                    )
+                                    .await
+                                }
+                                RefreshOutcome::NotRefreshable | RefreshOutcome::Failed(_) => {
+                                    Err(err)
+                                }
+                            },
+                            None => Err(err),
+                        }
                     }
-                }
-                other => other,
-            };
+                    other => other,
+                };
             let response = match response {
                 Ok(r) => r,
+                // F-17: a cancel that fired MID-CALL (the cancel_raced guard
+                // above aborts the in-flight provider response) or was
+                // reported by the driver's own boundary check takes the SAME
+                // terminal path as the loop-top cancel — Stopped(
+                // user_cancelled) + journaled TurnEnd(cancelled) →
+                // stopReason "cancelled" — never the generic failure arm.
+                // P1 §3.5: the in-flight request's reservation settles
+                // conservatively first (a dispatched request is not a refund).
+                Err(ModelError::Cancelled) => {
+                    if let Some(reservation) = reservation.as_mut() {
+                        let delta = reservation
+                            .settle_conservative(&self.model_name, tokens.estimate(&messages));
+                        turn_usage.add_sum(&delta);
+                        usage_recorded = true;
+                    }
+                    state = TurnState::Stopped(StopInfo::new(
+                        NanoErrorKind::UserCancelled,
+                        "cancelled by caller",
+                    ));
+                    emit(
+                        &mut ops,
+                        turn_end_op(
+                            turn_id,
+                            nano_session::op::TurnOutcome::Cancelled,
+                            &mut turn_usage,
+                            &mut usage_recorded,
+                            &self.robustness.extra_usage,
+                        ),
+                    );
+                    break;
+                }
                 // C9 §4.3 schema re-ask: ONE re-ask, a new journaled
                 // sampling step (NOT a retry). Journal-first: the LITERAL
                 // feedback text lands durable before history mutates; the
