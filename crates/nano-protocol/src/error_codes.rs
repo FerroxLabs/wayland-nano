@@ -158,10 +158,11 @@ mod tests {
     /// MCP-ecosystem kinds moved the pin 48 → 55 (post-P2a-rebase rule);
     /// the RC2 wiring pass added P4's PtySessionGone (55 → 56); the P4
     /// review-mode merge added ReviewParseFailed (56 → 57); the P4 rules
-    /// wiring (F-P4-1) added ShellRuleDenied + RuleFileInvalid (57 → 59).
+    /// wiring (F-P4-1) added ShellRuleDenied + RuleFileInvalid (57 → 59);
+    /// the S3 session-ownership slice (F-P4-3) added SessionBusy (59 → 60).
     #[test]
     fn shim_re_exports_the_canonical_table() {
-        assert_eq!(ALL_KINDS.len(), 59);
+        assert_eq!(ALL_KINDS.len(), 60);
         assert_eq!(
             spec(NanoErrorKind::ModelRateLimited).title,
             nano_session::error_codes::spec(NanoErrorKind::ModelRateLimited).title

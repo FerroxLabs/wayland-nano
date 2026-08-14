@@ -58,6 +58,30 @@ where
             return 2;
         }
     };
+    // F-P4-3: a RESUMED session is owned BEFORE bootstrap appends the
+    // resume marker — resuming a session another host owns is a typed
+    // refusal, never a second writer. (Id validation/existence stay with
+    // bootstrap: an unsafe or missing id skips ownership here and fails
+    // typed below without creating a file.) A fresh session's id is minted
+    // inside bootstrap, so its ownership follows; the fresh nanosecond id
+    // is unguessable, so no contender can hold that lock first.
+    let pre_ownership = match &seed {
+        nano_agent::bootstrap::SessionSeed::Resume(id) => {
+            let journal = sessions_dir.join(format!("{id}.jsonl"));
+            if !nano_agent::bootstrap::is_fs_safe_session_id(id) || !journal.exists() {
+                None
+            } else {
+                match session_guard_registry().try_own(&journal) {
+                    Ok(ownership) => Some(ownership),
+                    Err(err) => {
+                        eprintln!("wayland-nano: {err}");
+                        return 2;
+                    }
+                }
+            }
+        }
+        nano_agent::bootstrap::SessionSeed::New => None,
+    };
     let session = match bootstrap_session(sessions_dir, workspace, seed) {
         Ok(session) => session,
         Err(err) => {
@@ -65,8 +89,20 @@ where
             return 2;
         }
     };
+    let _ownership = match pre_ownership {
+        Some(ownership) => ownership,
+        None => match session_guard_registry().try_own(&session.journal_path) {
+            Ok(ownership) => ownership,
+            Err(err) => {
+                eprintln!("wayland-nano: {err}");
+                return 2;
+            }
+        },
+    };
     // 2. The SessionGuard: exec holds it for its whole run (one exclusion
-    //    for turns, forks, and cron fires). Busy is a typed error, exit 2.
+    //    for turns, forks, and cron fires). On the owned journal this is the
+    //    in-process layer only — the lifetime ownership above is the OS
+    //    layer. Busy is a typed error, exit 2.
     let _guard = match session_guard_registry().try_acquire(&session.journal_path) {
         Ok(guard) => guard,
         Err(err) => {

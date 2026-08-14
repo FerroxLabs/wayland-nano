@@ -280,6 +280,14 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
             "Check disk and permissions; do not retry blindly",
         ),
         NanoErrorKind::SessionNotFound => response(-32602, false, "Session not found", ""),
+        // F-P4-3: not retryable as-is — resending only succeeds AFTER the
+        // owning host closes or dies; auto-retry would just contend.
+        NanoErrorKind::SessionBusy => response(
+            -32602,
+            false,
+            "Session is open in another host",
+            "Close it there (or resume after that host exits), then retry",
+        ),
         NanoErrorKind::ModelNotFound => response(
             -32602,
             false,
@@ -410,6 +418,7 @@ pub const ALL_KINDS: &[NanoErrorKind] = &[
     NanoErrorKind::UserCancelled,
     NanoErrorKind::JournalUnavailable,
     NanoErrorKind::SessionNotFound,
+    NanoErrorKind::SessionBusy,
     NanoErrorKind::ModelNotFound,
     NanoErrorKind::TurnInProgress,
     NanoErrorKind::NoSession,
@@ -542,10 +551,31 @@ mod tests {
     /// seven MCP-ecosystem kinds (48 → 55); the RC2 wiring pass added P4's
     /// PtySessionGone (55 → 56); the P4 review-mode merge added
     /// ReviewParseFailed (56 → 57); the P4 rules wiring (F-P4-1) added
-    /// ShellRuleDenied + RuleFileInvalid (57 → 59).
+    /// ShellRuleDenied + RuleFileInvalid (57 → 59); the S3 session-ownership
+    /// slice (F-P4-3) added SessionBusy (59 → 60).
     #[test]
     fn all_kinds_count_is_pinned() {
-        assert_eq!(ALL_KINDS.len(), 59);
+        assert_eq!(ALL_KINDS.len(), 60);
+    }
+
+    /// F-P4-3: the session-ownership contention kind is pinned — a
+    /// non-retryable error response named `session_busy`.
+    #[test]
+    fn s3_session_busy_is_pinned() {
+        let wire = serde_json::to_value(NanoErrorKind::SessionBusy)
+            .expect("kind serializes")
+            .as_str()
+            .expect("kind is a string")
+            .to_string();
+        assert_eq!(wire, "session_busy");
+        assert_eq!(
+            serde_json::from_str::<NanoErrorKind>("\"session_busy\"").unwrap(),
+            NanoErrorKind::SessionBusy
+        );
+        let spec = spec(NanoErrorKind::SessionBusy);
+        assert!(!spec.retryable);
+        assert_eq!(spec.surface, ErrorSurface::ErrorResponse);
+        assert_eq!(spec.wire_code, -32602);
     }
 
     /// P3 §12 [r2 codex-F16]: symbolic wire names are the compatibility

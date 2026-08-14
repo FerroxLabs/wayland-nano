@@ -30,11 +30,17 @@ fn journal_path(sessions_dir: &Path, session_id: &str) -> Result<std::path::Path
 
 /// Fork core (C11): shared by the CLI mirror and the ACP
 /// `_wayland/session/fork` adapter — one implementation, no business logic
-/// in either adapter.
+/// in either adapter. `parent_owned` is true only when the caller holds the
+/// parent session's lifetime ownership lock (F-P4-3: the acp-host forking
+/// its own active session); then the OS lock acquisition is skipped — it
+/// would self-conflict with the ownership handle — and the SessionGuard's
+/// in-process layer still excludes a mid-turn append or cron fire for the
+/// whole digest→copy→digest sequence.
 pub fn session_fork_core(
     sessions_dir: &Path,
     session_id: &str,
     at_turn: Option<String>,
+    parent_owned: bool,
 ) -> Result<serde_json::Value, String> {
     let parent = journal_path(sessions_dir, session_id)?;
     // fork_journal takes the OS journal lock itself for the whole
@@ -49,7 +55,15 @@ pub fn session_fork_core(
         Some(turn_id) => ForkPoint::Turn(turn_id.clone()),
         None => ForkPoint::End,
     };
-    let outcome = fork_journal(&parent, &child, &child_id, &at).map_err(|err| err.to_string())?;
+    let outcome = if parent_owned {
+        let _guard = session_guard_registry()
+            .try_acquire(&parent)
+            .map_err(|err| err.to_string())?;
+        nano_session::fork_journal_when_owned(&parent, &child, &child_id, &at)
+    } else {
+        fork_journal(&parent, &child, &child_id, &at)
+    }
+    .map_err(|err| err.to_string())?;
     Ok(serde_json::json!({
         "child_session_id": outcome.child_session_id,
         "parent_digest_before": outcome.parent_digest_before,
@@ -67,7 +81,7 @@ pub fn session_fork(
     at_turn: Option<String>,
     out: &mut dyn Write,
 ) -> i32 {
-    match session_fork_core(sessions_dir, session_id, at_turn) {
+    match session_fork_core(sessions_dir, session_id, at_turn, false) {
         Ok(json) => {
             let _ = writeln!(out, "{json}");
             0

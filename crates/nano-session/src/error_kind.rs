@@ -104,6 +104,11 @@ pub enum NanoErrorKind {
     // ── request/session level (JSON-RPC error responses) ────────────────
     JournalUnavailable,
     SessionNotFound,
+    /// F-P4-3: session single-writer ownership — a second host/process tried
+    /// to open (load/resume/exec) a session whose journal lock is held by a
+    /// live owner. Never silent double-load; retry succeeds only after the
+    /// owner closes or dies (the OS releases the handle lock on death).
+    SessionBusy,
     ModelNotFound,
     TurnInProgress,
     NoSession,

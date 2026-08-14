@@ -109,7 +109,36 @@ pub fn fork_journal(
     }
     // Cross-process exclusion for the whole before→copy→after sequence.
     let _lock = FileLock::try_acquire(parent_path)?;
+    fork_journal_locked(parent_path, child_path, child_id, at)
+}
 
+/// F-P4-3: fork a parent journal the CALLER already owns — the owning host
+/// holds the session's lifetime OS lock (single-writer ownership), so this
+/// variant skips the lock acquisition that would otherwise self-conflict.
+/// Contract: the caller must hold the exclusive journal lock on
+/// `parent_path` (plus the in-process SessionGuard layer) for the whole
+/// call; the before/after digest proof still fails closed against any
+/// writer that bypassed ownership.
+pub fn fork_journal_when_owned(
+    parent_path: &Path,
+    child_path: &Path,
+    child_id: &str,
+    at: &ForkPoint,
+) -> Result<ForkOutcome, ForkError> {
+    if !parent_path.exists() {
+        return Err(ForkError::ParentNotFound(parent_path.to_path_buf()));
+    }
+    fork_journal_locked(parent_path, child_path, child_id, at)
+}
+
+/// The lock-free body: everything after exclusion is established (either by
+/// a freshly acquired [`FileLock`] or by the caller's lifetime ownership).
+fn fork_journal_locked(
+    parent_path: &Path,
+    child_path: &Path,
+    child_id: &str,
+    at: &ForkPoint,
+) -> Result<ForkOutcome, ForkError> {
     let before_bytes = std::fs::read(parent_path)?;
     let digest_before = sha256_hex(&before_bytes);
 

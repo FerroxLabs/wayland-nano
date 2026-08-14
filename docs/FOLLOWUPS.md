@@ -661,3 +661,16 @@ promotes/closes entries; builders append only.
 - **F-P5-4 LOW:** merged live leg-1 test writes its fixture one `..` too many (p5_auto_routing.rs:2531-2534 → outside workspace). Prover relocated the canary-clean fixture to shared/fixtures/flux/auto-routing/ and removed the stray tree; the test path bug remains.
 - **F-P5-5 LOW:** pin/implicit turn frames drop the response-reported model (engine meters the configured reference, turn.rs:1121; no TurnEnd model field). Moot while alias-echo stands.
 - Confirmed live, NOT a finding (design-§3-compliant known gap): production Auto refuses `capability_empty` pre-dispatch on tool-bearing turns (acp_mode.rs:2602 forces tools=true) until the tool-capability catalog lands.
+
+## S3 session-ownership lane (F-P4-3 fix) — residual scope note (2026-08-14)
+
+- **F-S3-1 LOW (scope boundary):** the S3 ownership lock covers the
+  enumerated writer paths — acp-host session/new|load, exec (incl.
+  --resume), and transitively goal/fork/cron writers via the SessionGuard
+  OS layer. `protocol-host` (`crates/nano-cli/src/host_mode.rs:91`) opens
+  its FIXED `protocol-host.jsonl` for writing with NO ownership lock: two
+  protocol-host processes on one NANO_HOME can double-append. It can never
+  collide with an ACP/exec session (distinct fixed id), and the lane
+  boundary excluded it. Close means: acquire `SessionOwnership`
+  (`session_guard_registry().try_own`) at protocol-host startup, fail
+  closed with a typed busy when a second protocol-host is already running.

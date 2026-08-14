@@ -2,9 +2,9 @@
 //!
 //! Privacy contract: listing opens only validated `*.jsonl` entries, uses a
 //! no-follow final-component open, and reads at most the first journal line.
-//! It never reads prompts or derives titles. `Live` is a point-in-time lock
-//! probe, not lifetime ownership; picker-driven load of a live row is refused
-//! until the separately reviewed session-ownership slice lands.
+//! It never reads prompts or derives titles. `Live` is a point-in-time probe
+//! of the F-P4-3 single-writer ownership lock; the load-time authority is
+//! host-side — loading a live row earns a typed `session_busy` refusal.
 
 use nano_agent::bootstrap::is_fs_safe_session_id;
 use nano_session::audit_private_session_dir;
@@ -21,9 +21,10 @@ pub const MAX_SESSION_SUMMARIES: usize = 200;
 pub const SESSION_LIST_METHOD: &str = "_wayland/session/list";
 const MAX_FIRST_LINE_BYTES: u64 = 64 * 1024;
 
-/// The lock classification is a point-in-time probe. Slice 0 closes the race.
+/// The lock classification is a point-in-time probe; the host-side
+/// ownership lock (F-P4-3) is the load-time authority that closes the race.
 pub const LIVE_STATUS_CAVEAT: &str =
-    "live status is a point-in-time probe; selection never loads a live row";
+    "live status is a point-in-time probe; the host refuses loading a live session";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

@@ -31,7 +31,7 @@ pub use attachment_store::{
 };
 pub use coordinator::{CompactionGuard, JournalCoordinator, hydration_carry_at};
 pub use error_kind::NanoErrorKind;
-pub use fork::{ForkError, ForkOutcome, ForkPoint, fork_journal};
+pub use fork::{ForkError, ForkOutcome, ForkPoint, fork_journal, fork_journal_when_owned};
 pub use lock::{FileLock, LockError, LockMode};
 pub use op::{
     CandidateKind, CandidateRejection, CompactionCancelReason, DIGEST_HEX_CHARS,
