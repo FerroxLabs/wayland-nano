@@ -368,6 +368,12 @@ impl ToolExecutor for McpSessionToolExecutor<'_> {
             _ => self.inner.execute_cancellable(call, cancel).await,
         }
     }
+
+    /// F-P3-5: delegate the mid-turn hydration refresh to the inner
+    /// MCP-merged executor (this wrapper owns no tool definitions itself).
+    fn current_mcp_tool_definitions(&self) -> Option<Vec<nano_model::types::ToolDefinition>> {
+        self.inner.current_mcp_tool_definitions()
+    }
 }
 
 #[cfg(test)]

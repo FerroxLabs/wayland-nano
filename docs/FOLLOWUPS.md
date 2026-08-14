@@ -751,3 +751,66 @@ promotes/closes entries; builders append only.
 - Paid marketplace accounts and account credential flows are post-v1.
 - Add a real `plugin update` transaction; v1 update is remove plus freshly consented install.
 - Add `${VAR}` environment indirection for MCP plugin specs without adding a credential channel.
+
+## Wave-2 fix lane (branch fix/w2-agent, 2026-08-14) — F-1, F-27 item 6, F-P3-5 FIXED on branch, owner closes
+
+Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-2026-08-14.md`.
+
+- **F-1 (SEV-1) FIXED.** Engine-side ceiling at the turn.rs history-append
+  seam: `MAX_HISTORY_TOOL_RESULT_CHARS` = 128 KiB (above fs_read's 100 KB
+  page so paged reads pass through; below shell's 256 KB/stream and the
+  512 KiB MCP transport cap so oversized results compose down). Head+tail
+  truncation with the visible typed marker `…[tool result truncated by the
+  engine history cap: N chars in, M elided]…` — never silent clipping;
+  char-based cut (no split UTF-8). Digest-first: the journaled
+  `ToolResult.output_digest` is computed from the FULL raw output; ACP
+  frames are built from those ops and carry digests only (test asserts no
+  serialized op contains raw bytes). Tests (turn_tests.rs):
+  `history_cap_boundaries_and_utf8_safety`,
+  `oversized_tool_result_is_capped_marked_and_digest_journaled`,
+  `under_cap_tool_result_flows_verbatim_unmarked`. Behavior note: a
+  maxed-out shell result (>128 KiB combined) now reaches the model in the
+  engine-capped marked form — intended consequence of the ceiling, not a
+  regression.
+- **F-27 item 6 (SEV-2) FIXED.** The mcp__ arm of
+  `McpToolExecutor::execute_cancellable` routes through
+  `McpClient::call_tool_cancellable` when the turn cancel flag is present
+  (shared lock-to-clone resolution and result fold extracted into
+  `resolve_mcp_call` / `execute_mcp` / `outcome_of_mcp`; the registry lock
+  is never held across the wire wait — that half was already fixed).
+  Test (mcp.rs integration_tests):
+  `cancel_aborts_in_flight_mcp_call_end_to_end` — typed `user_cancelled`
+  well before the server's 4s answer, the wire carries
+  `notifications/cancelled` (server-side marker file), and the late
+  response is dropped via the retired-id arm (a follow-up call on the same
+  connection receives ITS answer, not the retired call's).
+- **F-P3-5 (SEV-2) FIXED.** New `ToolExecutor::current_mcp_tool_definitions`
+  hook (default `None`; `McpToolExecutor` answers from the live registry;
+  every production wrapper — SessionTools, PtyToolExecutor, CronjobExecutor,
+  TaskToolExecutor, MemoryToolExecutor, McpSessionToolExecutor,
+  CheckpointToolExecutor, GoalToolExecutor — delegates). At each
+  ModelRequest build, `TurnEngine::current_tool_definitions` splices the
+  registry's CURRENT direct ∪ hydrated set in place of the
+  construction-time `mcp__*` block (order preserved), so a journaled
+  mid-turn `tool_search` hydration reaches the very next in-turn request.
+  Derived from journaled state only (the `McpToolHydration` op lands
+  durably before the registry mutates), so replay rebuilds the same set —
+  asserted by rebuilding a fresh registry from the journaled op and
+  comparing advertised names. Test (mcp_tests.rs):
+  `mid_turn_hydration_reaches_next_in_turn_request`.
+
+## F-41: tasks cancel-isolation test is timing-sensitive under suite-parallel load — LOW, test-robustness
+
+- **Filed:** 2026-08-14, wave-2 lane observation. One full-suite run of
+  `cargo test -p nano-agent` failed
+  `tasks::tests::cancel_isolation_and_bounded_teardown_on_a_wedged_child`
+  at tasks.rs:1982: the wedged child observed the cancel flag and exited
+  `cancelled` BEFORE the bounded-teardown wait tripped, so the status never
+  read `detached`. Green in isolation (5s run) and green on the immediate
+  full-suite rerun (284/284); the lane's diff to tasks.rs is a purely
+  additive trait-method delegation. Same failure class as F-38
+  (host/scheduler-dependent), no product code implication observed.
+- **Close means:** the test pins detach-vs-cancel ordering deterministically
+  (e.g. hold the wedged child in a state that cannot observe the flag
+  until after TEARDOWN_WAIT) without weakening the bounded-teardown
+  assertion.

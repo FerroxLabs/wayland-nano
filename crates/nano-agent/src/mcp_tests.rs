@@ -4,9 +4,10 @@
 //! rendering); live legs reuse the powershell/sh fake-server pattern.
 
 use super::*;
-use crate::loop_protection::ProgressSignals;
-use crate::turn::ToolExecutor;
+use crate::loop_protection::{ProgressSignals, TurnBudget};
+use crate::turn::{ModelDriver, ToolExecutor, TurnEngine, TurnState};
 use nano_mcp::dispatcher::{ConnectionHandle, ServerRequest};
+use nano_model::types::{ModelError, ModelEvent, ModelRequest, ModelResponse, Usage};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
@@ -1492,4 +1493,202 @@ fn duplicate_display_name_is_a_typed_refusal() {
         "typed DuplicateDisplayName: {err}"
     );
     assert_eq!(registry.servers.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// F-P3-5: mid-turn hydration reaches the NEXT in-turn model request
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct ScriptedModel {
+    responses: Mutex<Vec<ModelResponse>>,
+    requests: Mutex<Vec<ModelRequest>>,
+}
+
+#[async_trait::async_trait]
+impl ModelDriver for ScriptedModel {
+    async fn complete(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError> {
+        self.requests.lock().unwrap().push(request.clone());
+        Ok(self.responses.lock().unwrap().remove(0))
+    }
+}
+
+fn scripted_tool_call(id: &str, name: &str, arguments: serde_json::Value) -> ModelResponse {
+    ModelResponse {
+        events: vec![
+            ModelEvent::ToolCallComplete(ToolCall {
+                id: id.into(),
+                name: name.into(),
+                arguments,
+            }),
+            ModelEvent::Done {
+                stop_reason: "tool_calls".into(),
+            },
+        ],
+        usage: Usage::default(),
+        stop_reason: "tool_calls".into(),
+        model: None,
+    }
+}
+
+fn scripted_text(text: &str) -> ModelResponse {
+    ModelResponse {
+        events: vec![
+            ModelEvent::TextDelta(text.into()),
+            ModelEvent::Done {
+                stop_reason: "stop".into(),
+            },
+        ],
+        usage: Usage::default(),
+        stop_reason: "stop".into(),
+        model: None,
+    }
+}
+
+/// F-P3-5 (SEV-2): `tool_search` promises the hydrated tools "in the NEXT
+/// request" — that promise must hold WITHIN a turn, not just across
+/// prompts. Drive a real turn against a 150-tool all-deferred fake server:
+/// step 1 searches (journal-first hydration), step 2 calls the freshly
+/// hydrated tool. The second in-turn model request must advertise
+/// `mcp__big__search_doc_0`; the journaled hydration op must rebuild the
+/// same set on a fresh registry (replay consistency).
+#[tokio::test]
+async fn mid_turn_hydration_reaches_next_in_turn_request() {
+    let server = fake_server(
+        "big",
+        &big_inventory(),
+        "{}",
+        &serde_json::json!([]),
+        None,
+        None,
+    );
+    let mut registry = McpRegistry::new();
+    registry.register(server.spec).expect("register");
+    assert!(
+        registry.tool_definitions().is_empty(),
+        "150-tool server is fully deferred at construction"
+    );
+    let registry = Arc::new(Mutex::new(registry));
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let journal_path = dir.path().join("s.jsonl");
+    let coordinator =
+        Arc::new(nano_session::JournalCoordinator::open(&journal_path).expect("coordinator opens"));
+
+    let inner = Noop;
+    let mcp_executor = McpToolExecutor::from_shared(registry.clone(), &inner);
+    let executor = crate::mcp_session_tools::McpSessionToolExecutor::new(
+        Some(registry.clone()),
+        coordinator,
+        "s".into(),
+        &mcp_executor,
+    );
+
+    // Construction-time advertisement: tool_search only, zero mcp__ defs.
+    let listing = registry.lock().unwrap().deferred_source_listing();
+    let tool_definitions = crate::wiring::mcp_session_tool_definitions(Some(&listing), false);
+    assert!(tool_definitions.iter().any(|d| d.name == "tool_search"));
+
+    let model = ScriptedModel {
+        responses: Mutex::new(vec![
+            scripted_tool_call(
+                "t1",
+                "tool_search",
+                serde_json::json!({"query": "search documents"}),
+            ),
+            scripted_tool_call("t2", "mcp__big__search_doc_0", serde_json::json!({})),
+            scripted_text("done"),
+        ]),
+        requests: Mutex::new(Vec::new()),
+    };
+    let engine = TurnEngine {
+        model: &model,
+        tools: &executor,
+        budget: TurnBudget::default(),
+        model_name: "mock".into(),
+        tool_definitions,
+        approval: None,
+        compaction: None,
+        robustness: Default::default(),
+    };
+    let result = engine.run_turn("fp35", "find and run the doc search").await;
+    assert_eq!(
+        result.state,
+        TurnState::Complete,
+        "turn: {:?}",
+        result.state
+    );
+
+    let requests = model.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    // Before hydration: no mcp__ definitions on the wire.
+    assert!(
+        !requests[0]
+            .tools
+            .iter()
+            .any(|d| d.name.starts_with("mcp__"))
+    );
+    // THE FIX: the NEXT in-turn request carries the hydrated tool, and the
+    // construction-time definitions are preserved around it.
+    let advertised: Vec<&str> = requests[1].tools.iter().map(|d| d.name.as_str()).collect();
+    assert!(
+        advertised.contains(&"mcp__big__search_doc_0"),
+        "hydrated tool missing from the next in-turn request: {advertised:?}"
+    );
+    assert!(
+        advertised.contains(&"tool_search"),
+        "construction-time defs preserved: {advertised:?}"
+    );
+    // The hydrated call dispatched to the server (the fake marks every
+    // tools/call) and its result reached the model.
+    assert!(server.marker.exists(), "hydrated call never dispatched");
+    assert!(requests[2]
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .any(|block| matches!(
+            block,
+            nano_model::types::ContentBlock::ToolResult { content, .. } if content.contains("pong")
+        )));
+
+    // Journal-first consistency: the hydration op is durable, and a
+    // registry rebuilt from the JOURNAL advertises exactly the mcp__ set
+    // the in-turn request carried (replay sees the same set).
+    let journal = std::fs::read_to_string(&journal_path).expect("journal readable");
+    let hydration_entries: Vec<HydrationEntry> = journal
+        .lines()
+        .filter_map(|line| serde_json::from_str::<nano_session::op::OpEnvelope>(line).ok())
+        .filter_map(|envelope| match envelope.op {
+            nano_session::op::Op::McpToolHydration { entries, .. } => Some(entries),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(hydration_entries.len(), 1, "one journaled hydration batch");
+
+    let server2 = fake_server(
+        "big",
+        &big_inventory(),
+        "{}",
+        &serde_json::json!([]),
+        None,
+        None,
+    );
+    let mut replayed = McpRegistry::new();
+    replayed.register(server2.spec).expect("register");
+    replayed.apply_hydration(&hydration_entries);
+    let mut replayed_names: Vec<String> = replayed
+        .tool_definitions()
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
+    let mut advertised_mcp: Vec<String> = requests[1]
+        .tools
+        .iter()
+        .filter(|d| d.name.starts_with("mcp__"))
+        .map(|d| d.name.clone())
+        .collect();
+    replayed_names.sort();
+    advertised_mcp.sort();
+    assert_eq!(replayed_names, advertised_mcp, "replay set == live set");
 }
