@@ -98,19 +98,20 @@ Windows there is **no provisioning step** — no service accounts, no WFP.
 If Seatbelt cannot be applied, Nano fails closed with
 `SANDBOX_UNAVAILABLE`; there is no silent unsandboxed fallback.
 
-## 6. Desktop: checkout + merge the error-table PR
+## 6. Desktop: checkout + merge the error-table PRs
 
 ```bash
 git clone https://github.com/FerroxLabs/wayland.git
 cd wayland
 git checkout feature/wayland-nano
-gh pr merge 954        # feat(acp): nano error table — RC2 surface (57 kinds)
+gh pr merge 955        # feat(acp): nano error table — 59 kinds (P4 fix round)
 ```
 
-PR #954 regenerates `src/common/types/nanoErrorCodes.ts` (+ JSON parity
-copy) to the 57-kind RC2 error surface. It touches two generated files
+PR #954 (57 kinds) is already merged; PR #955 adds the two kinds the P4
+fix round introduced (`shell_rule_denied`, `rule_file_invalid`), bringing
+the mirror to the final 59-kind surface. Both touch two generated files
 only. Note: this branch line has pre-existing red CI from an unrelated
-constitution-fs pin issue (PRs #950–953) — that is NOT caused by #954.
+constitution-fs pin issue (PRs #950–953) — NOT caused by these PRs.
 
 ## 7. Run Desktop dev and pick Nano
 
