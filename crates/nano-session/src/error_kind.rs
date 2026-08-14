@@ -71,6 +71,7 @@ pub enum NanoErrorKind {
     UnknownTool,
     MissingArgs,
     ApprovalDenied,
+    HookBlocked,
     /// P4 §8: write/read/kill against an unknown or exited PTY session
     /// (§4.4). The exit code rides the tool-card detail when known; the
     /// presentation stays static.

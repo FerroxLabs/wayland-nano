@@ -221,6 +221,7 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
         NanoErrorKind::UnknownTool => card("Unknown tool", ""),
         NanoErrorKind::MissingArgs => card("Bad tool arguments", ""),
         NanoErrorKind::ApprovalDenied => card("Denied by user", ""),
+        NanoErrorKind::HookBlocked => card("Blocked by lifecycle hook", ""),
         // P4 §8: tool-card surface (a failed pty_* call), never retryable —
         // the session is gone; re-sending the identical call cannot succeed.
         NanoErrorKind::PtySessionGone => card("That terminal session has exited", ""),
@@ -399,6 +400,7 @@ pub const ALL_KINDS: &[NanoErrorKind] = &[
     NanoErrorKind::UnknownTool,
     NanoErrorKind::MissingArgs,
     NanoErrorKind::ApprovalDenied,
+    NanoErrorKind::HookBlocked,
     NanoErrorKind::PtySessionGone,
     NanoErrorKind::ReviewParseFailed,
     NanoErrorKind::ShellRuleDenied,
@@ -542,10 +544,10 @@ mod tests {
     /// seven MCP-ecosystem kinds (48 → 55); the RC2 wiring pass added P4's
     /// PtySessionGone (55 → 56); the P4 review-mode merge added
     /// ReviewParseFailed (56 → 57); the P4 rules wiring (F-P4-1) added
-    /// ShellRuleDenied + RuleFileInvalid (57 → 59).
+    /// ShellRuleDenied + RuleFileInvalid + HookBlocked (57 → 60).
     #[test]
     fn all_kinds_count_is_pinned() {
-        assert_eq!(ALL_KINDS.len(), 59);
+        assert_eq!(ALL_KINDS.len(), 60);
     }
 
     /// P3 §12 [r2 codex-F16]: symbolic wire names are the compatibility

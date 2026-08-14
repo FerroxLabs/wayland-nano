@@ -426,7 +426,7 @@ pub async fn run_exec_turn<D, T, W>(
     tools: &T,
     gate: &dyn ApprovalGate,
     model_name: &str,
-    _session: &BootstrappedSession,
+    session: &BootstrappedSession,
     turn_id: &str,
     input: &str,
     context: Vec<nano_model::types::Message>,
@@ -473,6 +473,15 @@ where
     }
     let mut tool_definitions = v1_tool_definitions(web_search_backed, false);
     tool_definitions.extend(extra_tool_definitions.iter().cloned());
+    let nano_home = session
+        .journal_path
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or_else(|| Path::new("."));
+    let hooks = nano_hooks::HookEngine::load(nano_home);
+    for warning in hooks.warnings() {
+        eprintln!("wayland-nano: {warning}");
+    }
     let engine = TurnEngine {
         model: driver,
         tools,
@@ -485,7 +494,8 @@ where
         // observer channel, no sticky params (a CI-grade run takes its
         // instructions up front).
         robustness: nano_agent::turn::TurnRobustness::default(),
-    };
+    }
+    .with_hooks(&hooks);
     let mut sink = |envelope: &OpEnvelope| -> bool {
         // Journal first: the durable record leads the live event, never the
         // other way round.

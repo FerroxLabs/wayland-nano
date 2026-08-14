@@ -1,0 +1,24 @@
+[package]
+name = "nano-hooks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+toml = "0.8"
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "time"] }
+tracing = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+nano-sandbox = { version = "0.1.0", path = "../nano-sandbox" }
+
+[dev-dependencies]
+tempfile = "3"

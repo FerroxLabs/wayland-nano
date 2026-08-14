@@ -1438,6 +1438,7 @@ dependencies = [
  "futures-util",
  "nano-core",
  "nano-egress",
+ "nano-hooks",
  "nano-mcp",
  "nano-model",
  "nano-session",
@@ -1464,6 +1465,7 @@ dependencies = [
  "nano-agent",
  "nano-core",
  "nano-egress",
+ "nano-hooks",
  "nano-mcp",
  "nano-model",
  "nano-protocol",
@@ -1507,6 +1509,22 @@ dependencies = [
  "sha2",
  "thiserror 2.0.20",
  "tokio",
+]
+
+[[package]]
+name = "nano-hooks"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "nano-sandbox",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

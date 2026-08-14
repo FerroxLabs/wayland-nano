@@ -877,6 +877,32 @@ pub enum RoutingExhaustion {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookEvent {
+    PreToolUse,
+    PostToolUse,
+    UserPromptSubmit,
+    Stop,
+    SessionStart,
+    SessionEnd,
+    PreCompact,
+    PostCompact,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookOutcome {
+    Pass,
+    Blocked,
+    Failed,
+    Timeout,
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Op {
@@ -923,6 +949,17 @@ pub enum Op {
         error_kind: Option<crate::error_kind::NanoErrorKind>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         image_refs: Vec<ImageRef>,
+    },
+    /// Digest-safe lifecycle-hook audit record. Commands and hook output are
+    /// deliberately absent: either may contain operator secrets.
+    HookDecision {
+        turn_id: String,
+        event: HookEvent,
+        handler_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        matcher_input: Option<String>,
+        outcome: HookOutcome,
+        duration_ms: u64,
     },
     /// Assistant-visible reply text for a model step. Unlike tool output this
     /// is content the agent itself produced for the user (it is streamed to

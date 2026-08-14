@@ -187,6 +187,10 @@ pub async fn run(
     }
     tool_definitions.extend(nano_agent::memory::memory_tool_definitions(memory_write));
 
+    let hooks = nano_hooks::HookEngine::load(nano_home);
+    for warning in hooks.warnings() {
+        eprintln!("wayland-nano: {warning}");
+    }
     let engine = TurnEngine {
         model: &driver,
         tools: &executor,
@@ -214,7 +218,8 @@ pub async fn run(
                 }
             }
         },
-    };
+    }
+    .with_hooks(&hooks);
     let skill_context = std::sync::Arc::new(skill_context);
     let plan_cell = plan;
     let todo_cell = todos;
