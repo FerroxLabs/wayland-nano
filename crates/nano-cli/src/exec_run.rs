@@ -160,6 +160,7 @@ where
             &turn_id,
             routing.mode,
             &routing.reference,
+            crate::auto_routing::ATTEMPT_BUDGET,
             plan.candidates.clone(),
             crate::auto_routing::snapshot_digest(&candidate_inputs, &plan),
         ) {

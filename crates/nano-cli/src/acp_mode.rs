@@ -2554,6 +2554,7 @@ where
                                     &turn_id,
                                     routing.mode,
                                     &routing.reference,
+                                    crate::auto_routing::ATTEMPT_BUDGET,
                                     crate::auto_routing::pin_snapshot_candidates(
                                         &routing.reference,
                                     ),
@@ -2778,6 +2779,11 @@ where
                                     &turn_id,
                                     routing.mode,
                                     &routing.reference,
+                                    // F-P5-2: the TRUE remainder — a fresh
+                                    // turn's ATTEMPT_BUDGET or the resumed
+                                    // turn's journaled remainder, so a
+                                    // second kill replays the real budget.
+                                    budget,
                                     snapshot_candidates,
                                     digest,
                                 ) {

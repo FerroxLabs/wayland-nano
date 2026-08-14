@@ -16,6 +16,9 @@ pub fn kind_of_model(err: &ModelError) -> NanoErrorKind {
         ModelError::ContextOverflow(_) => NanoErrorKind::ModelContextOverflow,
         ModelError::Entitlement(_) => NanoErrorKind::ModelEntitlement,
         ModelError::Server { status, .. } => kind_of_status(*status),
+        // F-P5-1: a format rejection is request-side (4xx semantics) even
+        // when the edge mislabeled it 5xx; terminal, never retryable.
+        ModelError::InvalidRequest { .. } => NanoErrorKind::ModelServer4xx,
         ModelError::Transport { .. } => NanoErrorKind::ModelTransport,
         ModelError::Protocol(_) => NanoErrorKind::ModelProtocol,
         // C9: structured-output rejection after the one re-ask, and the
@@ -40,6 +43,9 @@ pub fn typed_error_of_model(err: &ModelError) -> TypedError {
             typed.retry_after_ms = *retry_after_ms;
         }
         ModelError::Server { status, .. } => {
+            typed.status = Some(*status);
+        }
+        ModelError::InvalidRequest { status, .. } => {
             typed.status = Some(*status);
         }
         ModelError::Egress(nano_egress::client::EgressError::Denied { host, .. }) => {

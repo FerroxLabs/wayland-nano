@@ -758,6 +758,7 @@ fn kill_fixture(boundary: &str) -> KillFixture {
         &turn_id,
         RoutingMode::AutoClientSide,
         "flux-auto",
+        auto_routing::ATTEMPT_BUDGET,
         candidates,
         "ab".repeat(32),
     ));
@@ -961,6 +962,304 @@ fn kill_between_rungs_preserves_remaining_budget_and_order() {
         .expect("resumed rung succeeds");
     assert_eq!(response.model.as_deref(), Some("gpt-b"));
     assert_eq!(calls.lock().unwrap()[0].model, "gpt-b");
+}
+
+// ── F-P5-1 / F-P5-2 adversarial regression legs [seam] ──────────────────
+
+#[test]
+fn adv_500_with_format_body_must_be_terminal() {
+    // F-P5-1: a 500 whose body carries error.type=="invalid_request_error"
+    // is a FORMAT rejection — terminal, zero calls to rung 2. The failing
+    // error is the REAL ModelError the production adapter's classify_status
+    // produces on that wire shape (never a synthetic signal map).
+    let err = nano_model::flux_common::classify_status(
+        500,
+        "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad tools payload\"}}"
+            .to_string(),
+    );
+    let a = ScriptedTransport::fails(err, 1, None);
+    let b = ScriptedTransport::succeeds(Some("gpt-a"), Usage::default());
+    let b_calls = b.calls.clone();
+    let sink = Arc::new(CollectSink::default());
+    let ladder = ladder_with(
+        vec![
+            (
+                candidate(0, "flux-router", "flux-auto", CandidateKind::Alias),
+                a,
+            ),
+            (candidate(1, "openai", "gpt-a", CandidateKind::Leaf), b),
+        ],
+        sink.clone(),
+    );
+    let outcome = block_on(ladder.complete_observed(&text_request(), &CallHooks::none()));
+    assert!(
+        matches!(outcome, Err(ModelError::InvalidRequest { status: 500, .. })),
+        "the terminal typed error surfaces unchanged: {outcome:?}"
+    );
+    assert!(
+        b_calls.lock().unwrap().is_empty(),
+        "terminal: zero rung-2 calls"
+    );
+    let ops = sink.ops();
+    let receipt = ops
+        .iter()
+        .find_map(|op| match op {
+            Op::RoutingReceipt {
+                ordinal: 0,
+                outcome,
+                failure,
+                status,
+                ..
+            } => Some((*outcome, *failure, *status)),
+            _ => None,
+        })
+        .expect("rung-1 receipt journaled");
+    assert_eq!(
+        receipt,
+        (
+            RoutingOutcome::TerminalFailure,
+            Some(nano_session::RoutingFailureClass::FormatRejected),
+            Some(500)
+        ),
+        "journaled as terminal format rejection with the wire status"
+    );
+}
+
+#[test]
+fn adv_double_kill_budget_leak() {
+    // F-P5-2: chained kill-resume must conserve the global 3-attempt budget.
+    // Chain: turn 1 is killed mid-attempt (1 consumed) → the resume arm
+    // re-journals turn 2 with the TRUE remainder (2), spends one cascading
+    // attempt, and is killed again → turn 3 may spend AT MOST 1. Total
+    // physical attempts across one logical routed turn: 3, never 4.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let journal_path = dir.path().join("sessions").join("s.jsonl");
+    let candidates = vec![
+        nano_session::RoutingCandidate {
+            provider: "flux-router".into(),
+            candidate: "flux-auto".into(),
+            kind: CandidateKind::Alias,
+            admitted: true,
+            rejection: None,
+        },
+        nano_session::RoutingCandidate {
+            provider: "openai".into(),
+            candidate: "gpt-a".into(),
+            kind: CandidateKind::Leaf,
+            admitted: true,
+            rejection: None,
+        },
+        nano_session::RoutingCandidate {
+            provider: "openai".into(),
+            candidate: "gpt-b".into(),
+            kind: CandidateKind::Leaf,
+            admitted: true,
+            rejection: None,
+        },
+    ];
+    let digest = "ab".repeat(32);
+    // ── Turn 1: snapshot(budget 3), begin 0, killed mid-attempt.
+    {
+        let coordinator = JournalCoordinator::open(&journal_path).expect("open journal");
+        coordinator
+            .append(&nano_session::OpEnvelope::new(
+                "s-begin-1",
+                "now",
+                Op::SessionBegin {
+                    session_id: "s".into(),
+                    cwd: ".".into(),
+                },
+            ))
+            .expect("session begin");
+        coordinator
+            .append(&nano_session::OpEnvelope::new(
+                "s-turn-1-1",
+                "now",
+                Op::TurnBegin {
+                    turn_id: "s-turn-1".into(),
+                    input: "resume me".into(),
+                    input_blocks: Vec::new(),
+                },
+            ))
+            .expect("turn begin");
+        let sink = auto_routing::CoordinatorRoutingSink(Arc::new(coordinator));
+        assert!(auto_routing::journal_snapshot(
+            &sink,
+            "s-turn-1",
+            RoutingMode::AutoClientSide,
+            "flux-auto",
+            auto_routing::ATTEMPT_BUDGET,
+            candidates.clone(),
+            digest.clone(),
+        ));
+        assert!(RoutingSink::append(
+            &sink,
+            &nano_session::OpEnvelope::new(
+                "s-turn-1-routing-begin-0",
+                "now",
+                Op::RoutingAttemptBegin {
+                    turn_id: "s-turn-1".into(),
+                    ordinal: 0,
+                    routing_mode: RoutingMode::AutoClientSide,
+                    provider: "flux-router".into(),
+                    candidate: "flux-auto".into(),
+                },
+            ),
+        ));
+        // The "process" dies here: dropped without a receipt for ordinal 0.
+    }
+    // ── Resume #1 (the ACP resume arm): reconcile the stranded attempt,
+    //    plan from the journal, re-journal turn 2 with the TRUE remainder,
+    //    spend one cascading attempt, killed again.
+    {
+        let report = nano_session::read_journal(&journal_path).expect("read");
+        let folded = SessionState::fold(&report.envelopes);
+        let routing = folded.routing.get("s-turn-1").expect("turn-1 routing");
+        let coordinator = JournalCoordinator::open(&journal_path).expect("reopen");
+        let sink = auto_routing::CoordinatorRoutingSink(Arc::new(coordinator));
+        auto_routing::reconcile_interrupted(&sink, "s-turn-1", routing, "resume me")
+            .expect("reconcile");
+        let report = nano_session::read_journal(&journal_path).expect("re-read");
+        let folded = SessionState::fold(&report.envelopes);
+        let routing = folded.routing.get("s-turn-1").expect("turn-1 routing");
+        let resume = auto_routing::plan_resume(routing).expect("resumable");
+        assert_eq!(resume.budget, 2, "3 - 1 consumed in-flight");
+        assert_eq!(resume.remaining.len(), 2);
+        // The resume arm re-journals through journal_snapshot — the F-P5-2
+        // fix passes the remainder instead of hardcoding ATTEMPT_BUDGET.
+        let coordinator = JournalCoordinator::open(&journal_path).expect("reopen");
+        let sink = auto_routing::CoordinatorRoutingSink(Arc::new(coordinator));
+        assert!(RoutingSink::append(
+            &sink,
+            &nano_session::OpEnvelope::new(
+                "s-turn-2-1",
+                "now",
+                Op::TurnBegin {
+                    turn_id: "s-turn-2".into(),
+                    input: "resume me".into(),
+                    input_blocks: Vec::new(),
+                },
+            ),
+        ));
+        assert!(auto_routing::journal_snapshot(
+            &sink,
+            "s-turn-2",
+            RoutingMode::AutoClientSide,
+            &resume.configured_reference,
+            resume.budget,
+            resume.snapshot_candidates.clone(),
+            resume.catalog_digest.clone(),
+        ));
+        // Turn 2 spends ONE cascading attempt on ordinal 1, then is killed.
+        assert!(RoutingSink::append(
+            &sink,
+            &nano_session::OpEnvelope::new(
+                "s-turn-2-routing-begin-1",
+                "now",
+                Op::RoutingAttemptBegin {
+                    turn_id: "s-turn-2".into(),
+                    ordinal: 1,
+                    routing_mode: RoutingMode::AutoClientSide,
+                    provider: "openai".into(),
+                    candidate: "gpt-a".into(),
+                },
+            ),
+        ));
+        assert!(RoutingSink::append(
+            &sink,
+            &nano_session::OpEnvelope::new(
+                "s-turn-2-routing-receipt-1",
+                "now",
+                Op::RoutingReceipt {
+                    turn_id: "s-turn-2".into(),
+                    ordinal: 1,
+                    routing_mode: RoutingMode::AutoClientSide,
+                    provider: "openai".into(),
+                    configured_reference: "flux-auto".into(),
+                    candidate: "gpt-a".into(),
+                    outcome: RoutingOutcome::CascadeFailure,
+                    failure: Some(nano_session::RoutingFailureClass::RateLimited),
+                    status: Some(429),
+                    attempts_consumed: 1,
+                    selected: false,
+                    response_model: None,
+                    leaf_identity: LeafProvenance::Absent,
+                    usage: None,
+                    exhaustion: None,
+                    rejection: None,
+                },
+            ),
+        ));
+    }
+    // The journaled turn-2 snapshot carries the remainder, NOT a fresh 3 —
+    // this is the crux of the leak (pre-fix it re-journaled 3).
+    {
+        let report = nano_session::read_journal(&journal_path).expect("read");
+        let journaled_budget = report.envelopes.iter().find_map(|e| match &e.op {
+            Op::RoutingSnapshot {
+                turn_id,
+                attempt_budget,
+                ..
+            } if turn_id == "s-turn-2" => Some(*attempt_budget),
+            _ => None,
+        });
+        assert_eq!(
+            journaled_budget,
+            Some(2),
+            "the resume arm journals the true remainder"
+        );
+    }
+    // ── Resume #2: budget = journaled remainder (2) - consumed (1) = 1.
+    let resume2 = {
+        let report = nano_session::read_journal(&journal_path).expect("read");
+        let folded = SessionState::fold(&report.envelopes);
+        let routing = folded.routing.get("s-turn-2").expect("turn-2 routing");
+        auto_routing::plan_resume(routing).expect("resumable")
+    };
+    assert_eq!(resume2.budget, 1, "the chain conserves the global budget");
+    assert_eq!(resume2.remaining.len(), 1);
+    assert_eq!(resume2.remaining[0].candidate, "gpt-b");
+    // The resumed ladder spends AT MOST that one attempt (the transport has
+    // two scripted steps: a second dispatch would also fail the call count).
+    let transport = ScriptedTransport::fails(
+        ModelError::Server {
+            status: 503,
+            message: String::new(),
+        },
+        1,
+        None,
+    );
+    transport.steps.lock().unwrap().push_back(AttemptOutcome {
+        result: Err(ModelError::Server {
+            status: 503,
+            message: String::new(),
+        }),
+        attempts_consumed: 1,
+        failed_usage: None,
+    });
+    let calls = transport.calls.clone();
+    let sink = Arc::new(CollectSink::default());
+    let ladder = Ladder::new(
+        "s-turn-3",
+        RoutingMode::AutoClientSide,
+        &resume2.configured_reference,
+        vec![LadderCandidate {
+            plan: resume2.remaining[0].clone(),
+            transport,
+        }],
+        sink,
+        None,
+        false,
+        resume2.budget,
+        0,
+    );
+    let outcome = block_on(ladder.complete_observed(&text_request(), &CallHooks::none()));
+    assert!(outcome.is_err(), "the last candidate fails the turn");
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        1,
+        "global budget conserved: 1 + 1 + 1 = 3 physical attempts across the chain"
+    );
 }
 
 // ── §8.1 usage rollup + receipt completeness + canary ───────────────────

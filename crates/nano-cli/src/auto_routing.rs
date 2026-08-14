@@ -589,6 +589,16 @@ pub fn signals_of_model_error(err: &ModelError) -> FailureSignals {
             sdk: None,
             body: None,
         },
+        // F-P5-1: the adapter already folded the 5xx+invalid_request_error
+        // body evidence into the variant (classify_status). The typed-SDK
+        // signal is the TERMINAL FormatRejected class — it beats the
+        // cascading 5xx status signal (conservative wins), so a
+        // 500-with-format-body never cascades.
+        ModelError::InvalidRequest { status, .. } => FailureSignals {
+            status: Some(*status),
+            sdk: Some(RoutingFailureClass::FormatRejected),
+            body: None,
+        },
         ModelError::Transport { phase, .. } => FailureSignals {
             sdk: Some(match phase {
                 TransportPhase::Connect | TransportPhase::Tls | TransportPhase::BeforeFirstByte => {
@@ -627,6 +637,7 @@ pub fn status_of_model_error(err: &ModelError) -> Option<u16> {
         ModelError::RateLimited { .. } => Some(429),
         ModelError::Entitlement(_) => Some(402),
         ModelError::Server { status, .. } => Some(*status),
+        ModelError::InvalidRequest { status, .. } => Some(*status),
         _ => None,
     }
 }
@@ -668,7 +679,7 @@ pub fn model_error_of_failure_class(class: RoutingFailureClass, status: Option<u
         RoutingFailureClass::ContextOverflow => {
             ModelError::ContextOverflow("context overflow (journaled)".to_string())
         }
-        RoutingFailureClass::FormatRejected => ModelError::Server {
+        RoutingFailureClass::FormatRejected => ModelError::InvalidRequest {
             status: status.unwrap_or(400),
             message: "format rejected (journaled)".to_string(),
         },
@@ -855,11 +866,19 @@ fn routing_envelope(turn_id: &str, suffix: &str, op: Op) -> OpEnvelope {
 
 /// The journaled snapshot op for one turn (§3/§4.1: durable BEFORE the
 /// first dispatch). Returns false on append failure (fail-closed).
+///
+/// F-P5-2: `attempt_budget` is a PARAMETER, never a hardcoded constant —
+/// fresh turns pass [`ATTEMPT_BUDGET`]; a kill-resume arm passes the true
+/// remainder from `plan_resume`, so a SECOND kill replays the real
+/// journaled remainder and the global three-attempt budget is conserved
+/// across the whole chain.
+#[allow(clippy::too_many_arguments)]
 pub fn journal_snapshot(
     sink: &dyn RoutingSink,
     turn_id: &str,
     mode: RoutingMode,
     configured_reference: &str,
+    attempt_budget: u32,
     candidates: Vec<RoutingCandidate>,
     catalog_digest: String,
 ) -> bool {
@@ -870,7 +889,7 @@ pub fn journal_snapshot(
             turn_id: turn_id.to_string(),
             routing_mode: mode,
             configured_reference: configured_reference.to_string(),
-            attempt_budget: ATTEMPT_BUDGET,
+            attempt_budget,
             candidates,
             catalog_digest,
         },
@@ -1693,14 +1712,17 @@ mod tests {
             body: Some(RoutingFailureClass::Auth),
         };
         assert_eq!(classify_attempt(&signals), RoutingFailureClass::Auth);
-        // 500-with-format-body: terminal FormatRejected.
-        let signals = FailureSignals {
-            status: Some(500),
-            sdk: Some(RoutingFailureClass::ServerError),
-            body: Some(RoutingFailureClass::FormatRejected),
-        };
+        // 500-with-format-body (F-P5-1): the signal derives from the REAL
+        // ModelError the adapter produces for a 5xx + invalid_request_error
+        // body — terminal FormatRejected, never a cascade.
+        let body = "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"malformed tool schema\"}}";
+        let err = nano_model::flux_common::classify_status(500, body.to_string());
+        assert!(matches!(
+            err,
+            ModelError::InvalidRequest { status: 500, .. }
+        ));
         assert_eq!(
-            classify_attempt(&signals),
+            classify_attempt(&signals_of_model_error(&err)),
             RoutingFailureClass::FormatRejected
         );
         // No conflict: pure cascade stays cascading.

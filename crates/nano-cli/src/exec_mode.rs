@@ -455,6 +455,7 @@ where
         turn_id,
         routing_mode,
         model_name,
+        crate::auto_routing::ATTEMPT_BUDGET,
         crate::auto_routing::pin_snapshot_candidates(model_name),
         crate::auto_routing::pin_snapshot_digest(
             &crate::provider_router::ProviderRouter::default(),
