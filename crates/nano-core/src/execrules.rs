@@ -899,11 +899,13 @@ fn unix_owner_only(mode: u32, uid: u32, effective_uid: u32) -> bool {
     mode & 0o077 == 0 && uid == effective_uid
 }
 
+/// Windows owner-only enforcement (P4 §2.5): the P2a §5.5 DACL-audit helper
+/// has landed (ported from `nano-session`'s `attachment_store::windows_acl`
+/// — the same helper `audit_private_session_dir` rides). The DACL must grant
+/// no beyond-user principal; anything else fails closed as RuleFileInvalid.
 #[cfg(windows)]
-fn verify_owner_only(_path: &Path, _metadata: &fs::Metadata) -> Result<(), RuleStoreError> {
-    Err(invalid(
-        "Windows owner-only ACL verification is unavailable; install the P2a ACL audit helper",
-    ))
+fn verify_owner_only(path: &Path, _metadata: &fs::Metadata) -> Result<(), RuleStoreError> {
+    windows_acl::audit_current_user_only(path)
 }
 
 #[cfg(unix)]
@@ -913,9 +915,7 @@ fn verify_platform_acl_available() -> Result<(), RuleStoreError> {
 
 #[cfg(windows)]
 fn verify_platform_acl_available() -> Result<(), RuleStoreError> {
-    Err(invalid(
-        "Windows owner-only ACL verification is unavailable; install the P2a ACL audit helper",
-    ))
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -986,14 +986,38 @@ fn atomic_owner_only_write(path: &Path, contents: &[u8]) -> Result<(), RuleStore
         file.write_all(contents)?;
         file.sync_all()?;
         drop(file);
+        // Windows: the temp file's inherited DACL typically grants
+        // SYSTEM/Administrators, which the open-time audit refuses. Pin an
+        // explicit current-user-only DACL BEFORE the rename (a same-volume
+        // rename carries the descriptor), so the amended file passes the
+        // same audit every load applies. Fail-closed: an ACL we cannot set
+        // is a file we do not ship.
+        #[cfg(windows)]
+        windows_acl::set_current_user_only(&temp_path)?;
         replace_file(&temp_path, path)?;
-        File::open(parent)?.sync_all()?;
-        Ok::<(), io::Error>(())
+        sync_parent_dir(parent)?;
+        Ok::<(), RuleStoreError>(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temp_path);
     }
-    result.map_err(RuleStoreError::Io)
+    result
+}
+
+#[cfg(unix)]
+fn sync_parent_dir(parent: &Path) -> io::Result<()> {
+    File::open(parent)?.sync_all()
+}
+
+/// Windows directory durability: `replace_file` already passes
+/// MOVEFILE_WRITE_THROUGH (the rename is written through to disk, directory
+/// metadata included); a plain directory handle cannot be `sync_all`'d
+/// (FlushFileBuffers on a read-only dir handle is ERROR_ACCESS_DENIED), and
+/// the repo's Windows writers (attachment_store) follow the same
+/// write-through posture. So the parent sync is a unix-only step.
+#[cfg(windows)]
+fn sync_parent_dir(_parent: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -1117,6 +1141,221 @@ fn lock_overlapped() -> windows_sys::Win32::System::IO::OVERLAPPED {
     overlapped
 }
 
+/// Windows owner-only ACL enforcement for `rules.toml` (P4 §2.5 step 2).
+/// Ported from `nano-session`'s `attachment_store::windows_acl` (the P2a
+/// §5.5 helper this module's interim stub pointed at) with the error type
+/// adapted to [`RuleStoreError`]; the DACL semantics are unchanged: no
+/// beyond-user ALLOW ACE, deny ACEs tolerated, missing/empty DACL refused.
+/// nano-core stays a foundation crate (it must not depend on nano-session),
+/// so the helper is ported here rather than imported — the same discipline
+/// this module already applies to the sidecar lock (`nano-session`'s
+/// `lock.rs` mechanism, locally implemented).
+#[cfg(windows)]
+mod windows_acl {
+    use super::{RuleStoreError, invalid};
+    use std::path::Path;
+    use std::ptr;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Foundation::HLOCAL;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Foundation::PSID;
+    use windows_sys::Win32::Security::ACL;
+    use windows_sys::Win32::Security::Authorization::EXPLICIT_ACCESS_W;
+    use windows_sys::Win32::Security::Authorization::GetNamedSecurityInfoW;
+    use windows_sys::Win32::Security::Authorization::SE_FILE_OBJECT;
+    use windows_sys::Win32::Security::Authorization::SET_ACCESS;
+    use windows_sys::Win32::Security::Authorization::SetEntriesInAclW;
+    use windows_sys::Win32::Security::Authorization::SetNamedSecurityInfoW;
+    use windows_sys::Win32::Security::Authorization::TRUSTEE_IS_SID;
+    use windows_sys::Win32::Security::Authorization::TRUSTEE_IS_USER;
+    use windows_sys::Win32::Security::Authorization::TRUSTEE_W;
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+    use windows_sys::Win32::Security::EqualSid;
+    use windows_sys::Win32::Security::GetAce;
+    use windows_sys::Win32::Security::GetLengthSid;
+    use windows_sys::Win32::Security::GetTokenInformation;
+    use windows_sys::Win32::Security::PROTECTED_DACL_SECURITY_INFORMATION;
+    use windows_sys::Win32::Security::TOKEN_QUERY;
+    use windows_sys::Win32::Security::TOKEN_USER;
+    use windows_sys::Win32::Security::TokenUser;
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    use windows_sys::Win32::System::Threading::OpenProcessToken;
+
+    const GENERIC_ALL_PERM: u32 = 0x1000_0000;
+    const SUB_CONTAINERS_AND_OBJECTS_INHERIT: u32 = 0x3; // CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE
+    const ACCESS_ALLOWED_ACE_TYPE_U8: u8 = 0;
+    const ACCESS_DENIED_ACE_TYPE_U8: u8 = 1;
+
+    fn to_wide(path: &Path) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    /// The current process user's SID (from the process token — the
+    /// effective identity, never a name lookup).
+    fn current_user_sid() -> Result<Vec<u8>, RuleStoreError> {
+        // Safety: GetCurrentProcess returns a pseudo-handle to the current
+        // process (never closed); the token handle is opened with
+        // TOKEN_QUERY and closed before every return.
+        unsafe {
+            let mut token: HANDLE = 0;
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                return Err(invalid("ACL audit: OpenProcessToken failed"));
+            }
+            let mut needed = 0u32;
+            let _ = GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut needed);
+            if needed == 0 {
+                let _ = CloseHandle(token);
+                return Err(invalid("ACL audit: GetTokenInformation sizing failed"));
+            }
+            let mut buf = vec![0u8; needed as usize];
+            let ok = GetTokenInformation(
+                token,
+                TokenUser,
+                buf.as_mut_ptr().cast(),
+                needed,
+                &mut needed,
+            );
+            let _ = CloseHandle(token);
+            if ok == 0 {
+                return Err(invalid("ACL audit: GetTokenInformation failed"));
+            }
+            let user = &*(buf.as_ptr() as *const TOKEN_USER);
+            let sid_len = GetLengthSid(user.User.Sid) as usize;
+            if sid_len == 0 || sid_len > buf.len() {
+                return Err(invalid("ACL audit: invalid user SID"));
+            }
+            let mut sid = vec![0u8; sid_len];
+            ptr::copy_nonoverlapping(user.User.Sid as *const u8, sid.as_mut_ptr(), sid_len);
+            Ok(sid)
+        }
+    }
+
+    /// Amendment writes: replace the DACL with a single current-user
+    /// full-control ACE, protected from inheritance (the P2a §5.5 creation
+    /// posture applied to the rules file).
+    pub fn set_current_user_only(path: &Path) -> Result<(), RuleStoreError> {
+        let sid = current_user_sid()?;
+        let wide = to_wide(path);
+        unsafe {
+            let mut trustee: TRUSTEE_W = std::mem::zeroed();
+            trustee.TrusteeForm = TRUSTEE_IS_SID;
+            trustee.TrusteeType = TRUSTEE_IS_USER;
+            // For TRUSTEE_IS_SID, ptstrName carries the SID pointer.
+            trustee.ptstrName = sid.as_ptr() as *mut u16;
+            let mut entry: EXPLICIT_ACCESS_W = std::mem::zeroed();
+            entry.grfAccessPermissions = GENERIC_ALL_PERM;
+            entry.grfAccessMode = SET_ACCESS;
+            entry.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+            entry.Trustee = trustee;
+            let mut new_acl: *mut ACL = ptr::null_mut();
+            // Safety: `entry`/`sid` outlive the call; `new_acl` is a
+            // LocalAlloc'd out-param freed below.
+            let rc = SetEntriesInAclW(1, &entry, ptr::null(), &mut new_acl);
+            if rc != 0 || new_acl.is_null() {
+                return Err(invalid("ACL pin: SetEntriesInAclW failed"));
+            }
+            // Safety: `wide` is NUL-terminated and outlives the call.
+            let rc = SetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                new_acl,
+                ptr::null(),
+            );
+            LocalFree(new_acl as HLOCAL);
+            if rc != 0 {
+                return Err(invalid("ACL pin: SetNamedSecurityInfoW failed"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Open-time audit: the DACL must grant no beyond-user principals.
+    /// Deny ACEs grant nothing and are tolerated; anything else (allow ACEs
+    /// for other SIDs, audit ACEs, …) fails closed.
+    pub fn audit_current_user_only(path: &Path) -> Result<(), RuleStoreError> {
+        let user_sid = current_user_sid()?;
+        let wide = to_wide(path);
+        unsafe {
+            let mut dacl: *mut ACL = ptr::null_mut();
+            let mut sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR = ptr::null_mut();
+            // Safety: `wide` is NUL-terminated; out-params are written by
+            // the call and `sd` is LocalFree'd below.
+            let rc = GetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut dacl,
+                ptr::null_mut(),
+                &mut sd,
+            );
+            if rc != 0 {
+                return Err(invalid("ACL audit: GetNamedSecurityInfoW failed"));
+            }
+            let result = audit_dacl(dacl, user_sid.as_ptr() as PSID);
+            if !sd.is_null() {
+                LocalFree(sd as HLOCAL);
+            }
+            result?;
+        }
+        Ok(())
+    }
+
+    /// The DACL walk, separated for testability. Fails when any ALLOW ACE
+    /// targets a principal other than the current user, when no ALLOW ACE
+    /// covers the current user, or when the DACL is absent entirely.
+    ///
+    /// Safety: `dacl` must be a valid ACL pointer (or null) and `user_sid`
+    /// a valid SID pointer, both outliving the call.
+    unsafe fn audit_dacl(dacl: *mut ACL, user_sid: PSID) -> Result<(), RuleStoreError> {
+        // Safety: upheld by the caller contract above.
+        unsafe {
+            if dacl.is_null() {
+                return Err(invalid("rules file has no DACL (world-accessible)"));
+            }
+            let ace_count = (*dacl).AceCount;
+            let mut user_granted = false;
+            for i in 0..u32::from(ace_count) {
+                let mut ace: *mut std::ffi::c_void = ptr::null_mut();
+                if GetAce(dacl, i, &mut ace) == 0 || ace.is_null() {
+                    return Err(invalid("ACL audit: GetAce failed"));
+                }
+                let header = &*(ace as *const windows_sys::Win32::Security::ACE_HEADER);
+                match header.AceType {
+                    ACCESS_ALLOWED_ACE_TYPE_U8 => {
+                        let allowed =
+                            &*(ace as *const windows_sys::Win32::Security::ACCESS_ALLOWED_ACE);
+                        let sid = &raw const allowed.SidStart as PSID;
+                        if EqualSid(sid, user_sid) == 0 {
+                            return Err(invalid("rules file DACL grants a beyond-user principal"));
+                        }
+                        user_granted = true;
+                    }
+                    ACCESS_DENIED_ACE_TYPE_U8 => {
+                        // Deny ACEs grant nothing; they cannot widen access.
+                    }
+                    _ => {
+                        return Err(invalid("rules file DACL carries a non-access ACE"));
+                    }
+                }
+            }
+            if !user_granted {
+                return Err(invalid("rules file DACL grants the current user nothing"));
+            }
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1189,5 +1428,41 @@ mod tests {
         assert!(unix_owner_only(0o600, 1000, 1000));
         assert!(!unix_owner_only(0o600, 1001, 1000));
         assert!(!unix_owner_only(0o606, 1000, 1000));
+    }
+
+    /// F-P4-2: the Windows load/amend path now rides the ported P2a §5.5
+    /// DACL audit instead of the interim hard-refusal stub. A file whose
+    /// DACL is pinned current-user-only (the amendment writer's posture)
+    /// loads; a DACL widened to another principal fails closed.
+    #[cfg(windows)]
+    #[test]
+    fn windows_acl_audit_loads_pinned_file_and_refuses_widened_dacl() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("rules.toml");
+        fs::write(
+            &path,
+            "[[rule]]\npattern = [\"git\"]\ndecision = \"allow\"\nexact = false\n",
+        )
+        .unwrap();
+        windows_acl::set_current_user_only(&path).unwrap();
+        assert_eq!(
+            load_rules(temp.path(), None).unwrap().rules().len(),
+            1,
+            "a current-user-only rules.toml must load on Windows"
+        );
+        // Widen the DACL (Everyone read) via icacls; the audit must refuse.
+        let status = std::process::Command::new("icacls")
+            .arg(&path)
+            .args(["/grant", "*S-1-1-0:R"])
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "icacls grant failed");
+        assert!(
+            matches!(
+                load_rules(temp.path(), None),
+                Err(RuleStoreError::RuleFileInvalid { .. })
+            ),
+            "a DACL granting a beyond-user principal must fail closed"
+        );
     }
 }
