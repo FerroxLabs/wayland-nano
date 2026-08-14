@@ -894,3 +894,45 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
 - **FIXED F-P3-8 at cea3778** (>64 hydrated union bricked compaction): `hydration_carry_at` (nano-session/src/coordinator.rs) degrades an over-cap entry to digest/summary form — tool_names dropped whole (never a truncated subset), tools_digest + churn window carried. Resume re-exposes nothing for that server; tool_search re-hydrates. Compaction never bricks. Pin: `carry_degrades_when_hydrated_union_exceeds_the_name_cap` (70-name union, replay consistency, second compaction carries).
 - **FIXED F-P3-11 at 697099d** (OAuth listener held ~180s after early failure): mechanism shipped with S5's ad87b4c (binding Drop cancels the accept loop); bind-before-DCR stands because registration needs the redirect_uri. This commit pins the flow-level evidence: `dcr_failure_releases_the_listener_port_promptly` recovers the bound port from the DCR request body and probes it released within 2s of the typed RegistrationFailed.
 - **FIXED F-P3-12 at a48ead5** (unsanitized HTTP error surface): S5's 20be621 routed all `McpError::Transport` construction through `nano_egress::client::sanitize_transport_error` / status-only strings. This commit pins the redaction end-to-end: `http_error_surface_carries_no_body_or_credentials` (500 with a 64 KiB secret-marked body, garbage 200 body, connection-refused with query+userinfo markers, presented bearer) — none reach the error, text stays ≤ 256 chars. **Sev-1 check: NEGATIVE** — no credential material reaches model/card/log paths (AuthHeader values only ever become request headers; `resource_error_of_mcp` stringifies the sanitized text only).
+
+## Wave-end audit fix lane (fix/wa-ckpt, 2026-08-14) — two High findings in crates/nano-checkpoints/src/lib.rs, FIXED on branch at 9991e7a, owner closes
+
+- **F-42 (High, journal-claims-nonexistent-state ordering) FIXED.** `create_locked`
+  journaled `CheckpointCreated` BEFORE the manifest/index were persisted; a crash
+  in between left replay claiming an unreachable checkpoint. Now manifest+index
+  are written and fsynced FIRST (`atomic_json` gained `sync_all` before the
+  rename), and the journal append is the LAST step — a failed/torn final append
+  loses only the claim while the ref-anchored commit, manifest, and index entry
+  remain restorable truth. Restore path audited: `CheckpointRestoreBegin` lands
+  before any workspace mutation and `CheckpointRestoreEnd` only after the apply
+  completes (recovery re-applies an interrupted tail), so it already follows the
+  same durable-first discipline — no change needed. Pin:
+  `failed_final_append_leaves_durable_state_without_phantom_claim` (journal path
+  torn mid-create: typed error, state listed+manifested, resumed journal carries
+  no CheckpointCreated, and every landed claim resolves to a persisted index
+  entry).
+- **F-43 (High, 256 MiB cap didn't bound disk) FIXED.** Eviction removed only
+  index entries; parent-chained `commit-tree` objects accumulated forever. Each
+  checkpoint is now anchored under `refs/nano-checkpoints/<id>` (best-effort
+  migration anchor for pre-existing stores at open); eviction deletes the ref
+  and manifest, then runs a bounded `git gc --prune=now` (eviction-only, once
+  per evicted batch); the cap is additionally enforced against the ACTUAL
+  on-disk store size (`store_disk_bytes` over repo.git + manifests + index).
+  Commits are deliberately parentless — ancestry chaining would keep evicted
+  objects reachable from successors and unprunable; `CheckpointInfo.parent`
+  remains journal/index metadata. All git subprocess calls stay on the crate's
+  scrubbed/-c hooks-disabled discipline with argument-safe ref names. Pin:
+  `eviction_prunes_object_store_below_cap` (40 checkpoints × 2 MiB
+  incompressible payload: 32 retained, refs 1:1 with the index, evicted commits
+  fail `cat-file -e`, disk < un-pruned accumulation and ≤ MAX_STORE_BYTES,
+  newest checkpoint still restores). Behavioral notes: the just-created
+  checkpoint is never evicted by its own create (a single >cap checkpoint is
+  kept, not phantom-created); the disk-cap loop itself is only reachable when
+  per-object overhead pushes disk past the logical sum, so the test exercises
+  the count/logical eviction + pruning path and asserts against the cap rather
+  than forcing 256 MiB of fixture data.
+- **Found in testing, fixed in the same commit:** parentless commits with
+  identical trees created within git's 1-second committer-timestamp granularity
+  collapsed to the SAME commit id (previously kept distinct by the parent
+  chain) — a shared id would let one index entry's eviction prune a sibling's
+  objects. The commit message now carries a unique `now_nanos-sequence` token.
