@@ -18,6 +18,11 @@ const DEFAULT_TIMEOUT_SEC: u64 = 30;
 const MAX_TIMEOUT_SEC: u64 = 600;
 const SESSION_END_MAX_TIMEOUT_SEC: u64 = 3;
 const MAX_REASON_BYTES: usize = 2048;
+/// Hook stdout/stderr are hook-controlled: each pipe drains through a
+/// capped buffer. Past the cap the drain keeps reading and discards — a
+/// full pipe must never deadlock the child — and the hook fails with
+/// `HookOutcome::BoundedOutput`, distinct from Timeout.
+const MAX_HOOK_OUTPUT_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HookEvent {
@@ -47,6 +52,9 @@ pub enum HookOutcome {
     Blocked,
     Failed,
     Timeout,
+    /// The hook emitted more than MAX_HOOK_OUTPUT_BYTES on a pipe; the
+    /// output was drained-and-discarded past the cap and the hook failed.
+    BoundedOutput,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,7 +76,10 @@ impl HookRun {
         self.decisions.iter().find_map(|decision| {
             matches!(
                 decision.outcome,
-                HookOutcome::Blocked | HookOutcome::Failed | HookOutcome::Timeout
+                HookOutcome::Blocked
+                    | HookOutcome::Failed
+                    | HookOutcome::Timeout
+                    | HookOutcome::BoundedOutput
             )
             .then_some(
                 decision
@@ -320,6 +331,10 @@ async fn execute(handler: &Handler, payload: &Value) -> HookDecision {
         }
         Ok(_) => (HookOutcome::Failed, None),
         Err(RunError::Timeout) => (HookOutcome::Timeout, Some("hook command timed out".into())),
+        Err(RunError::BoundedOutput) => (
+            HookOutcome::BoundedOutput,
+            Some("hook output exceeded bound".into()),
+        ),
         Err(RunError::Spawn) => (
             HookOutcome::Failed,
             Some("hook command could not start".into()),
@@ -367,6 +382,37 @@ fn bound_reason(reason: &str) -> String {
 enum RunError {
     Spawn,
     Timeout,
+    BoundedOutput,
+}
+
+struct DrainedPipe {
+    bytes: Vec<u8>,
+    exceeded: bool,
+}
+
+/// Drains one pipe to EOF through a capped buffer: at most
+/// MAX_HOOK_OUTPUT_BYTES are retained; bytes past the cap are read and
+/// discarded so a child writing past the cap never blocks on a full pipe.
+async fn drain_pipe_capped(
+    mut pipe: impl tokio::io::AsyncRead + Unpin,
+) -> std::io::Result<DrainedPipe> {
+    let mut bytes = Vec::new();
+    let mut exceeded = false;
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = pipe.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        let room = MAX_HOOK_OUTPUT_BYTES.saturating_sub(bytes.len());
+        if n > room {
+            bytes.extend_from_slice(&chunk[..room]);
+            exceeded = true;
+        } else {
+            bytes.extend_from_slice(&chunk[..n]);
+        }
+    }
+    Ok(DrainedPipe { bytes, exceeded })
 }
 
 async fn execute_command(
@@ -408,14 +454,8 @@ async fn execute_command(
         .map_err(|_| RunError::Spawn)?;
     let mut stdout = child.stdout.take().ok_or(RunError::Spawn)?;
     let mut stderr = child.stderr.take().ok_or(RunError::Spawn)?;
-    let stdout_task = tokio::spawn(async move {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).await.map(|_| bytes)
-    });
-    let stderr_task = tokio::spawn(async move {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).await.map(|_| bytes)
-    });
+    let stdout_task = tokio::spawn(async move { drain_pipe_capped(&mut stdout).await });
+    let stderr_task = tokio::spawn(async move { drain_pipe_capped(&mut stderr).await });
     let deadline = Instant::now() + handler.timeout;
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|_| RunError::Spawn)? {
@@ -446,10 +486,13 @@ async fn execute_command(
         .await
         .map_err(|_| RunError::Spawn)?
         .map_err(|_| RunError::Spawn)?;
+    if stdout.exceeded || stderr.exceeded {
+        return Err(RunError::BoundedOutput);
+    }
     Ok(Output {
         status,
-        stdout,
-        stderr,
+        stdout: stdout.bytes,
+        stderr: stderr.bytes,
     })
 }
 

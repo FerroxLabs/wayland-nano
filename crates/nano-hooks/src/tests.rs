@@ -92,3 +92,45 @@ async fn blocking_invalid_output_fails_closed() {
         .await;
     assert!(run.blocking_reason().is_some());
 }
+
+/// A hook emitting more than MAX_HOOK_OUTPUT_BYTES fails with the
+/// bounded-output outcome — distinct from Timeout — while the drain keeps
+/// reading past the cap, so the child never deadlocks on a full pipe and
+/// the host never retains the unbounded output. The oversized content is
+/// streamed from a fixture file so the test is fast on both `cmd` and
+/// `sh`; the fixture anchors under target/ (repo precedent for contained
+/// child file access, and the path stays quote-free for `cmd /S /C`).
+#[tokio::test]
+async fn hook_output_over_cap_fails_bounded_output_without_deadlock() {
+    let scratch = std::env::current_dir().unwrap().join("target");
+    fs::create_dir_all(&scratch).unwrap();
+    let dir = tempfile::Builder::new()
+        .prefix("nano-hooks-bounds-")
+        .tempdir_in(&scratch)
+        .unwrap();
+    let big = dir.path().join("big-output.bin");
+    fs::write(&big, vec![b'x'; MAX_HOOK_OUTPUT_BYTES + 64 * 1024]).unwrap();
+    let command = if cfg!(windows) {
+        format!("type {}", big.display())
+    } else {
+        format!("cat {}", big.display())
+    };
+    let engine = load(&format!(
+        "[[hooks.PreToolUse]]\nmatcher='.*'\nhooks=[{{command={command:?}, timeout_sec=30}}]"
+    ));
+    let run = engine
+        .run(HookEvent::PreToolUse, Some("Bash"), &serde_json::json!({}))
+        .await;
+    assert_eq!(run.decisions.len(), 1);
+    let decision = &run.decisions[0];
+    assert_eq!(decision.outcome, HookOutcome::BoundedOutput, "{decision:?}");
+    assert!(
+        decision.duration_ms < 30_000,
+        "over-cap hook drained and exited well before the timeout: {decision:?}"
+    );
+    assert_eq!(
+        decision.reason.as_deref(),
+        Some("hook output exceeded bound")
+    );
+    assert!(run.blocking_reason().is_some());
+}
