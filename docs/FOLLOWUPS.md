@@ -817,6 +817,15 @@ promotes/closes entries; builders append only.
 
 # Plugin substrate follow-ups (S8)
 
+# S9 computer-use follow-ups
+
+- Complete macOS CGEvent/CGDisplay dispatch and record the live TCC proof before advertising computer use.
+- Complete Linux X11 XTest input/capture and run the two `xvfb-run` live legs before advertising computer use.
+- Route Wayland `wlrctl`/`grim` fixed argv through a concrete `nano-platform` `SpawnSpec`; restricted compositors must remain unregistered.
+- Complete Windows `type`, `key`, and `scroll` `SendInput` dispatch plus live focus-invariance, landing, and 100%/150% HiDPI evidence.
+- Add the integrator-owned `nano-session` CUA journal/error/resume vocabulary and `nano-agent`/`nano-tools` approval, permission-mode, cancellation, panic-containment, attachment, and registration seams.
+- Add the six-target cross-platform battery; capability flags remain false until each platform's live proof is recorded.
+
 - Git-subprocess registry sources require an OS-containment and nano-egress design.
 - ACP-host skill activation requires a skill-context consumer; protocol-host is the v1 consumer.
 - HTTP-transport MCP plugin entries remain blocked on the §6.1 dispatcher HTTP binding.
@@ -965,3 +974,35 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
   must chain `plugin_cmds::plugin_skill_roots(nano_home)` with the same
   fail-closed Result discipline (corrupt store = typed startup refusal,
   never a silent zero).
+
+## F-42: nano-cua live-desktop proofs (S9 §7.2) — capability flags stay FALSE until they land
+
+- **Filed:** 2026-08-14, S9 completion lane (feat/s9-cua). The crate shipped
+  headless-complete: policy battery, coordinate mapping, gate matrix, journal
+  shapes, Wayland probe fixtures, redaction fixtures, and all four backends
+  compile (Windows tested natively; macOS via `--target aarch64-apple-darwin`
+  check+clippy; Linux via WSL test+clippy, both with and without the `x11`
+  feature). Live dispatch is proven on NO platform: WSL on this host has no
+  xvfb/X server, so even the CI-provable X11 leg ran self-skipped.
+- **Gap:** the §7.2 battery in `crates/nano-cua/tests/live.rs` self-skips
+  behind `NANO_CUA_LIVE=1` with reason strings. Until each platform's proof
+  is run and recorded, `Capabilities.computer_use` stays FALSE per platform
+  (honesty rule; the donor's `27-C2(b)` advertise-from-linkage defect is the
+  anti-precedent). Do NOT wire advertisement at integration.
+- **Close means:** per platform — Windows: focus-invariance + SendInput
+  landing + HiDPI at 100%/150% on an interactive window station (owner-run);
+  macOS: TCC-granted CGEvent/CGDisplay run on a logged-in GUI session;
+  Linux X11: `xvfb-run cargo test -p nano-cua --test live` with
+  `NANO_CUA_LIVE=1` (CI-automatable on the ubuntu legs); Linux Wayland: a
+  live sway/river seat. Then, and only then, flip that platform's flag.
+
+## F-43: reroute Wayland CUA helpers through nano-platform SpawnSpec
+
+- **Filed:** 2026-08-14, S9 completion lane. nano-platform is a 5-line stub
+  (no SpawnSpec exists), so `nano-cua/src/backends/linux_wayland.rs` shells
+  out to `wlrctl`/`grim` directly in argv mode — the precedent S5 shipped in
+  `nano-mcp/src/stdio.rs` (fixed program, separate argv entries, no shell).
+  Design §2.6 prefers SpawnSpec routing once it exists.
+- **Close means:** nano-platform lands SpawnSpec; the `run_argv` helper in
+  linux_wayland.rs (and the `osascript`/`xdotool` frontmost probes) route
+  through it, with the fixed-argv/no-model-interpolation contract kept.
