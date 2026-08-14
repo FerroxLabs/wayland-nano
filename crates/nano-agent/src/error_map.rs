@@ -119,6 +119,8 @@ pub fn kind_of_mcp(err: &nano_mcp::client::McpError) -> NanoErrorKind {
         // content boundary — the new kinds, not the generic server bucket.
         McpError::ResourceUnsupported => NanoErrorKind::McpResourceUnsupported,
         McpError::ContentUnsupported => NanoErrorKind::McpContentUnsupported,
+        // S5 Leg B: unix containment failure is fail-closed, never generic.
+        McpError::SandboxUnavailable(_) => NanoErrorKind::SandboxUnavailable,
         McpError::Egress(err) => kind_of_egress(err),
     }
 }

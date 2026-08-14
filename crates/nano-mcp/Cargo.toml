@@ -7,6 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 nano-egress = { version = "0.1.0", path = "../nano-egress" }
+nano-core = { version = "0.1.0", path = "../nano-core" }
+nano-sandbox = { version = "0.1.0", path = "../nano-sandbox", features = ["unix-argv-builders"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 tokio = { version = "1", features = ["macros", "rt", "time", "sync"] }
 serde = { version = "1", features = ["derive"] }
@@ -19,6 +21,9 @@ base64 = "0.22"
 rand = { version = "0.8", features = ["std", "std_rng"] }
 sha2 = "0.10"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # OAuth credential storage (P3 §6.4, Q5 RULED): the keyring-primary store is
 # a hand-rolled wincred shim over the PINNED windows-sys 0.52 — the `keyring`
 # crate's Windows backend pulls a second windows-sys version, which the
@@ -27,7 +32,6 @@ sha2 = "0.10"
 # Contained stdio spawn (§2.6, F-P3-2): spawn_process_with_pipes_contained
 # (NO-BREAKAWAY job + KILL_ON_JOB_CLOSE). Windows-only — the unix arm keeps
 # the std spawn (recorded §2.6 deviation, see stdio.rs).
-nano-sandbox = { version = "0.1.0", path = "../nano-sandbox" }
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_Security_Credentials",

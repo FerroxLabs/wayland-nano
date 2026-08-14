@@ -1,9 +1,8 @@
 //! F-P3-2 / §2.6 proof: the contained stdio spawn kills the MCP server
 //! child AND its direct descendant on graceful close — asserted via
 //! EXTERNAL process inventory (OpenProcess / GetExitCodeProcess), never
-//! self-report. Windows-only: the contained spawn is the Windows arm of
-//! §2.6 (unix keeps the std spawn for v1 — the recorded deviation in
-//! `stdio.rs`).
+//! self-report. Windows-only: Unix has parallel process-group and host-death
+//! proof legs in `unix_contained_spawn.rs`.
 //!
 //! Scope note (§2.6 v1 proof): this exercises the graceful-close path,
 //! where the supervisor terminates the NO-BREAKAWAY job. The host-death

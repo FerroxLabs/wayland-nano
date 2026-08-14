@@ -12,14 +12,11 @@
 //! floor, not the ceiling — the §2.6 restricted-token inheritance lands with
 //! that plumbing.
 //!
-//! Unix (DEVIATION from §2.6, recorded): nano-sandbox's unix backends
-//! (bwrap/landlock/seatbelt) are argv/policy builders for the tool-exec
-//! lane, not a piped-spawn-with-process-group-teardown primitive reusable
-//! here, so unix keeps the plain `std::process::Command` spawn for v1 —
-//! child-kill only, NO direct-descendant containment and NO host-death
-//! reaping. This is exactly why the stdio-MCP capability flag stays FALSE
-//! until the §13 leg-1b process-inventory proofs pass on every tier-1
-//! platform.
+//! Unix (§2.6, F-P3-2): Linux runs through the wayland-nano-linux-sandbox
+//! helper (modern bwrap default); macOS runs through sandbox-exec with the
+//! seatbelt policy builder. A process-group guardian owns each sandboxed
+//! tree, reaping it on supervisor teardown or host death. Backend selection,
+//! helper resolution, policy construction, setsid, and spawn all fail closed.
 
 use crate::client::McpError;
 use std::io::BufReader;
@@ -48,6 +45,8 @@ pub enum TransportChild {
     /// Streamable HTTP pump. The supervisor owns the sole shutdown sender;
     /// dropping/sending it tears down the pump and closes both virtual pipes.
     Http(HttpChild),
+    #[cfg(unix)]
+    UnixContained(UnixContainedChild),
     /// Windows contained spawn (`spawn_process_with_pipes_contained`):
     /// terminate is `JobObject::terminate` on a NO-BREAKAWAY job with
     /// KILL_ON_JOB_CLOSE.
@@ -61,6 +60,8 @@ impl TransportChild {
         match self {
             Self::Std(child) => child.try_wait().ok().flatten().is_some(),
             Self::Http(child) => child.exited.load(Ordering::Acquire),
+            #[cfg(unix)]
+            Self::UnixContained(child) => child.try_wait_exited(),
             #[cfg(target_os = "windows")]
             Self::Contained(child) => child.try_wait_exited(),
         }
@@ -77,6 +78,8 @@ impl TransportChild {
             Self::Http(child) => {
                 let _ = child.shutdown.send(());
             }
+            #[cfg(unix)]
+            Self::UnixContained(child) => child.terminate(),
             #[cfg(target_os = "windows")]
             Self::Contained(child) => child.terminate(),
         }
@@ -86,6 +89,26 @@ impl TransportChild {
 pub struct HttpChild {
     pub(crate) shutdown: Sender<()>,
     pub(crate) exited: Arc<AtomicBool>,
+}
+
+#[cfg(unix)]
+pub struct UnixContainedChild {
+    child: Child,
+    process_group: libc::pid_t,
+}
+
+#[cfg(unix)]
+impl UnixContainedChild {
+    fn try_wait_exited(&mut self) -> bool {
+        self.child.try_wait().ok().flatten().is_some()
+    }
+
+    fn terminate(&mut self) {
+        unsafe {
+            libc::killpg(self.process_group, libc::SIGKILL);
+        }
+        let _ = self.child.wait();
+    }
 }
 
 /// Windows contained child: the NO-BREAKAWAY job object (kill authority,
@@ -198,26 +221,187 @@ fn spawn_contained(
     })
 }
 
-/// Unix v1 spawn (the recorded §2.6 deviation — see module doc).
-#[cfg(not(target_os = "windows"))]
+#[derive(Debug, PartialEq, Eq)]
+#[cfg(any(unix, test))]
+struct PlatformCommand {
+    program: std::path::PathBuf,
+    args: Vec<String>,
+}
+
+#[cfg(target_os = "linux")]
+const NANO_LINUX_SANDBOX_EXE_ENV_VAR: &str = "NANO_LINUX_SANDBOX_EXE";
+#[cfg(any(unix, test))]
+const NANO_LINUX_SANDBOX_ARG0: &str = "wayland-nano-linux-sandbox";
+
+#[cfg(any(unix, test))]
+fn platform_sandbox_command_for(
+    sandbox: Option<nano_sandbox::SandboxType>,
+    command: Vec<String>,
+    cwd: &std::path::Path,
+    linux_resolver: impl FnOnce() -> Option<std::path::PathBuf>,
+) -> Result<PlatformCommand, McpError> {
+    use nano_core::permissions::{NetworkSandboxPolicy, PermissionProfile};
+    let profile =
+        PermissionProfile::workspace_write_with(&[], NetworkSandboxPolicy::Restricted, true, true);
+    match sandbox {
+        Some(nano_sandbox::SandboxType::LinuxSeccomp) => {
+            let helper = linux_resolver().ok_or_else(|| {
+                McpError::SandboxUnavailable(format!(
+                    "`{NANO_LINUX_SANDBOX_ARG0}` helper not found"
+                ))
+            })?;
+            let args = nano_sandbox::linux_landlock::create_linux_sandbox_command_args_for_permission_profile(
+                command,
+                cwd,
+                &profile,
+                cwd,
+                false,
+            );
+            Ok(PlatformCommand {
+                program: helper,
+                args,
+            })
+        }
+        Some(nano_sandbox::SandboxType::MacosSeatbelt) => {
+            let (file_system_sandbox_policy, network_sandbox_policy) =
+                profile.to_runtime_permissions();
+            let args = nano_sandbox::macos_seatbelt::create_seatbelt_command_args(
+                nano_sandbox::macos_seatbelt::CreateSeatbeltCommandArgsParams {
+                    command,
+                    file_system_sandbox_policy: &file_system_sandbox_policy,
+                    network_sandbox_policy,
+                    sandbox_policy_cwd: cwd,
+                    extra_allow_unix_sockets: &[],
+                },
+            )
+            .map_err(|_| {
+                McpError::SandboxUnavailable("seatbelt policy build failed".into())
+            })?;
+            Ok(PlatformCommand {
+                program: nano_sandbox::macos_seatbelt::MACOS_PATH_TO_SEATBELT_EXECUTABLE.into(),
+                args,
+            })
+        }
+        other => Err(McpError::SandboxUnavailable(format!(
+            "no unix backend for selection {other:?}"
+        ))),
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn resolve_linux_sandbox_exe_from(
+    env_override: Option<std::path::PathBuf>,
+    current_exe_dir: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    if let Some(path) = env_override
+        && path.is_file()
+    {
+        return Some(path);
+    }
+    let dir = current_exe_dir?;
+    [dir.to_path_buf(), dir.join("..")]
+        .into_iter()
+        .map(|dir| dir.join(NANO_LINUX_SANDBOX_ARG0))
+        .find(|path| path.is_file())
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_linux_sandbox_exe() -> Option<std::path::PathBuf> {
+    let env_override =
+        std::env::var_os(NANO_LINUX_SANDBOX_EXE_ENV_VAR).map(std::path::PathBuf::from);
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+    resolve_linux_sandbox_exe_from(env_override, exe_dir.as_deref())
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_linux_sandbox_exe() -> Option<std::path::PathBuf> {
+    None
+}
+
+/// The guardian is the session/process-group leader. It keeps the sandboxed
+/// server in the same group, watches the Nano host PID externally, and kills
+/// the complete group if the host disappears.
+#[cfg(unix)]
+const UNIX_GUARDIAN: &str = r#"
+parent=$1
+shift
+"$@" &
+child=$!
+while kill -0 "$parent" 2>/dev/null && kill -0 "$child" 2>/dev/null; do
+  sleep 0.05
+done
+if ! kill -0 "$parent" 2>/dev/null; then
+  kill -KILL -$$
+fi
+wait "$child"
+"#;
+
+/// Unix contained spawn. There is no raw-Command fallback.
+#[cfg(unix)]
 fn spawn_std(
     command: &str,
     args: &[String],
     env: &[(String, String)],
 ) -> Result<TransportParts, McpError> {
+    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
-    let mut child = Command::new(command)
-        .args(args)
+
+    let cwd = std::env::current_dir().map_err(|_| {
+        McpError::SandboxUnavailable("current directory unavailable".into())
+    })?;
+    let sandboxed = platform_sandbox_command_for(
+        nano_sandbox::get_platform_sandbox(true),
+        std::iter::once(command.to_string())
+            .chain(args.iter().cloned())
+            .collect(),
+        &cwd,
+        resolve_linux_sandbox_exe,
+    )?;
+    use std::os::unix::fs::PermissionsExt;
+    let executable = std::fs::metadata(&sandboxed.program)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0);
+    if !executable {
+        return Err(McpError::SandboxUnavailable(
+            "sandbox executable is missing or not executable".into(),
+        ));
+    }
+    let mut guardian_args = vec![
+        "-c".to_string(),
+        UNIX_GUARDIAN.to_string(),
+        "wayland-nano-mcp-guardian".to_string(),
+        std::process::id().to_string(),
+        sandboxed.program.to_string_lossy().into_owned(),
+    ];
+    guardian_args.extend(sandboxed.args);
+    let mut command = Command::new("/bin/sh");
+    command
+        .args(guardian_args)
         .envs(env.iter().cloned())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    let mut child = command
         .spawn()
-        .map_err(|e| McpError::Transport(format!("spawn {command}: {e}")))?;
+        .map_err(|_| McpError::SandboxUnavailable("contained spawn failed".into()))?;
+    let process_group = child.id() as libc::pid_t;
     let stdin = child.stdin.take().expect("stdin piped");
     let stdout = child.stdout.take().expect("stdout piped");
     Ok(TransportParts {
-        child: TransportChild::Std(child),
+        child: TransportChild::UnixContained(UnixContainedChild {
+            child,
+            process_group,
+        }),
         stdin: Box::new(stdin),
         stdout: BufReader::new(Box::new(stdout)),
     })
@@ -272,5 +456,85 @@ impl Drop for StdioTransport {
         if let Some(mut parts) = self.parts.take() {
             parts.child.terminate();
         }
+    }
+}
+
+#[cfg(test)]
+mod unix_transform_tests {
+    use super::*;
+    use nano_sandbox::SandboxType;
+
+    #[test]
+    fn absent_backend_fails_closed_typed() {
+        let err = platform_sandbox_command_for(
+            None,
+            vec!["server".into()],
+            std::path::Path::new("/workspace"),
+            || None,
+        )
+        .expect_err("no backend must refuse");
+        assert!(matches!(err, McpError::Transport(_)));
+        assert!(err.to_string().contains("SANDBOX_UNAVAILABLE:"));
+    }
+
+    #[test]
+    fn missing_linux_helper_fails_closed_typed() {
+        let err = platform_sandbox_command_for(
+            Some(SandboxType::LinuxSeccomp),
+            vec!["server".into()],
+            std::path::Path::new("/workspace"),
+            || None,
+        )
+        .expect_err("missing helper must refuse");
+        assert!(matches!(err, McpError::Transport(_)));
+        assert!(err.to_string().contains(NANO_LINUX_SANDBOX_ARG0));
+    }
+
+    #[test]
+    fn linux_transform_routes_through_helper_and_restricted_profile() {
+        let helper = std::path::PathBuf::from("/opt/wayland-nano-linux-sandbox");
+        let transformed = platform_sandbox_command_for(
+            Some(SandboxType::LinuxSeccomp),
+            vec!["server".into(), "--flag".into()],
+            std::path::Path::new("/workspace"),
+            || Some(helper.clone()),
+        )
+        .expect("transform");
+        assert_eq!(transformed.program, helper);
+        assert!(
+            transformed
+                .args
+                .iter()
+                .any(|arg| arg == "--permission-profile")
+        );
+        assert!(
+            transformed
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--", "server"])
+        );
+        assert_eq!(transformed.args.last().map(String::as_str), Some("--flag"));
+    }
+
+    #[test]
+    fn linux_helper_resolution_is_override_then_sibling_then_parent() {
+        let root =
+            std::env::temp_dir().join(format!("nano-mcp-helper-resolution-{}", std::process::id()));
+        let deps = root.join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let parent_helper = root.join(NANO_LINUX_SANDBOX_ARG0);
+        std::fs::write(&parent_helper, b"probe").unwrap();
+        assert_eq!(
+            resolve_linux_sandbox_exe_from(None, Some(&deps))
+                .and_then(|path| path.canonicalize().ok()),
+            parent_helper.canonicalize().ok()
+        );
+        let override_helper = root.join("override-helper");
+        std::fs::write(&override_helper, b"probe").unwrap();
+        assert_eq!(
+            resolve_linux_sandbox_exe_from(Some(override_helper.clone()), Some(&deps)),
+            Some(override_helper)
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }

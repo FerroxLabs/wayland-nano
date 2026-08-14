@@ -147,8 +147,17 @@ fn answer_call_later(out: &Out, id: Value, delay: Duration, marker: Value) {
 /// drop so only job containment can kill it.
 #[allow(clippy::zombie_processes)]
 fn spawn_tree_probe() {
+    #[cfg(target_os = "windows")]
     let descendant = std::process::Command::new("ping.exe")
         .args(["-t", "127.0.0.1"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("tree scenario descendant spawns");
+    #[cfg(unix)]
+    let descendant = std::process::Command::new("sh")
+        .args(["-c", "while :; do sleep 60; done"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

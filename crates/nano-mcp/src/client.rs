@@ -54,6 +54,12 @@ pub enum McpError {
     /// owns binary-to-model content); nothing crosses into the agent path.
     #[error("non-text resource content refused")]
     ContentUnsupported,
+    /// S5 Leg B: unix stdio containment is mandatory — no raw-Command
+    /// fallback. Display keeps the `SANDBOX_UNAVAILABLE:` prefix so existing
+    /// assertions and log greps keep matching; maps to
+    /// `NanoErrorKind::SandboxUnavailable` (fail-closed, never downgraded).
+    #[error("SANDBOX_UNAVAILABLE: {0}")]
+    SandboxUnavailable(String),
 }
 
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
