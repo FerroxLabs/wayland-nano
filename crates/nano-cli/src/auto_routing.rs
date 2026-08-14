@@ -649,6 +649,13 @@ pub fn signals_of_model_error(err: &ModelError) -> FailureSignals {
             sdk: None,
             body: None,
         },
+        // F-18: the adapter folded a provider 404 into the typed variant —
+        // the terminal ModelNotFound class, never the 4xx status fallback.
+        ModelError::ModelNotFound { status, .. } => FailureSignals {
+            status: Some(*status),
+            sdk: Some(RoutingFailureClass::ModelNotFound),
+            body: None,
+        },
         // F-P5-1: the adapter already folded the 5xx+invalid_request_error
         // body evidence into the variant (classify_status). The typed-SDK
         // signal is the TERMINAL FormatRejected class — it beats the
@@ -697,6 +704,7 @@ pub fn status_of_model_error(err: &ModelError) -> Option<u16> {
         ModelError::RateLimited { .. } => Some(429),
         ModelError::Entitlement(_) => Some(402),
         ModelError::Server { status, .. } => Some(*status),
+        ModelError::ModelNotFound { status, .. } => Some(*status),
         ModelError::InvalidRequest { status, .. } => Some(*status),
         _ => None,
     }
@@ -732,8 +740,8 @@ pub fn model_error_of_failure_class(class: RoutingFailureClass, status: Option<u
             status,
         },
         RoutingFailureClass::Billing => ModelError::Entitlement("billing (journaled)".to_string()),
-        RoutingFailureClass::ModelNotFound => ModelError::Server {
-            status: 404,
+        RoutingFailureClass::ModelNotFound => ModelError::ModelNotFound {
+            status: status.unwrap_or(404),
             message: "model not found (journaled)".to_string(),
         },
         RoutingFailureClass::ContextOverflow => {
@@ -1934,6 +1942,32 @@ mod tests {
             classify_attempt(&signals_of_model_error(&err)),
             RoutingFailureClass::ModelNotFound
         );
+    }
+
+    /// F-18: a provider 404 arrives from the adapter as the TYPED
+    /// ModelError::ModelNotFound (flux_common::classify_status) — the
+    /// ladder signal fold yields the terminal model_not_found class, the
+    /// journaled status is 404, and the journaled-class round trip
+    /// reconstructs the typed error (never the 4xx Server bucket).
+    #[test]
+    fn provider_404_folds_to_typed_model_not_found_end_to_end() {
+        let err = nano_model::flux_common::classify_status(
+            404,
+            r#"{"error":{"message":"model retired"}}"#.to_string(),
+        );
+        assert!(matches!(err, ModelError::ModelNotFound { status: 404, .. }));
+        let signals = signals_of_model_error(&err);
+        assert_eq!(signals.status, Some(404));
+        let class = classify_attempt(&signals);
+        assert_eq!(class, RoutingFailureClass::ModelNotFound);
+        assert!(!class.cascades(), "404 is terminal (§4), never a cascade");
+        assert_eq!(status_of_model_error(&err), Some(404));
+        // The journaled-class reconstruction keeps the typed variant.
+        let rebuilt = model_error_of_failure_class(class, Some(404));
+        assert!(matches!(
+            rebuilt,
+            ModelError::ModelNotFound { status: 404, .. }
+        ));
     }
 }
 

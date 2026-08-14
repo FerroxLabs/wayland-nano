@@ -4,8 +4,10 @@
 //! Error classification and transport mapping live here exactly once so the
 //! adapters can never diverge on the corrected live-wire rules (FINDINGS.md
 //! batch 3): invalid key arrives as HTTP 500 with `error.type=="auth_error"`
-//! (non-retryable Auth), context overflow arrives as HTTP 413, and burst load
-//! saturates the edge with bare 503 HTML (retryable Server). These behaviors
+//! (non-retryable Auth), context overflow arrives as HTTP 413, burst load
+//! saturates the edge with bare 503 HTML (retryable Server), and a retired
+//! model id arrives as HTTP 404 (F-18: typed `ModelNotFound`, terminal —
+//! never the undifferentiated 4xx bucket). These behaviors
 //! were probed on the Completions surface; the Responses/Anthropic error
 //! bodies were not separately probed (same LiteLLM proxy — flagged gap, not
 //! a blocker), so all adapters share this single classification path.
@@ -75,6 +77,14 @@ pub fn classify_status(status: u16, body: String) -> ModelError {
             status: Some(500),
         },
         402 => ModelError::Entitlement(message),
+        // F-18: a 404 on an inference call is the provider reporting the
+        // addressed model id unknown/retired (live provider proofs:
+        // cerebras, fireworks). The typed class, never the 4xx bucket, so
+        // kind-keyed fallback/model-retirement logic fires.
+        404 => ModelError::ModelNotFound {
+            status: 404,
+            message,
+        },
         // Kept for spec compliance; live Flux never sends 429 (burst load
         // saturates the edge with bare 503 nginx HTML, no Retry-After).
         // P5 §4 classifier precedence (conservative wins): a 429 whose body
@@ -128,4 +138,32 @@ pub fn context_window_for(model_id: &str, catalog: &[crate::flux_models::FluxMod
         .find(|m| m.id == model_id)
         .and_then(|m| m.max_input_tokens)
         .unwrap_or(DEFAULT_CONTEXT_WINDOW_TOKENS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F-18: a provider 404 (retired/unknown model id at the endpoint —
+    /// the live-proof matrix hit this on cerebras/fireworks) classifies as
+    /// the TYPED model-not-found, never the undifferentiated 4xx bucket, so
+    /// kind-keyed fallback/retirement logic fires.
+    #[test]
+    fn provider_404_classifies_as_model_not_found() {
+        let body = r#"{"error":{"message":"model llama-v3p1-70b-instruct not found","type":"invalid_request_error","code":"model_not_found"}}"#;
+        let err = classify_status(404, body.to_string());
+        let ModelError::ModelNotFound { status, message } = err else {
+            panic!("404 must classify as ModelNotFound, got {err:?}");
+        };
+        assert_eq!(status, 404);
+        assert!(message.contains("not found"), "{message}");
+
+        // The classification keys on the STATUS alone — a bare/HTML 404
+        // body (no parseable error object) is still model-not-found.
+        let err = classify_status(404, "<html>nginx 404</html>".to_string());
+        assert!(
+            matches!(err, ModelError::ModelNotFound { status: 404, .. }),
+            "bare 404 must classify as ModelNotFound, got {err:?}"
+        );
+    }
 }

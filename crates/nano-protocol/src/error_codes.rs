@@ -58,6 +58,10 @@ mod tests {
                 status: 500,
                 message: "malformed".into(),
             }),
+            ModelError::ModelNotFound { .. } => cases.push(ModelError::ModelNotFound {
+                status: 404,
+                message: "retired".into(),
+            }),
             ModelError::Transport { .. } => cases.push(ModelError::Transport {
                 phase: nano_model::types::TransportPhase::Connect,
                 message: "reset".into(),
