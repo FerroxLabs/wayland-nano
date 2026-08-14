@@ -324,6 +324,13 @@ where
         &with_mcp,
     );
     let mut extra_definitions = vec![nano_agent::cron::cronjob_tool_definition()];
+    // S9 §3: CUA tool definitions register only outside read_only (posture,
+    // strictest-wins). Exec can never prompt and CUA always prompts, so the
+    // exec gate auto-denies every cua_* call in every mode (pinned arm) —
+    // the advertisement is the surface contract, the gate is the posture.
+    if nano_agent::cua::cua_registration(params.mode.id(), false, true) {
+        extra_definitions.extend(nano_agent::cua::cua_tool_definitions());
+    }
     {
         let registry = mcp_registry.lock().unwrap_or_else(|p| p.into_inner());
         extra_definitions.extend(registry.tool_definitions());

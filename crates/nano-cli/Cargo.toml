@@ -27,6 +27,9 @@ dirs-next = "2"
 nano-agent = { version = "0.1.0", path = "../nano-agent" }
 nano-hooks = { version = "0.1.0", path = "../nano-hooks" }
 nano-core = { version = "0.1.0", path = "../nano-core" }
+# S9: the ACP host constructs the CUA backend/policy (backends::for_platform,
+# CuaPolicy::default); the bridge and engine seam live in nano-agent.
+nano-cua = { version = "0.1.0", path = "../nano-cua" }
 nano-egress = { version = "0.1.0", path = "../nano-egress" }
 # F-36 (P3 §6.3): the OAuth record_grant producer converts
 # nano-mcp's flow::GrantRecord into the journaled Op::McpOauthGrant.

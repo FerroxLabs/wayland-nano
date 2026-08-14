@@ -267,6 +267,14 @@ pub fn exec_gate_decision(
     if call.name == "cronjob" {
         return ApprovalDecision::Deny;
     }
+    // S9 §2.2/§3: computer use ALWAYS prompts (uncontainable by
+    // construction — no mode auto-approves it), and exec can never prompt,
+    // so every cua_* call auto-denies in EVERY mode. Pinned explicitly like
+    // the PTY/cronjob names so no future fast path leaks synthesized input
+    // onto this non-interactive surface.
+    if nano_agent::cua::is_cua_tool(&call.name) {
+        return ApprovalDecision::Deny;
+    }
     let rule_verdict =
         crate::shell_rules::evaluate_set(rules, call).map(|evaluation| evaluation.verdict());
     match mode {

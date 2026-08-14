@@ -930,6 +930,36 @@ pub enum CheckpointRestoreOutcome {
     Unknown,
 }
 
+// ── S9 CUA (panel-certified design: S9-BROWSER-CUA-DESIGN.md §4) ──────────
+// JOURNAL-MIGRATION REVIEW FLAG (rides the SAME coordinated RC2
+// journal-migration review as the P1/P2a/P3/P5 additions above): the TWO S9
+// additions — `Op::CuaAction` and `Op::CuaResult` — are additive variants;
+// `SCHEMA_VERSION` stays 1, pre-S9 journals replay byte-identical, and old
+// readers skip both via the `Unknown`-op forward tolerance. The payloads are
+// ids, bounded strings, digests, and bounded enums ONLY: coordinates and
+// typed text are payload and NEVER reach the journal (the digest-only
+// invariant — the `ToolResult.output_digest` precedent, stricter: unlike
+// `ToolCall.args`, CUA arguments are digest-only because typed text is
+// keystroke payload). Replay folds them context-neutrally except for the
+// §4.2 ambiguous-tail rule (an unpaired CuaAction marks the tail
+// interrupted — see replay.rs).
+
+/// Terminal outcome of one journaled CUA op (S9 §4.1): reuses
+/// [`TurnOutcome`]'s serde discipline (snake_case, closed set, forward
+/// tolerance). `denied` covers gate denials, policy rejects, and hook blocks
+/// — `error_kind` on the result op disambiguates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CuaOutcome {
+    Completed,
+    Denied,
+    Cancelled,
+    Failed,
+    /// An outcome written by a newer build this one does not know.
+    #[serde(other)]
+    Unknown,
+}
+
 pub const MAX_CHECKPOINT_ID_CHARS: usize = 128;
 pub const WORKSPACE_KEY_HEX_CHARS: usize = 16;
 
@@ -1420,6 +1450,42 @@ pub enum Op {
         exact: bool,
         /// 64-hex sha256 of `rules.toml` AFTER the append.
         rule_digest: String,
+    },
+    /// S9 §4.1: a computer-use action, journaled BEFORE dispatch (the
+    /// `Op::ToolCall`-before-approval precedent: a failed append is
+    /// turn-fatal `JournalUnavailable`, never a dropped record). DIGESTS
+    /// ONLY: `args_digest` is sha256 of the canonical serialized args —
+    /// coordinates and typed text are payload and never journal;
+    /// `pre_shot` is the pre-action screenshot's attachment-store digest
+    /// (mutating ops; absent otherwise and on pre-dispatch denials).
+    /// `op_kind` is the snake_case kind tag; `frontmost_app` is the bounded
+    /// app id the approval prompt was issued against (None = unresolved).
+    /// Replay is context-neutral except the §4.2 ambiguous-tail rule: an
+    /// action without its paired result marks the tail interrupted.
+    CuaAction {
+        turn_id: String,
+        call_id: String,
+        op_kind: String,
+        args_digest: String,
+        /// Serde-defaulted: omitted (byte-minimal) when unresolved.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        frontmost_app: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pre_shot: Option<String>,
+    },
+    /// S9 §4.1: the dispatch-side record, appended after the dispatch
+    /// settles (or after a pre-dispatch denial). `error_kind` carries the
+    /// closed-vocabulary kind on denial/failure (the `ToolResult.error_kind`
+    /// pattern — never raw error text); `post_shot` is the post-action
+    /// screenshot's attachment-store digest (mutating ops and the screenshot
+    /// op itself).
+    CuaResult {
+        call_id: String,
+        outcome: CuaOutcome,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        post_shot: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_kind: Option<crate::error_kind::NanoErrorKind>,
     },
     /// Forward tolerance: any Op type this build does not know. Skipped on
     /// replay; the raw line stays in the journal for future readers.

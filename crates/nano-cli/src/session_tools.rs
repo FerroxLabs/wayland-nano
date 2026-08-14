@@ -724,6 +724,13 @@ pub fn posture_allows(
 
 impl nano_agent::turn::ApprovalGate for PlanAwareApproval {
     fn approve(&self, call: &ToolCall) -> nano_agent::turn::ApprovalDecision {
+        // S9 §2.2: CUA requires an interactive approval — EVERY op prompts,
+        // in every mode — and this host has no prompt channel (questions are
+        // `Unavailable`). Fail closed: deny every cua_* call here rather
+        // than let the trust-all baseline approve synthesized input.
+        if nano_agent::cua::is_cua_tool(&call.name) {
+            return nano_agent::turn::ApprovalDecision::Deny;
+        }
         match posture_allows(&self.posture, call, &self.workspace) {
             Some(true) => nano_agent::turn::ApprovalDecision::Approve,
             Some(false) => nano_agent::turn::ApprovalDecision::Deny,
@@ -994,6 +1001,29 @@ mod tests {
             arguments: serde_json::json!({"command": "ls"}),
         };
         assert_eq!(gate.approve(&shell), ApprovalDecision::Approve);
+    }
+
+    /// S9 §2.2: the protocol host is trust-all at baseline, but CUA is the
+    /// one tool class that can NEVER auto-approve (uncontainable by
+    /// construction) — and this host has no prompt channel, so every cua_*
+    /// call fails closed to a denial.
+    #[test]
+    fn plan_aware_approval_denies_cua_without_a_prompt_channel() {
+        use nano_agent::turn::{ApprovalDecision, ApprovalGate};
+        let (tmp, posture) = posture_fixture();
+        let gate = PlanAwareApproval::new(posture.clone(), tmp.path());
+        for name in nano_agent::cua::CUA_TOOL_NAMES {
+            let call = nano_model::types::ToolCall {
+                id: "c".into(),
+                name: name.into(),
+                arguments: serde_json::json!({}),
+            };
+            assert_eq!(
+                gate.approve(&call),
+                ApprovalDecision::Deny,
+                "{name}: no prompt channel ⇒ deny (never trust-all)"
+            );
+        }
     }
 
     #[test]

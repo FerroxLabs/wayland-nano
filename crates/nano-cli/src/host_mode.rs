@@ -207,6 +207,12 @@ pub async fn run(
         ));
     }
     tool_definitions.extend(nano_agent::memory::memory_tool_definitions(memory_write));
+    // S9: the protocol host advertises the CUA surface, but its gate
+    // (PlanAwareApproval) has NO prompt channel and CUA always prompts
+    // (§2.2) — every cua_* call denies there. The engine seam stays unwired
+    // on this host (no bridge), so even a gate bypass could never dispatch:
+    // the engine journals a failed CuaBackendUnavailable pair instead.
+    tool_definitions.extend(nano_agent::cua::cua_tool_definitions());
 
     let hooks = nano_hooks::HookEngine::load(nano_home);
     for warning in hooks.warnings() {

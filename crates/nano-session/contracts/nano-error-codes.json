@@ -511,6 +511,54 @@
       "surface": "tool_card",
       "title": "Checkpoint restore did not complete",
       "wireCode": -32603
+    },
+    {
+      "hint": "Re-screenshot and re-plan; the policy will deny this again",
+      "kind": "cua_policy_denied",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "Computer-use policy denied the operation",
+      "wireCode": -32603
+    },
+    {
+      "hint": "Re-screenshot and re-target the now-focused window",
+      "kind": "cua_focus_lost",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "The focused window changed before the action was dispatched",
+      "wireCode": -32603
+    },
+    {
+      "hint": "Grant the permission in the OS settings, then retry",
+      "kind": "cua_os_permission_denied",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "The OS computer-use permission is not granted",
+      "wireCode": -32603
+    },
+    {
+      "hint": "No usable display backend; do not retry",
+      "kind": "cua_backend_unavailable",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "Computer use is unavailable on this desktop session",
+      "wireCode": -32603
+    },
+    {
+      "hint": "Re-screenshot and target coordinates inside the display bounds",
+      "kind": "cua_coordinate_out_of_range",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "Coordinates are outside the primary display",
+      "wireCode": -32603
+    },
+    {
+      "hint": "Do not retry the identical action",
+      "kind": "cua_backend",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "The computer-use backend failed",
+      "wireCode": -32603
     }
   ],
   "generator": "cargo run -p nano-cli --bin gen_error_table",

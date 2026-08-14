@@ -10,6 +10,7 @@ pub mod clock;
 pub mod compact;
 pub mod cost;
 pub mod cron;
+pub mod cua;
 pub mod elicitation;
 pub mod error_map;
 pub mod goal;
@@ -46,3 +47,7 @@ mod goal_tests;
 #[cfg(test)]
 #[path = "cron_tests.rs"]
 mod cron_tests;
+
+#[cfg(test)]
+#[path = "cua_tests.rs"]
+mod cua_tests;

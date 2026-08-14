@@ -99,6 +99,21 @@ pub struct OpenTurn {
     pub input: String,
 }
 
+/// S9 §4.2: a `CuaAction` journaled WITHOUT its paired `CuaResult` — the
+/// ambiguous half-executed GUI action (the input event may or may not have
+/// landed). Marked interrupted by REPLAY, never by a live writer (the
+/// `TurnOutcome::Interrupted` precedent): the host tells the model "action
+/// X was interrupted; screen state unknown" and requires the resumed turn's
+/// first CUA op to be a fresh screenshot before any mutating op.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CuaInterruptedAction {
+    pub turn_id: String,
+    pub call_id: String,
+    /// The snake_case kind tag (e.g. `left_click`) — bounded vocabulary,
+    /// safe to surface to the model in the resume note.
+    pub op_kind: String,
+}
+
 /// The live (child-authored) goal machine state (C11). Terminal states stay
 /// visible for status reporting; `is_terminal` distinguishes them.
 #[derive(Debug, Clone, PartialEq)]
@@ -213,6 +228,14 @@ pub struct SessionState {
     /// P5: per-turn routing-ladder records (snapshot / begins / receipts)
     /// folded from the journal — the kill-resume replay source (§4.1).
     pub routing: BTreeMap<String, TurnRouting>,
+    /// S9 §4.2: CUA actions left unpaired at the journal tail (kill between
+    /// the action append and the dispatch return), ordered by call id.
+    /// Empty when every action has its result. Read by the host at
+    /// session/load to arm the resumed turn's mandatory-first-screenshot rule.
+    pub interrupted_cua: Vec<CuaInterruptedAction>,
+    /// In-flight CUA actions (journaled, not yet result-paired) at the
+    /// CURRENT fold position — drains into `interrupted_cua` at the tail.
+    cua_pending: BTreeMap<String, CuaInterruptedAction>,
     /// Set when the fold hit a structural failure (see [`ReplayError`]);
     /// `fold` records it, `fold_strict` returns it.
     pub integrity_error: Option<ReplayError>,
@@ -591,6 +614,28 @@ impl SessionState {
                     self.session_usage.add_sum(&usage.to_turn_usage());
                 }
             }
+            // S9 §4.2: an action/result pair is replay-neutral history; an
+            // UNPAIRED action at the tail is the ambiguous half-executed GUI
+            // action — it drains into `interrupted_cua` at restore time
+            // (marked by replay, never by a live writer).
+            Op::CuaAction {
+                turn_id,
+                call_id,
+                op_kind,
+                ..
+            } => {
+                self.cua_pending.insert(
+                    call_id.clone(),
+                    CuaInterruptedAction {
+                        turn_id: turn_id.clone(),
+                        call_id: call_id.clone(),
+                        op_kind: op_kind.clone(),
+                    },
+                );
+            }
+            Op::CuaResult { call_id, .. } => {
+                self.cua_pending.remove(call_id);
+            }
             Op::Unknown => {}
         }
     }
@@ -626,6 +671,11 @@ impl SessionState {
         if matches!(self.compaction, Some(CompactionPhase::Running { .. })) {
             self.compaction = Some(CompactionPhase::Idle);
         }
+        // S9 §4.2: any CUA action still unpaired at the tail is ambiguous —
+        // the input event may or may not have landed. Mark it interrupted
+        // (replay writes this, never a live writer) so the host arms the
+        // resumed turn's mandatory-first-screenshot rule.
+        self.interrupted_cua = self.cua_pending.values().cloned().collect();
         // kimi normalizeAfterReplay: an interrupted goal never silently
         // resumes driving turns — it comes back paused until an explicit
         // resume.

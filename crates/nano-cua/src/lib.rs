@@ -7,6 +7,8 @@ pub mod coords;
 pub mod error;
 pub mod journal;
 pub mod liveness;
+#[doc(hidden)] // test support for the integrator's wiring tests — not a production backend
+pub mod mock;
 pub mod op;
 pub mod policy;
 pub mod posture;

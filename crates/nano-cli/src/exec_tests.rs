@@ -298,6 +298,35 @@ fn p4_exec_gate_pty_denied_repo_map_read_only() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// S9 §2.2/§3: CUA always prompts (uncontainable by construction) and exec
+/// can never prompt — every cua_* name auto-DENIES in every mode, pinned
+/// explicitly like the pty_*/cronjob names so no future fast path leaks
+/// synthesized input onto this non-interactive surface.
+#[test]
+fn s9_exec_gate_cua_denied_in_every_mode() {
+    let dir = tmpdir("gate-cua");
+    let policy = fake_policy();
+    let call = |name: &str| ToolCall {
+        id: "c".into(),
+        name: name.into(),
+        arguments: serde_json::json!({}),
+    };
+    for mode in [
+        PermissionMode::ReadOnly,
+        PermissionMode::Default,
+        PermissionMode::FullAuto,
+    ] {
+        for name in nano_agent::cua::CUA_TOOL_NAMES {
+            assert_eq!(
+                exec_gate_decision(&call(name), mode, &policy, &dir, true, &no_rules()),
+                ApprovalDecision::Deny,
+                "{mode:?}: {name} auto-denies in exec"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// P3 §4.3: exec is non-interactive — DiscoveryLocal (tool_search, no server
 /// contact) approves in every mode; the server-contact classes would prompt,
 /// so they auto-DENY in every mode, full_auto included.

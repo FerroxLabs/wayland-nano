@@ -219,6 +219,13 @@ struct Session {
     /// rules + a loud typed warning), amended in place via the journaled
     /// approval-card flow. Never folded from the journal.
     rules: crate::shell_rules::SharedRules,
+    /// S9: the session's CUA bridge (backend + policy + attachment store +
+    /// §4.2 resume flag). `None` = no registration anywhere: the platform
+    /// probe refused (§5.4/Q5), the platform is unsupported, or the
+    /// attachment store failed to open (fail-closed — no evidence trail, no
+    /// surface). Session-scoped: the §2.2 seen-app set and the §4.2
+    /// re-screenshot flag die with the session.
+    cua: Option<Arc<nano_agent::cua::CuaSession>>,
 }
 
 /// P4 §3.4: the review completion watcher. Polls the registry's C6
@@ -1565,6 +1572,9 @@ where
                                 image_influenced,
                                 pty,
                                 rules,
+                                // S9: a fresh session has no ambiguous tail
+                                // (§4.2) — the resume flag starts disarmed.
+                                cua: cua_session_for(config.attachment_home, false),
                             });
                             write_out(
                                 &out,
@@ -1857,6 +1867,17 @@ where
                             let todos = Arc::new(Mutex::new(folded.todos.clone()));
                             let mut context = session_context_prefix(&cwd, &todos, &plan);
                             context.extend(context_messages);
+                            // S9 §4.2: unpaired CUA actions at the journal
+                            // tail (kill between append and dispatch return)
+                            // are ambiguous — the input may have landed. Tell
+                            // the model which actions were interrupted; the
+                            // bridge's resume flag (armed below) enforces the
+                            // mandatory-first-screenshot rule mechanically.
+                            if !folded.interrupted_cua.is_empty() {
+                                context.push(Message::system(cua_interrupted_block(
+                                    &folded.interrupted_cua,
+                                )));
+                            }
                             // C6: replacing a live session tears its children
                             // down first (bounded, then detach).
                             if let Some(old) = session.take() {
@@ -1977,6 +1998,12 @@ where
                                 image_influenced,
                                 pty,
                                 rules,
+                                // S9 §4.2: arm the resumed turn's mandatory-
+                                // first-screenshot rule from the folded tail.
+                                cua: cua_session_for(
+                                    config.attachment_home,
+                                    !folded.interrupted_cua.is_empty(),
+                                ),
                             });
                             write_out(
                                 &out,
@@ -3136,6 +3163,10 @@ where
                             // turn's executor routes pty_* calls through it
                             // without taking ownership.
                             let turn_pty = active.pty.clone();
+                            // S9: the session's CUA bridge — registration and
+                            // the engine seam both read this cell (None = no
+                            // probe pass / no evidence store ⇒ no surface).
+                            let turn_cua = active.cua.clone();
                             // C2 §3 asymmetric application: the turn captures
                             // a mode SNAPSHOT (its tool-layer profile and its
                             // escalation ceiling) AND a clone of the shared
@@ -3373,6 +3404,26 @@ where
                                 tool_definitions.extend(
                                     nano_agent::memory::memory_tool_definitions(memory_write),
                                 );
+                                // S9 §3 (Q3 RULED, strictest-wins): the eight
+                                // CUA tools register ONLY when the session
+                                // bridge is wired, the turn's mode registers
+                                // CUA (default/full_auto — read_only never),
+                                // and the plan posture is off. Every op still
+                                // prompts at the gate (the 1g arm), including
+                                // under full_auto — registration is NOT
+                                // auto-approval. A mid-turn plan entry or
+                                // mode drop tightens via the gate's live
+                                // cells even though the advertised set is
+                                // per-turn (the min(captured, current)
+                                // discipline).
+                                if nano_agent::cua::cua_registration(
+                                    turn_mode.id(),
+                                    plan_cell.lock().unwrap_or_else(|p| p.into_inner()).active,
+                                    turn_cua.is_some(),
+                                ) {
+                                    tool_definitions
+                                        .extend(nano_agent::cua::cua_tool_definitions());
+                                }
                                 let gate = AcpApproval {
                                     session_id: session_id.clone(),
                                     out: gate_out,
@@ -3556,6 +3607,13 @@ where
                                         meter: turn_meter.clone(),
                                         extra_usage,
                                         image_influence: Some(gate_image_influenced.clone()),
+                                        // S9: the engine's CUA seam — the
+                                        // digest-only CuaAction/CuaResult
+                                        // pair, cancel race, and panic
+                                        // containment live behind this.
+                                        cua: turn_cua
+                                            .as_deref()
+                                            .map(|s| s as &dyn nano_agent::cua::CuaBridge),
                                     },
                                 };
                                 let sink_session = session_id.clone();
@@ -5289,6 +5347,24 @@ impl<W: Write + Send> ApprovalGate for AcpApproval<W> {
                 self.prompt_host(call)
             };
         }
+        // 1g. S9 §2.2/§3 (Q2/Q3 RULED): computer use is uncontainable by
+        //     construction (§2.1), so EVERY cua_* op — including
+        //     cua_screenshot (screen content is exfiltratable context) —
+        //     takes the host prompt in EVERY mode. full_auto NEVER
+        //     auto-approves CUA (the battle plan's "full-auto-never");
+        //     there is no sandbox/rules fast path for synthesized input.
+        //     read_only and the plan posture deny categorically — the tools
+        //     are unregistered under both, so this arm is the fail-closed
+        //     backstop for a stale advertisement or a mid-turn tightening
+        //     (min(captured, current) + the live plan cell).
+        if nano_agent::cua::is_cua_tool(&call.name) {
+            let plan_active = self.plan.lock().unwrap_or_else(|p| p.into_inner()).active;
+            return if plan_active || self.effective_mode() == PermissionMode::ReadOnly {
+                ApprovalDecision::Deny
+            } else {
+                self.prompt_host(call)
+            };
+        }
         // 2. C10 §3 plan posture — enforcement AT THE GATE, before the mode
         //    arms, in every C2 mode including full_auto: fs_write/fs_edit
         //    pass ONLY for the session's plan file (a creation-safe
@@ -5732,6 +5808,57 @@ fn session_context_prefix(
         messages.push(Message::system(block));
     }
     messages
+}
+
+/// S9: construct the session's CUA bridge — fail-closed on every axis
+/// (§5.4/Q5): no platform backend (unsupported platform, or the Wayland
+/// compositor probe refused) or an attachment-store failure means NO bridge,
+/// which means the tools are never registered. `needs_rescreenshot` is the
+/// §4.2 ambiguous-tail flag (armed from `SessionState::interrupted_cua` at
+/// session/load; always false at session/new).
+fn cua_session_for(
+    attachment_home: &std::path::Path,
+    needs_rescreenshot: bool,
+) -> Option<Arc<nano_agent::cua::CuaSession>> {
+    let backend = nano_cua::backends::for_platform(nano_cua::Platform::current())?;
+    let store = match AttachmentStore::open(attachment_home) {
+        Ok(store) => store,
+        Err(err) => {
+            // Fail closed: without the evidence store the §2.4 pre/post-shot
+            // trail cannot exist, so the surface does not register.
+            eprintln!("wayland-nano: computer use unavailable (attachment store: {err})");
+            return None;
+        }
+    };
+    Some(Arc::new(nano_agent::cua::CuaSession::new(
+        backend,
+        nano_cua::CuaPolicy::default(),
+        store,
+        needs_rescreenshot,
+    )))
+}
+
+/// S9 §4.2: the model-facing note for a resumed session whose journal tail
+/// carries unpaired CUA actions — the input events may or may not have
+/// landed, so screen state is UNKNOWN and the resumed turn's first
+/// computer-use op must be a fresh screenshot (the bridge enforces it).
+/// Bounded: the closed op-kind vocabulary only, at most 8 actions named.
+fn cua_interrupted_block(interrupted: &[nano_session::CuaInterruptedAction]) -> String {
+    let mut out = String::from(
+        "[Computer-use interruption — screen state unknown]\n\
+         The session was interrupted with these computer-use actions in flight (they may or may not have landed on the desktop):\n",
+    );
+    for action in interrupted.iter().take(8) {
+        out.push_str(&format!("- {} (call {})\n", action.op_kind, action.call_id));
+    }
+    if interrupted.len() > 8 {
+        out.push_str(&format!("…[{} actions total]\n", interrupted.len()));
+    }
+    out.push_str(
+        "Do NOT assume their effects. Your FIRST computer-use op in the resumed turn must be cua_screenshot; every other computer-use op is denied until one succeeds.\n\
+         [End of computer-use interruption]",
+    );
+    out
 }
 
 /// Builds the `session/load` replay: one notification per historical beat, in
@@ -6290,6 +6417,46 @@ fn write_op_frame<W: Write>(
             writer,
             &tool_call_done(session_id, call_id, *ok, output_digest, *error_kind),
         ),
+        // S9: the digest-only CUA pair maps to the same card lifecycle. The
+        // card input carries the kind tag + digests ONLY — raw coordinates
+        // and typed text went to the operator in the permission prompt, and
+        // never into frames a client log might capture.
+        Op::CuaAction {
+            call_id,
+            op_kind,
+            args_digest,
+            frontmost_app,
+            pre_shot,
+            ..
+        } => write_json(
+            writer,
+            &tool_call_update(
+                session_id,
+                call_id,
+                &format!("cua_{op_kind}"),
+                &serde_json::json!({
+                    "op": op_kind,
+                    "args_digest": args_digest,
+                    "frontmost_app": frontmost_app,
+                    "pre_shot": pre_shot,
+                }),
+            ),
+        ),
+        Op::CuaResult {
+            call_id,
+            outcome,
+            post_shot,
+            error_kind,
+        } => write_json(
+            writer,
+            &tool_call_done(
+                session_id,
+                call_id,
+                matches!(outcome, nano_session::op::CuaOutcome::Completed),
+                post_shot.as_deref().unwrap_or(""),
+                *error_kind,
+            ),
+        ),
         // C1 §7: compaction lifecycle events surface as session/update
         // notices so both UIs can render the event in the transcript.
         Op::CompactionBegin { .. } => write_json(writer, &compaction_notice(session_id, "begin")),
@@ -6574,6 +6741,86 @@ mod tests {
             rig.gate.denial_reason(),
             Some("session is in read_only mode")
         );
+    }
+
+    /// S9 §2.2/§3 (Q2/Q3 RULED — the always-prompt matrix): EVERY cua_* op
+    /// prompts the host in default AND full_auto (CUA is uncontainable by
+    /// construction; full_auto never auto-approves it — no sandbox/rules
+    /// fast path), including cua_screenshot. read_only and the plan posture
+    /// deny categorically with ZERO prompts (the tools are unregistered
+    /// there; the arm is the fail-closed backstop).
+    #[test]
+    fn s9_cua_gate_matrix_always_prompts() {
+        let ws = workspace();
+        let click = || call("cua_left_click", serde_json::json!({"x": 10, "y": 20}));
+        let shot = || call("cua_screenshot", serde_json::json!({}));
+        // default + full_auto: one prompt per op, approval only via the
+        // host's explicit answer — full_auto with a SANDBOX available still
+        // prompts (the sandbox cannot contain an input event).
+        for mode in [PermissionMode::Default, PermissionMode::FullAuto] {
+            let rig = TestGate::new(mode, &ws.0, true, Some("allow"));
+            assert_eq!(
+                rig.gate.approve(&click()),
+                ApprovalDecision::Approve,
+                "{mode:?}: the host approved at the prompt"
+            );
+            assert_eq!(rig.prompt_count(), 1, "{mode:?}: click prompted once");
+            assert_eq!(rig.gate.approve(&shot()), ApprovalDecision::Approve);
+            assert_eq!(
+                rig.prompt_count(),
+                2,
+                "{mode:?}: screenshot prompts too (§2.2)"
+            );
+        }
+        // full_auto, host DENIES at the prompt: denied — the mode cannot
+        // override the human.
+        let rig = TestGate::new(PermissionMode::FullAuto, &ws.0, true, Some("deny"));
+        assert_eq!(rig.gate.approve(&click()), ApprovalDecision::Deny);
+        assert_eq!(rig.prompt_count(), 1);
+        // read_only: categorical denial, no prompt ever (§3: prompting for a
+        // categorically forbidden action re-widens the session).
+        let rig = TestGate::new(PermissionMode::ReadOnly, &ws.0, true, None);
+        assert_eq!(rig.gate.approve(&click()), ApprovalDecision::Deny);
+        assert_eq!(rig.gate.approve(&shot()), ApprovalDecision::Deny);
+        assert_eq!(rig.prompt_count(), 0);
+        // Plan posture: categorical denial in EVERY mode, no prompt (plan
+        // forbids mutation; CUA is mutation — §3).
+        for mode in PermissionMode::ALL {
+            let rig = TestGate::new(mode, &ws.0, true, None);
+            rig.plan.lock().unwrap().active = true;
+            assert_eq!(
+                rig.gate.approve(&click()),
+                ApprovalDecision::Deny,
+                "{mode:?}: plan posture denies CUA"
+            );
+            assert_eq!(rig.prompt_count(), 0, "{mode:?}: no prompt under plan");
+        }
+        // F-C2-1 parity: a mid-turn de-escalation tightens the pending CUA
+        // call — captured full_auto + current read_only denies (min() rule).
+        let rig = TestGate::new(PermissionMode::FullAuto, &ws.0, true, None);
+        rig.set_mode(PermissionMode::ReadOnly);
+        assert_eq!(rig.gate.approve(&click()), ApprovalDecision::Deny);
+        assert_eq!(rig.prompt_count(), 0);
+    }
+
+    /// S9 §4.2: the resume note names the interrupted actions and mandates
+    /// the screenshot-first rule, bounded and clearly delimited.
+    #[test]
+    fn s9_interrupted_block_names_actions_and_the_rule() {
+        let interrupted: Vec<nano_session::CuaInterruptedAction> = (0..10)
+            .map(|i| nano_session::CuaInterruptedAction {
+                turn_id: "t1".into(),
+                call_id: format!("c{i}"),
+                op_kind: "left_click".into(),
+            })
+            .collect();
+        let block = cua_interrupted_block(&interrupted);
+        assert!(block.starts_with("[Computer-use interruption"));
+        assert!(block.ends_with("[End of computer-use interruption]"));
+        assert!(block.contains("left_click"));
+        assert!(block.contains("10 actions total"), "bounded at 8 named");
+        assert!(block.contains("must be cua_screenshot"));
+        assert!(cua_interrupted_block(&[]).contains("must be cua_screenshot"));
     }
 
     /// P3 §4.3 [r2 claude-F1]: the full per-mode decision table for the MCP

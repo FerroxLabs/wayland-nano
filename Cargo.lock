@@ -1525,10 +1525,12 @@ name = "nano-agent"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "chrono",
  "futures-util",
  "nano-checkpoints",
  "nano-core",
+ "nano-cua",
  "nano-egress",
  "nano-hooks",
  "nano-mcp",
@@ -1569,6 +1571,7 @@ dependencies = [
  "libc",
  "nano-agent",
  "nano-core",
+ "nano-cua",
  "nano-egress",
  "nano-hooks",
  "nano-mcp",

@@ -378,6 +378,12 @@ pub struct TurnRobustness<'a> {
     /// approval gate. Updated from the canonical history walker immediately
     /// before each model request construction.
     pub image_influence: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// S9: the computer-use bridge (§2–§5 of the S9 design). `None` = no CUA
+    /// surface at all: the tools are unregistered and a stray `cua_*` call
+    /// fails closed as a journaled `CuaBackendUnavailable` pair, never a
+    /// dispatch. When present, `cua_*` calls journal the digest-only
+    /// CuaAction/CuaResult pair INSTEAD of ToolCall/ToolResult.
+    pub cua: Option<&'a dyn crate::cua::CuaBridge>,
 }
 
 /// Decides whether a tool call may execute. Production prompts via the host;
@@ -1554,6 +1560,224 @@ impl<'a> TurnEngine<'a> {
                         ));
                         break;
                     }
+                }
+                // ── S9 CUA path (design §4.1) ────────────────────────────
+                // `cua_*` calls journal the DIGEST-ONLY CuaAction/CuaResult
+                // pair INSTEAD of ToolCall/ToolResult: coordinates and typed
+                // text are payload and never reach the journal. CuaAction is
+                // appended BEFORE the gate and BEFORE dispatch (journal-first;
+                // a failed append is turn-fatal `JournalUnavailable`, the
+                // ToolCall precedent). The approval gate runs per op in EVERY
+                // mode (the host's gate arm guarantees the prompt; full_auto
+                // never auto-approves CUA — §3, strictest-wins). Dispatch
+                // races the cancel flag and is panic-contained in the bridge
+                // (§2.5); no retry of any outcome (§2.5/§5).
+                if crate::cua::is_cua_tool(&call.name) {
+                    let prepare = match self.robustness.cua {
+                        Some(bridge) => bridge.prepare(call).await,
+                        // Fail-closed: a CUA call on a host that never wired
+                        // a backend (unregistered there; a stale/hallucinated
+                        // call) journals a failed pair and never dispatches.
+                        None => crate::cua::CuaPrepare::unwired(call),
+                    };
+                    let frame = prepare.frame().clone();
+                    if !emit(
+                        &mut ops,
+                        Op::CuaAction {
+                            turn_id: turn_id.into(),
+                            call_id: call.id.clone(),
+                            op_kind: frame.op_kind.clone(),
+                            args_digest: frame.args_digest.clone(),
+                            frontmost_app: frame.frontmost_app.clone(),
+                            pre_shot: frame.pre_shot.clone(),
+                        },
+                    ) {
+                        state = TurnState::Failed(TypedError::new(
+                            NanoErrorKind::JournalUnavailable,
+                            "journal append failed for cua action",
+                        ));
+                        break;
+                    }
+                    // Pre-gate terminal outcomes (bad args, policy reject,
+                    // §4.2 resume rule, pre-shot/backend failure, unwired
+                    // host): the journaled pair completes as denied/failed.
+                    let prepared = match prepare {
+                        crate::cua::CuaPrepare::Ready(prepared) => prepared,
+                        terminal => {
+                            let (outcome, kind, message) =
+                                terminal.terminal().expect("non-Ready is terminal");
+                            if !emit(
+                                &mut ops,
+                                Op::CuaResult {
+                                    call_id: call.id.clone(),
+                                    outcome,
+                                    post_shot: None,
+                                    error_kind: Some(kind),
+                                },
+                            ) {
+                                state = TurnState::Failed(TypedError::new(
+                                    NanoErrorKind::JournalUnavailable,
+                                    "journal append failed for cua result",
+                                ));
+                                break;
+                            }
+                            messages.push(Message::tool_result(&call.id, message, true));
+                            continue;
+                        }
+                    };
+                    // The per-op approval gate (§2.2/Q2 RULED): every CUA op
+                    // prompts, in every mode — denial journals the pair as
+                    // denied (the C2/D4 pattern) with the gate's kind.
+                    if let Some(gate) = self.approval
+                        && gate.approve(call) == ApprovalDecision::Deny
+                    {
+                        let (text, denial_kind) = match (gate.typed_denial(), gate.denial_reason())
+                        {
+                            (Some((kind, message)), _) => (message, kind),
+                            (None, Some(reason)) => (
+                                format!("denied by approval gate: {reason}"),
+                                NanoErrorKind::ApprovalDenied,
+                            ),
+                            (None, None) => (
+                                "denied by approval gate".to_string(),
+                                NanoErrorKind::ApprovalDenied,
+                            ),
+                        };
+                        if !emit(
+                            &mut ops,
+                            Op::CuaResult {
+                                call_id: call.id.clone(),
+                                outcome: nano_session::op::CuaOutcome::Denied,
+                                post_shot: None,
+                                error_kind: Some(denial_kind),
+                            },
+                        ) {
+                            state = TurnState::Failed(TypedError::new(
+                                NanoErrorKind::JournalUnavailable,
+                                "journal append failed for cua denial result",
+                            ));
+                            break;
+                        }
+                        messages.push(Message::tool_result(&call.id, text, true));
+                        continue;
+                    }
+                    if let Some(hooks) = lifecycle_hooks {
+                        let run = hooks
+                            .run(
+                                nano_hooks::HookEvent::PreToolUse,
+                                Some(&call.name),
+                                &serde_json::json!({
+                                    "hook_event_name": "PreToolUse",
+                                    "turn_id": turn_id,
+                                    "tool_use_id": call.id,
+                                    "tool_name": call.name,
+                                    "tool_input": call.arguments,
+                                }),
+                            )
+                            .await;
+                        if !emit_hook_decisions(&mut emit, &mut ops, turn_id, &run) {
+                            state = TurnState::Failed(TypedError::new(
+                                NanoErrorKind::JournalUnavailable,
+                                "journal append failed for PreToolUse hook",
+                            ));
+                            break;
+                        }
+                        if let Some(reason) = run.blocking_reason() {
+                            let text = format!("blocked by lifecycle hook: {reason}");
+                            if !emit(
+                                &mut ops,
+                                Op::CuaResult {
+                                    call_id: call.id.clone(),
+                                    outcome: nano_session::op::CuaOutcome::Denied,
+                                    post_shot: None,
+                                    error_kind: Some(NanoErrorKind::HookBlocked),
+                                },
+                            ) {
+                                state = TurnState::Failed(TypedError::new(
+                                    NanoErrorKind::JournalUnavailable,
+                                    "journal append failed for hook denial result",
+                                ));
+                                break;
+                            }
+                            messages.push(Message::tool_result(&call.id, text, true));
+                            continue;
+                        }
+                    }
+                    // §2.2: the first-contact seen-set advances ONLY behind
+                    // an approval; then dispatch (cancel-raced, panic-
+                    // contained, no retry) and journal the result.
+                    if let Some(bridge) = self.robustness.cua {
+                        bridge.note_approved(&prepared);
+                        let dispatch = bridge.dispatch(&prepared, cancel).await;
+                        if let Some(hooks) = lifecycle_hooks {
+                            let run = hooks
+                                .run(
+                                    nano_hooks::HookEvent::PostToolUse,
+                                    Some(&call.name),
+                                    &serde_json::json!({
+                                        "hook_event_name": "PostToolUse",
+                                        "turn_id": turn_id,
+                                        "tool_use_id": call.id,
+                                        "tool_name": call.name,
+                                        "tool_input": call.arguments,
+                                        "ok": matches!(dispatch.outcome, nano_session::op::CuaOutcome::Completed),
+                                    }),
+                                )
+                                .await;
+                            let _ = emit_hook_decisions(&mut emit, &mut ops, turn_id, &run);
+                        }
+                        step_progress.files_changed |= dispatch.progress.files_changed;
+                        step_progress.process_outcome_changed |=
+                            dispatch.progress.process_outcome_changed;
+                        step_progress.new_information |= dispatch.progress.new_information;
+                        if !emit(
+                            &mut ops,
+                            Op::CuaResult {
+                                call_id: call.id.clone(),
+                                outcome: dispatch.outcome,
+                                post_shot: dispatch.post_shot.clone(),
+                                error_kind: dispatch.error_kind,
+                            },
+                        ) {
+                            state = TurnState::Failed(TypedError::new(
+                                NanoErrorKind::JournalUnavailable,
+                                "journal append failed for cua result",
+                            ));
+                            break;
+                        }
+                        let failed =
+                            !matches!(dispatch.outcome, nano_session::op::CuaOutcome::Completed);
+                        messages.push(Message::tool_result(
+                            &call.id,
+                            cap_history_tool_result(&dispatch.output).as_ref(),
+                            failed,
+                        ));
+                        continue;
+                    }
+                    // Unreachable: prepare came from this bridge. Defensive —
+                    // a vanished bridge mid-call is a typed failure, never a
+                    // dispatch (the dispatch above never ran).
+                    if !emit(
+                        &mut ops,
+                        Op::CuaResult {
+                            call_id: call.id.clone(),
+                            outcome: nano_session::op::CuaOutcome::Failed,
+                            post_shot: None,
+                            error_kind: Some(NanoErrorKind::CuaBackendUnavailable),
+                        },
+                    ) {
+                        state = TurnState::Failed(TypedError::new(
+                            NanoErrorKind::JournalUnavailable,
+                            "journal append failed for cua result",
+                        ));
+                        break;
+                    }
+                    messages.push(Message::tool_result(
+                        &call.id,
+                        "computer use is not available on this host (no backend wired)",
+                        true,
+                    ));
+                    continue;
                 }
                 // C7/D4: the ToolCall op is journaled BEFORE the approval
                 // gate runs, so a denial is an honest journaled + framed

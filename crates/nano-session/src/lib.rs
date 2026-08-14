@@ -34,7 +34,7 @@ pub use error_kind::NanoErrorKind;
 pub use fork::{ForkError, ForkOutcome, ForkPoint, fork_journal, fork_journal_when_owned};
 pub use lock::{FileLock, LockError, LockMode};
 pub use op::{
-    CandidateKind, CandidateRejection, CompactionCancelReason, DIGEST_HEX_CHARS,
+    CandidateKind, CandidateRejection, CompactionCancelReason, CuaOutcome, DIGEST_HEX_CHARS,
     ESTIMATION_METHOD_VERSION, GoalBudgets, GoalOutcome, GoalReason, GoalStatusKind, GrantEndpoint,
     GrantMethod, HydrationCarryEntry, HydrationEntry, ImageRef, InputBlock, LeafProvenance,
     MAX_AS_ORIGIN_CHARS, MAX_ELICITATION_REQUEST_ID_CHARS, MAX_GOAL_OBJECTIVE_LEN,
@@ -48,7 +48,8 @@ pub use op::{
 pub use reader::{JournalReport, read_journal};
 pub use redaction::{RedactionError, SecretKind, scan_for_secrets};
 pub use replay::{
-    CompactionPhase, GoalLive, McpOauthGrantState, ReplayError, SessionState, TurnRouting,
+    CompactionPhase, CuaInterruptedAction, GoalLive, McpOauthGrantState, ReplayError, SessionState,
+    TurnRouting,
 };
 pub use writer::JournalWriter;
 
@@ -62,3 +63,7 @@ mod p3_tests;
 #[cfg(test)]
 #[path = "fork_tests.rs"]
 mod fork_tests;
+
+#[cfg(test)]
+#[path = "s9_tests.rs"]
+mod s9_tests;

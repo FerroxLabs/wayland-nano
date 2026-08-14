@@ -739,6 +739,10 @@ pub fn child_tool_definitions(web_search_backed: bool, vision_backed: bool) -> V
         // auto-approve-coupled SESSION_TOOL_NAMES list.
         .filter(|def| !MCP_SESSION_TOOL_NAMES.contains(&def.name.as_str()))
         .filter(|def| !CHECKPOINT_TOOL_NAMES.contains(&def.name.as_str()))
+        // S9 §8 (non-goal 8): subagents never get CUA — explicit even though
+        // `v1_tool_definitions` never carries the `cua_*` names, so a future
+        // surface change cannot leak them to a child.
+        .filter(|def| !crate::cua::is_cua_tool(&def.name))
         .collect()
 }
 

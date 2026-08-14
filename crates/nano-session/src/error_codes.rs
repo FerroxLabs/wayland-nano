@@ -371,6 +371,33 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
             "Checkpoint restore did not complete",
             "Resume the session to run checkpoint recovery",
         ),
+        // ── S9 §5 CUA family: all tool cards, ALL non-retryable — §2.5
+        // rules out retry of any CUA op (denials and failures are terminal
+        // per call; the model must re-screenshot and re-plan). ────────────
+        NanoErrorKind::CuaPolicyDenied => card(
+            "Computer-use policy denied the operation",
+            "Re-screenshot and re-plan; the policy will deny this again",
+        ),
+        NanoErrorKind::CuaFocusLost => card(
+            "The focused window changed before the action was dispatched",
+            "Re-screenshot and re-target the now-focused window",
+        ),
+        NanoErrorKind::CuaOsPermissionDenied => card(
+            "The OS computer-use permission is not granted",
+            "Grant the permission in the OS settings, then retry",
+        ),
+        NanoErrorKind::CuaBackendUnavailable => card(
+            "Computer use is unavailable on this desktop session",
+            "No usable display backend; do not retry",
+        ),
+        NanoErrorKind::CuaCoordinateOutOfRange => card(
+            "Coordinates are outside the primary display",
+            "Re-screenshot and target coordinates inside the display bounds",
+        ),
+        NanoErrorKind::CuaBackend => card(
+            "The computer-use backend failed",
+            "Do not retry the identical action",
+        ),
         // Unknown kinds classify TERMINAL in both clients and never retry
         // (design §2/D2 forward-compat rule).
         NanoErrorKind::Unknown => response(
@@ -449,6 +476,12 @@ pub const ALL_KINDS: &[NanoErrorKind] = &[
     NanoErrorKind::CheckpointUnavailable,
     NanoErrorKind::CheckpointNotFound,
     NanoErrorKind::CheckpointRestoreFailed,
+    NanoErrorKind::CuaPolicyDenied,
+    NanoErrorKind::CuaFocusLost,
+    NanoErrorKind::CuaOsPermissionDenied,
+    NanoErrorKind::CuaBackendUnavailable,
+    NanoErrorKind::CuaCoordinateOutOfRange,
+    NanoErrorKind::CuaBackend,
 ];
 
 /// The static, provider-free presentation for one kind: title plus the
@@ -572,10 +605,50 @@ mod tests {
     /// added HookBlocked (59 → 60); the S7 checkpoints merge added
     /// CheckpointUnavailable + CheckpointNotFound + CheckpointRestoreFailed
     /// (60 → 63); the S3 session-ownership slice (F-P4-3) added
-    /// SessionBusy (63 → 64).
+    /// SessionBusy (63 → 64); the S9 CUA seam added the six computer-use
+    /// kinds CuaPolicyDenied + CuaFocusLost + CuaOsPermissionDenied +
+    /// CuaBackendUnavailable + CuaCoordinateOutOfRange + CuaBackend
+    /// (64 → 70).
     #[test]
     fn all_kinds_count_is_pinned() {
-        assert_eq!(ALL_KINDS.len(), 64);
+        assert_eq!(ALL_KINDS.len(), 70);
+    }
+
+    /// S9 §5: the six CUA kinds are pinned — non-retryable tool cards with
+    /// snake_case wire names (§2.5: no retry of any CUA op).
+    #[test]
+    fn s9_cua_kinds_are_pinned() {
+        for (kind, wire_name) in [
+            (NanoErrorKind::CuaPolicyDenied, "cua_policy_denied"),
+            (NanoErrorKind::CuaFocusLost, "cua_focus_lost"),
+            (
+                NanoErrorKind::CuaOsPermissionDenied,
+                "cua_os_permission_denied",
+            ),
+            (
+                NanoErrorKind::CuaBackendUnavailable,
+                "cua_backend_unavailable",
+            ),
+            (
+                NanoErrorKind::CuaCoordinateOutOfRange,
+                "cua_coordinate_out_of_range",
+            ),
+            (NanoErrorKind::CuaBackend, "cua_backend"),
+        ] {
+            let wire = serde_json::to_value(kind)
+                .expect("kind serializes")
+                .as_str()
+                .expect("kind is a string")
+                .to_string();
+            assert_eq!(wire, wire_name);
+            assert_eq!(
+                serde_json::from_str::<NanoErrorKind>(&format!("\"{wire_name}\"")).unwrap(),
+                kind
+            );
+            let spec = spec(kind);
+            assert!(!spec.retryable, "{wire_name} must not be retryable");
+            assert_eq!(spec.surface, ErrorSurface::ToolCard, "{wire_name} surface");
+        }
     }
 
     /// F-P4-3: the session-ownership contention kind is pinned — a

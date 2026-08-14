@@ -150,6 +150,30 @@ pub enum NanoErrorKind {
     CheckpointNotFound,
     /// A restore failed after its durable begin marker was appended.
     CheckpointRestoreFailed,
+    // ── S9 CUA family (design §5; kinds only, static presentations, raw OS
+    //    strings stay logs-side; ALL fail-closed and never auto-retryable —
+    //    §2.5: no retry of mutating ops) ──────────────────────────────────
+    /// Forbidden app / forbidden key combo (incl. smuggled glyph spellings)
+    /// / control-char payload; also the §4.2 resumed-turn rule (a non-
+    /// screenshot CUA op before the mandatory re-verification screenshot).
+    CuaPolicyDenied,
+    /// The frontmost app changed between approval and dispatch (§5.1); the
+    /// op was NOT dispatched.
+    CuaFocusLost,
+    /// macOS TCC accessibility/screen-recording not granted; Windows
+    /// UIPI/integrity refusal (§5.3). The bounded remedy string rides the
+    /// tool-card detail, never the journal.
+    CuaOsPermissionDenied,
+    /// No display/backend: no DISPLAY, no active window session, restricted
+    /// Wayland compositor, missing wlrctl/grim; also a CUA call reaching an
+    /// engine whose host never wired a backend (fail-closed).
+    CuaBackendUnavailable,
+    /// Post-scaling coordinates outside the primary display's physical
+    /// bounds (§5.2 — an error, never a clamp).
+    CuaCoordinateOutOfRange,
+    /// Opaque backend failure, incl. a contained backend panic (§2.5 panic
+    /// containment — never a process abort).
+    CuaBackend,
     /// A kind written by a newer build (forward tolerance — deserialize
     /// only; never constructed by this build's mappers).
     #[serde(other)]
