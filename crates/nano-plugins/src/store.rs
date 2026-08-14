@@ -560,21 +560,61 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-pub fn plugin_mcp_specs(nano_home: &Path) -> Vec<McpServerSpec> {
-    match PluginStore::new(nano_home).plugin_mcp_specs() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("wayland-nano: plugin store invalid; loading zero MCP specs: {e}");
-            Vec::new()
-        }
-    }
+/// The activation adapters consumed by the host bootstrap paths. An ABSENT
+/// store (a fresh nano_home that never installed a plugin) resolves empty;
+/// a CORRUPT installed-state document (unparseable lockfile, a pinned
+/// plugin whose installed payload is gone) is a typed error — the caller
+/// fails startup closed, never a silent downgrade to zero capabilities.
+pub fn plugin_mcp_specs(nano_home: &Path) -> Result<Vec<McpServerSpec>, PluginError> {
+    PluginStore::new(nano_home).plugin_mcp_specs()
 }
-pub fn plugin_skill_roots(nano_home: &Path) -> Vec<PathBuf> {
-    match PluginStore::new(nano_home).plugin_skill_roots() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("wayland-nano: plugin store invalid; loading zero skill roots: {e}");
-            Vec::new()
-        }
+pub fn plugin_skill_roots(nano_home: &Path) -> Result<Vec<PathBuf>, PluginError> {
+    PluginStore::new(nano_home).plugin_skill_roots()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absent_store_resolves_empty() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(plugin_mcp_specs(d.path()).unwrap().is_empty());
+        assert!(plugin_skill_roots(d.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn corrupt_lockfile_is_a_typed_error_never_a_silent_zero() {
+        let d = tempfile::tempdir().unwrap();
+        let store = d.path().join("wayland-nano-plugins");
+        fs::create_dir_all(&store).unwrap();
+        fs::write(store.join("plugins.lock.json"), b"{ not json").unwrap();
+        assert!(matches!(
+            plugin_mcp_specs(d.path()),
+            Err(PluginError::Json(_))
+        ));
+        assert!(matches!(
+            plugin_skill_roots(d.path()),
+            Err(PluginError::Json(_))
+        ));
+    }
+
+    #[test]
+    fn pinned_plugin_with_missing_payload_is_a_typed_error() {
+        // The lockfile pins an installed MCP plugin but the installed
+        // payload (server.json) is gone: corrupt, not absent — a typed
+        // error, never a silent zero-spec startup.
+        let d = tempfile::tempdir().unwrap();
+        let store = d.path().join("wayland-nano-plugins");
+        fs::create_dir_all(&store).unwrap();
+        fs::write(
+            store.join("plugins.lock.json"),
+            r#"{"plugins":{"r/p":{"archive_sha256":"a","manifest_sha256":"m","installed":{"plugin":"p","registry":"r","kind":"mcp_server","source":"local","resolved_ref":"x","archive_sha256":"a","manifest_sha256":"m","installed_at":1,"instance_id":null}}}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            plugin_mcp_specs(d.path()),
+            Err(PluginError::Io { .. })
+        ));
     }
 }

@@ -7,10 +7,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub fn plugin_mcp_specs(nano_home: &Path) -> Vec<McpServerSpec> {
+pub fn plugin_mcp_specs(nano_home: &Path) -> Result<Vec<McpServerSpec>, PluginError> {
     nano_plugins::store::plugin_mcp_specs(nano_home)
 }
-pub fn plugin_skill_roots(nano_home: &Path) -> Vec<PathBuf> {
+pub fn plugin_skill_roots(nano_home: &Path) -> Result<Vec<PathBuf>, PluginError> {
     nano_plugins::store::plugin_skill_roots(nano_home)
 }
 
@@ -205,10 +205,10 @@ mod tests {
         assert_eq!(run(&home, &i, &mut out), 0);
         let text = String::from_utf8(out.clone()).unwrap();
         assert!(text.contains("UNSIGNED") && text.contains("sha256"));
-        assert_eq!(plugin_skill_roots(&home).len(), 1);
+        assert_eq!(plugin_skill_roots(&home).unwrap().len(), 1);
         let rm = vec!["remove".into(), "p@r".into()];
         assert_eq!(run(&home, &rm, &mut out), 0);
-        assert!(plugin_skill_roots(&home).is_empty());
+        assert!(plugin_skill_roots(&home).unwrap().is_empty());
         assert!(home.join("wayland-nano-plugins/journal.jsonl").is_file());
     }
 }

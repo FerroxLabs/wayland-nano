@@ -64,7 +64,18 @@ pub async fn run(
     // host). P3 §6.1: every configured HTTP MCP server's ORIGIN also joins
     // this host's egress policy at construction (inert until the dispatcher
     // HTTP binding lands; deny-by-default otherwise unchanged).
-    let mcp_specs = nano_cli::mcp_specs::mcp_specs_from_env();
+    let mut mcp_specs = nano_cli::mcp_specs::mcp_specs_from_env();
+    // S8 activation: installed MCP plugins merge into the SAME registry
+    // path as the operator specs (containment/egress/approval posture is
+    // identical). A corrupt plugin store is a typed startup refusal (fail
+    // closed); an absent store resolves empty.
+    match nano_cli::plugin_cmds::plugin_mcp_specs(nano_home) {
+        Ok(specs) => mcp_specs.extend(specs),
+        Err(err) => {
+            eprintln!("wayland-nano: plugin store unreadable; refusing to start: {err}");
+            return Ok(HostExit::Fatal(format!("plugin store: {err}")));
+        }
+    }
     let driver_policy = nano_cli::mcp_specs::allow_http_mcp_origins(
         nano_egress::policy::EgressPolicy::flux_only(),
         &mcp_specs,
@@ -165,11 +176,21 @@ pub async fn run(
     let executor =
         nano_agent::memory::MemoryToolExecutor::new(memory_store.clone(), memory_write, &executor);
 
-    // Skills: default roots are <nano_home>/skills and <workspace>/.nano/skills.
-    let skill_context = nano_agent::skills::prepare_skill_context(&[
+    // Skills: default roots are <nano_home>/skills and <workspace>/.nano/skills;
+    // installed skills plugins join the same discovery roots. Same fail-closed
+    // discipline as the MCP specs above: corrupt store = typed refusal.
+    let mut skill_roots = vec![
         nano_home.join("skills"),
         workspace.join(".nano").join("skills"),
-    ]);
+    ];
+    match nano_cli::plugin_cmds::plugin_skill_roots(nano_home) {
+        Ok(roots) => skill_roots.extend(roots),
+        Err(err) => {
+            eprintln!("wayland-nano: plugin store unreadable; refusing to start: {err}");
+            return Ok(HostExit::Fatal(format!("plugin store: {err}")));
+        }
+    }
+    let skill_context = nano_agent::skills::prepare_skill_context(&skill_roots);
 
     let mut tool_definitions = v1_tool_definitions(search.is_some(), false);
     tool_definitions.extend(mcp_definitions);

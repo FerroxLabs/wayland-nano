@@ -26,3 +26,6 @@ pub mod shell_rules;
 #[cfg(test)]
 #[path = "exec_tests.rs"]
 mod exec_tests;
+#[cfg(test)]
+#[path = "plugin_activation_tests.rs"]
+mod plugin_activation_tests;

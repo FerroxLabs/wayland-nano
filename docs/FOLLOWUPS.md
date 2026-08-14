@@ -894,3 +894,22 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
 - **FIXED F-P3-8 at cea3778** (>64 hydrated union bricked compaction): `hydration_carry_at` (nano-session/src/coordinator.rs) degrades an over-cap entry to digest/summary form — tool_names dropped whole (never a truncated subset), tools_digest + churn window carried. Resume re-exposes nothing for that server; tool_search re-hydrates. Compaction never bricks. Pin: `carry_degrades_when_hydrated_union_exceeds_the_name_cap` (70-name union, replay consistency, second compaction carries).
 - **FIXED F-P3-11 at 697099d** (OAuth listener held ~180s after early failure): mechanism shipped with S5's ad87b4c (binding Drop cancels the accept loop); bind-before-DCR stands because registration needs the redirect_uri. This commit pins the flow-level evidence: `dcr_failure_releases_the_listener_port_promptly` recovers the bound port from the DCR request body and probes it released within 2s of the typed RegistrationFailed.
 - **FIXED F-P3-12 at a48ead5** (unsanitized HTTP error surface): S5's 20be621 routed all `McpError::Transport` construction through `nano_egress::client::sanitize_transport_error` / status-only strings. This commit pins the redaction end-to-end: `http_error_surface_carries_no_body_or_credentials` (500 with a 64 KiB secret-marked body, garbage 200 body, connection-refused with query+userinfo markers, presented bearer) — none reach the error, text stays ≤ 256 chars. **Sev-1 check: NEGATIVE** — no credential material reaches model/card/log paths (AuthHeader values only ever become request headers; `resource_error_of_mcp` stringifies the sanitized text only).
+
+## F-42: plugin skill roots have no discovery seam on exec/acp — LOW, activation parity
+
+- **Filed:** 2026-08-14, wave-end audit fix lane (fix/wa-plugins, S8 inert
+  plugins + silent downgrade). The lane wired installed-plugin MCP specs
+  into ALL THREE bootstraps (host_mode.rs, exec_run.rs, acp_mode.rs — the
+  same registry path as config-file servers) and plugin skill roots into
+  the host_mode skill discovery, with fail-closed typed startup refusal on
+  a corrupt plugin store (absent store resolves empty).
+- **Gap:** plugin SKILL roots activate only on the protocol host. Exec mode
+  has no skill-context assembly at all (no `prepare_skill_context` seam —
+  exec builds turns from `v1_tool_definitions` + journal context), and the
+  ACP host never discovers skills either (no skill block in its context
+  assembly). Adding plugin roots there requires FIRST standing up skill
+  discovery on those surfaces — a feature, not a surgical seam extension.
+- **Close means:** if exec/acp ever gain skill discovery, their root lists
+  must chain `plugin_cmds::plugin_skill_roots(nano_home)` with the same
+  fail-closed Result discipline (corrupt store = typed startup refusal,
+  never a silent zero).

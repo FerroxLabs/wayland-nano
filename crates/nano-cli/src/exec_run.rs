@@ -722,7 +722,19 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
     // P3 §6.1: parse the operator MCP specs once — every configured HTTP
     // MCP server's ORIGIN joins exec's egress policy at construction (inert
     // until the dispatcher HTTP binding lands; deny-by-default unchanged).
-    let mcp_specs = crate::mcp_specs::mcp_specs_from_env();
+    let mut mcp_specs = crate::mcp_specs::mcp_specs_from_env();
+    // S8 activation: installed MCP plugins merge into the SAME registry
+    // path as the operator specs (containment/egress/approval posture is
+    // identical — exec's gate auto-denies mcp__ calls exactly as for any
+    // configured server). A corrupt plugin store is a typed startup
+    // refusal (fail closed); an absent store resolves empty.
+    match crate::plugin_cmds::plugin_mcp_specs(nano_home) {
+        Ok(specs) => mcp_specs.extend(specs),
+        Err(err) => {
+            eprintln!("wayland-nano: plugin store unreadable; refusing to start: {err}");
+            return 2;
+        }
+    }
     let driver_policy = crate::mcp_specs::allow_http_mcp_origins(
         nano_egress::policy::EgressPolicy::flux_only(),
         &mcp_specs,
