@@ -187,8 +187,17 @@ where
     //    goal the `goal_complete` definition is never advertised.)
     let (tools, policy) = make_tools(workspace, params.mode);
     let cron_store = nano_agent::cron::JsonCronStore::new(nano_home);
-    let with_cron =
-        nano_agent::cron::CronjobExecutor::new(&tools, &cron_store, session.session_id.clone());
+    // F-6: journal-first create/delete ride the session's coordinator. The
+    // exec GATE typed-denies every cronjob action on this non-interactive
+    // surface (create/delete would prompt; list stays out of v1 headless
+    // scope) — the executor is wired so the denial is a gate decision, not
+    // an unwired-tool hole.
+    let with_cron = nano_agent::cron::CronjobExecutor::new(
+        &tools,
+        &cron_store,
+        session.session_id.clone(),
+        &journal,
+    );
     // P3: the registry is SHARED (executor + session-tool wrapper), the
     // elicitation bridge auto-declines on this non-interactive surface
     // (§5.2: would-prompt ⇒ deny), and the journaled hydration state is

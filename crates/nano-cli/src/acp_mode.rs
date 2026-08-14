@@ -3242,6 +3242,24 @@ where
                                 );
                                 tool_definitions
                                     .extend(nano_tools::pty::pty_tool_definitions());
+                                // C11 §5.5 (F-6 closure, SURGICAL
+                                // registration only): the session-owned
+                                // cronjob tool — create/delete journal-first
+                                // through the session's coordinator, the
+                                // store the host ticker reads. The gate's
+                                // cronjob arm (1f) is the authorization:
+                                // create prompts in EVERY mode.
+                                let cron_store = nano_agent::cron::JsonCronStore::new(
+                                    config.attachment_home,
+                                );
+                                let executor = nano_agent::cron::CronjobExecutor::new(
+                                    &executor,
+                                    &cron_store,
+                                    session_id.clone(),
+                                    &turn_coordinator,
+                                );
+                                tool_definitions
+                                    .push(nano_agent::cron::cronjob_tool_definition());
                                 // P3 §3.2/§4.3: the MCP session tools
                                 // (tool_search / mcp_list_resources /
                                 // mcp_read_resource) ride the shared registry
@@ -5044,6 +5062,33 @@ impl<W: Write + Send> ApprovalGate for AcpApproval<W> {
                 _ => ApprovalDecision::Approve,
             };
         }
+        // 1f. C11 §5.5 (F-6 closure — the locked ruling): `cronjob` —
+        //     scheduled code execution is too dangerous to auto-approve, so
+        //     create ALWAYS prompts the host, in EVERY mode including
+        //     full_auto (no sandbox/rules fast path exists for it). delete
+        //     prompts too: removing scheduled work mutates the session's
+        //     future behavior. read_only and the plan posture deny
+        //     create/delete categorically (typed); list is a read of the
+        //     session's job cache — approved in read_only/full_auto,
+        //     prompted in default. Unrecognized actions ride the mutation
+        //     arm (the executor rejects them typed after approval).
+        if call.name == "cronjob" {
+            let action = call.arguments.get("action").and_then(|v| v.as_str());
+            if action == Some("list") {
+                return match self.effective_mode() {
+                    PermissionMode::ReadOnly | PermissionMode::FullAuto => {
+                        ApprovalDecision::Approve
+                    }
+                    PermissionMode::Default => self.prompt_host(call),
+                };
+            }
+            let plan_active = self.plan.lock().unwrap_or_else(|p| p.into_inner()).active;
+            return if plan_active || self.effective_mode() == PermissionMode::ReadOnly {
+                ApprovalDecision::Deny
+            } else {
+                self.prompt_host(call)
+            };
+        }
         // 2. C10 §3 plan posture — enforcement AT THE GATE, before the mode
         //    arms, in every C2 mode including full_auto: fs_write/fs_edit
         //    pass ONLY for the session's plan file (a creation-safe
@@ -6457,6 +6502,99 @@ mod tests {
         let rig = TestGate::new(PermissionMode::FullAuto, &ws.0, true, Some("reject"));
         assert_eq!(rig.gate.approve(&spawn()), ApprovalDecision::Deny);
         assert_eq!(rig.prompt_count(), 1);
+    }
+
+    /// C11 §5.5 (F-6 closure — the locked ruling) cronjob gate matrix:
+    /// create ALWAYS prompts the host, in EVERY mode including full_auto
+    /// (scheduled code execution is never auto-approved); delete prompts
+    /// too; read_only and the plan posture deny create/delete without a
+    /// prompt; list approves in read_only/full_auto and prompts in default.
+    #[test]
+    fn c11_cronjob_gate_matrix() {
+        let ws = workspace();
+        let cron = |action: &str| {
+            call(
+                "cronjob",
+                serde_json::json!({"action": action, "schedule": "0 9 * * *", "prompt": "x", "job_id": "j"}),
+            )
+        };
+        // read_only: create/delete categorical deny, never a prompt; list
+        // is a session-state read and approves.
+        let rig = TestGate::new(PermissionMode::ReadOnly, &ws.0, true, None);
+        assert_eq!(rig.gate.approve(&cron("create")), ApprovalDecision::Deny);
+        assert_eq!(rig.gate.approve(&cron("delete")), ApprovalDecision::Deny);
+        assert_eq!(rig.gate.approve(&cron("list")), ApprovalDecision::Approve);
+        assert_eq!(rig.prompt_count(), 0, "read_only never prompts for cronjob");
+        // default: every action resolves through the host prompt.
+        let rig = TestGate::new(PermissionMode::Default, &ws.0, true, Some("allow"));
+        for action in ["create", "delete", "list"] {
+            assert_eq!(
+                rig.gate.approve(&cron(action)),
+                ApprovalDecision::Approve,
+                "default/{action} resolves through the host prompt"
+            );
+        }
+        assert_eq!(
+            rig.prompt_count(),
+            3,
+            "default prompts for every cronjob action"
+        );
+        // full_auto: create/delete STILL prompt (the always-prompt arm is
+        // the regression pin — no fast path); list approves silently.
+        let rig = TestGate::new(PermissionMode::FullAuto, &ws.0, true, Some("allow"));
+        assert_eq!(rig.gate.approve(&cron("create")), ApprovalDecision::Approve);
+        assert_eq!(rig.gate.approve(&cron("delete")), ApprovalDecision::Approve);
+        assert_eq!(rig.gate.approve(&cron("list")), ApprovalDecision::Approve);
+        assert_eq!(
+            rig.prompt_count(),
+            2,
+            "full_auto must PROMPT for cronjob create/delete, never for list"
+        );
+        // A denied prompt denies the creation.
+        let rig = TestGate::new(PermissionMode::FullAuto, &ws.0, true, Some("reject"));
+        assert_eq!(rig.gate.approve(&cron("create")), ApprovalDecision::Deny);
+        assert_eq!(rig.prompt_count(), 1);
+        // The plan posture typed-denies create/delete in every mode (the
+        // posture is read-only for anything but the plan file); list is
+        // unaffected.
+        for mode in [PermissionMode::Default, PermissionMode::FullAuto] {
+            let rig = TestGate::new(mode, &ws.0, true, Some("allow"));
+            rig.plan.lock().unwrap_or_else(|p| p.into_inner()).active = true;
+            assert_eq!(
+                rig.gate.approve(&cron("create")),
+                ApprovalDecision::Deny,
+                "plan+{mode:?} must deny cronjob create"
+            );
+            assert_eq!(
+                rig.gate.approve(&cron("delete")),
+                ApprovalDecision::Deny,
+                "plan+{mode:?} must deny cronjob delete"
+            );
+            assert_eq!(
+                rig.prompt_count(),
+                0,
+                "plan+{mode:?} never prompts for cronjob mutations"
+            );
+            // list is unaffected by the posture: silent in full_auto,
+            // prompted in default (the mode's ordinary list rule).
+            assert_eq!(
+                rig.gate.approve(&cron("list")),
+                ApprovalDecision::Approve,
+                "plan+{mode:?} leaves cronjob list alone"
+            );
+            assert_eq!(
+                rig.prompt_count(),
+                match mode {
+                    PermissionMode::Default => 1,
+                    _ => 0,
+                },
+                "plan+{mode:?} list follows the mode's ordinary rule"
+            );
+        }
+        // The name matches NEITHER fast path (the MCP/pty pin's cron
+        // analogue): approval comes ONLY from the explicit arm above.
+        assert!(!is_read_only_tool("cronjob"));
+        assert!(!nano_agent::wiring::SESSION_TOOL_NAMES.contains(&"cronjob"));
     }
 
     /// P4 §4.3/§13: the four follow-ups are NOT re-gated outside read_only

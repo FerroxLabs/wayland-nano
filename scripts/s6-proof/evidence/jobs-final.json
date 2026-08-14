@@ -1,0 +1,12 @@
+[
+  {
+    "job_id": "cron-1786705384614858600",
+    "session_id": "wayland-nano-session-1786705379318683000-1",
+    "schedule": "* * * * *",
+    "prompt": "Reply with exactly: cron-fired-ok",
+    "enabled": true,
+    "created_at": "2026-08-14T11:03:00Z",
+    "last_fired": "2026-08-14T11:04:00Z",
+    "next_fire": "2026-08-14T11:05:00Z"
+  }
+]

@@ -79,7 +79,7 @@ promotes/closes entries; builders append only.
   renderers + the regenerated error-table mappings (the 40-kind TS module
   already ships on PR #953), plus one CDP drive per surface.
 
-## F-6: Cron job creation has no production path (C11 proof, F-C11-3) — OWNER RULING NEEDED
+## F-6: Cron job creation has no production path (C11 proof, F-C11-3) — FIXED (S6)
 
 - **Filed:** 2026-08-12, from the C11 adversarial proof.
 - **Gap:** the `cronjob` tool is absent from the interactive ACP tool list,
@@ -90,6 +90,40 @@ promotes/closes entries; builders append only.
 - **Close means:** an owner ruling — ship cron creation (add the tool to
   the ACP list with the gate prompt) or formally descope it to
   host-managed-only and amend the design text.
+- **Resolution (2026-08-14, owner ruling = SHIP with the locked §5.5
+  posture, branch `feat/s6-cron-path`):**
+  - The `cronjob` tool is registered on the interactive ACP session surface
+    (`acp_mode.rs` per-turn build) and serviced journal-first by
+    `CronjobExecutor`, now holding the session's `JournalCoordinator`:
+    create/delete append `Op::CronCreated`/`Op::CronDeleted` (additive,
+    `Unknown`-tolerant) BEFORE the `jobs.json` cache persist — the journal
+    is authoritative for job EXISTENCE, exactly as it already was for
+    fires.
+  - Gate (AcpApproval arm 1f): create ALWAYS prompts the host, in every
+    mode including full_auto (the locked C11 ruling — scheduled code
+    execution is never auto-approved); delete prompts too; read_only and
+    the plan posture typed-deny create/delete; list approves in
+    read_only/full_auto, prompts in default. Pinned by
+    `c11_cronjob_gate_matrix`.
+  - Exec stays typed-denied for ALL cronjob actions in every mode (pinned
+    arm in `exec_gate_decision`, like the PTY names): create/delete would
+    prompt and exec can never prompt; headless list is deliberately out of
+    v1 scope.
+  - Kill windows closed by reconciliation: a torn create (CronCreated
+    durable, cache persist lost) is rebuilt by the runner's existence
+    discovery and fires; a torn delete (CronDeleted durable, cache still
+    carrying the job) is removed WITHOUT firing. Tests:
+    `torn_create_is_rebuilt_from_journal_and_fires`,
+    `torn_delete_removes_cache_entry_without_firing`,
+    `created_job_survives_compaction_and_fires`,
+    `cronjob_create_journal_failure_leaves_cache_untouched` (nano-agent);
+    fold/suppression/round-trip in nano-session fork_tests.
+  - Live proof: `scripts/s6-proof/f6_cron_create_proof.py` — the model
+    creates the job THROUGH the tool (gate prompt answered over
+    `session/request_permission`), the host is killed before the first
+    fire, a fresh acp-host resumes and fires it exactly once with the
+    provenance-marked input. No externally-authored `jobs.json` anywhere in
+    the proof path.
 
 ## F-7: Permission-parked turn silences the host ≥15s (C11 proof, F-C11-6)
 
