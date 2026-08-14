@@ -139,6 +139,12 @@ pub enum NanoErrorKind {
     /// Attachment store open/audit/IO failure, incl. the Windows ACL audit
     /// (§5.5) and GC lock failure (§5.4). Fail-closed.
     AttachmentStoreError,
+    /// Checkpoint storage or its required system-Git backend is unavailable.
+    CheckpointUnavailable,
+    /// The requested checkpoint is unknown or has been evicted.
+    CheckpointNotFound,
+    /// A restore failed after its durable begin marker was appended.
+    CheckpointRestoreFailed,
     /// A kind written by a newer build (forward tolerance — deserialize
     /// only; never constructed by this build's mappers).
     #[serde(other)]

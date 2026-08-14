@@ -1,0 +1,11 @@
+    Checking nano-core v0.1.0 (D:\Development\waylandnano\wayland-nano\.tmp-wt-integ\crates\nano-core)
+    Checking nano-session v0.1.0 (D:\Development\waylandnano\wayland-nano\.tmp-wt-integ\crates\nano-session)
+    Checking nano-sandbox v0.1.0 (D:\Development\waylandnano\wayland-nano\.tmp-wt-integ\crates\nano-sandbox)
+    Checking nano-tui v0.1.0 (D:\Development\waylandnano\wayland-nano\.tmp-wt-integ\crates\nano-tui)
+    Checking nano-repomap v0.1.0 (D:\Development\waylandnano\wayland-nano\.tmp-wt-integ\crates\nano-repomap)
+    Checking nano-mcp v0.1.0 (D:\Development\waylandnano\wayland-nano\.tmp-wt-integ\crates\nano-mcp)
+    Checking nano-tools v0.1.0 (D:\Development\waylandnano\wayland-nano\.tmp-wt-integ\crates\nano-tools)
+    Checking nano-agent v0.1.0 (D:\Development\waylandnano\wayland-nano\.tmp-wt-integ\crates\nano-agent)
+    Checking nano-protocol v0.1.0 (D:\Development\waylandnano\wayland-nano\.tmp-wt-integ\crates\nano-protocol)
+    Checking nano-cli v0.1.0 (D:\Development\waylandnano\wayland-nano\.tmp-wt-integ\crates\nano-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.88s

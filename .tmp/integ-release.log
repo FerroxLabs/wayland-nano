@@ -1,0 +1,6 @@
+   Compiling nano-mcp v0.1.0 (D:\Development\waylandnano\wayland-nano\.tmp-wt-integ\crates\nano-mcp)
+   Compiling nano-tui v0.1.0 (D:\Development\waylandnano\wayland-nano\.tmp-wt-integ\crates\nano-tui)
+   Compiling nano-tools v0.1.0 (D:\Development\waylandnano\wayland-nano\.tmp-wt-integ\crates\nano-tools)
+   Compiling nano-protocol v0.1.0 (D:\Development\waylandnano\wayland-nano\.tmp-wt-integ\crates\nano-protocol)
+   Compiling nano-cli v0.1.0 (D:\Development\waylandnano\wayland-nano\.tmp-wt-integ\crates\nano-cli)
+    Finished `release` profile [optimized] target(s) in 30.70s

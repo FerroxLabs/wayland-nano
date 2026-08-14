@@ -479,6 +479,30 @@
       "surface": "tool_card",
       "title": "The attachment store is unavailable or insecurely configured",
       "wireCode": -32603
+    },
+    {
+      "hint": "Check system Git, checkpoint storage permissions, and store contention",
+      "kind": "checkpoint_unavailable",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "Workspace checkpoints are unavailable",
+      "wireCode": -32603
+    },
+    {
+      "hint": "It may have been evicted by checkpoint retention",
+      "kind": "checkpoint_not_found",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "Checkpoint not found",
+      "wireCode": -32603
+    },
+    {
+      "hint": "Resume the session to run checkpoint recovery",
+      "kind": "checkpoint_restore_failed",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "Checkpoint restore did not complete",
+      "wireCode": -32603
     }
   ],
   "generator": "cargo run -p nano-cli --bin gen_error_table",
