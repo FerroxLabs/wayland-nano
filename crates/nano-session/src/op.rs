@@ -1223,6 +1223,31 @@ pub enum Op {
         #[serde(default)]
         coalesced: u32,
     },
+    /// Cron job creation (C11 §5.5, F-6 closure): the DURABLE ACT of
+    /// `cronjob create` — appended and synced BEFORE the `jobs.json` cache
+    /// persist (journal-first; the scheduler rebuilds the cache from this
+    /// op when the two disagree). Additive; old readers skip via `Unknown`.
+    /// The prompt is journal-consistent content (`TurnBegin.input` and
+    /// `ToolCall.args` already journal full text verbatim); the payload is
+    /// prompt + session + schedule only — nothing that could carry
+    /// privilege.
+    CronCreated {
+        job_id: String,
+        session_id: String,
+        /// Canonical 5-field crontab (validated BEFORE journaling).
+        schedule: String,
+        prompt: String,
+        /// RFC3339 UTC minute: the coalescing anchor for a never-fired job.
+        created_at: String,
+    },
+    /// Cron job deletion (C11 §5.5, F-6 closure): journaled BEFORE the
+    /// cache removal; replay tombstones the job id so a cache that still
+    /// carries it (a kill between this append and the cache persist) is
+    /// repaired by the scheduler — a deleted job NEVER re-fires.
+    CronDeleted {
+        job_id: String,
+        session_id: String,
+    },
     /// An ACCEPTED `/budget continue` grant (P1 §4.3) — JOURNAL-MIGRATION
     /// REVIEW FLAG (addition (b) of the RC2 coordinated review trio).
     /// Journaled DURABLY at acceptance under journal-first, accepted-only

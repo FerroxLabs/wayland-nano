@@ -16,7 +16,7 @@
 //!   imported prefix) is inert lineage data;
 //! - `ForkedFrom` opens an imported region of declared length: inside it,
 //!   context and turn-structure ops fold exactly as the parent's replay
-//!   folds them, while CONTROL ops (all goal ops, `CronFired`) are
+//!   folds them, while CONTROL ops (all goal ops, all cron ops) are
 //!   suppressed from live state into an audit-only namespace at EVERY fold
 //!   step — there is no transient application followed by correction;
 //! - the live goal machine only tracks goals begun by a CHILD-AUTHORED
@@ -110,6 +110,17 @@ pub struct GoalLive {
     pub budgets: GoalBudgets,
 }
 
+/// The replayable payload of a child-authored `CronCreated` op (C11 §5.5,
+/// F-6 closure) — the journal-authoritative existence record the scheduler
+/// reconciles the `jobs.json` cache against. `last_fired`/`next_fire` are
+/// deliberately absent: they derive from `cron_last_fired` / the schedule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CronJobRecord {
+    pub schedule: String,
+    pub prompt: String,
+    pub created_at: String,
+}
+
 impl GoalLive {
     pub fn is_terminal(&self) -> bool {
         matches!(
@@ -169,6 +180,17 @@ pub struct SessionState {
     /// only), extracted from occurrence ids. The journal-authoritative
     /// `last_fired` source for runner reconciliation.
     pub cron_last_fired: BTreeMap<String, String>,
+    /// Live cron jobs authored by THIS session (child-authored `CronCreated`
+    /// ops minus later `CronDeleted`), keyed by job id (C11 §5.5, F-6
+    /// closure): the journal-authoritative EXISTENCE source — the scheduler
+    /// rebuilds cache entries a kill dropped between the journal append and
+    /// the cache persist.
+    pub cron_jobs: BTreeMap<String, CronJobRecord>,
+    /// Job ids tombstoned by a child-authored `CronDeleted` (and not
+    /// re-created since): a cache entry whose journal carries a tombstone is
+    /// removed, never re-fired. Legacy cache jobs with NO cron ops in their
+    /// session journal are never touched.
+    pub cron_tombstones: BTreeSet<String>,
     /// Audit-only namespace: control ops that were seen but NEVER folded
     /// into live state (imported goal/cron ops, goal ops naming a goal this
     /// session did not begin). Reader-visible proof that suppression
@@ -260,6 +282,8 @@ impl SessionState {
                 | Op::GoalStatus { .. }
                 | Op::GoalEnd { .. }
                 | Op::CronFired { .. }
+                | Op::CronCreated { .. }
+                | Op::CronDeleted { .. }
                 | Op::ForkedFrom { .. } => {
                     self.suppressed_control_ops.push(envelope.clone());
                     return;
@@ -486,6 +510,32 @@ impl SessionState {
                         *entry = scheduled.to_string();
                     }
                 }
+            }
+            // C11 §5.5 (F-6): creation/deletion are journal-first durable
+            // acts — replay rebuilds job EXISTENCE last-write-wins so the
+            // scheduler can repair a lagging cache. A re-create clears the
+            // tombstone; a delete of a never-created id tombstones anyway
+            // (fail-closed: never resurrect what a journal says is gone).
+            Op::CronCreated {
+                job_id,
+                schedule,
+                prompt,
+                created_at,
+                ..
+            } => {
+                self.cron_tombstones.remove(job_id);
+                self.cron_jobs.insert(
+                    job_id.clone(),
+                    CronJobRecord {
+                        schedule: schedule.clone(),
+                        prompt: prompt.clone(),
+                        created_at: created_at.clone(),
+                    },
+                );
+            }
+            Op::CronDeleted { job_id, .. } => {
+                self.cron_jobs.remove(job_id);
+                self.cron_tombstones.insert(job_id.clone());
             }
             // P1 §4.3: an accepted budget grant folds into budget state —
             // replay-deterministic across kill-resume, never session-volatile.

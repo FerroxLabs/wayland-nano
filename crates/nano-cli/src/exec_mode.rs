@@ -257,6 +257,16 @@ pub fn exec_gate_decision(
     if nano_agent::wiring::PTY_TOOL_NAMES.contains(&call.name.as_str()) {
         return ApprovalDecision::Deny;
     }
+    // C11 §5.5 (F-6 closure): `cronjob` is interactive-only too — the ACP
+    // gate's cronjob arm PROMPTS for create in every mode (scheduled code
+    // execution is never auto-approved) and for delete; exec can never
+    // prompt, so create/delete auto-deny here, and list (a read of the
+    // job cache) stays denied as well: headless schedule introspection is
+    // deliberately out of v1 scope. Pinned explicitly like the PTY names
+    // so no future fast path leaks a cronjob action onto this surface.
+    if call.name == "cronjob" {
+        return ApprovalDecision::Deny;
+    }
     let rule_verdict =
         crate::shell_rules::evaluate_set(rules, call).map(|evaluation| evaluation.verdict());
     match mode {
@@ -292,8 +302,9 @@ pub fn exec_gate_decision(
                     }
                 }
             },
-            // cronjob create prompts even in full_auto (§5.5) — and exec can
-            // never prompt, so it auto-denies. mcp__* likewise.
+            // Anything not pinned above (cronjob/pty names are denied
+            // earlier): mcp__* and unrecognized names auto-deny — they
+            // would prompt interactively, and exec can never prompt.
             _ => ApprovalDecision::Deny,
         },
     }

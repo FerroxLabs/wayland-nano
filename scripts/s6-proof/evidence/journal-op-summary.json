@@ -1,0 +1,58 @@
+[
+ {
+  "id": "wayland-nano-session-1786705379318683000-1-begin-1",
+  "op": "session_begin"
+ },
+ {
+  "id": "wayland-nano-session-1786705379318683000-1-turn-1-routing-snapshot",
+  "op": "routing_snapshot"
+ },
+ {
+  "id": "wayland-nano-session-1786705379318683000-1-turn-1-1",
+  "op": "turn_begin"
+ },
+ {
+  "id": "wayland-nano-session-1786705379318683000-1-turn-1-2",
+  "op": "tool_call"
+ },
+ {
+  "id": "wayland-nano-session-1786705379318683000-1-croncreate-1786705384614940800",
+  "op": "cron_created"
+ },
+ {
+  "id": "wayland-nano-session-1786705379318683000-1-turn-1-3",
+  "op": "tool_result"
+ },
+ {
+  "id": "wayland-nano-session-1786705379318683000-1-turn-1-4",
+  "op": "assistant_text"
+ },
+ {
+  "id": "wayland-nano-session-1786705379318683000-1-turn-1-5",
+  "op": "turn_end"
+ },
+ {
+  "id": "wayland-nano-session-1786705379318683000-1-cronfired-1786705440",
+  "op": "cron_fired"
+ },
+ {
+  "id": "wayland-nano-session-1786705379318683000-1-begin-2",
+  "op": "session_begin"
+ },
+ {
+  "id": "wayland-nano-session-1786705379318683000-1-cron-1786705440-routing-snapshot",
+  "op": "routing_snapshot"
+ },
+ {
+  "id": "wayland-nano-session-1786705379318683000-1-cron-1786705440-1",
+  "op": "turn_begin"
+ },
+ {
+  "id": "wayland-nano-session-1786705379318683000-1-cron-1786705440-2",
+  "op": "assistant_text"
+ },
+ {
+  "id": "wayland-nano-session-1786705379318683000-1-cron-1786705440-3",
+  "op": "turn_end"
+ }
+]

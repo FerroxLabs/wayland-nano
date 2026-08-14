@@ -448,6 +448,17 @@ fn new_ops_round_trip_and_unknown_skips() {
             mode_at_fire: "default".into(),
             coalesced: 3,
         },
+        Op::CronCreated {
+            job_id: "j".into(),
+            session_id: "s".into(),
+            schedule: "*/5 * * * *".into(),
+            prompt: "hourly digest".into(),
+            created_at: "2026-08-12T09:55:00Z".into(),
+        },
+        Op::CronDeleted {
+            job_id: "j".into(),
+            session_id: "s".into(),
+        },
     ];
     for op in ops {
         let envelope = env("x-1", op.clone());
@@ -534,6 +545,86 @@ fn imported_cron_fired_never_touches_child_scheduler_state() {
             .iter()
             .any(|e| matches!(&e.op, Op::CronFired { occurrence_id, .. } if occurrence_id == "job:2026-08-12T09:00:00Z")),
         "imported CronFired stays reader-visible in the audit namespace"
+    );
+}
+
+/// Cron lifecycle replay (C11 §5.5, F-6): child-authored CronCreated/
+/// CronDeleted fold last-write-wins into the live map + tombstones; a
+/// re-create clears the tombstone; imported-region lifecycle ops are
+/// suppressed into the audit namespace at every fold step.
+#[test]
+fn cron_lifecycle_folds_last_write_wins_and_imported_ops_are_suppressed() {
+    let created = |id: &str, job: &str| {
+        env(
+            id,
+            Op::CronCreated {
+                job_id: job.into(),
+                session_id: "child".into(),
+                schedule: "*/5 * * * *".into(),
+                prompt: "digest".into(),
+                created_at: "2026-08-12T09:55:00Z".into(),
+            },
+        )
+    };
+    let deleted = |id: &str, job: &str| {
+        env(
+            id,
+            Op::CronDeleted {
+                job_id: job.into(),
+                session_id: "child".into(),
+            },
+        )
+    };
+    // create → delete → re-create: live at the tail, no tombstone.
+    let state = SessionState::fold(&[
+        begin("c-begin-1", "child"),
+        created("c-1", "job-a"),
+        created("c-2", "job-b"),
+        deleted("c-3", "job-a"),
+        created("c-4", "job-a"),
+    ]);
+    assert_eq!(state.cron_jobs.len(), 2);
+    assert_eq!(
+        state.cron_jobs.get("job-a").map(|r| r.schedule.as_str()),
+        Some("*/5 * * * *")
+    );
+    assert!(state.cron_tombstones.is_empty());
+    // A trailing delete: tombstoned, absent from the live map.
+    let state = SessionState::fold(&[
+        begin("c-begin-1", "child"),
+        created("c-1", "job-a"),
+        deleted("c-2", "job-a"),
+    ]);
+    assert!(state.cron_jobs.is_empty());
+    assert!(state.cron_tombstones.contains("job-a"));
+    // Imported lifecycle ops: suppressed, never touch child state.
+    let state = SessionState::fold_strict(&[
+        begin("c-begin-1", "child"),
+        env(
+            "c-fork-1",
+            Op::ForkedFrom {
+                parent_session_id: "parent".into(),
+                parent_op_id: "p-2".into(),
+                at_turn: None,
+                parent_digest_before: "a".into(),
+                parent_digest_after: "a".into(),
+                imported_ops: 2,
+            },
+        ),
+        created("p-1", "parent-job"),
+        deleted("p-2", "other-job"),
+    ])
+    .unwrap();
+    assert!(
+        state.cron_jobs.is_empty() && state.cron_tombstones.is_empty(),
+        "imported CronCreated/CronDeleted never touch child scheduler state"
+    );
+    assert!(
+        state
+            .suppressed_control_ops
+            .iter()
+            .any(|e| matches!(&e.op, Op::CronCreated { job_id, .. } if job_id == "parent-job")),
+        "imported CronCreated stays reader-visible in the audit namespace"
     );
 }
 

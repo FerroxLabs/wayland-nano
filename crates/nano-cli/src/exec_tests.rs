@@ -447,24 +447,23 @@ fn full_auto_gate_decision_matrix() {
         ),
         ApprovalDecision::Approve
     );
-    // cronjob create is NOT in full_auto's auto-approve set (§5.5): it
-    // would prompt — exec auto-denies.
-    let cronjob = ToolCall {
-        id: "c".into(),
-        name: "cronjob".into(),
-        arguments: serde_json::json!({"action": "create"}),
-    };
-    assert_eq!(
-        exec_gate_decision(
-            &cronjob,
-            PermissionMode::FullAuto,
-            &policy,
-            &dir,
-            true,
-            &no_rules()
-        ),
-        ApprovalDecision::Deny
-    );
+    // cronjob is pinned typed-denied on the exec surface in EVERY mode
+    // (F-6 closure: create/delete would prompt — exec can never prompt;
+    // list stays out of v1 headless scope).
+    for action in ["create", "list", "delete"] {
+        let cronjob = ToolCall {
+            id: "c".into(),
+            name: "cronjob".into(),
+            arguments: serde_json::json!({"action": action}),
+        };
+        for mode in PermissionMode::ALL {
+            assert_eq!(
+                exec_gate_decision(&cronjob, mode, &policy, &dir, true, &no_rules()),
+                ApprovalDecision::Deny,
+                "exec must typed-deny cronjob {action} in {mode:?}"
+            );
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -144,6 +144,23 @@ fn runner<'a>(
     }
 }
 
+/// A no-op inner executor for cronjob tool tests (the tool never delegates
+/// its own name).
+#[derive(Debug)]
+struct NoTools;
+
+#[async_trait::async_trait]
+impl ToolExecutor for NoTools {
+    async fn execute(&self, _call: &ToolCall) -> ToolOutcome {
+        ToolOutcome {
+            ok: false,
+            output: "no tools".into(),
+            progress: ProgressSignals::default(),
+            error_kind: None,
+        }
+    }
+}
+
 #[test]
 fn schedule_parsing_five_fields_and_sugar_rejection() {
     // Valid forms.
@@ -604,25 +621,18 @@ async fn scan_miss_payload_is_contained_by_fire_time_mode_cap() {
 
 /// The cronjob tool: create validates schedule + scans prompts; list and
 /// delete round-trip; interval sugar is rejected naming the cron equivalent.
+/// F-6: create/delete are JOURNAL-FIRST — the CronCreated/CronDeleted ops
+/// land durably beside the cache mutation.
 #[tokio::test]
 async fn cronjob_tool_create_list_delete() {
-    #[derive(Debug)]
-    struct NoTools;
-    #[async_trait::async_trait]
-    impl ToolExecutor for NoTools {
-        async fn execute(&self, _call: &ToolCall) -> ToolOutcome {
-            ToolOutcome {
-                ok: false,
-                output: "no tools".into(),
-                progress: ProgressSignals::default(),
-                error_kind: None,
-            }
-        }
-    }
     let dir = tmpdir("tool");
+    let sessions = dir.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    make_session(&sessions, "s1");
+    let coordinator = nano_session::JournalCoordinator::open(sessions.join("s1.jsonl")).unwrap();
     let home = dir.join("home");
     let store = JsonCronStore::new(&home);
-    let executor = CronjobExecutor::new(&NoTools, &store, "s1".into());
+    let executor = CronjobExecutor::new(&NoTools, &store, "s1".into(), &coordinator);
 
     // Sugar rejected, naming the cron equivalent.
     let sugar = executor
@@ -681,6 +691,25 @@ async fn cronjob_tool_create_list_delete() {
     assert!(deleted.ok);
     assert!(store.load().unwrap().is_empty());
 
+    // F-6 journal-first: the lifecycle ops are durable in the session
+    // journal — CronCreated before/with the cache entry, CronDeleted after.
+    let report = read_journal(&sessions.join("s1.jsonl")).unwrap();
+    let created_pos = report
+        .envelopes
+        .iter()
+        .position(|e| matches!(&e.op, Op::CronCreated { job_id, .. } if *job_id == jobs[0].job_id))
+        .expect("CronCreated journaled");
+    let deleted_pos = report
+        .envelopes
+        .iter()
+        .position(|e| matches!(&e.op, Op::CronDeleted { job_id, .. } if *job_id == jobs[0].job_id))
+        .expect("CronDeleted journaled");
+    assert!(created_pos < deleted_pos);
+    // Replay folds the lifecycle: created-then-deleted ⇒ tombstoned, not live.
+    let state = nano_session::SessionState::fold(&report.envelopes);
+    assert!(state.cron_jobs.is_empty());
+    assert!(state.cron_tombstones.contains(&jobs[0].job_id));
+
     // Job payload discipline: prompt + session + schedule only (no
     // mode/env/shell fields that could carry privilege).
     let definition = cronjob_tool_definition();
@@ -688,5 +717,222 @@ async fn cronjob_tool_create_list_delete() {
     let mut names: Vec<&str> = props.keys().map(String::as_str).collect();
     names.sort_unstable();
     assert_eq!(names, ["action", "job_id", "prompt", "schedule"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// F-6 journal-first create: a failed journal append leaves the cache
+/// UNTOUCHED (nothing scheduled) and fails typed — the reverse window (an
+/// unjournaled job reaching the scheduler) is impossible.
+#[tokio::test]
+async fn cronjob_create_journal_failure_leaves_cache_untouched() {
+    let dir = tmpdir("tooljf");
+    let sessions = dir.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    make_session(&sessions, "s1");
+    let coordinator = nano_session::JournalCoordinator::open(sessions.join("s1.jsonl")).unwrap();
+    let store = JsonCronStore::new(&dir.join("home"));
+    let executor = CronjobExecutor::new(&NoTools, &store, "s1".into(), &coordinator);
+    // Tear the journal path out from under the coordinator (the fail-closed
+    // torn-path guard): the append must fail typed.
+    std::fs::remove_file(sessions.join("s1.jsonl")).unwrap();
+    std::fs::create_dir(sessions.join("s1.jsonl")).unwrap();
+    let outcome = executor
+        .execute(&ToolCall {
+            id: "c1".into(),
+            name: "cronjob".into(),
+            arguments: serde_json::json!({
+                "action": "create", "schedule": "0 9 * * *", "prompt": "morning report"
+            }),
+        })
+        .await;
+    assert!(!outcome.ok, "{}", outcome.output);
+    assert!(
+        outcome.output.contains("cannot journal"),
+        "{}",
+        outcome.output
+    );
+    assert!(
+        store.load().unwrap().is_empty(),
+        "journal-first: append failure ⇒ cache untouched"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// F-6 kill-resume, torn create: the job was created THROUGH the tool and
+/// the host died before the cache persist (simulated by deleting the cache
+/// file). The runner's existence discovery rebuilds the job from the
+/// journaled CronCreated and fires it on the same tick.
+#[tokio::test]
+async fn torn_create_is_rebuilt_from_journal_and_fires() {
+    let dir = tmpdir("torncreate");
+    let sessions = dir.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    make_session(&sessions, "s1");
+    let coordinator = nano_session::JournalCoordinator::open(sessions.join("s1.jsonl")).unwrap();
+    let store = JsonCronStore::new(&dir.join("home"));
+    let executor = CronjobExecutor::new(&NoTools, &store, "s1".into(), &coordinator);
+    let created = executor
+        .execute(&ToolCall {
+            id: "c1".into(),
+            name: "cronjob".into(),
+            arguments: serde_json::json!({
+                "action": "create", "schedule": "* * * * *", "prompt": "tick"
+            }),
+        })
+        .await;
+    assert!(created.ok, "{}", created.output);
+    // The kill window: journal durable, cache lost.
+    std::fs::remove_file(store.path()).unwrap();
+    assert!(store.load().unwrap().is_empty());
+    // The next tick rebuilds from the journal and fires the due occurrence.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let clock = TestClock::new((now_secs + 61) * 1000);
+    let spy = FireSpy::default();
+    runner(sessions, &clock, &|_| None)
+        .tick(&store, &spy)
+        .await
+        .unwrap();
+    let calls = spy.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1, "rebuilt job fired exactly once: {calls:?}");
+    assert!(store.load().unwrap().len() == 1, "cache rebuilt");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// F-6 torn delete: CronDeleted landed durably but the cache persist was
+/// lost (injected save failure) — the next tick removes the stale cache
+/// entry WITHOUT firing it.
+#[tokio::test]
+async fn torn_delete_removes_cache_entry_without_firing() {
+    let dir = tmpdir("torndelete");
+    let sessions = dir.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    make_session(&sessions, "s1");
+    let coordinator = nano_session::JournalCoordinator::open(sessions.join("s1.jsonl")).unwrap();
+    let store = MemStore::default();
+    let executor = CronjobExecutor::new(&NoTools, &store, "s1".into(), &coordinator);
+    let created = executor
+        .execute(&ToolCall {
+            id: "c1".into(),
+            name: "cronjob".into(),
+            arguments: serde_json::json!({
+                "action": "create", "schedule": "* * * * *", "prompt": "tick"
+            }),
+        })
+        .await;
+    assert!(created.ok, "{}", created.output);
+    let job_id = store.load().unwrap()[0].job_id.clone();
+    // The torn delete: journal append succeeds, cache persist fails.
+    *store.fail_next_save.lock().unwrap() = true;
+    let deleted = executor
+        .execute(&ToolCall {
+            id: "c2".into(),
+            name: "cronjob".into(),
+            arguments: serde_json::json!({"action": "delete", "job_id": job_id}),
+        })
+        .await;
+    assert!(deleted.ok, "{}", deleted.output);
+    assert!(
+        deleted.output.contains("cache persist failed"),
+        "{}",
+        deleted.output
+    );
+    assert_eq!(
+        store.load().unwrap().len(),
+        1,
+        "cache still carries the job"
+    );
+    // The tick tombstones it: removed, never fired.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let clock = TestClock::new((now_secs + 61) * 1000);
+    let spy = FireSpy::default();
+    let outcomes = runner(sessions, &clock, &|_| None)
+        .tick(&store, &spy)
+        .await
+        .unwrap();
+    assert!(
+        spy.calls.lock().unwrap().is_empty(),
+        "deleted job NEVER fires"
+    );
+    assert!(
+        store.load().unwrap().is_empty(),
+        "stale cache entry removed"
+    );
+    assert!(
+        matches!(&outcomes[0], JobTickOutcome::Idle { .. }),
+        "{outcomes:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// F-6 compaction survival: a job created mid-turn keeps firing after the
+/// journal compacts over its creation op (control ops fold unsuppressed —
+/// compaction ops are context-class).
+#[tokio::test]
+async fn created_job_survives_compaction_and_fires() {
+    let dir = tmpdir("croncompact");
+    let sessions = dir.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    make_session(&sessions, "s1");
+    let coordinator = nano_session::JournalCoordinator::open(sessions.join("s1.jsonl")).unwrap();
+    let store = JsonCronStore::new(&dir.join("home"));
+    let executor = CronjobExecutor::new(&NoTools, &store, "s1".into(), &coordinator);
+    let created = executor
+        .execute(&ToolCall {
+            id: "c1".into(),
+            name: "cronjob".into(),
+            arguments: serde_json::json!({
+                "action": "create", "schedule": "* * * * *", "prompt": "tick"
+            }),
+        })
+        .await;
+    assert!(created.ok, "{}", created.output);
+    // A mid-turn compaction covers every op so far, including the CronCreated.
+    let report = read_journal(&sessions.join("s1.jsonl")).unwrap();
+    let covers: Vec<String> = report.envelopes.iter().map(|e| e.id.clone()).collect();
+    coordinator
+        .append(&OpEnvelope::new(
+            String::from("s1-compact-begin-1"),
+            "now",
+            Op::CompactionBegin {
+                compaction_id: String::from("k1"),
+            },
+        ))
+        .unwrap();
+    coordinator
+        .append(&OpEnvelope::new(
+            String::from("s1-compact-complete-1"),
+            "now",
+            Op::CompactionComplete {
+                compaction_id: String::from("k1"),
+                summary: "context summary".into(),
+                covers_op_ids: covers,
+                changed_files: Vec::new(),
+                image_influenced: false,
+                mcp_hydration: None,
+            },
+        ))
+        .unwrap();
+    // Fold post-compaction: the job is still live state.
+    let report = read_journal(&sessions.join("s1.jsonl")).unwrap();
+    let state = nano_session::SessionState::fold(&report.envelopes);
+    assert_eq!(state.cron_jobs.len(), 1, "CronCreated survives compaction");
+    // And the job fires.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let clock = TestClock::new((now_secs + 61) * 1000);
+    let spy = FireSpy::default();
+    runner(sessions, &clock, &|_| None)
+        .tick(&store, &spy)
+        .await
+        .unwrap();
+    assert_eq!(spy.calls.lock().unwrap().len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }

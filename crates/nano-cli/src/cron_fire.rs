@@ -92,9 +92,20 @@ where
         // make_tools fallback handle); session CostMeter wiring is the ACP
         // prompt path's (P1 economy scope).
         let (tools, policy) = (self.make_tools)(&session_cwd, mode, &plan_file, None, None, None);
+        // P3 §3.3: the fired session's appends route through a coordinator
+        // (opened before the cronjob executor — F-6 journal-first
+        // create/delete needs it).
+        let journal = Arc::new(
+            nano_session::JournalCoordinator::open(&session.journal_path)
+                .map_err(|err| fail(format!("cannot open session journal: {err}")))?,
+        );
         let cron_store = nano_agent::cron::JsonCronStore::new(&self.nano_home);
-        let executor =
-            nano_agent::cron::CronjobExecutor::new(&tools, &cron_store, job.session_id.clone());
+        let executor = nano_agent::cron::CronjobExecutor::new(
+            &tools,
+            &cron_store,
+            job.session_id.clone(),
+            &journal,
+        );
         // C8: resolve the provider binding at fire time (credential
         // re-resolution, fail-closed — a vanished key fails the fire with a
         // typed error, never a silent fallback onto another provider).
@@ -108,11 +119,6 @@ where
             .resolve_binding(&self.model_name, &env_reader, now)
             .map_err(|err| fail(format!("provider binding unavailable: {err:?}")))?;
         let driver = (self.make_driver)(&binding);
-        // P3 §3.3: the fired session's appends route through a coordinator.
-        let journal = Arc::new(
-            nano_session::JournalCoordinator::open(&session.journal_path)
-                .map_err(|err| fail(format!("cannot open session journal: {err}")))?,
-        );
         let events = Arc::new(Mutex::new(crate::exec_mode::ExecEvents::new(
             Vec::new(), // a cron fire has no stdout stream; events sink to void
             session.session_id.clone(),
@@ -160,7 +166,7 @@ where
             turn_id,
             &input,
             context,
-            journal,
+            journal.clone(),
             events,
             &[],
             // P1: cron executors carry no search wiring — the scheduled

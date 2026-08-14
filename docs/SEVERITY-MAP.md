@@ -27,7 +27,7 @@ Severity rule (owner-locked):
 
 | ID | Severity | Justification |
 |---|---|---|
-| F-6 | SEV-2 | Cron job creation has no production path: `cronjob` absent from the interactive ACP tool list and exec auto-denies `create` — the designed creation surface (design §5.5 prompt under full_auto) is unreachable; only the fire path is proven. Owner ruling needed. |
+| ~~F-6~~ | FIXED (S6, `feat/s6-cron-path`) | Cron job creation shipped per owner ruling: `cronjob` registered on the ACP session surface, journal-first `CronCreated`/`CronDeleted` ops, create ALWAYS prompts (even full_auto), exec typed-denied; kill-window reconciliation + live kill-resume proof (`scripts/s6-proof/`). See FOLLOWUPS.md F-6. |
 | F-7 | SEV-2 | Permission-parked turn silences the host ≥15s (live probe): fork/prompt/cancel unobserved while parked — cancel, an advertised capability, potentially wedged on a production path; unconfirmed vs observation-window artifact, repro owed. |
 | F-8 | SEV-2 | C11 hardening set: cron idempotency check outside the SessionGuard (cross-process double-fire window) plus journal holes on goal-driver/exec failure paths — journal-integrity defects on shipped surfaces. |
 | F-18 | SEV-2 | Provider-side 404 (retired model) surfaces as `model_server_4xx{status:404}`, not `model_not_found` — fallback logic keying off the KIND (incl. P5 auto-routing) misclassifies a shipped typed-error case. |

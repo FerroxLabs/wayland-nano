@@ -3,8 +3,10 @@
 //! - 5-field cron only (`min hour dom mon dow`); interval sugar is REJECTED
 //!   with a typed error naming the cron equivalent (Q5 RULED).
 //! - The store (`nano_home/cron/jobs.json`) is a CACHE: session journals are
-//!   authoritative for what fired; reconciliation rebuilds `last_fired` from
-//!   journaled `CronFired` ops whenever the two disagree. No MAC (Q6 RULED);
+//!   authoritative for what fired AND for job existence — `cronjob` tool
+//!   create/delete journal `CronCreated`/`CronDeleted` BEFORE touching the
+//!   cache (F-6 closure), and reconciliation rebuilds missing jobs / removes
+//!   tombstoned ones whenever the two disagree. No MAC (Q6 RULED);
 //!   a corrupt store disables the whole scheduler with a typed error.
 //! - A fire = a journal-first `CronFired` reservation keyed by a stable
 //!   occurrence id (`{job_id}:{scheduled_fire_time}`, RFC3339 UTC minute
@@ -531,6 +533,17 @@ impl CronRunner<'_> {
     /// fire. The store is reloaded and repersisted through the injected
     /// store each tick; a corrupt store disables the whole tick with a
     /// typed error.
+    ///
+    /// EXISTENCE RECONCILIATION (C11 §5.5, F-6 closure): `CronCreated`/
+    /// `CronDeleted` are the journal-first durable acts of the `cronjob`
+    /// tool, so the cache can lag (a kill between the journal append and
+    /// the cache persist). Before the due-loop, sessions WITHOUT any cached
+    /// job are discovered by a directory scan and their journals folded:
+    /// live journaled jobs missing from the cache are rebuilt (and fire
+    /// this very tick when due). Sessions WITH a cached job get the same
+    /// repair (plus tombstone removal) inside `tick_one`, which already
+    /// folds their journal. Legacy cache jobs with no cron ops in their
+    /// session journal are never touched.
     pub async fn tick<S: CronStoreLike>(
         &self,
         store: &S,
@@ -540,6 +553,61 @@ impl CronRunner<'_> {
         let now = self.clock.now_ms() / 1000;
         let mut outcomes = Vec::new();
         let mut dirty = false;
+
+        // Discovery: fold the journals of sessions no cached job covers.
+        // Unreadable/absent journals are skipped (nothing actionable without
+        // a job; a cached job's unreadable journal is tick_one's typed
+        // Error). A repaired job enters THIS tick's due-loop.
+        {
+            let covered: std::collections::BTreeSet<&str> =
+                jobs.iter().map(|job| job.session_id.as_str()).collect();
+            if let Ok(entries) = std::fs::read_dir(&self.sessions_dir) {
+                let journal_paths: Vec<PathBuf> = entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                            && path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .is_some_and(|stem| !covered.contains(stem))
+                    })
+                    .collect();
+                for path in journal_paths {
+                    let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) else {
+                        continue;
+                    };
+                    let Ok(report) = read_journal(&path) else {
+                        continue;
+                    };
+                    let state = SessionState::fold(&report.envelopes);
+                    for (job_id, record) in &state.cron_jobs {
+                        if jobs.iter().any(|job| &job.job_id == job_id) {
+                            continue;
+                        }
+                        jobs.push(CronJob {
+                            job_id: job_id.clone(),
+                            session_id: session_id.to_string(),
+                            schedule: record.schedule.clone(),
+                            prompt: record.prompt.clone(),
+                            enabled: true,
+                            created_at: Some(record.created_at.clone()),
+                            last_fired: state.cron_last_fired.get(job_id).cloned(),
+                            next_fire: None,
+                        });
+                        dirty = true;
+                    }
+                }
+            }
+        }
+
+        // Job ids tombstoned in their session journal but still cached
+        // (torn delete): removed after the loop, NEVER fired.
+        let mut tombstoned: Vec<String> = Vec::new();
+        // Live journaled jobs of covered sessions missing from the cache
+        // (torn create on a covered session): rebuilt after the loop —
+        // they enter the due-loop on the NEXT tick.
+        let mut discovered: Vec<CronJob> = Vec::new();
 
         for job in jobs.iter_mut().filter(|job| job.enabled) {
             // Persist-one-job helper for the fire transaction: the §5.4
@@ -555,9 +623,27 @@ impl CronRunner<'_> {
                 store.save(&all)
             };
             let outcome = self
-                .tick_one(job, now, &persist, &mut dirty, executor)
+                .tick_one(
+                    job,
+                    now,
+                    &persist,
+                    &mut dirty,
+                    &mut tombstoned,
+                    &mut discovered,
+                    executor,
+                )
                 .await;
             outcomes.push(outcome);
+        }
+        if !tombstoned.is_empty() {
+            jobs.retain(|job| !tombstoned.contains(&job.job_id));
+            dirty = true;
+        }
+        for repaired in discovered {
+            if !jobs.iter().any(|job| job.job_id == repaired.job_id) {
+                jobs.push(repaired);
+                dirty = true;
+            }
         }
         if dirty {
             store.save(&jobs)?;
@@ -565,12 +651,15 @@ impl CronRunner<'_> {
         Ok(outcomes)
     }
 
+    #[allow(clippy::too_many_arguments)] // the reconciliation out-params travel with the tick
     async fn tick_one(
         &self,
         job: &mut CronJob,
         now: u64,
         persist: &dyn Fn(&CronJob) -> Result<(), CronStoreError>,
         dirty: &mut bool,
+        tombstoned: &mut Vec<String>,
+        discovered: &mut Vec<CronJob>,
         executor: &dyn CronFireExecutor,
     ) -> JobTickOutcome {
         let fail = |error: String| JobTickOutcome::Error {
@@ -589,6 +678,35 @@ impl CronRunner<'_> {
             Err(err) => return fail(format!("session journal unreadable: {err}")),
         };
         let state = SessionState::fold(&report.envelopes);
+
+        // ── Journal-authoritative existence (C11 §5.5, F-6 closure) ──
+        // A torn DELETE (CronDeleted durable, cache persist lost) leaves the
+        // job cached: remove it WITHOUT firing. A torn CREATE on a session
+        // another cached job covers (CronCreated durable, cache persist
+        // lost) is rebuilt here — tick()'s pre-loop discovery covers
+        // sessions with NO cached job; both feed the same doctrine: the
+        // journal is authoritative for existence, the cache is a cache.
+        if state.cron_tombstones.contains(&job.job_id) && !state.cron_jobs.contains_key(&job.job_id)
+        {
+            tombstoned.push(job.job_id.clone());
+            return JobTickOutcome::Idle {
+                job_id: job.job_id.clone(),
+            };
+        }
+        for (job_id, record) in &state.cron_jobs {
+            if *job_id != job.job_id {
+                discovered.push(CronJob {
+                    job_id: job_id.clone(),
+                    session_id: job.session_id.clone(),
+                    schedule: record.schedule.clone(),
+                    prompt: record.prompt.clone(),
+                    enabled: true,
+                    created_at: Some(record.created_at.clone()),
+                    last_fired: state.cron_last_fired.get(job_id).cloned(),
+                    next_fire: None,
+                });
+            }
+        }
 
         // ── Replay reconciliation: the journal is authoritative ──
         let journaled_last = state.cron_last_fired.get(&job.job_id).cloned();
@@ -740,20 +858,46 @@ pub fn cronjob_tool_definition() -> nano_model::types::ToolDefinition {
 
 /// ToolExecutor decorator adding the `cronjob` tool against a job store.
 /// Every other tool delegates to the inner executor unchanged.
+///
+/// JOURNAL-FIRST (C11 §5.5, F-6 closure): create/delete append
+/// `Op::CronCreated`/`Op::CronDeleted` through the session's coordinator —
+/// the durable act — BEFORE touching the `jobs.json` cache. An append
+/// failure leaves the cache untouched and the schedule unchanged (typed
+/// error). A cache persist failure AFTER the durable append reports success
+/// with a reconciliation note: the runner rebuilds existence from the
+/// journal on its next tick (the §5.4 fire-transaction doctrine applied to
+/// the lifecycle ops).
 #[derive(Debug)]
 pub struct CronjobExecutor<'a, T: crate::turn::ToolExecutor, S: CronStoreLike> {
     inner: &'a T,
     store: &'a S,
     session_id: String,
+    coordinator: &'a nano_session::JournalCoordinator,
 }
 
 impl<'a, T: crate::turn::ToolExecutor, S: CronStoreLike> CronjobExecutor<'a, T, S> {
-    pub fn new(inner: &'a T, store: &'a S, session_id: String) -> Self {
+    pub fn new(
+        inner: &'a T,
+        store: &'a S,
+        session_id: String,
+        coordinator: &'a nano_session::JournalCoordinator,
+    ) -> Self {
         Self {
             inner,
             store,
             session_id,
+            coordinator,
         }
+    }
+
+    /// The op id for a lifecycle append (`{session}-cron{kind}-{nanos}` —
+    /// nanosecond uniqueness, the C11 goal-op-id pattern).
+    fn op_id(&self, kind: &str) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("{}-cron{}-{nanos}", self.session_id, kind)
     }
 }
 
@@ -788,30 +932,67 @@ impl<T: crate::turn::ToolExecutor, S: CronStoreLike> crate::turn::ToolExecutor
                 if let Some(reason) = scan_cron_prompt(prompt) {
                     return outcome(false, format!("cronjob create rejected: {reason}"));
                 }
-                let mut jobs = match self.store.load() {
-                    Ok(jobs) => jobs,
-                    Err(err) => return outcome(false, err.to_string()),
-                };
                 let nanos = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_nanos())
                     .unwrap_or(0);
                 let now_secs = (nanos / 1_000_000_000) as u64;
+                let created_at = rfc3339_minute(now_secs);
                 let job = CronJob {
                     job_id: format!("cron-{nanos}"),
                     session_id: self.session_id.clone(),
                     schedule: schedule.to_string(),
                     prompt: prompt.to_string(),
                     enabled: true,
-                    created_at: Some(rfc3339_minute(now_secs)),
+                    created_at: Some(created_at.clone()),
                     last_fired: None,
                     next_fire: None,
                 };
                 let job_id = job.job_id.clone();
+                // Journal-first: the CronCreated op is the durable act of
+                // creation. An append failure leaves the cache UNTOUCHED —
+                // no unjournaled job ever reaches the scheduler.
+                let envelope = OpEnvelope::new(
+                    self.op_id("create"),
+                    "now",
+                    Op::CronCreated {
+                        job_id: job_id.clone(),
+                        session_id: self.session_id.clone(),
+                        schedule: job.schedule.clone(),
+                        prompt: job.prompt.clone(),
+                        created_at,
+                    },
+                );
+                if let Err(err) = self.coordinator.append(&envelope) {
+                    return outcome(
+                        false,
+                        format!(
+                            "cronjob create failed (nothing scheduled): cannot journal CronCreated: {err}"
+                        ),
+                    );
+                }
+                let mut jobs = match self.store.load() {
+                    Ok(jobs) => jobs,
+                    Err(err) => {
+                        return outcome(
+                            true,
+                            format!(
+                                "created cron job {job_id} (journaled; cache unreadable: {err} — the scheduler rebuilds it from the journal next tick)"
+                            ),
+                        );
+                    }
+                };
                 jobs.push(job);
                 match self.store.save(&jobs) {
                     Ok(()) => outcome(true, format!("created cron job {job_id}")),
-                    Err(err) => outcome(false, err.to_string()),
+                    // The journal holds the creation durably; the runner's
+                    // existence reconciliation repairs the cache next tick.
+                    Err(err) => outcome(
+                        true,
+                        format!(
+                            "created cron job {job_id} (journaled; cache persist failed: {err} — the scheduler rebuilds it from the journal next tick)"
+                        ),
+                    ),
                 }
             }
             Some("list") => match self.store.load() {
@@ -834,9 +1015,36 @@ impl<T: crate::turn::ToolExecutor, S: CronStoreLike> crate::turn::ToolExecutor
                 if jobs.len() == before {
                     return outcome(false, format!("no such cron job: {job_id}"));
                 }
+                // Journal-first: the CronDeleted tombstone lands durably
+                // BEFORE the cache removal — a kill between the two leaves
+                // the job cached but tombstoned, and the runner removes it
+                // WITHOUT firing on the next tick.
+                let envelope = OpEnvelope::new(
+                    self.op_id("delete"),
+                    "now",
+                    Op::CronDeleted {
+                        job_id: job_id.to_string(),
+                        session_id: self.session_id.clone(),
+                    },
+                );
+                if let Err(err) = self.coordinator.append(&envelope) {
+                    return outcome(
+                        false,
+                        format!(
+                            "cronjob delete failed (job still scheduled): cannot journal CronDeleted: {err}"
+                        ),
+                    );
+                }
                 match self.store.save(&jobs) {
                     Ok(()) => outcome(true, format!("deleted cron job {job_id}")),
-                    Err(err) => outcome(false, err.to_string()),
+                    // The tombstone is durable; the runner removes the stale
+                    // cache entry (without firing it) next tick.
+                    Err(err) => outcome(
+                        true,
+                        format!(
+                            "deleted cron job {job_id} (journaled; cache persist failed: {err} — the scheduler removes the stale entry next tick)"
+                        ),
+                    ),
                 }
             }
             other => outcome(
