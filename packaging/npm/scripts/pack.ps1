@@ -62,7 +62,10 @@ foreach ($Key in $Targets) {
     # to the host binary (pty.rs resolves it beside current_exe; the
     # NANO_PTY_GUARD_EXE override is the documented escape hatch). Windows
     # needs no guard — ConPTY + Job Objects carry the teardown there.
-    $Helpers = if ($Key -eq 'win32-x64') { @() } else { @('wayland-nano-pty-guard') }
+    # @(...) is mandatory: an if/else expression unpipes a single-element
+    # array to a SCALAR, and StrictMode then kills $Helpers.Count (this
+    # exact failure broke the first rc.0 unix release legs).
+    $Helpers = @(if ($Key -eq 'win32-x64') { @() } else { 'wayland-nano-pty-guard' })
     if ($ArtifactRoot) {
         $Source = Join-Path $ArtifactRoot "$Key\$File"
         $HelperSources = @($Helpers | ForEach-Object { Join-Path $ArtifactRoot "$Key\$_" })
