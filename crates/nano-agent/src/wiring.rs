@@ -11,6 +11,205 @@ use nano_tools::shell::{ShellKind, ShellTool};
 use nano_tools::web::{FetchArgs, WebFetchTool, render_fetch_output};
 use nano_tools::web_search::{SearchArgs, WebSearchTool, render_search_output};
 
+#[cfg(feature = "soak-fake-model")]
+mod soak_fake {
+    use super::*;
+    use nano_model::types::{ModelEvent, TransportPhase, Usage};
+    use serde::Deserialize;
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
+
+    #[derive(Debug, Clone, Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    enum Directive {
+        Text {
+            text: String,
+            #[serde(default)]
+            usage: ScriptUsage,
+            #[serde(default)]
+            latency_ms: Latency,
+        },
+        ToolCall {
+            name: String,
+            arguments: serde_json::Value,
+            #[serde(default)]
+            usage: ScriptUsage,
+            #[serde(default)]
+            latency_ms: Latency,
+        },
+        Error {
+            error: ScriptError,
+            #[serde(default)]
+            latency_ms: Latency,
+        },
+    }
+
+    #[derive(Debug, Clone, Default, Deserialize)]
+    struct ScriptUsage {
+        #[serde(default)]
+        input_tokens: u64,
+        #[serde(default)]
+        output_tokens: u64,
+    }
+
+    impl From<ScriptUsage> for Usage {
+        fn from(value: ScriptUsage) -> Self {
+            Self {
+                input_tokens: value.input_tokens,
+                output_tokens: value.output_tokens,
+                ..Usage::default()
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Default, Deserialize)]
+    #[serde(untagged)]
+    enum Latency {
+        Fixed(u64),
+        Range {
+            min: u64,
+            max: u64,
+        },
+        #[default]
+        None,
+    }
+
+    impl Latency {
+        fn millis(&self, ordinal: usize) -> u64 {
+            match self {
+                Self::Fixed(ms) => *ms,
+                Self::Range { min, max } if max > min => min + ordinal as u64 % (max - min + 1),
+                Self::Range { min, .. } => *min,
+                Self::None => 0,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    enum ScriptError {
+        Server { status: u16, message: String },
+        Timeout { message: String },
+        MalformedStream { message: String },
+    }
+
+    #[derive(Debug)]
+    struct State {
+        directives: Vec<Directive>,
+        next: usize,
+        call_id: u64,
+    }
+
+    static STATE: OnceLock<Result<Mutex<State>, String>> = OnceLock::new();
+
+    fn load(path: &Path) -> Result<Mutex<State>, String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|err| format!("NANO_SOAK_MODEL_SCRIPT unreadable: {err}"))?;
+        let mut directives = Vec::new();
+        for (index, line) in content.lines().enumerate() {
+            if line.trim().is_empty() || line.trim_start().starts_with('#') {
+                continue;
+            }
+            directives.push(serde_json::from_str(line).map_err(|err| {
+                format!("NANO_SOAK_MODEL_SCRIPT line {} invalid: {err}", index + 1)
+            })?);
+        }
+        if directives.is_empty() {
+            return Err("NANO_SOAK_MODEL_SCRIPT contains no directives".into());
+        }
+        Ok(Mutex::new(State {
+            directives,
+            next: 0,
+            call_id: 0,
+        }))
+    }
+
+    pub(super) async fn complete() -> Option<Result<ModelResponse, ModelError>> {
+        let path = std::env::var_os("NANO_SOAK_MODEL_SCRIPT")?;
+        let state = STATE.get_or_init(|| load(Path::new(&path)));
+        let (directive, ordinal, call_id) = match state {
+            Ok(state) => {
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let ordinal = state.next;
+                let directive = state.directives[ordinal % state.directives.len()].clone();
+                state.next += 1;
+                state.call_id += 1;
+                (directive, ordinal, state.call_id)
+            }
+            Err(message) => return Some(Err(ModelError::Protocol(message.clone()))),
+        };
+        let latency = match &directive {
+            Directive::Text { latency_ms, .. }
+            | Directive::ToolCall { latency_ms, .. }
+            | Directive::Error { latency_ms, .. } => latency_ms.millis(ordinal),
+        };
+        if latency > 0 {
+            tokio::time::sleep(Duration::from_millis(latency)).await;
+        }
+        Some(match directive {
+            Directive::Text { text, usage, .. } => {
+                let usage = Usage::from(usage);
+                Ok(ModelResponse {
+                    events: vec![
+                        ModelEvent::TextDelta(text),
+                        ModelEvent::Usage(usage.clone()),
+                        ModelEvent::Done {
+                            stop_reason: "end_turn".into(),
+                        },
+                    ],
+                    usage,
+                    stop_reason: "end_turn".into(),
+                    model: Some("wayland-nano-soak-fake".into()),
+                })
+            }
+            Directive::ToolCall {
+                name,
+                arguments,
+                usage,
+                ..
+            } => {
+                let usage = Usage::from(usage);
+                Ok(ModelResponse {
+                    events: vec![
+                        ModelEvent::ToolCallComplete(ToolCall {
+                            id: format!("soak-{call_id}"),
+                            name,
+                            arguments,
+                        }),
+                        ModelEvent::Usage(usage.clone()),
+                        ModelEvent::Done {
+                            stop_reason: "tool_use".into(),
+                        },
+                    ],
+                    usage,
+                    stop_reason: "tool_use".into(),
+                    model: Some("wayland-nano-soak-fake".into()),
+                })
+            }
+            Directive::Error { error, .. } => Err(match error {
+                ScriptError::Server { status, message } => ModelError::Server { status, message },
+                ScriptError::Timeout { message } => ModelError::Transport {
+                    phase: TransportPhase::BeforeFirstByte,
+                    message,
+                },
+                ScriptError::MalformedStream { message } => ModelError::Protocol(message),
+            }),
+        })
+    }
+}
+
+#[cfg(not(feature = "soak-fake-model"))]
+fn reject_uncompiled_soak_seam() -> Option<Result<ModelResponse, ModelError>> {
+    std::env::var_os("NANO_SOAK_MODEL_SCRIPT").map(|_| {
+        Err(ModelError::Protocol(
+            "NANO_SOAK_MODEL_SCRIPT requires the soak-fake-model feature".into(),
+        ))
+    })
+}
+
 /// One of the three Flux wire surfaces. Completions is the production wire;
 /// Responses and Anthropic Messages are selectable compat surfaces (per
 /// FINDINGS batch-2 WIRE-2, never the default).
@@ -58,6 +257,14 @@ impl FluxDriver {
 #[async_trait::async_trait]
 impl ModelDriver for FluxDriver {
     async fn complete(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError> {
+        #[cfg(feature = "soak-fake-model")]
+        if let Some(response) = soak_fake::complete().await {
+            return response;
+        }
+        #[cfg(not(feature = "soak-fake-model"))]
+        if let Some(response) = reject_uncompiled_soak_seam() {
+            return response;
+        }
         match &self.client {
             FluxClient::Completions(client) => client.complete(request, &self.api_key).await,
             FluxClient::Responses(client) => client.complete(request, &self.api_key).await,
@@ -131,6 +338,14 @@ impl ProviderDriver {
 #[async_trait::async_trait]
 impl ModelDriver for ProviderDriver {
     async fn complete(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError> {
+        #[cfg(feature = "soak-fake-model")]
+        if let Some(response) = soak_fake::complete().await {
+            return response;
+        }
+        #[cfg(not(feature = "soak-fake-model"))]
+        if let Some(response) = reject_uncompiled_soak_seam() {
+            return response;
+        }
         match &self.client {
             ProviderClient::OpenAi(client) => client.complete(request, &self.credential).await,
             ProviderClient::Anthropic(client) => client.complete(request, &self.credential).await,

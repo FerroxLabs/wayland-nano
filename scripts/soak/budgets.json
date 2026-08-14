@@ -1,0 +1,14 @@
+{
+  "B1": { "name": "RSS growth", "absoluteBytes": 1610612736, "endRatio": 1.25, "slopeBytesPerHour": 16777216 },
+  "B2": { "name": "handle count", "absolute": 4096, "baselineRatio": 2 },
+  "B3": { "name": "thread count", "absolute": 128, "baselineRatio": 1.5 },
+  "B4": { "name": "open FDs", "absolute": 1024, "baselineRatio": 2 },
+  "B5": { "name": "journal growth", "bytesPerHour": 8388608, "turnP95Bytes": 262144, "absoluteBytes": 67108864 },
+  "B6": { "name": "NANO_HOME disk", "growthBytes": 268435456 },
+  "B7": { "name": "orphan processes", "absolute": 0 },
+  "B8": { "name": "torn journal", "tornMiddle": 0 },
+  "B9": { "name": "turn throughput", "turnsPerHour": 120 },
+  "B10": { "name": "typed error rate", "maximumRate": 0.01, "panics": 0, "unknown": 0 },
+  "B11": { "name": "live segment", "completionRate": 1, "canaryHits": 0 },
+  "B12": { "name": "watchdog", "maximumFrameGapMs": 60000 }
+}

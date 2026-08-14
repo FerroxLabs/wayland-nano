@@ -1,0 +1,10 @@
+{"kind":"tool_call","name":"fs_write","arguments":{"path":"soak-state.txt","content":"S10 durable state\n"},"usage":{"input_tokens":9000,"output_tokens":200},"latency_ms":{"min":50,"max":200}}
+{"kind":"text","text":"write verified","usage":{"input_tokens":300,"output_tokens":20},"latency_ms":50}
+{"kind":"tool_call","name":"fs_read","arguments":{"path":"soak-state.txt"},"usage":{"input_tokens":9000,"output_tokens":200},"latency_ms":{"min":50,"max":200}}
+{"kind":"text","text":"read verified: S10 durable state","usage":{"input_tokens":300,"output_tokens":20},"latency_ms":50}
+{"kind":"tool_call","name":"fs_edit","arguments":{"path":"soak-state.txt","old_string":"S10 durable state","new_string":"S10 durable state"},"usage":{"input_tokens":9000,"output_tokens":200},"latency_ms":{"min":50,"max":200}}
+{"kind":"text","text":"edit verified","usage":{"input_tokens":300,"output_tokens":20},"latency_ms":50}
+{"kind":"tool_call","name":"shell","arguments":{"command":"Write-Output S10-soak"},"usage":{"input_tokens":9000,"output_tokens":200},"latency_ms":{"min":50,"max":200}}
+{"kind":"text","text":"shell verified","usage":{"input_tokens":300,"output_tokens":20},"latency_ms":50}
+{"kind":"tool_call","name":"repo_map","arguments":{"query":"soak","limit":5},"usage":{"input_tokens":9000,"output_tokens":200},"latency_ms":{"min":50,"max":200}}
+{"kind":"text","text":"search verified","usage":{"input_tokens":300,"output_tokens":20},"latency_ms":50}
