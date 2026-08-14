@@ -817,7 +817,18 @@ fn forward_compat_unknown_fields_and_types_are_ignored() {
 /// inventory, never self-report).
 #[tokio::test]
 async fn exec_reaps_mcp_children_on_exit() {
-    let dir = tmpdir("mcp-reap");
+    // The unix contained spawn (seatbelt/bwrap workspace-write) may only
+    // write under the host cwd — so this fixture anchors under target/,
+    // not the OS temp dir: a /tmp pid-file write would be DENIED inside
+    // containment and the server would die before recording its pid
+    // (CI unix-leg failure, 2026-08-14). Same precedent as mcp_tests.
+    let scratch = std::env::current_dir().expect("cwd").join("target");
+    std::fs::create_dir_all(&scratch).expect("fixture scratch root");
+    let dir = tempfile::Builder::new()
+        .prefix("nano-cli-exec-mcp-reap-")
+        .tempdir_in(&scratch)
+        .expect("fixture dir")
+        .keep();
     let sessions = dir.join("sessions");
     let workspace = dir.join("ws");
     std::fs::create_dir_all(&workspace).unwrap();
