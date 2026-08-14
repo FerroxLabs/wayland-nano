@@ -55,6 +55,8 @@ mod tests {
         assert!(is_sensitive_path(Path::new("/repo/.ENV.PRODUCTION")));
         assert!(is_sensitive_path(Path::new("/repo/.Env.Production")));
         assert!(is_sensitive_path(Path::new("/repo/.env.LOCAL")));
+        // Windows-style separators only parse as components on Windows.
+        #[cfg(windows)]
         assert!(is_sensitive_path(Path::new("C:\\repo\\.EnV.Staging")));
         // Tightening only: near-misses that were never caught stay clear.
         assert!(!is_sensitive_path(Path::new("/repo/.ENVRC")));
