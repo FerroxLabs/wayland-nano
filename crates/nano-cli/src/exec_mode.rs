@@ -79,13 +79,17 @@ pub struct ExecParams {
 
 /// P5 §1: the routing decision for this exec run, resolved by the caller
 /// (production: `exec_run::run`; tests inject). `mode` is journaled on
-/// every turn's routing snapshot; `auto_client_side` turns take the §5/§3
-/// fail-closed capability path (exec turns always advertise tools, so no
-/// admissible candidates exist until the tool-capability catalog lands).
+/// every turn's routing snapshot; `auto_client_side` turns run the §4
+/// ladder over the catalog-admitted candidates (the vendored
+/// tool-capability catalog, layered with the S1 evidence-capture probe
+/// arm), failing closed with the §5/§3 typed capability refusal when no
+/// candidate is admissible.
 #[derive(Debug, Clone)]
 pub struct ExecRouting {
     pub mode: nano_session::RoutingMode,
     pub reference: String,
+    /// S1: the parsed `NANO_AUTO_TOOLS_PROBE` arm (evidence capture only).
+    pub tools_probe: bool,
 }
 
 /// The frozen exec event vocabulary (v1). Serialized one JSON object per
@@ -446,21 +450,28 @@ where
     W: Write + Send,
 {
     // P5: the routing snapshot (with `routing_mode`) is durable BEFORE the
-    // first dispatch. Exec turns that reach this runner are pins/implicit
-    // passthrough — the `auto_client_side` refusal happens in
-    // `run_exec_with` before any turn runs.
+    // first dispatch. Pin/implicit turns journal the singleton snapshot
+    // here; an `auto_client_side` turn's FULL candidate snapshot was
+    // journaled by `run_exec_with` before this runner was entered (the
+    // envelope id would dedup a second append, but skipping keeps the
+    // single-writer discipline explicit rather than dedup-dependent).
     let routing_sink = crate::auto_routing::CoordinatorRoutingSink(journal.clone());
-    let journaled = crate::auto_routing::journal_snapshot(
-        &routing_sink,
-        turn_id,
-        routing_mode,
-        model_name,
-        crate::auto_routing::pin_snapshot_candidates(model_name),
-        crate::auto_routing::pin_snapshot_digest(
-            &crate::provider_router::ProviderRouter::default(),
+    let journaled = if routing_mode == nano_session::RoutingMode::AutoClientSide {
+        true
+    } else {
+        crate::auto_routing::journal_snapshot(
+            &routing_sink,
+            turn_id,
+            routing_mode,
             model_name,
-        ),
-    );
+            crate::auto_routing::ATTEMPT_BUDGET,
+            crate::auto_routing::pin_snapshot_candidates(model_name),
+            crate::auto_routing::pin_snapshot_digest(
+                &crate::provider_router::ProviderRouter::default(),
+                model_name,
+            ),
+        )
+    };
     if !journaled {
         return ExecTurnOutcome {
             state: TurnState::Failed(nano_agent::turn::TypedError::new(

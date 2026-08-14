@@ -320,6 +320,14 @@ pub enum ModelError {
     Entitlement(String),
     #[error("server error {status}: {message}")]
     Server { status: u16, message: String },
+    /// The provider rejected the request FORMAT (F-P5-1): the live Flux
+    /// edge answers a malformed request body with HTTP 5xx whose body
+    /// carries `error.type == "invalid_request_error"`. Terminal for
+    /// routing and never retried — another candidate would reject the
+    /// identical bytes. Distinct from `Server` so the 5xx status signal
+    /// cannot cascade it.
+    #[error("invalid request (http_status={status}): {message}")]
+    InvalidRequest { status: u16, message: String },
     #[error("transport/{phase:?}: {message}")]
     Transport {
         phase: TransportPhase,

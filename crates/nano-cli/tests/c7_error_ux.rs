@@ -144,6 +144,7 @@ static DEFAULT_ROUTING: nano_cli::auto_routing::RoutingConfig =
     nano_cli::auto_routing::RoutingConfig {
         auto_opt_in: false,
         configured_default: None,
+        tools_probe: false,
     };
 
 fn text_response(text: &str) -> ModelResponse {

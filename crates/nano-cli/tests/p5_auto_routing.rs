@@ -51,6 +51,7 @@ const TOUCHED_VARS: &[&str] = &[
     "NVIDIA_API_KEY",
     "NANO_ROUTING_AUTO",
     "NANO_DEFAULT_MODEL",
+    "NANO_AUTO_TOOLS_PROBE",
 ];
 
 fn clear_env() {
@@ -758,6 +759,7 @@ fn kill_fixture(boundary: &str) -> KillFixture {
         &turn_id,
         RoutingMode::AutoClientSide,
         "flux-auto",
+        auto_routing::ATTEMPT_BUDGET,
         candidates,
         "ab".repeat(32),
     ));
@@ -961,6 +963,304 @@ fn kill_between_rungs_preserves_remaining_budget_and_order() {
         .expect("resumed rung succeeds");
     assert_eq!(response.model.as_deref(), Some("gpt-b"));
     assert_eq!(calls.lock().unwrap()[0].model, "gpt-b");
+}
+
+// ── F-P5-1 / F-P5-2 adversarial regression legs [seam] ──────────────────
+
+#[test]
+fn adv_500_with_format_body_must_be_terminal() {
+    // F-P5-1: a 500 whose body carries error.type=="invalid_request_error"
+    // is a FORMAT rejection — terminal, zero calls to rung 2. The failing
+    // error is the REAL ModelError the production adapter's classify_status
+    // produces on that wire shape (never a synthetic signal map).
+    let err = nano_model::flux_common::classify_status(
+        500,
+        "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad tools payload\"}}"
+            .to_string(),
+    );
+    let a = ScriptedTransport::fails(err, 1, None);
+    let b = ScriptedTransport::succeeds(Some("gpt-a"), Usage::default());
+    let b_calls = b.calls.clone();
+    let sink = Arc::new(CollectSink::default());
+    let ladder = ladder_with(
+        vec![
+            (
+                candidate(0, "flux-router", "flux-auto", CandidateKind::Alias),
+                a,
+            ),
+            (candidate(1, "openai", "gpt-a", CandidateKind::Leaf), b),
+        ],
+        sink.clone(),
+    );
+    let outcome = block_on(ladder.complete_observed(&text_request(), &CallHooks::none()));
+    assert!(
+        matches!(outcome, Err(ModelError::InvalidRequest { status: 500, .. })),
+        "the terminal typed error surfaces unchanged: {outcome:?}"
+    );
+    assert!(
+        b_calls.lock().unwrap().is_empty(),
+        "terminal: zero rung-2 calls"
+    );
+    let ops = sink.ops();
+    let receipt = ops
+        .iter()
+        .find_map(|op| match op {
+            Op::RoutingReceipt {
+                ordinal: 0,
+                outcome,
+                failure,
+                status,
+                ..
+            } => Some((*outcome, *failure, *status)),
+            _ => None,
+        })
+        .expect("rung-1 receipt journaled");
+    assert_eq!(
+        receipt,
+        (
+            RoutingOutcome::TerminalFailure,
+            Some(nano_session::RoutingFailureClass::FormatRejected),
+            Some(500)
+        ),
+        "journaled as terminal format rejection with the wire status"
+    );
+}
+
+#[test]
+fn adv_double_kill_budget_leak() {
+    // F-P5-2: chained kill-resume must conserve the global 3-attempt budget.
+    // Chain: turn 1 is killed mid-attempt (1 consumed) → the resume arm
+    // re-journals turn 2 with the TRUE remainder (2), spends one cascading
+    // attempt, and is killed again → turn 3 may spend AT MOST 1. Total
+    // physical attempts across one logical routed turn: 3, never 4.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let journal_path = dir.path().join("sessions").join("s.jsonl");
+    let candidates = vec![
+        nano_session::RoutingCandidate {
+            provider: "flux-router".into(),
+            candidate: "flux-auto".into(),
+            kind: CandidateKind::Alias,
+            admitted: true,
+            rejection: None,
+        },
+        nano_session::RoutingCandidate {
+            provider: "openai".into(),
+            candidate: "gpt-a".into(),
+            kind: CandidateKind::Leaf,
+            admitted: true,
+            rejection: None,
+        },
+        nano_session::RoutingCandidate {
+            provider: "openai".into(),
+            candidate: "gpt-b".into(),
+            kind: CandidateKind::Leaf,
+            admitted: true,
+            rejection: None,
+        },
+    ];
+    let digest = "ab".repeat(32);
+    // ── Turn 1: snapshot(budget 3), begin 0, killed mid-attempt.
+    {
+        let coordinator = JournalCoordinator::open(&journal_path).expect("open journal");
+        coordinator
+            .append(&nano_session::OpEnvelope::new(
+                "s-begin-1",
+                "now",
+                Op::SessionBegin {
+                    session_id: "s".into(),
+                    cwd: ".".into(),
+                },
+            ))
+            .expect("session begin");
+        coordinator
+            .append(&nano_session::OpEnvelope::new(
+                "s-turn-1-1",
+                "now",
+                Op::TurnBegin {
+                    turn_id: "s-turn-1".into(),
+                    input: "resume me".into(),
+                    input_blocks: Vec::new(),
+                },
+            ))
+            .expect("turn begin");
+        let sink = auto_routing::CoordinatorRoutingSink(Arc::new(coordinator));
+        assert!(auto_routing::journal_snapshot(
+            &sink,
+            "s-turn-1",
+            RoutingMode::AutoClientSide,
+            "flux-auto",
+            auto_routing::ATTEMPT_BUDGET,
+            candidates.clone(),
+            digest.clone(),
+        ));
+        assert!(RoutingSink::append(
+            &sink,
+            &nano_session::OpEnvelope::new(
+                "s-turn-1-routing-begin-0",
+                "now",
+                Op::RoutingAttemptBegin {
+                    turn_id: "s-turn-1".into(),
+                    ordinal: 0,
+                    routing_mode: RoutingMode::AutoClientSide,
+                    provider: "flux-router".into(),
+                    candidate: "flux-auto".into(),
+                },
+            ),
+        ));
+        // The "process" dies here: dropped without a receipt for ordinal 0.
+    }
+    // ── Resume #1 (the ACP resume arm): reconcile the stranded attempt,
+    //    plan from the journal, re-journal turn 2 with the TRUE remainder,
+    //    spend one cascading attempt, killed again.
+    {
+        let report = nano_session::read_journal(&journal_path).expect("read");
+        let folded = SessionState::fold(&report.envelopes);
+        let routing = folded.routing.get("s-turn-1").expect("turn-1 routing");
+        let coordinator = JournalCoordinator::open(&journal_path).expect("reopen");
+        let sink = auto_routing::CoordinatorRoutingSink(Arc::new(coordinator));
+        auto_routing::reconcile_interrupted(&sink, "s-turn-1", routing, "resume me")
+            .expect("reconcile");
+        let report = nano_session::read_journal(&journal_path).expect("re-read");
+        let folded = SessionState::fold(&report.envelopes);
+        let routing = folded.routing.get("s-turn-1").expect("turn-1 routing");
+        let resume = auto_routing::plan_resume(routing).expect("resumable");
+        assert_eq!(resume.budget, 2, "3 - 1 consumed in-flight");
+        assert_eq!(resume.remaining.len(), 2);
+        // The resume arm re-journals through journal_snapshot — the F-P5-2
+        // fix passes the remainder instead of hardcoding ATTEMPT_BUDGET.
+        let coordinator = JournalCoordinator::open(&journal_path).expect("reopen");
+        let sink = auto_routing::CoordinatorRoutingSink(Arc::new(coordinator));
+        assert!(RoutingSink::append(
+            &sink,
+            &nano_session::OpEnvelope::new(
+                "s-turn-2-1",
+                "now",
+                Op::TurnBegin {
+                    turn_id: "s-turn-2".into(),
+                    input: "resume me".into(),
+                    input_blocks: Vec::new(),
+                },
+            ),
+        ));
+        assert!(auto_routing::journal_snapshot(
+            &sink,
+            "s-turn-2",
+            RoutingMode::AutoClientSide,
+            &resume.configured_reference,
+            resume.budget,
+            resume.snapshot_candidates.clone(),
+            resume.catalog_digest.clone(),
+        ));
+        // Turn 2 spends ONE cascading attempt on ordinal 1, then is killed.
+        assert!(RoutingSink::append(
+            &sink,
+            &nano_session::OpEnvelope::new(
+                "s-turn-2-routing-begin-1",
+                "now",
+                Op::RoutingAttemptBegin {
+                    turn_id: "s-turn-2".into(),
+                    ordinal: 1,
+                    routing_mode: RoutingMode::AutoClientSide,
+                    provider: "openai".into(),
+                    candidate: "gpt-a".into(),
+                },
+            ),
+        ));
+        assert!(RoutingSink::append(
+            &sink,
+            &nano_session::OpEnvelope::new(
+                "s-turn-2-routing-receipt-1",
+                "now",
+                Op::RoutingReceipt {
+                    turn_id: "s-turn-2".into(),
+                    ordinal: 1,
+                    routing_mode: RoutingMode::AutoClientSide,
+                    provider: "openai".into(),
+                    configured_reference: "flux-auto".into(),
+                    candidate: "gpt-a".into(),
+                    outcome: RoutingOutcome::CascadeFailure,
+                    failure: Some(nano_session::RoutingFailureClass::RateLimited),
+                    status: Some(429),
+                    attempts_consumed: 1,
+                    selected: false,
+                    response_model: None,
+                    leaf_identity: LeafProvenance::Absent,
+                    usage: None,
+                    exhaustion: None,
+                    rejection: None,
+                },
+            ),
+        ));
+    }
+    // The journaled turn-2 snapshot carries the remainder, NOT a fresh 3 —
+    // this is the crux of the leak (pre-fix it re-journaled 3).
+    {
+        let report = nano_session::read_journal(&journal_path).expect("read");
+        let journaled_budget = report.envelopes.iter().find_map(|e| match &e.op {
+            Op::RoutingSnapshot {
+                turn_id,
+                attempt_budget,
+                ..
+            } if turn_id == "s-turn-2" => Some(*attempt_budget),
+            _ => None,
+        });
+        assert_eq!(
+            journaled_budget,
+            Some(2),
+            "the resume arm journals the true remainder"
+        );
+    }
+    // ── Resume #2: budget = journaled remainder (2) - consumed (1) = 1.
+    let resume2 = {
+        let report = nano_session::read_journal(&journal_path).expect("read");
+        let folded = SessionState::fold(&report.envelopes);
+        let routing = folded.routing.get("s-turn-2").expect("turn-2 routing");
+        auto_routing::plan_resume(routing).expect("resumable")
+    };
+    assert_eq!(resume2.budget, 1, "the chain conserves the global budget");
+    assert_eq!(resume2.remaining.len(), 1);
+    assert_eq!(resume2.remaining[0].candidate, "gpt-b");
+    // The resumed ladder spends AT MOST that one attempt (the transport has
+    // two scripted steps: a second dispatch would also fail the call count).
+    let transport = ScriptedTransport::fails(
+        ModelError::Server {
+            status: 503,
+            message: String::new(),
+        },
+        1,
+        None,
+    );
+    transport.steps.lock().unwrap().push_back(AttemptOutcome {
+        result: Err(ModelError::Server {
+            status: 503,
+            message: String::new(),
+        }),
+        attempts_consumed: 1,
+        failed_usage: None,
+    });
+    let calls = transport.calls.clone();
+    let sink = Arc::new(CollectSink::default());
+    let ladder = Ladder::new(
+        "s-turn-3",
+        RoutingMode::AutoClientSide,
+        &resume2.configured_reference,
+        vec![LadderCandidate {
+            plan: resume2.remaining[0].clone(),
+            transport,
+        }],
+        sink,
+        None,
+        false,
+        resume2.budget,
+        0,
+    );
+    let outcome = block_on(ladder.complete_observed(&text_request(), &CallHooks::none()));
+    assert!(outcome.is_err(), "the last candidate fails the turn");
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        1,
+        "global budget conserved: 1 + 1 + 1 = 3 physical attempts across the chain"
+    );
 }
 
 // ── §8.1 usage rollup + receipt completeness + canary ───────────────────
@@ -1867,11 +2167,13 @@ use acp_harness::Host;
 static NO_AUTO: auto_routing::RoutingConfig = auto_routing::RoutingConfig {
     auto_opt_in: false,
     configured_default: None,
+    tools_probe: false,
 };
 
 static AUTO_OPT_IN: auto_routing::RoutingConfig = auto_routing::RoutingConfig {
     auto_opt_in: true,
     configured_default: None,
+    tools_probe: false,
 };
 
 fn configured_default(reference: &str) -> &'static auto_routing::RoutingConfig {
@@ -1879,6 +2181,7 @@ fn configured_default(reference: &str) -> &'static auto_routing::RoutingConfig {
     Box::leak(Box::new(auto_routing::RoutingConfig {
         auto_opt_in: false,
         configured_default: Some(reference.to_string()),
+        tools_probe: false,
     }))
 }
 
@@ -1967,10 +2270,11 @@ fn routing_mode_separation_four_journaled_values() {
     assert_eq!(host.seen(), ["flux-auto"]);
     drop(host);
 
-    // 4. auto_client_side: the opt-in admits the ladder — and the turn
-    // FAILS CLOSED with the typed capability-empty refusal (the ACP turn
-    // always advertises tools; §3's tool-capability catalog does not exist
-    // yet). No dispatch reaches the driver.
+    // 4. auto_client_side: the opt-in admits the ladder. Post-S1 the
+    // vendored catalog blesses the flux-auto alias for tools, so the
+    // tool-bearing turn dispatches rung 1 (the §5 capability gate is
+    // satisfied by recorded proof — the pre-S1 capability_empty refusal is
+    // superseded, never weakened: an UNPROVEN candidate still rejects).
     let mut host = Host::spawn(
         ProviderRouter::default(),
         acp_harness::flux_available(),
@@ -1979,23 +2283,25 @@ fn routing_mode_separation_four_journaled_values() {
     );
     let session = host.new_session();
     let response = host.prompt(&session, "hi");
-    let error = response.get("error").expect("auto turn is a typed refusal");
-    assert_eq!(error["code"], -32602, "{error}");
-    assert_eq!(error["data"]["kind"], "capability_empty", "{error}");
+    assert!(
+        response.get("result").is_some(),
+        "the auto turn rides the blessed alias: {response}"
+    );
     let ops = host.routing_ops(&session);
     assert_eq!(snapshot_mode(&ops), Some(RoutingMode::AutoClientSide));
-    // The journaled snapshot shows the alias rung REJECTED (capability
-    // unproven for tool-bearing turns) — and zero dispatch happened.
-    let rejected = ops.iter().any(|op| {
+    // The journaled snapshot shows the alias rung ADMITTED (blessed for
+    // tools) and the turn committed on it.
+    let admitted = ops.iter().any(|op| {
         matches!(
             op,
             Op::RoutingSnapshot { candidates, .. }
-                if candidates.iter().any(|c| !c.admitted
-                    && c.rejection == Some(nano_session::CandidateRejection::CapabilityUnproven))
+                if candidates.iter().any(|c| c.admitted
+                    && c.kind == CandidateKind::Alias
+                    && c.candidate == "flux-auto")
         )
     });
-    assert!(rejected, "the alias rung is capability-rejected: {ops:?}");
-    assert!(host.seen().is_empty(), "no dispatch behind the refusal");
+    assert!(admitted, "the alias rung is admitted: {ops:?}");
+    assert_eq!(host.seen(), ["flux-auto"], "dispatch reached rung 1 only");
     drop(host);
 }
 
@@ -2146,8 +2452,10 @@ fn no_config_no_cross_provider_dispatch() {
     );
     drop(host);
 
-    // With the opt-in, the tool-bearing turn fails closed (capability_empty)
-    // rather than silently routing cross-provider.
+    // With the opt-in (post-S1: the vendored catalog blesses the flux-auto
+    // alias for tools), the tool-bearing turn is admitted on rung 1 ONLY —
+    // the ladder dispatches the alias, never a cross-provider leaf (no
+    // approved-leaf manifest exists in v1, so rungs 2/3 are empty).
     let router = ProviderRouter::from_payload(Some(
         r#"[
             {"provider":"openai","models":["gpt-a"],"hasKey":true},
@@ -2160,14 +2468,39 @@ fn no_config_no_cross_provider_dispatch() {
     let mut host = Host::spawn(router, available, "flux-auto", &AUTO_OPT_IN);
     let session = host.new_session();
     let response = host.prompt(&session, "hi");
-    assert_eq!(
-        response["error"]["data"]["kind"], "capability_empty",
-        "opted-in tool-bearing turn fails closed: {response}"
-    );
     assert!(
-        host.seen().is_empty(),
-        "opt-in never silently dispatches cross-provider either"
+        response.get("result").is_some(),
+        "the opted-in tool-bearing turn rides the blessed alias: {response}"
     );
+    assert_eq!(
+        host.seen(),
+        ["flux-auto"],
+        "rung 1 only — opt-in never dispatches cross-provider"
+    );
+    let ops = host.routing_ops(&session);
+    let admits_alias_only = ops.iter().any(|op| {
+        matches!(
+            op,
+            Op::RoutingSnapshot { routing_mode, candidates, .. }
+                if *routing_mode == RoutingMode::AutoClientSide
+                    && candidates.len() == 1
+                    && candidates[0].admitted
+                    && candidates[0].kind == CandidateKind::Alias
+                    && candidates[0].candidate == "flux-auto"
+        )
+    });
+    assert!(
+        admits_alias_only,
+        "the auto snapshot admits exactly the alias rung: {ops:?}"
+    );
+    let committed = ops.iter().any(|op| {
+        matches!(
+            op,
+            Op::RoutingReceipt { outcome, selected, .. }
+                if *outcome == RoutingOutcome::Committed && *selected
+        )
+    });
+    assert!(committed, "rung 1 committed: {ops:?}");
     drop(host);
 }
 
@@ -2528,8 +2861,8 @@ fn live_leg1_alias_identity() {
     let text = serde_json::to_string_pretty(&fixture).expect("fixture serializes");
     // Canary: the credential NEVER lands in the fixture.
     assert!(!text.contains(&key), "canary: no key in the fixture");
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../shared/fixtures/flux/auto-routing");
+    // F-P5-4: ancestor-walked fixture root (no hardcoded `..` count).
+    let dir = shared_flux_fixture_dir().join("auto-routing");
     std::fs::create_dir_all(&dir).expect("fixture dir");
     std::fs::write(dir.join("alias-identity.json"), text).expect("fixture write");
 }
@@ -2580,13 +2913,296 @@ fn live_leg8_metering_provenance() {
     }
 }
 
-// ── §8.1 exec surface: --auto / --model / NANO_ROUTING_AUTO ─────────────
-// Process-level legs against the real binary (the c11 pattern). All three
-// are network-free: the auto refusal and the usage errors fire BEFORE any
-// dispatch.
+// ── S1 [live]: tool-bearing Auto turns through the flux-auto alias ──────
+// Self-skips without the Flux key (standard chain at call time). Arm A
+// drives the §4 ladder in-process with a real Flux driver (3 alias-stability
+// trials, fixtures under shared/fixtures/flux/tools/); arm B runs one
+// integrated `exec --auto` turn end-to-end. The probe arm
+// (NANO_AUTO_TOOLS_PROBE) admits rung 1 for evidence capture BEFORE the
+// vendored catalog blessing lands; post-bless the vendored `true` admits
+// it and the probe is unnecessary.
+
+/// Locate `shared/fixtures/flux` by walking ancestors of the manifest dir —
+/// robust across the main-checkout and worktree layouts (the F-P5-4 class
+/// of hardcoded-`..` bug).
+fn shared_flux_fixture_dir() -> std::path::PathBuf {
+    let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    loop {
+        let candidate = dir.join("shared/fixtures/flux");
+        if candidate.is_dir() {
+            return candidate;
+        }
+        if !dir.pop() {
+            panic!("shared/fixtures/flux not found above CARGO_MANIFEST_DIR");
+        }
+    }
+}
 
 #[test]
-fn exec_auto_flag_refuses_closed_and_journals_auto_mode() {
+fn live_leg_tool_bearing_auto_alias() {
+    let _guard = env_lock();
+    let _restore = EnvRestore::snapshot();
+    let Some(key) = live_flux_key() else {
+        eprintln!("p5 live tools leg: FLUX_TEST_KEY not set — self-skipping");
+        return;
+    };
+    // Production candidate construction: the vendored catalog layered with
+    // the probe arm as the process env carries it.
+    let probe =
+        auto_routing::parse_tools_probe(std::env::var(auto_routing::AUTO_TOOLS_PROBE_ENV).ok())
+            .expect("typed probe parse");
+    let vendored = nano_model::tool_capability::ToolCapabilityCatalog::vendored()
+        .expect("vendored catalog parses");
+    let tools = auto_routing::ProbeToolCatalog {
+        inner: vendored,
+        probe,
+    };
+    let vision = nano_model::vision_catalog::VisionCatalog::vendored().expect("vision parses");
+    let router = ProviderRouter::default();
+    let inputs = auto_routing::CandidateInputs {
+        router: &router,
+        get_env: &|_| None,
+        now_unix_secs: 0,
+        flux_credentialed: true,
+        flux_advertised: &[],
+        vision: &vision,
+        tools: &tools,
+        approved_leaves: &[],
+        requirements: auto_routing::TurnRequirements {
+            images: false,
+            tools: true,
+        },
+    };
+    let plan = auto_routing::construct_candidates(&inputs);
+    assert_eq!(
+        plan.admitted.len(),
+        1,
+        "rung 1 (the alias) is the one admitted candidate: {:?}",
+        plan.candidates
+    );
+    assert_eq!(plan.admitted[0].candidate, "flux-auto");
+    assert_eq!(plan.admitted[0].kind, CandidateKind::Alias);
+
+    let tool_def = nano_model::types::ToolDefinition {
+        name: "get_weather".to_string(),
+        description: "Get weather for a city".to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"]
+        }),
+    };
+    let request_json = serde_json::json!({
+        "model": "flux-auto",
+        "messages": [{"role": "user", "content": "What is the weather in Paris? Use the get_weather tool."}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get weather for a city",
+                "parameters": tool_def.input_schema,
+            }
+        }],
+        "tool_choice": "auto",
+        "max_tokens": 256,
+        "stream": false,
+    });
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // Arm A: three alias-stability trials through the real ladder.
+    let mut trials = Vec::new();
+    for trial in 0..3u32 {
+        let client = nano_model::flux_completions::FluxCompletionsClient::new(
+            nano_egress::client::EgressClient::flux(),
+        )
+        .with_retry_config(nano_model::retry::RetryConfig::single_attempt());
+        let driver = nano_agent::wiring::FluxDriver::new(client, key.clone());
+        let sink = Arc::new(CollectSink::default());
+        let ladder = Ladder::new(
+            &format!("s1-tools-trial-{trial}"),
+            RoutingMode::AutoClientSide,
+            "flux-auto",
+            vec![LadderCandidate {
+                plan: plan.admitted[0].clone(),
+                transport: auto_routing::DriverTransport(driver),
+            }],
+            sink.clone(),
+            None,
+            false,
+            auto_routing::ATTEMPT_BUDGET,
+            0,
+        );
+        let request = ModelRequest {
+            model: "flux-auto".to_string(),
+            messages: vec![nano_model::types::Message::user(
+                "What is the weather in Paris? Use the get_weather tool.",
+            )],
+            tools: vec![tool_def.clone()],
+            max_tokens: Some(256),
+            ..ModelRequest::default()
+        };
+        let response = block_on(ladder.complete_observed(&request, &CallHooks::none()))
+            .expect("alias tool trial succeeds");
+        let tool_calls: Vec<serde_json::Value> = response
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::ToolCallComplete(call) => Some(serde_json::json!({
+                    "name": call.name,
+                    "arguments": call.arguments,
+                })),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !tool_calls.is_empty(),
+            "trial {trial}: the response carries tool_calls: {:?}",
+            response.events
+        );
+        // The journaled ladder run: exactly one begin, committed on rung 1.
+        let ops = sink.ops();
+        assert_eq!(begins(&ops), [0], "one attempt on the alias rung");
+        let committed = ops.iter().any(|op| {
+            matches!(
+                op,
+                Op::RoutingReceipt {
+                    ordinal: 0,
+                    outcome: RoutingOutcome::Committed,
+                    selected: true,
+                    candidate,
+                    ..
+                } if candidate == "flux-auto"
+            )
+        });
+        assert!(committed, "rung-1 committed receipt journaled: {ops:?}");
+        trials.push(serde_json::json!({
+            "trial": trial,
+            "requested_alias": "flux-auto",
+            "response_model": response.model,
+            "tool_calls": tool_calls,
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
+        }));
+    }
+    let manifest = serde_json::json!({
+        "leg": "s1-tool-bearing-auto-alias",
+        "captured_at_unix": stamp,
+        "surface": "chat_completions",
+        "request": request_json,
+        "trials": trials,
+    });
+    let text = serde_json::to_string_pretty(&manifest).expect("fixture serializes");
+    // Canary: the credential NEVER lands in the fixture.
+    assert!(!text.contains(&key), "canary: no key in the fixture");
+    let dir = shared_flux_fixture_dir().join("tools/flux-auto");
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    std::fs::write(dir.join(format!("{stamp}_manifest.json")), &text)
+        .expect("timestamped manifest");
+    // The stable citation the vendored catalog names in `proven`.
+    std::fs::write(dir.join("manifest.json"), &text).expect("stable manifest");
+
+    // Arm B: one integrated `exec --auto` tool turn end-to-end.
+    let home = std::env::temp_dir().join(format!(
+        "nano-p5-exec-live-{}-{}",
+        std::process::id(),
+        stamp
+    ));
+    let workspace = home.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    std::fs::write(
+        workspace.join("hello.txt"),
+        "hello from the s1 live fixture\n",
+    )
+    .expect("seed file");
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_wayland-nano"));
+    command
+        .args([
+            "exec",
+            "--auto",
+            "Read the file hello.txt with the fs_read tool, then reply with its exact contents.",
+        ])
+        .current_dir(&workspace)
+        .env("NANO_HOME", &home)
+        .env("FLUX_API_KEY", &key)
+        // Hermetic: no inherited provider payload/credentials.
+        .env_remove("WAYLAND_NANO_PROVIDERS");
+    if let Ok(probe_value) = std::env::var(auto_routing::AUTO_TOOLS_PROBE_ENV) {
+        command.env(auto_routing::AUTO_TOOLS_PROBE_ENV, probe_value);
+    }
+    let output = command.output().expect("spawn exec");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Canary: the key never appears on either stream.
+    assert!(
+        !stdout.contains(&key) && !stderr.contains(&key),
+        "canary: no key"
+    );
+    assert!(
+        !stdout.contains("capability_empty"),
+        "the tool-bearing auto turn is NOT refused: {stdout}"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the tool-bearing auto turn completes: {stdout} {stderr}"
+    );
+    assert!(
+        stdout.contains("\"tool_call\""),
+        "a tool_call event streamed: {stdout}"
+    );
+    // The journaled snapshot admits rung 1 (the alias candidate).
+    let sessions = home.join("sessions");
+    let journal = std::fs::read_dir(&sessions)
+        .expect("sessions dir")
+        .next()
+        .expect("one journal")
+        .expect("entry")
+        .path();
+    let ops: Vec<Op> = nano_session::read_journal(&journal)
+        .expect("journal reads")
+        .envelopes
+        .iter()
+        .map(|e| e.op.clone())
+        .collect();
+    let admits_rung1 = ops.iter().any(|op| {
+        matches!(
+            op,
+            Op::RoutingSnapshot {
+                routing_mode,
+                candidates,
+                ..
+            } if *routing_mode == RoutingMode::AutoClientSide
+                && candidates.iter().any(|c| c.admitted
+                    && c.kind == CandidateKind::Alias
+                    && c.candidate == "flux-auto")
+        )
+    });
+    assert!(
+        admits_rung1,
+        "the journaled snapshot admits rung 1: {ops:?}"
+    );
+    let raw = std::fs::read_to_string(&journal).expect("journal bytes");
+    assert!(!raw.contains(&key), "canary: no key in the journal");
+}
+
+// ── §8.1 exec surface: --auto / --model / NANO_ROUTING_AUTO ─────────────
+// Process-level legs against the real binary (the c11 pattern). The usage
+// errors fire BEFORE any dispatch; the auto leg dispatches rung 1 (the
+// S1-blessed alias) and fails closed on its fake credential — one physical
+// attempt, never committed, whether the edge answers or is unreachable.
+
+#[test]
+fn exec_auto_admits_alias_and_bad_credential_fails_closed() {
+    // Post-S1: the vendored tool-capability catalog blesses the flux-auto
+    // alias, so `exec --auto` ADMITS rung 1 and dispatches. A bad
+    // credential (or an unreachable edge) still fails the turn closed —
+    // exactly one physical attempt, never committed, exit 1. (Pre-S1 this
+    // leg asserted the pre-dispatch capability_empty refusal; the
+    // capability gate moved from "nothing proven" to "proven on the
+    // alias", and the fail-closed property now lives at the wire.)
     let _guard = env_lock();
     let _restore = EnvRestore::snapshot();
     clear_env();
@@ -2610,20 +3226,22 @@ fn exec_auto_flag_refuses_closed_and_journals_auto_mode() {
     assert_eq!(
         output.status.code(),
         Some(1),
-        "auto turn fails closed: {}",
+        "the admitted auto turn fails closed on a bad credential: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("capability_empty"),
-        "typed capability refusal in the event stream: {stdout}"
+        !stdout.contains("capability_empty"),
+        "the blessed alias is not capability-refused: {stdout}"
     );
     assert!(
         !stdout.contains("sk-p5-exec-auto"),
         "canary: no key on stdout"
     );
-    // The journaled snapshot carries auto_client_side with the rejected
-    // alias rung.
+    // The journaled snapshot carries auto_client_side with the ADMITTED
+    // alias rung; exactly one begin and one non-committed receipt (terminal
+    // auth on the live wire, or cascade-exhausted when the edge is
+    // unreachable — both fail closed within the budget).
     let sessions = home.join("sessions");
     let journal = std::fs::read_dir(&sessions)
         .expect("sessions dir")
@@ -2637,11 +3255,36 @@ fn exec_auto_flag_refuses_closed_and_journals_auto_mode() {
         .iter()
         .map(|e| e.op.clone())
         .collect();
-    let mode = ops.iter().find_map(|op| match op {
-        Op::RoutingSnapshot { routing_mode, .. } => Some(*routing_mode),
+    let snapshot = ops.iter().find_map(|op| match op {
+        Op::RoutingSnapshot {
+            routing_mode,
+            candidates,
+            attempt_budget,
+            ..
+        } => Some((*routing_mode, candidates.clone(), *attempt_budget)),
         _ => None,
     });
-    assert_eq!(mode, Some(RoutingMode::AutoClientSide), "{ops:?}");
+    let (mode, candidates, budget) = snapshot.expect("snapshot journaled");
+    assert_eq!(mode, RoutingMode::AutoClientSide, "{ops:?}");
+    assert_eq!(budget, auto_routing::ATTEMPT_BUDGET);
+    assert!(
+        candidates
+            .iter()
+            .any(|c| c.admitted && c.kind == CandidateKind::Alias && c.candidate == "flux-auto"),
+        "rung 1 admitted: {candidates:?}"
+    );
+    assert_eq!(
+        begins(&ops).len(),
+        1,
+        "exactly one physical attempt: {ops:?}"
+    );
+    let receipt_outcomes = receipts(&ops);
+    assert_eq!(receipt_outcomes.len(), 1, "one receipt: {ops:?}");
+    assert_ne!(
+        receipt_outcomes[0].1,
+        RoutingOutcome::Committed,
+        "never committed on a bad credential"
+    );
     let raw = std::fs::read_to_string(&journal).expect("journal bytes");
     assert!(
         !raw.contains("sk-p5-exec-auto"),

@@ -87,6 +87,15 @@ pub fn classify_status(status: u16, body: String) -> ModelError {
         429 => ModelError::RateLimited {
             retry_after_ms: None,
         },
+        // Live wire (F-P5-1): the edge answers a malformed request body
+        // (e.g. a tool payload a leaf cannot parse) with HTTP 5xx whose
+        // body carries error.type=="invalid_request_error". That is a
+        // FORMAT rejection, not a server fault: terminal, never retried,
+        // and — via signals_of_model_error → FormatRejected — never a
+        // routing cascade (the identical bytes would fail every rung).
+        s if s >= 500 && error_type == Some("invalid_request_error") => {
+            ModelError::InvalidRequest { status: s, message }
+        }
         // Live wire (batch-3 overlimit fixture): context overflow arrives as
         // HTTP 413 with error.message=="context_window_exceeded".
         413 => ModelError::ContextOverflow(message),

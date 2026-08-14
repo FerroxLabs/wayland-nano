@@ -54,6 +54,10 @@ mod tests {
                     message: "bad".into(),
                 });
             }
+            ModelError::InvalidRequest { .. } => cases.push(ModelError::InvalidRequest {
+                status: 500,
+                message: "malformed".into(),
+            }),
             ModelError::Transport { .. } => cases.push(ModelError::Transport {
                 phase: nano_model::types::TransportPhase::Connect,
                 message: "reset".into(),
@@ -124,6 +128,10 @@ mod tests {
                 status: 500,
                 message: String::new(),
             },
+            ModelError::InvalidRequest {
+                status: 500,
+                message: String::new(),
+            },
             ModelError::Transport {
                 phase: nano_model::types::TransportPhase::MidStream,
                 message: String::new(),
@@ -140,7 +148,7 @@ mod tests {
         ] {
             push(&anchor, &mut cases);
         }
-        assert_eq!(cases.len(), 21);
+        assert_eq!(cases.len(), 22);
         for err in &cases {
             if matches!(err, ModelError::Cancelled) {
                 continue; // never an error kind — stopReason:"cancelled"

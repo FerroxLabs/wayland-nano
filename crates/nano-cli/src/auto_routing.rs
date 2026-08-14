@@ -11,8 +11,9 @@
 //!   only for `routing_mode = auto_client_side`.
 //! - §3: candidate construction is deterministic and filtered BEFORE any
 //!   network attempt (advertised + credentialed + live-proven + capability);
-//!   the tool-capability catalog is a hard prerequisite — until it exists,
-//!   tool-bearing Auto turns fail closed with the typed capability error.
+//!   the tool-capability catalog (`nano_model::tool_capability`, vendored,
+//!   parse-time proof enforcement) gates tool-bearing turns — unproven
+//!   candidates fail closed with the typed capability error.
 //! - §4: at most three physical provider attempts per Auto turn, at most one
 //!   attempt per candidate; cascade ONLY on 408/429/5xx, typed
 //!   rate-limit/overload, and pre-commit transport failures; the first
@@ -86,6 +87,10 @@ pub struct RoutingConfig {
     /// pin. Validation against the advertised set happens at startup (a
     /// misconfigured default fails loudly, never silently reroutes).
     pub configured_default: Option<String>,
+    /// `NANO_AUTO_TOOLS_PROBE` (absent/empty = false) — the S1
+    /// evidence-capture arm: admits the `flux-auto` alias rung without
+    /// catalog proof. Evidence capture ONLY; production posture is false.
+    pub tools_probe: bool,
 }
 
 /// Parses `NANO_ROUTING_AUTO`: absent/empty → false; `1|true` → true;
@@ -219,21 +224,76 @@ pub fn requirements_of(
 }
 
 /// §5: the exact leaf-and-wire tool-capability catalog interface. UNKNOWN
-/// EQUALS FALSE — the production v1 catalog is empty (the real catalog is a
-/// hard prerequisite tracked by the design's §3/§9), so every tool-bearing
-/// Auto turn fails closed until it lands. The §8 seam injects proof maps.
+/// EQUALS FALSE. The production catalog is the vendored
+/// [`nano_model::tool_capability::ToolCapabilityCatalog`] (parse-time
+/// proof enforcement); the §8 seam injects proof maps, and the
+/// evidence-capture probe arm ([`ProbeToolCatalog`]) can admit the
+/// `flux-auto` alias rung without catalog proof.
 pub trait ToolCapabilityCatalog {
     /// Proven tool-use support on the exact provider/leaf. Absent ⇒ false.
     fn tool_use_proven(&self, provider: &str, leaf: &str) -> bool;
 }
 
-/// The production v1 posture: nothing is proven.
+/// The all-false catalog: nothing is proven. Retained for tests and as
+/// the fail-closed shape; production wires the vendored catalog.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EmptyToolCapabilityCatalog;
 
 impl ToolCapabilityCatalog for EmptyToolCapabilityCatalog {
     fn tool_use_proven(&self, _provider: &str, _leaf: &str) -> bool {
         false
+    }
+}
+
+/// The production catalog (vendored, parse-time proof enforcement)
+/// implements the seam directly — keyed by exact provider/leaf.
+impl ToolCapabilityCatalog for nano_model::tool_capability::ToolCapabilityCatalog {
+    fn tool_use_proven(&self, provider: &str, leaf: &str) -> bool {
+        self.tool_use(provider, leaf)
+    }
+}
+
+/// §3 evidence-capture arm (S1): the opt-in env var that admits the
+/// `flux-auto` alias rung WITHOUT catalog proof, for live evidence capture
+/// only. Absent/empty means false — fail-closed, same parse discipline as
+/// [`AUTO_ROUTING_ENV`].
+pub const AUTO_TOOLS_PROBE_ENV: &str = "NANO_AUTO_TOOLS_PROBE";
+
+/// Parses `NANO_AUTO_TOOLS_PROBE`: absent/empty → false; `1|true` → true;
+/// `0|false` → false; anything else is a typed config error, never a
+/// silent default.
+pub fn parse_tools_probe(raw: Option<String>) -> Result<bool, String> {
+    match raw {
+        None => Ok(false),
+        Some(raw) if raw.trim().is_empty() => Ok(false),
+        Some(raw) => match raw.trim() {
+            "1" | "true" => Ok(true),
+            "0" | "false" => Ok(false),
+            other => Err(format!(
+                "{AUTO_TOOLS_PROBE_ENV} must be 1|true|0|false, got {other:?}"
+            )),
+        },
+    }
+}
+
+/// The evidence-capture probe wrapper: when armed (`NANO_AUTO_TOOLS_PROBE`
+/// parsed true) it admits EXACTLY the `flux-auto` alias rung without
+/// catalog proof; every other lookup delegates to the inner catalog. It
+/// never widens images, never blesses leaves, and is meaningless without
+/// the `NANO_ROUTING_AUTO` opt-in (the ladder only exists for
+/// auto_client_side turns).
+#[derive(Debug, Clone)]
+pub struct ProbeToolCatalog<C> {
+    pub inner: C,
+    pub probe: bool,
+}
+
+impl<C: ToolCapabilityCatalog> ToolCapabilityCatalog for ProbeToolCatalog<C> {
+    fn tool_use_proven(&self, provider: &str, leaf: &str) -> bool {
+        (self.probe
+            && provider == nano_model::provider_catalog::flux_router().id
+            && leaf == FLUX_AUTO)
+            || self.inner.tool_use_proven(provider, leaf)
     }
 }
 
@@ -347,9 +407,9 @@ pub fn construct_candidates(inputs: &CandidateInputs<'_>) -> CandidatePlan {
     };
 
     // ── Rung 1: the Flux router alias passthrough. Admitted when Flux is
-    // credentialed AND the turn's required capabilities can be proven for
-    // alias routing (§3) — tool/image capability on an alias is unprovable
-    // until the capability catalogs bless it.
+    // credentialed AND the turn's required capabilities are proven for
+    // alias routing (§3): S1 blessed the alias for TOOLS (recorded proof —
+    // Flux routes internally); IMAGES stay unblessed on aliases (P2a D6).
     let alias_rejection = if !inputs.flux_credentialed {
         Some(CandidateRejection::ProviderUncredentialed)
     } else {
@@ -589,6 +649,16 @@ pub fn signals_of_model_error(err: &ModelError) -> FailureSignals {
             sdk: None,
             body: None,
         },
+        // F-P5-1: the adapter already folded the 5xx+invalid_request_error
+        // body evidence into the variant (classify_status). The typed-SDK
+        // signal is the TERMINAL FormatRejected class — it beats the
+        // cascading 5xx status signal (conservative wins), so a
+        // 500-with-format-body never cascades.
+        ModelError::InvalidRequest { status, .. } => FailureSignals {
+            status: Some(*status),
+            sdk: Some(RoutingFailureClass::FormatRejected),
+            body: None,
+        },
         ModelError::Transport { phase, .. } => FailureSignals {
             sdk: Some(match phase {
                 TransportPhase::Connect | TransportPhase::Tls | TransportPhase::BeforeFirstByte => {
@@ -627,6 +697,7 @@ pub fn status_of_model_error(err: &ModelError) -> Option<u16> {
         ModelError::RateLimited { .. } => Some(429),
         ModelError::Entitlement(_) => Some(402),
         ModelError::Server { status, .. } => Some(*status),
+        ModelError::InvalidRequest { status, .. } => Some(*status),
         _ => None,
     }
 }
@@ -668,7 +739,7 @@ pub fn model_error_of_failure_class(class: RoutingFailureClass, status: Option<u
         RoutingFailureClass::ContextOverflow => {
             ModelError::ContextOverflow("context overflow (journaled)".to_string())
         }
-        RoutingFailureClass::FormatRejected => ModelError::Server {
+        RoutingFailureClass::FormatRejected => ModelError::InvalidRequest {
             status: status.unwrap_or(400),
             message: "format rejected (journaled)".to_string(),
         },
@@ -855,11 +926,19 @@ fn routing_envelope(turn_id: &str, suffix: &str, op: Op) -> OpEnvelope {
 
 /// The journaled snapshot op for one turn (§3/§4.1: durable BEFORE the
 /// first dispatch). Returns false on append failure (fail-closed).
+///
+/// F-P5-2: `attempt_budget` is a PARAMETER, never a hardcoded constant —
+/// fresh turns pass [`ATTEMPT_BUDGET`]; a kill-resume arm passes the true
+/// remainder from `plan_resume`, so a SECOND kill replays the real
+/// journaled remainder and the global three-attempt budget is conserved
+/// across the whole chain.
+#[allow(clippy::too_many_arguments)]
 pub fn journal_snapshot(
     sink: &dyn RoutingSink,
     turn_id: &str,
     mode: RoutingMode,
     configured_reference: &str,
+    attempt_budget: u32,
     candidates: Vec<RoutingCandidate>,
     catalog_digest: String,
 ) -> bool {
@@ -870,7 +949,7 @@ pub fn journal_snapshot(
             turn_id: turn_id.to_string(),
             routing_mode: mode,
             configured_reference: configured_reference.to_string(),
-            attempt_budget: ATTEMPT_BUDGET,
+            attempt_budget,
             candidates,
             catalog_digest,
         },
@@ -1563,6 +1642,76 @@ mod tests {
     }
 
     #[test]
+    fn tools_probe_parsing_is_fail_closed_and_typed() {
+        assert_eq!(parse_tools_probe(None), Ok(false));
+        assert_eq!(parse_tools_probe(Some(String::new())), Ok(false));
+        assert_eq!(parse_tools_probe(Some("1".into())), Ok(true));
+        assert_eq!(parse_tools_probe(Some("true".into())), Ok(true));
+        assert_eq!(parse_tools_probe(Some("0".into())), Ok(false));
+        assert_eq!(parse_tools_probe(Some("false".into())), Ok(false));
+        let err = parse_tools_probe(Some("yes".into())).expect_err("typed config error");
+        assert!(err.contains(AUTO_TOOLS_PROBE_ENV), "{err}");
+    }
+
+    #[test]
+    fn tools_probe_arm_admits_only_the_alias_rung() {
+        // The probe admits EXACTLY (flux-router, flux-auto); every other
+        // pair delegates to the inner catalog (here: all-false).
+        let armed = ProbeToolCatalog {
+            inner: EmptyToolCapabilityCatalog,
+            probe: true,
+        };
+        assert!(armed.tool_use_proven("flux-router", FLUX_AUTO));
+        assert!(!armed.tool_use_proven("flux-router", "flux-fast"));
+        assert!(!armed.tool_use_proven("flux-router", "flux-pinned-gpt-5"));
+        assert!(!armed.tool_use_proven("openai", "gpt-a"));
+        // Disarmed: pure passthrough.
+        let disarmed = ProbeToolCatalog {
+            inner: EmptyToolCapabilityCatalog,
+            probe: false,
+        };
+        assert!(!disarmed.tool_use_proven("flux-router", FLUX_AUTO));
+        // A proven inner entry shines through regardless of the arm.
+        let vendored = nano_model::tool_capability::ToolCapabilityCatalog::from_json_str(
+            r#"{"version": 1, "entries": {
+                "openai:gpt-a": { "tool_use": true, "proven": "shared/fixtures/flux/tools/p.json" }
+            }}"#,
+        )
+        .expect("catalog parses");
+        let layered = ProbeToolCatalog {
+            inner: vendored,
+            probe: false,
+        };
+        assert!(layered.tool_use_proven("openai", "gpt-a"));
+    }
+
+    #[test]
+    fn vendored_tool_catalog_implements_the_seam() {
+        let catalog =
+            nano_model::tool_capability::ToolCapabilityCatalog::vendored().expect("vendored");
+        // The S1 blessing: the flux-auto alias is proven for tools, citing
+        // the recorded fixture tree (parse-time enforced).
+        assert!(ToolCapabilityCatalog::tool_use_proven(
+            &catalog,
+            "flux-router",
+            FLUX_AUTO
+        ));
+        let proven = catalog
+            .proven("flux-router", FLUX_AUTO)
+            .expect("proof cited");
+        assert!(
+            proven.starts_with(nano_model::tool_capability::PROOF_ARTIFACT_PREFIX),
+            "{proven}"
+        );
+        // Unknown equals false through the trait; a never-proven pair.
+        assert!(!ToolCapabilityCatalog::tool_use_proven(
+            &catalog,
+            "flux-router",
+            "flux-pinned-codestral"
+        ));
+    }
+
+    #[test]
     fn configured_default_parsing_is_typed() {
         assert_eq!(parse_configured_default(None), Ok(None));
         assert_eq!(
@@ -1693,14 +1842,17 @@ mod tests {
             body: Some(RoutingFailureClass::Auth),
         };
         assert_eq!(classify_attempt(&signals), RoutingFailureClass::Auth);
-        // 500-with-format-body: terminal FormatRejected.
-        let signals = FailureSignals {
-            status: Some(500),
-            sdk: Some(RoutingFailureClass::ServerError),
-            body: Some(RoutingFailureClass::FormatRejected),
-        };
+        // 500-with-format-body (F-P5-1): the signal derives from the REAL
+        // ModelError the adapter produces for a 5xx + invalid_request_error
+        // body — terminal FormatRejected, never a cascade.
+        let body = "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"malformed tool schema\"}}";
+        let err = nano_model::flux_common::classify_status(500, body.to_string());
+        assert!(matches!(
+            err,
+            ModelError::InvalidRequest { status: 500, .. }
+        ));
         assert_eq!(
-            classify_attempt(&signals),
+            classify_attempt(&signals_of_model_error(&err)),
             RoutingFailureClass::FormatRejected
         );
         // No conflict: pure cascade stays cascading.

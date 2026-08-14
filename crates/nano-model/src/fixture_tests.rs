@@ -139,6 +139,30 @@ fn error_classification_maps_flux_shapes() {
 }
 
 #[test]
+fn f_p5_1_500_invalid_request_error_is_terminal_never_retryable() {
+    // Live wire (F-P5-1): a malformed request body (e.g. a tool payload a
+    // leaf cannot parse) arrives as HTTP 5xx with
+    // error.type=="invalid_request_error". That is a FORMAT rejection:
+    // terminal InvalidRequest, never the retryable/cascading Server class.
+    let body = r#"{"error":{"message":"Invalid parameter: tools[0].function","type":"invalid_request_error","code":"400"}}"#;
+    for status in [500, 502, 503] {
+        let err = classify_status(status, body.into());
+        let ModelError::InvalidRequest { status: s, .. } = &err else {
+            panic!("{status} + invalid_request_error must classify as InvalidRequest: {err:?}");
+        };
+        assert_eq!(*s, status);
+        assert_eq!(
+            crate::retry::is_retryable(&err),
+            None,
+            "a format rejection is never retried"
+        );
+    }
+    // The fold applies on the invalid_request_error marker only — a plain
+    // internal_error 500 stays the retryable Server class (pinned by
+    // non_auth_500_stays_retryable_server).
+}
+
+#[test]
 fn batch3_badkey_500_auth_error_classifies_as_auth_not_retryable() {
     // Live wire: invalid key → HTTP 500 with error.type=="auth_error"
     // (FINDINGS.md batch 3 §a2). Must surface as Auth and never be retried.

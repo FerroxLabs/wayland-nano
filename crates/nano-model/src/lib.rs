@@ -26,6 +26,7 @@ pub mod rate_limits;
 pub mod retry;
 pub mod sse;
 pub mod structured;
+pub mod tool_capability;
 pub mod types;
 pub mod vision_catalog;
 
