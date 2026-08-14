@@ -1345,57 +1345,57 @@ impl<'a> McpToolExecutor<'a> {
     pub fn tool_definitions_from_registry(&self) -> Vec<ToolDefinition> {
         self.registry.lock().unwrap().tool_definitions()
     }
-}
 
-#[async_trait::async_trait]
-impl ToolExecutor for McpToolExecutor<'_> {
-    async fn execute(&self, call: &ToolCall) -> ToolOutcome {
-        if !call.name.starts_with("mcp__") {
-            return self.inner.execute(call).await;
-        }
-        // Lock to clone, never to wait (§2.1.5/§9.2): the registry lock is
-        // held only to resolve the server handle and clone the client; the
-        // wire wait happens AFTER the lock is dropped.
-        let (client, tool, interrupted_call) = {
-            let registry = self.registry.lock().unwrap();
-            let Some(entry) = registry
-                .servers
-                .iter()
-                .find(|e| call.name.starts_with(&format!("mcp__{}__", e.spec.name)))
-            else {
-                return ToolOutcome {
-                    ok: false,
-                    output: format!("unknown MCP tool: {}", call.name),
-                    progress: ProgressSignals::default(),
-                    error_kind: Some(NanoErrorKind::UnknownTool),
-                };
-            };
-            // §3.4 stale-call invalidation, FIRST arm after name
-            // resolution: a tool not in direct ∪ hydrated (never hydrated,
-            // dropped at resume, or on a pinned server) is not callable.
-            if !registry.is_exposed(&call.name) {
-                return ToolOutcome {
-                    ok: false,
-                    output: format!(
-                        "MCP tool '{}' is not currently exposed (deferred, hydration dropped, or pinned); call tool_search first to load it",
-                        call.name
-                    ),
-                    progress: ProgressSignals::default(),
-                    error_kind: Some(NanoErrorKind::UnknownTool),
-                };
-            }
-            let tool = call
-                .name
-                .strip_prefix(&format!("mcp__{}__", entry.spec.name))
-                .unwrap_or(&call.name)
-                .to_string();
-            (entry.client.clone(), tool, entry.interrupted_call.clone())
+    /// Lock-to-clone resolution shared by both execution arms
+    /// (§2.1.5/§9.2): the registry lock is held only to resolve the server
+    /// handle, run the §3.4 exposure gate, and clone the client; the wire
+    /// wait happens AFTER the lock is dropped. The `Err` arm is the
+    /// already-shaped typed refusal outcome.
+    #[allow(clippy::type_complexity)]
+    fn resolve_mcp_call(
+        &self,
+        call: &ToolCall,
+    ) -> Result<(McpClient, String, Arc<Mutex<Option<String>>>), ToolOutcome> {
+        let registry = self.registry.lock().unwrap();
+        let Some(entry) = registry
+            .servers
+            .iter()
+            .find(|e| call.name.starts_with(&format!("mcp__{}__", e.spec.name)))
+        else {
+            return Err(ToolOutcome {
+                ok: false,
+                output: format!("unknown MCP tool: {}", call.name),
+                progress: ProgressSignals::default(),
+                error_kind: Some(NanoErrorKind::UnknownTool),
+            });
         };
-        // Elicitation interrupted-call attribution (§5.6): the cell names
-        // the in-flight call for the journal record; cleared after.
-        *interrupted_call.lock().unwrap() = Some(call.id.clone());
-        let result = client.call_tool(&tool, call.arguments.clone());
-        *interrupted_call.lock().unwrap() = None;
+        // §3.4 stale-call invalidation, FIRST arm after name
+        // resolution: a tool not in direct ∪ hydrated (never hydrated,
+        // dropped at resume, or on a pinned server) is not callable.
+        if !registry.is_exposed(&call.name) {
+            return Err(ToolOutcome {
+                ok: false,
+                output: format!(
+                    "MCP tool '{}' is not currently exposed (deferred, hydration dropped, or pinned); call tool_search first to load it",
+                    call.name
+                ),
+                progress: ProgressSignals::default(),
+                error_kind: Some(NanoErrorKind::UnknownTool),
+            });
+        }
+        let tool = call
+            .name
+            .strip_prefix(&format!("mcp__{}__", entry.spec.name))
+            .unwrap_or(&call.name)
+            .to_string();
+        Ok((entry.client.clone(), tool, entry.interrupted_call.clone()))
+    }
+
+    /// The shared result → outcome fold: an `isError` payload is the
+    /// server reporting a tool-level failure — typed as mcp_server
+    /// (design §3); transport/protocol/timeout/cancel map through the C7
+    /// kind table.
+    fn outcome_of_mcp(result: Result<serde_json::Value, McpError>) -> ToolOutcome {
         match result {
             Ok(result) => ToolOutcome {
                 ok: !result
@@ -1408,8 +1408,6 @@ impl ToolExecutor for McpToolExecutor<'_> {
                     process_outcome_changed: true,
                     ..Default::default()
                 },
-                // An isError payload is the server reporting a tool-level
-                // failure — typed as mcp_server (design §3).
                 error_kind: result
                     .get("isError")
                     .and_then(|v| v.as_bool())
@@ -1425,20 +1423,51 @@ impl ToolExecutor for McpToolExecutor<'_> {
         }
     }
 
+    /// The mcp__ arm body, synchronous (the dispatcher is a blocking
+    /// full-duplex client); both async trait arms delegate here. `cancel`
+    /// threads the turn's cancellation through to the wire (§2.4).
+    fn execute_mcp(&self, call: &ToolCall, cancel: Option<&AtomicBool>) -> ToolOutcome {
+        let (client, tool, interrupted_call) = match self.resolve_mcp_call(call) {
+            Ok(resolved) => resolved,
+            Err(outcome) => return outcome,
+        };
+        // Elicitation interrupted-call attribution (§5.6): the cell names
+        // the in-flight call for the journal record; cleared after.
+        *interrupted_call.lock().unwrap() = Some(call.id.clone());
+        let result = match cancel {
+            Some(flag) => client.call_tool_cancellable(&tool, call.arguments.clone(), flag),
+            None => client.call_tool(&tool, call.arguments.clone()),
+        };
+        *interrupted_call.lock().unwrap() = None;
+        Self::outcome_of_mcp(result)
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor for McpToolExecutor<'_> {
+    async fn execute(&self, call: &ToolCall) -> ToolOutcome {
+        if !call.name.starts_with("mcp__") {
+            return self.inner.execute(call).await;
+        }
+        self.execute_mcp(call, None)
+    }
+
     /// P1: thread the turn's cancel flag through to the inner executor
-    /// (web_search's in-flight cancellation); the mcp__ arm dispatches
-    /// through the full-duplex client (call-level cancel lives in
-    /// `McpClient::call_tool_cancellable`, wired by the turn loop lane).
+    /// (web_search's in-flight cancellation). F-27 item 6: the mcp__ arm is
+    /// now cancellable END-TO-END via `McpClient::call_tool_cancellable`
+    /// (§2.4) — a set flag retires the pending id, sends
+    /// `notifications/cancelled` on the priority lane, and the late
+    /// response is dropped by the retired-id arm; the caller gets typed
+    /// `McpError::Cancelled` → `user_cancelled`.
     async fn execute_cancellable(
         &self,
         call: &ToolCall,
         cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> ToolOutcome {
-        if call.name.starts_with("mcp__") {
-            self.execute(call).await
-        } else {
-            self.inner.execute_cancellable(call, cancel).await
+        if !call.name.starts_with("mcp__") {
+            return self.inner.execute_cancellable(call, cancel).await;
         }
+        self.execute_mcp(call, cancel)
     }
 
     fn take_image_result(&self, call_id: &str) -> Option<crate::turn::LiveImageToolResult> {
@@ -1447,6 +1476,13 @@ impl ToolExecutor for McpToolExecutor<'_> {
 
     fn image_results_backed(&self) -> bool {
         self.inner.image_results_backed()
+    }
+
+    /// F-P3-5: the registry's CURRENT direct ∪ hydrated definitions — the
+    /// turn loop reads these between steps so a mid-turn journaled
+    /// hydration reaches the very next in-turn model request.
+    fn current_mcp_tool_definitions(&self) -> Option<Vec<ToolDefinition>> {
+        Some(self.tool_definitions_from_registry())
     }
 }
 
@@ -1565,6 +1601,167 @@ done
             .await;
         assert!(outcome.ok, "mcp call must succeed: {}", outcome.output);
         assert!(outcome.output.contains("pong"));
+    }
+
+    /// F-27 item 6 (SEV-2): turn-cancel of an in-flight MCP call is
+    /// end-to-end. A slow `tools/call` cancelled mid-flight must be
+    /// ABORTED (typed `user_cancelled`, prompt return), the wire must
+    /// carry `notifications/cancelled` (the server records it to a marker
+    /// file), and the server's LATE response must be dropped via the
+    /// retired-id arm — proven by a subsequent call on the same connection
+    /// receiving ITS answer, not the retired call's late one.
+    #[tokio::test]
+    async fn cancel_aborts_in_flight_mcp_call_end_to_end() {
+        let marker_dir = tempfile::tempdir().unwrap();
+        let marker = marker_dir.path().join("cancel-observed.txt");
+        #[cfg(windows)]
+        let (command, args) = {
+            let script = r#"
+$reader = [System.Console]::In
+while ($true) {
+    $line = $reader.ReadLine()
+    if ($null -eq $line) { break }
+    $obj = $line | ConvertFrom-Json
+    if ($obj.method -eq "initialize") {
+        Write-Output ("{`"jsonrpc`":`"2.0`",`"id`":$($obj.id),`"result`":{`"protocolVersion`":`"2025-03-26`",`"capabilities`":{},`"serverInfo`":{`"name`":`"fake`",`"version`":`"0`"}}}")
+    } elseif ($obj.method -eq "tools/list") {
+        Write-Output ("{`"jsonrpc`":`"2.0`",`"id`":$($obj.id),`"result`":{`"tools`":[{`"name`":`"slow`",`"description`":`"sleeps`"},{`"name`":`"fast`",`"description`":`"answers`"}]}}")
+    } elseif ($obj.method -eq "notifications/cancelled") {
+        [System.IO.File]::WriteAllText("MARKER_PATH", "cancelled")
+    } elseif ($obj.method -eq "tools/call") {
+        if ($obj.params.name -eq "slow") {
+            Start-Sleep -Seconds 4
+            Write-Output ("{`"jsonrpc`":`"2.0`",`"id`":$($obj.id),`"result`":{`"content`":`"slow-done`",`"isError`":false}}")
+        } else {
+            Write-Output ("{`"jsonrpc`":`"2.0`",`"id`":$($obj.id),`"result`":{`"content`":`"fast-done`",`"isError`":false}}")
+        }
+    }
+}
+"#
+            .replace("MARKER_PATH", &marker.display().to_string());
+            (
+                "powershell.exe".to_string(),
+                vec!["-NoProfile".to_string(), "-Command".to_string(), script],
+            )
+        };
+        #[cfg(unix)]
+        let (command, args) = {
+            let script = r#"
+while IFS= read -r line; do
+    id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+    case "$line" in
+        *'"initialize"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"fake","version":"0"}}}\n' "$id" ;;
+        *'"tools/list"'*)
+            printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"slow","description":"sleeps"},{"name":"fast","description":"answers"}]}}\n' "$id" ;;
+        *'"notifications/cancelled"'*)
+            printf 'cancelled' > 'MARKER_PATH' ;;
+        *'"tools/call"'*)
+            case "$line" in
+                *'"slow"'*)
+                    sleep 4
+                    printf '{"jsonrpc":"2.0","id":%s,"result":{"content":"slow-done","isError":false}}\n' "$id" ;;
+                *)
+                    printf '{"jsonrpc":"2.0","id":%s,"result":{"content":"fast-done","isError":false}}\n' "$id" ;;
+            esac ;;
+    esac
+done
+"#
+            .replace("MARKER_PATH", &marker.display().to_string());
+            ("sh".to_string(), vec!["-c".to_string(), script])
+        };
+        let mut registry = McpRegistry::new();
+        registry
+            .register(McpServerSpec {
+                name: "fake".into(),
+                transport: Transport::Stdio {
+                    command,
+                    args,
+                    env: vec![],
+                },
+                source: SpecSource::Config,
+            })
+            .expect("register");
+
+        #[derive(Debug)]
+        struct Noop;
+        #[async_trait::async_trait]
+        impl ToolExecutor for Noop {
+            async fn execute(&self, _call: &ToolCall) -> crate::turn::ToolOutcome {
+                crate::turn::ToolOutcome {
+                    ok: false,
+                    output: "should not route here".into(),
+                    progress: ProgressSignals::default(),
+                    error_kind: None,
+                }
+            }
+        }
+        let executor = McpToolExecutor::new(registry, &Noop);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let started = std::time::Instant::now();
+        // The cancellable call blocks on the wire; drive the synchronous
+        // arm body on a scoped worker while a second scoped thread sets
+        // the turn-cancel flag mid-flight.
+        let outcome = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            scope
+                .spawn(|| {
+                    executor.execute_mcp(
+                        &ToolCall {
+                            id: "slow1".into(),
+                            name: "mcp__fake__slow".into(),
+                            arguments: serde_json::json!({}),
+                        },
+                        Some(&cancel),
+                    )
+                })
+                .join()
+                .unwrap()
+        });
+        let elapsed = started.elapsed();
+        // Actually ABORTED, not just marked: typed user_cancelled well
+        // before the server's 4s answer.
+        assert!(!outcome.ok);
+        assert_eq!(
+            outcome.error_kind,
+            Some(NanoErrorKind::UserCancelled),
+            "expected typed cancellation, got: {}",
+            outcome.output
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(3),
+            "call must be aborted, not awaited to completion (took {elapsed:?})"
+        );
+        // The wire carries the cancel: the server observed
+        // `notifications/cancelled` (it writes the marker after its sleep,
+        // when it reads the next line).
+        let mut observed = false;
+        for _ in 0..100 {
+            if marker.exists() {
+                observed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(observed, "server never observed notifications/cancelled");
+        // Retired-id drop: the late slow-done response must NOT be
+        // delivered to the next caller on the same connection.
+        let followup = executor
+            .execute_cancellable(
+                &ToolCall {
+                    id: "fast1".into(),
+                    name: "mcp__fake__fast".into(),
+                    arguments: serde_json::json!({}),
+                },
+                None,
+            )
+            .await;
+        assert!(followup.ok, "follow-up call failed: {}", followup.output);
+        assert!(followup.output.contains("fast-done"));
+        assert!(!followup.output.contains("slow-done"));
     }
 }
 

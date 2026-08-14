@@ -116,6 +116,17 @@ pub trait ToolExecutor: Debug + Send + Sync {
     fn image_results_backed(&self) -> bool {
         false
     }
+
+    /// F-P3-5 (P3 §3.3): mid-turn hydration refresh. An executor that wraps
+    /// the session's MCP registry returns the registry's CURRENT direct ∪
+    /// hydrated tool definitions, so the turn loop can extend the
+    /// advertised set BETWEEN steps when a journaled `tool_search`
+    /// hydration landed mid-turn. Every other executor returns `None` and
+    /// the turn's construction-time list stands. Wrappers MUST delegate to
+    /// their inner executor so the registry's answer reaches the engine.
+    fn current_mcp_tool_definitions(&self) -> Option<Vec<nano_model::types::ToolDefinition>> {
+        None
+    }
 }
 
 pub struct LiveImageToolResult {
@@ -410,6 +421,37 @@ impl FileDiff {
     }
 }
 
+/// F-1: engine-side ceiling on ANY tool result entering billable model
+/// history. The per-tool caps (fs_read 100 KB/page, shell 256 KB/stream,
+/// web_fetch 64 KB, MCP transport MAX_OUTPUT_BYTES 512 KiB) bound each
+/// producer; THIS bound is the last-resort seam so a future tool — or a
+/// composed MCP result, whose transport ceiling sits above every per-tool
+/// cap — cannot flood the context. Sized above fs_read's 100 KB page so
+/// paged reads pass through untouched; below the shell/MCP ceilings so
+/// oversized streams compose down to a bounded, marked form.
+pub(crate) const MAX_HISTORY_TOOL_RESULT_CHARS: usize = 128 * 1024;
+
+/// History-append seam cap (F-1): head+tail truncation with an explicit,
+/// greppable marker — the model ALWAYS sees that truncation happened,
+/// never silent clipping (the `cap_diff_side` pattern). Char-based so the
+/// cut never splits a UTF-8 sequence (C1's truncation rule). Digest-first:
+/// the journaled `ToolResult.output_digest` is computed from the FULL raw
+/// output before this cap is applied; the journal never carries the raw
+/// or the capped text (digest-only invariant).
+pub(crate) fn cap_history_tool_result(output: &str) -> std::borrow::Cow<'_, str> {
+    let total = output.chars().count();
+    if total <= MAX_HISTORY_TOOL_RESULT_CHARS {
+        return std::borrow::Cow::Borrowed(output);
+    }
+    let half = MAX_HISTORY_TOOL_RESULT_CHARS / 2;
+    let head: String = output.chars().take(half).collect();
+    let tail: String = output.chars().skip(total - half).collect();
+    std::borrow::Cow::Owned(format!(
+        "{head}\n…[tool result truncated by the engine history cap: {total} chars in, {elided} elided]…\n{tail}",
+        elided = total - 2 * half,
+    ))
+}
+
 /// Head+tail truncation: over the cap, keep the first and last halves with a
 /// deterministic elision marker between. Char-based, so the cut never splits
 /// a UTF-8 sequence (C1's truncation rule).
@@ -480,6 +522,41 @@ impl<'a> TurnEngine<'a> {
             engine: self,
             hooks,
         }
+    }
+
+    /// F-P3-5 (§3.3): the tool set advertised on the NEXT model request.
+    /// When the executor wraps the session's MCP registry, the registry's
+    /// CURRENT direct ∪ hydrated definitions replace the construction-time
+    /// `mcp__*` block in place (order preserved), so a `tool_search`
+    /// hydration that landed mid-turn reaches the model on the very next
+    /// in-turn request instead of the next prompt. The refresh derives
+    /// from JOURNALED state only — the `McpToolHydration` op lands durably
+    /// BEFORE the registry mutates (journal-first, mcp_session_tools.rs) —
+    /// so replay reconstructs the same set and nothing unjournaled enters
+    /// a request. When the executor carries no registry (`None`), the
+    /// construction-time list stands unchanged.
+    fn current_tool_definitions(&self) -> Vec<nano_model::types::ToolDefinition> {
+        let Some(fresh) = self.tools.current_mcp_tool_definitions() else {
+            return self.tool_definitions.clone();
+        };
+        let is_mcp =
+            |definition: &nano_model::types::ToolDefinition| definition.name.starts_with("mcp__");
+        let Some(start) = self.tool_definitions.iter().position(is_mcp) else {
+            // No MCP block at construction (every server fully deferred):
+            // the hydrated set joins at the end of the advertised list.
+            let mut merged = self.tool_definitions.clone();
+            merged.extend(fresh);
+            return merged;
+        };
+        let end = start
+            + self.tool_definitions[start..]
+                .iter()
+                .take_while(|definition| is_mcp(definition))
+                .count();
+        let mut merged = self.tool_definitions[..start].to_vec();
+        merged.extend(fresh);
+        merged.extend_from_slice(&self.tool_definitions[end..]);
+        merged
     }
 
     pub fn with_hooks(self, hooks: &'a nano_hooks::HookEngine) -> HookedTurnEngine<'a> {
@@ -1024,7 +1101,7 @@ impl<'a> TurnEngine<'a> {
             let request = ModelRequest {
                 model: self.model_name.clone(),
                 messages: messages.clone(),
-                tools: self.tool_definitions.clone(),
+                tools: self.current_tool_definitions(),
                 max_tokens: Some(
                     reservation
                         .as_ref()
@@ -1634,7 +1711,15 @@ impl<'a> TurnEngine<'a> {
                         result.parts.images,
                     ));
                 } else {
-                    messages.push(Message::tool_result(&call.id, &outcome.output, !outcome.ok));
+                    // F-1: the engine-side history ceiling — digest-first
+                    // (the journaled op above recorded the FULL output's
+                    // digest), then the capped, marked form enters billable
+                    // model history; the raw text never does.
+                    messages.push(Message::tool_result(
+                        &call.id,
+                        cap_history_tool_result(&outcome.output).as_ref(),
+                        !outcome.ok,
+                    ));
                 }
             }
             if matches!(state, TurnState::Stopped(_) | TurnState::Failed(_)) {

@@ -99,6 +99,12 @@ impl ToolExecutor for CheckpointToolExecutor<'_> {
             _ => self.inner.execute(call).await,
         }
     }
+
+    /// F-P3-5: delegate the mid-turn hydration refresh through the wrapper
+    /// chain to the MCP-merged executor.
+    fn current_mcp_tool_definitions(&self) -> Option<Vec<nano_model::types::ToolDefinition>> {
+        self.inner.current_mcp_tool_definitions()
+    }
 }
 
 #[cfg(test)]

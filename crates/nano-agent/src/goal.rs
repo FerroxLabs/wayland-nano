@@ -475,4 +475,10 @@ impl<T: crate::turn::ToolExecutor> crate::turn::ToolExecutor for GoalToolExecuto
     fn image_results_backed(&self) -> bool {
         self.inner.image_results_backed()
     }
+
+    /// F-P3-5: delegate the mid-turn hydration refresh through the wrapper
+    /// chain to the MCP-merged executor.
+    fn current_mcp_tool_definitions(&self) -> Option<Vec<nano_model::types::ToolDefinition>> {
+        self.inner.current_mcp_tool_definitions()
+    }
 }

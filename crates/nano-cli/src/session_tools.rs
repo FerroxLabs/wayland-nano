@@ -533,6 +533,12 @@ impl ToolExecutor for SessionTools<'_> {
     fn image_results_backed(&self) -> bool {
         self.inner.image_results_backed()
     }
+
+    /// F-P3-5: delegate the mid-turn hydration refresh through the wrapper
+    /// chain to the MCP-merged executor.
+    fn current_mcp_tool_definitions(&self) -> Option<Vec<nano_model::types::ToolDefinition>> {
+        self.inner.current_mcp_tool_definitions()
+    }
 }
 
 /// The session-owned PTY executor (P4 §4.3/§4.4): routes the five `pty_*`
@@ -649,6 +655,12 @@ impl ToolExecutor for PtyToolExecutor<'_> {
 
     fn image_results_backed(&self) -> bool {
         self.inner.image_results_backed()
+    }
+
+    /// F-P3-5: delegate the mid-turn hydration refresh through the wrapper
+    /// chain to the MCP-merged executor.
+    fn current_mcp_tool_definitions(&self) -> Option<Vec<nano_model::types::ToolDefinition>> {
+        self.inner.current_mcp_tool_definitions()
     }
 }
 

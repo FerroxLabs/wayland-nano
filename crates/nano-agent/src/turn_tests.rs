@@ -1140,4 +1140,175 @@ mod tests {
             } if call_id == "w1"
         )));
     }
+
+    // ── F-1: engine-side ceiling on tool results entering billable model
+    // history (typed visible marker; digest-first journaling) ──
+
+    #[derive(Debug)]
+    struct FixedOutputTools {
+        output: String,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolExecutor for FixedOutputTools {
+        async fn execute(&self, _call: &ToolCall) -> crate::turn::ToolOutcome {
+            crate::turn::ToolOutcome {
+                ok: true,
+                output: self.output.clone(),
+                progress: ProgressSignals::default(),
+                error_kind: None,
+            }
+        }
+    }
+
+    #[test]
+    fn history_cap_boundaries_and_utf8_safety() {
+        use crate::turn::{MAX_HISTORY_TOOL_RESULT_CHARS, cap_history_tool_result};
+        // At/under the cap: verbatim pass-through, no marker.
+        let exact = "x".repeat(MAX_HISTORY_TOOL_RESULT_CHARS);
+        assert!(matches!(
+            cap_history_tool_result(&exact),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        let under = "x".repeat(MAX_HISTORY_TOOL_RESULT_CHARS - 1);
+        assert!(matches!(
+            cap_history_tool_result(&under),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        // Over the cap: bounded head+tail with the typed marker.
+        let over = "x".repeat(MAX_HISTORY_TOOL_RESULT_CHARS + 1_000);
+        let capped = cap_history_tool_result(&over);
+        assert!(capped.contains("tool result truncated by the engine history cap"));
+        assert!(capped.contains(&format!(
+            "{} chars in",
+            MAX_HISTORY_TOOL_RESULT_CHARS + 1_000
+        )));
+        assert!(capped.chars().count() <= MAX_HISTORY_TOOL_RESULT_CHARS + 128);
+        // Multibyte content: the char-based cut never splits a UTF-8
+        // sequence (C1's truncation rule).
+        let wide = "€".repeat(MAX_HISTORY_TOOL_RESULT_CHARS + 10);
+        let capped = cap_history_tool_result(&wide);
+        assert!(capped.contains("tool result truncated by the engine history cap"));
+        assert!(capped.ends_with('€'));
+    }
+
+    #[tokio::test]
+    async fn oversized_tool_result_is_capped_marked_and_digest_journaled() {
+        // F-1 (SEV-1): an oversized MCP-style tool result must reach model
+        // history ONLY in the capped + visibly marked form; the journal
+        // records the FULL output's digest (digest-first), and no op — the
+        // ACP frame source — ever serializes the raw bytes.
+        let raw_len = crate::turn::MAX_HISTORY_TOOL_RESULT_CHARS + 50_000;
+        let model = ScriptedModel::new(vec![
+            tool_response(ToolCall {
+                id: "big1".into(),
+                name: "mcp__fake__dump".into(),
+                arguments: serde_json::json!({}),
+            }),
+            text_response("done"),
+        ]);
+        let tools = FixedOutputTools {
+            output: "A".repeat(raw_len),
+        };
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            model_name: "mock".into(),
+            tool_definitions: vec![],
+            approval: None,
+            compaction: None,
+            robustness: Default::default(),
+        };
+        let result = engine.run_turn("f1-cap", "dump it").await;
+        assert_eq!(result.state, TurnState::Complete);
+        // History seam: the second request carries the capped, marked form.
+        let requests = model.requests.lock().unwrap();
+        let content = requests[1]
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|block| match block {
+                nano_model::types::ContentBlock::ToolResult { content, .. } => {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .expect("tool result block in second request");
+        assert!(
+            content.contains("tool result truncated by the engine history cap"),
+            "truncation must be VISIBLE to the model, never silent"
+        );
+        assert!(content.chars().count() < raw_len);
+        // Digest-first: the journaled op records the FULL raw output's
+        // digest, computed before the history cap applied.
+        let digest = result
+            .ops
+            .iter()
+            .find_map(|envelope| match &envelope.op {
+                nano_session::op::Op::ToolResult {
+                    call_id,
+                    output_digest,
+                    ..
+                } if call_id == "big1" => Some(output_digest.clone()),
+                _ => None,
+            })
+            .expect("tool result op journaled");
+        assert_eq!(digest, format!("len:{raw_len}"));
+        // ACP frames are built from these ops: digests only, raw bytes in
+        // NO serialized op.
+        for envelope in &result.ops {
+            let serialized = serde_json::to_string(envelope).unwrap();
+            assert!(!serialized.contains(&"A".repeat(4096)));
+        }
+    }
+
+    #[tokio::test]
+    async fn under_cap_tool_result_flows_verbatim_unmarked() {
+        let model = ScriptedModel::new(vec![
+            tool_response(ToolCall {
+                id: "s1".into(),
+                name: "fs_read".into(),
+                arguments: serde_json::json!({"path": "a.txt"}),
+            }),
+            text_response("done"),
+        ]);
+        let tools = FixedOutputTools {
+            output: "small result body".into(),
+        };
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            model_name: "mock".into(),
+            tool_definitions: vec![],
+            approval: None,
+            compaction: None,
+            robustness: Default::default(),
+        };
+        let result = engine.run_turn("f1-under", "read it").await;
+        assert_eq!(result.state, TurnState::Complete);
+        let requests = model.requests.lock().unwrap();
+        let content = requests[1]
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|block| match block {
+                nano_model::types::ContentBlock::ToolResult { content, .. } => {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .expect("tool result block in second request");
+        assert_eq!(content, "small result body");
+        assert!(!content.contains("truncated"));
+        assert!(result.ops.iter().any(|envelope| matches!(
+            &envelope.op,
+            nano_session::op::Op::ToolResult {
+                call_id,
+                output_digest,
+                ..
+            } if call_id == "s1" && output_digest == "len:17"
+        )));
+    }
 }
