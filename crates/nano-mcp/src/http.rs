@@ -13,6 +13,16 @@ use std::time::Duration;
 
 use crate::stdio::{HttpChild, TransportChild, TransportParts};
 
+/// Server-controlled response bodies are read BOUNDED at the MCP output
+/// bound (`client::MAX_OUTPUT_BYTES`, 512 KiB): `Response::text()` would
+/// allocate whatever a hostile endpoint sends before the status check and
+/// the JSON/SSE parse. A present Content-Length over the cap fails early;
+/// otherwise chunks stream into a capped buffer and overshoot aborts with
+/// the typed `McpError::OutputBounded`. Same philosophy as the F-14
+/// provider error-body bound (`nano-model flux_common::read_error_body`),
+/// sized to the protocol's output bound rather than the error bound.
+pub const MAX_HTTP_BODY_BYTES: usize = crate::client::MAX_OUTPUT_BYTES;
+
 pub struct HttpTransport {
     egress: EgressClient,
     endpoint: String,
@@ -94,10 +104,7 @@ impl HttpTransport {
         }
 
         let status = response.status().as_u16();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| McpError::Transport(nano_egress::client::sanitize_transport_error(&e)))?;
+        let text = read_bounded_body(response).await?;
         if status == 202 || status == 204 {
             return Ok(None);
         }
@@ -238,6 +245,37 @@ impl Read for ChannelReader {
     }
 }
 
+/// Reads a server-controlled response body with the MAX_HTTP_BODY_BYTES
+/// cap. A declared Content-Length over the cap aborts before any body
+/// byte is read; a chunked/undeclared stream aborts on the first chunk
+/// that would overshoot. The typed error carries a byte count only —
+/// never body content (the F-P3-12 error-surface discipline).
+async fn read_bounded_body(mut response: reqwest::Response) -> Result<String, McpError> {
+    if let Some(declared) = response.content_length()
+        && declared > MAX_HTTP_BODY_BYTES as u64
+    {
+        return Err(McpError::OutputBounded(declared as usize));
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(bytes)) => {
+                if buf.len() + bytes.len() > MAX_HTTP_BODY_BYTES {
+                    return Err(McpError::OutputBounded(buf.len() + bytes.len()));
+                }
+                buf.extend_from_slice(&bytes);
+            }
+            Ok(None) => break,
+            Err(e) => {
+                return Err(McpError::Transport(
+                    nano_egress::client::sanitize_transport_error(&e),
+                ));
+            }
+        }
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 /// Parses either a plain JSON response or an SSE-framed one
 /// (`event: message\ndata: {...}`), as Flux's /mcp/ surface emits.
 pub fn parse_response_body(text: &str) -> Result<JsonRpcResponse, McpError> {
@@ -293,10 +331,9 @@ mod tests {
 
     // --- F-P3-12: the error surface never carries bodies or credentials ----
 
-    /// Read one full request (head + Content-Length body — draining it so
-    /// the response close is FIN-ordered, never RST), then answer.
-    fn serve_once(listener: std::net::TcpListener, status: &str, body: String) {
-        let (mut stream, _) = listener.accept().expect("accept");
+    /// Reads one full request (head + Content-Length body) from `stream`.
+    /// Draining the request keeps the response close FIN-ordered, never RST.
+    fn drain_request(stream: &mut std::net::TcpStream) {
         let mut buf = Vec::new();
         let mut chunk = [0u8; 4096];
         let mut need = usize::MAX;
@@ -325,12 +362,46 @@ mod tests {
                 break;
             }
         }
+    }
+
+    /// Read the request, then answer with a fixed Content-Length body.
+    fn serve_once(listener: std::net::TcpListener, status: &str, body: String) {
+        let (mut stream, _) = listener.accept().expect("accept");
+        drain_request(&mut stream);
         let response = format!(
             "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         stream.write_all(response.as_bytes()).expect("write");
         stream.flush().expect("flush");
+    }
+
+    /// Read the request, then stream `count` copies of `chunk` as a chunked
+    /// response (no Content-Length) of `content_type`. Write failures after
+    /// the client aborts on the cap are expected and ignored.
+    fn serve_chunked(
+        listener: std::net::TcpListener,
+        content_type: &str,
+        chunk: &[u8],
+        count: usize,
+    ) {
+        let (mut stream, _) = listener.accept().expect("accept");
+        drain_request(&mut stream);
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(head.as_bytes()).expect("write head");
+        for _ in 0..count {
+            let frame = format!("{:x}\r\n", chunk.len());
+            let write = stream
+                .write_all(frame.as_bytes())
+                .and_then(|_| stream.write_all(chunk))
+                .and_then(|_| stream.write_all(b"\r\n"));
+            if write.is_err() {
+                return;
+            }
+        }
+        let _ = stream.write_all(b"0\r\n\r\n");
     }
 
     fn loopback_egress() -> EgressClient {
@@ -427,6 +498,133 @@ mod tests {
             !rendered.contains(userinfo_marker),
             "userinfo leaked into the error: {rendered}"
         );
+    }
+
+    // --- response bodies are read BOUNDED at MAX_HTTP_BODY_BYTES ----------
+
+    /// A declared Content-Length over the cap aborts BEFORE the body is
+    /// read: the typed OutputBounded error, no body allocation.
+    #[tokio::test]
+    async fn http_declared_length_over_cap_aborts_typed_early() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let declared = MAX_HTTP_BODY_BYTES + 1;
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            drain_request(&mut stream);
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {declared}\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(head.as_bytes()).expect("write head");
+            // The client must have aborted on the header; a further body
+            // write may already fail — either is fine.
+            let _ = stream.write_all(&vec![b'x'; 4096]);
+        });
+        let mut transport = HttpTransport::new(
+            loopback_egress(),
+            format!("http://127.0.0.1:{port}/mcp"),
+            AuthHeader::None,
+        );
+        let err = transport
+            .round_trip("{}")
+            .await
+            .expect_err("declared over-cap body is an error");
+        assert!(
+            matches!(err, McpError::OutputBounded(_)),
+            "typed bound error: {err}"
+        );
+        assert!(
+            err.to_string().len() <= 256,
+            "error carries a count, never body: {err}"
+        );
+    }
+
+    /// A chunked stream (no Content-Length) overshooting the cap aborts
+    /// with the typed error mid-stream; the connection is cleaned up and
+    /// the same transport still round-trips against a healthy server.
+    #[tokio::test]
+    async fn http_chunked_body_over_cap_aborts_typed_and_transport_recovers() {
+        let chunk = vec![b'x'; 64 * 1024];
+        let count = MAX_HTTP_BODY_BYTES / chunk.len() + 4; // ~1.25x over cap
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let chunk_body = chunk.clone();
+        std::thread::spawn(move || serve_chunked(listener, "application/json", &chunk_body, count));
+        let mut transport = HttpTransport::new(
+            loopback_egress(),
+            format!("http://127.0.0.1:{port}/mcp"),
+            AuthHeader::None,
+        );
+        let err = transport
+            .round_trip("{}")
+            .await
+            .expect_err("streamed over-cap body is an error");
+        assert!(
+            matches!(err, McpError::OutputBounded(_)),
+            "typed bound error: {err}"
+        );
+
+        // Connection cleanup: the transport is reusable — a healthy
+        // loopback server answers the next round trip.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            serve_once(
+                listener,
+                "200 OK",
+                r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#.to_string(),
+            )
+        });
+        transport = HttpTransport::new(
+            loopback_egress(),
+            format!("http://127.0.0.1:{port}/mcp"),
+            AuthHeader::None,
+        );
+        let resp = transport.round_trip("{}").await.expect("recovery");
+        assert_eq!(resp.id, serde_json::json!(1));
+    }
+
+    /// The SSE read path is bounded identically: an event stream that
+    /// overshoots the cap aborts typed before any SSE parse.
+    #[tokio::test]
+    async fn http_sse_stream_over_cap_aborts_typed() {
+        let chunk = b"data: {\"partial\":true}\n\n".repeat(4096); // ~104 KiB
+        let count = MAX_HTTP_BODY_BYTES / chunk.len() + 2;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || serve_chunked(listener, "text/event-stream", &chunk, count));
+        let mut transport = HttpTransport::new(
+            loopback_egress(),
+            format!("http://127.0.0.1:{port}/mcp"),
+            AuthHeader::None,
+        );
+        let err = transport
+            .round_trip("{}")
+            .await
+            .expect_err("over-cap SSE stream is an error");
+        assert!(
+            matches!(err, McpError::OutputBounded(_)),
+            "typed bound error: {err}"
+        );
+    }
+
+    /// A well-formed chunked SSE response UNDER the cap still parses —
+    /// the bounded read path is the only read path, so it must serve the
+    /// ordinary Flux framing too.
+    #[tokio::test]
+    async fn http_chunked_sse_under_cap_parses() {
+        let chunk = b"event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-03-26\"}}\n\n";
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || serve_chunked(listener, "text/event-stream", chunk, 1));
+        let mut transport = HttpTransport::new(
+            loopback_egress(),
+            format!("http://127.0.0.1:{port}/mcp"),
+            AuthHeader::None,
+        );
+        let resp = transport.round_trip("{}").await.expect("under-cap SSE");
+        let result = resp.into_result().expect("result");
+        assert_eq!(result["protocolVersion"], "2025-03-26");
     }
 }
 
