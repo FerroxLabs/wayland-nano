@@ -136,6 +136,11 @@ struct Session {
     cancel: Arc<std::sync::atomic::AtomicBool>,
     /// Append-only journal for this ACP session (`<sessions_dir>/<id>.jsonl`).
     journal: std::path::PathBuf,
+    /// F-P4-3: lifetime single-writer ownership of the journal — the OS
+    /// lock is held from session open until this session is replaced or the
+    /// host dies, so a second host's session/load of this session is a
+    /// typed `session_busy` refusal, never a silent double-load.
+    _ownership: nano_agent::bootstrap::SessionOwnership,
     /// P3 §3.3: the session's single journal-append authority. EVERY append
     /// routes through it (turn sink, mode/plan/todo ops, rollups, hydration,
     /// elicitation, grants, compaction) — serialization is its one mutex.
@@ -1091,6 +1096,27 @@ enum TurnAnswer {
 /// block. Live-wire-only, never journaled.
 pub type DiffHook = Arc<dyn Fn(&str, &nano_agent::turn::FileDiff) + Send + Sync>;
 
+/// F-P4-3: take lifetime single-writer ownership of a session journal,
+/// mapping contention to the typed `session_busy` wire error and lock I/O
+/// failures to `journal_unavailable`. The OS handle lock carries no holder
+/// metadata channel (by design — no lock file, no stale-break logic), so
+/// the refusal is the typed kind plus the static presentation.
+fn acquire_session_ownership(
+    journal: &std::path::Path,
+) -> Result<nano_agent::bootstrap::SessionOwnership, (NanoErrorKind, String)> {
+    match nano_agent::bootstrap::session_guard_registry().try_own(journal) {
+        Ok(ownership) => Ok(ownership),
+        Err(nano_agent::bootstrap::GuardError::Busy) => Err((
+            NanoErrorKind::SessionBusy,
+            "session is open in another host".to_string(),
+        )),
+        Err(nano_agent::bootstrap::GuardError::Io(err)) => Err((
+            NanoErrorKind::JournalUnavailable,
+            format!("cannot lock session journal: {err}"),
+        )),
+    }
+}
+
 /// `make_driver`/`make_tools` build a fresh pair per prompt (tools are
 /// anchored to the session workspace). `make_driver` takes the turn's
 /// freshly-resolved PROVIDER BINDING (C8: catalog endpoint + credential,
@@ -1326,6 +1352,24 @@ where
                                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
                             let session_id = new_session_id();
                             let journal = config.sessions_dir.join(format!("{session_id}.jsonl"));
+                            // F-P4-3: take lifetime single-writer ownership
+                            // BEFORE the first append — a session this host
+                            // cannot own is never journaled half-open.
+                            let ownership = match acquire_session_ownership(&journal) {
+                                Ok(ownership) => ownership,
+                                Err((kind, message)) => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            kind,
+                                            message,
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                            };
                             // Fail closed: a session we cannot journal is a
                             // session we could not honestly resume later.
                             // P3 §3.3: the JournalCoordinator is created here,
@@ -1488,6 +1532,7 @@ where
                                 workspace: cwd,
                                 cancel,
                                 journal,
+                                _ownership: ownership,
                                 coordinator,
                                 turn_counter: 0,
                                 context,
@@ -1581,6 +1626,34 @@ where
                                 )?;
                                 continue;
                             }
+                            // F-P4-3: single-writer ownership. Reloading
+                            // the session THIS host already holds releases
+                            // the old handle first, so a same-host reload
+                            // reacquires cleanly; a journal owned by
+                            // ANOTHER host (or a lingering second loader in
+                            // this one) is a typed session_busy refusal —
+                            // never a silent double-load.
+                            if session.as_ref().is_some_and(|s| s.id == session_id)
+                                && let Some(old) = session.take()
+                            {
+                                old.tasks.teardown_all();
+                                old.pty.terminate_all();
+                            }
+                            let ownership = match acquire_session_ownership(&journal) {
+                                Ok(ownership) => ownership,
+                                Err((kind, message)) => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            kind,
+                                            message,
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                            };
                             // A corrupt journal fails loudly (never silently
                             // resumes from a partial or forged history).
                             let report = match read_journal(&journal) {
@@ -1855,6 +1928,7 @@ where
                                 workspace: cwd,
                                 cancel,
                                 journal,
+                                _ownership: ownership,
                                 coordinator,
                                 turn_counter,
                                 context,
@@ -4179,10 +4253,17 @@ where
                                 .get("atTurn")
                                 .and_then(|t| t.as_str())
                                 .map(str::to_string);
+                            // F-P4-3: forking THIS host's active session
+                            // rides the lifetime ownership lock (a fresh OS
+                            // acquisition would self-conflict); any other
+                            // session forks under fork_journal's own lock.
+                            let parent_owned =
+                                session.as_ref().is_some_and(|s| s.id == fork_session);
                             match crate::session_cmds::session_fork_core(
                                 config.sessions_dir,
                                 &fork_session,
                                 at_turn,
+                                parent_owned,
                             ) {
                                 Ok(result) => {
                                     write_out(&out, &JsonRpcResponse::ok(id, result))?

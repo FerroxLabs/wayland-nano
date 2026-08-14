@@ -64,7 +64,7 @@ fn session_fork_core_returns_digests_and_loadable_child() {
     std::fs::create_dir_all(&sessions).unwrap();
     make_session(&sessions, "s1");
 
-    let result = session_fork_core(&sessions, "s1", None).unwrap();
+    let result = session_fork_core(&sessions, "s1", None, false).unwrap();
     assert_eq!(
         result["parent_digest_before"], result["parent_digest_after"],
         "byte-identical parent proof"
@@ -76,10 +76,10 @@ fn session_fork_core_returns_digests_and_loadable_child() {
     assert_eq!(state.session_id.as_deref(), Some(child_id.as_str()));
 
     // Fork-at-turn works; unknown turn is a typed error.
-    let at = session_fork_core(&sessions, "s1", Some("s1-turn-1".into())).unwrap();
+    let at = session_fork_core(&sessions, "s1", Some("s1-turn-1".into()), false).unwrap();
     assert_eq!(at["imported_ops"], 3); // begin + TurnBegin + TurnEnd
-    assert!(session_fork_core(&sessions, "s1", Some("nope".into())).is_err());
-    assert!(session_fork_core(&sessions, "no-such", None).is_err());
+    assert!(session_fork_core(&sessions, "s1", Some("nope".into()), false).is_err());
+    assert!(session_fork_core(&sessions, "no-such", None, false).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

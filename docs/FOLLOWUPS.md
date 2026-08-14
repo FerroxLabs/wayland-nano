@@ -693,3 +693,16 @@ promotes/closes entries; builders append only.
 - **F-P2B-5 (metering) — OPEN.** The 2026-08-14 probe showed usage.prompt_tokens does NOT include image tokens on the openai wire (image turn: 33 prompt tokens vs the 172-token text-only baseline — the image bytes are unmetered in usage). Attachment cost therefore CANNOT be recovered from usage metering; sessions re-send attachment bytes every turn (no Files API — full prompt tokens each time, per the owner contract). Close means: a client-side attachment cost model (bytes → estimated tokens) or Flux-side usage accounting of image tokens; until then cost reporting under-counts image-bearing turns.
 - **F-P2B-6 (remote image URL fetch+inline) — OPEN, blocked on nano-egress.** The contract's preferred handling for remote URLs is fetch-in-harness-and-inline, but `EgressClient::fetch_bounded` content-type-gates to text/* + a few application types (client.rs ~353: image/* is ContentTypeDenied), and nano-egress is a fail-closed security invariant outside this lane's boundary. Shipped behavior: remote http(s) image URLs are typed-refused at ACP intake (never passed through). Close means: an egress image-fetch variant (image/* allowlist, bounded, private-range deny) + intake wiring + probes — or delete this entry if FluxRouter's planned edge normalisation (contract "What is changing" #3) lands first.
 - **F-P2B-7 (multi-image messages) — OPEN, upstream-settled.** Contract rule 4 (one image per message) is enforced as a typed intake refusal because a Flux two-image probe miscounted ("1"). Revisit when FluxRouter settles multi-image support; lifting it = delete the count check in acp_mode.rs and re-probe.
+
+## S3 session-ownership lane (F-P4-3 fix) — residual scope note (2026-08-14)
+
+- **F-S3-1 LOW (scope boundary):** the S3 ownership lock covers the
+  enumerated writer paths — acp-host session/new|load, exec (incl.
+  --resume), and transitively goal/fork/cron writers via the SessionGuard
+  OS layer. `protocol-host` (`crates/nano-cli/src/host_mode.rs:91`) opens
+  its FIXED `protocol-host.jsonl` for writing with NO ownership lock: two
+  protocol-host processes on one NANO_HOME can double-append. It can never
+  collide with an ACP/exec session (distinct fixed id), and the lane
+  boundary excluded it. Close means: acquire `SessionOwnership`
+  (`session_guard_registry().try_own`) at protocol-host startup, fail
+  closed with a typed busy when a second protocol-host is already running.

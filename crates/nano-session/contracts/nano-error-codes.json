@@ -377,6 +377,14 @@
       "wireCode": -32602
     },
     {
+      "hint": "Close it there (or resume after that host exits), then retry",
+      "kind": "session_busy",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Session is open in another host",
+      "wireCode": -32602
+    },
+    {
       "hint": "Pick a model from the advertised catalog",
       "kind": "model_not_found",
       "retryable": false,

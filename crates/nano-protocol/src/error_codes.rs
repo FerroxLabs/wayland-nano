@@ -169,10 +169,11 @@ mod tests {
     /// wiring (F-P4-1) added ShellRuleDenied + RuleFileInvalid (57 → 59);
     /// the S4 hooks merge added HookBlocked (59 → 60); the S7 checkpoints
     /// merge added CheckpointUnavailable + CheckpointNotFound +
-    /// CheckpointRestoreFailed (60 → 63).
+    /// CheckpointRestoreFailed (60 → 63); the S3 session-ownership slice
+    /// (F-P4-3) added SessionBusy (63 → 64).
     #[test]
     fn shim_re_exports_the_canonical_table() {
-        assert_eq!(ALL_KINDS.len(), 63);
+        assert_eq!(ALL_KINDS.len(), 64);
         assert_eq!(
             spec(NanoErrorKind::ModelRateLimited).title,
             nano_session::error_codes::spec(NanoErrorKind::ModelRateLimited).title

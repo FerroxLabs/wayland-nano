@@ -914,8 +914,14 @@ fn journal_append_failure_leaves_the_mode_visibly_unchanged() {
 
     // Repair the filesystem and prove the mode never mutated: a contained
     // write still PROMPTS (default), where full_auto would have approved
-    // silently.
+    // silently. The repair restores an existing journal PATH: pre-F-P4-3
+    // the per-turn guard's create(true) lock acquisition recreated it as a
+    // side effect; with lifetime ownership there is no per-turn OS
+    // acquisition on an owned session, so the repair does it explicitly.
+    // (The coordinator's append on a MISSING journal stays typed
+    // fail-closed — that half is asserted above.)
     std::fs::remove_dir(&journal).unwrap();
+    std::fs::write(&journal, "").unwrap();
     let before = host.permission_frames();
     let response = host.prompt(&session_id, "write inside.txt");
     assert_eq!(response["result"]["stopReason"], "end_turn");
