@@ -14,6 +14,7 @@ members = [
     "crates/nano-session",
     "crates/nano-protocol",
     "crates/nano-cli",
+    "crates/nano-plugins",
     "crates/nano-tui",
 ]
 
@@ -38,6 +39,7 @@ image = { version = "=0.25.10", default-features = false, features = [
     "gif",
     "webp",
 ] }
+tar = "=0.4.46"
 
 [profile.release]
 lto = "thin"

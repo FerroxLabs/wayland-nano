@@ -661,3 +661,13 @@ promotes/closes entries; builders append only.
 - **F-P5-4 LOW:** merged live leg-1 test writes its fixture one `..` too many (p5_auto_routing.rs:2531-2534 → outside workspace). Prover relocated the canary-clean fixture to shared/fixtures/flux/auto-routing/ and removed the stray tree; the test path bug remains.
 - **F-P5-5 LOW:** pin/implicit turn frames drop the response-reported model (engine meters the configured reference, turn.rs:1121; no TurnEnd model field). Moot while alias-echo stands.
 - Confirmed live, NOT a finding (design-§3-compliant known gap): production Auto refuses `capability_empty` pre-dispatch on tool-bearing turns (acp_mode.rs:2602 forces tools=true) until the tool-capability catalog lands.
+# Plugin substrate follow-ups (S8)
+
+- Git-subprocess registry sources require an OS-containment and nano-egress design.
+- ACP-host skill activation requires a skill-context consumer; protocol-host is the v1 consumer.
+- HTTP-transport MCP plugin entries remain blocked on the §6.1 dispatcher HTTP binding.
+- WASM/subprocess sandboxed plugins are outside the declarative v1 substrate.
+- Manifest signing and verified publisher identity are post-v1 trust work.
+- Paid marketplace accounts and account credential flows are post-v1.
+- Add a real `plugin update` transaction; v1 update is remove plus freshly consented install.
+- Add `${VAR}` environment indirection for MCP plugin specs without adding a credential channel.

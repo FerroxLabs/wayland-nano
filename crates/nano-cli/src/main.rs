@@ -117,13 +117,18 @@ fn main() {
             let mut out = std::io::stdout();
             nano_cli::rules_cmds::run(&home, &mut out)
         }
+        Some("plugin") => {
+            let home = nano_home();
+            let mut out = std::io::stdout();
+            nano_cli::plugin_cmds::run(&home, &args[2..], &mut out)
+        }
         Some("--version") | Some("-V") => {
             println!("wayland-nano {}", env!("CARGO_PKG_VERSION"));
             0
         }
         _ => {
             eprintln!(
-                "usage: wayland-nano doctor | protocol-host | acp-host | auth login|status|logout <server> | exec | session fork | sessions | rules | goal | --version"
+                "usage: wayland-nano doctor | protocol-host | acp-host | auth login|status|logout <server> | exec | session fork | sessions | rules | plugin | goal | --version"
             );
             2
         }
