@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,6 +27,7 @@ pub const MAX_MANIFEST_FILES: usize = 100_000;
 
 const STAGING_DIR: &str = ".nano-checkpoint-staging";
 const DISABLED_HOOKS_PATH: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+const REF_PREFIX: &str = "refs/nano-checkpoints/";
 
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
@@ -144,6 +146,7 @@ impl CheckpointStore {
         };
         let _lock = store.lock()?;
         store.ensure_backend()?;
+        store.anchor_existing_refs();
         Ok(store)
     }
 
@@ -250,13 +253,17 @@ impl CheckpointStore {
             .map_err(|_| CheckpointError::unavailable("checkpoint manifest exceeds file cap"))?;
         let total_bytes = manifest_entries.iter().map(|e| e.bytes).sum();
         let tree_digest = digest_manifest(&manifest_entries)?;
-        let mut commit_args = vec![OsString::from("commit-tree"), OsString::from(&tree)];
-        if let Some(parent) = &parent {
-            commit_args.push(OsString::from("-p"));
-            commit_args.push(OsString::from(parent));
-        }
-        let checkpoint_id = self.git_stdout_os(
-            &commit_args,
+        // Commits are deliberately PARENTLESS: the recorded `parent` is
+        // journal/index metadata only. Ancestry chaining would keep every
+        // evicted checkpoint reachable from its successors and make the
+        // on-disk store unprunable. The commit message carries a unique
+        // token so two identical trees captured within git's 1-second
+        // committer-timestamp granularity still yield distinct commit ids
+        // (a shared id would let one entry's eviction prune the other's
+        // objects from under it).
+        let message = format!("wayland-nano checkpoint {}-{}", now_nanos(), self.next());
+        let checkpoint_id = self.git_stdout(
+            &["commit-tree", &tree, "-m", &message],
             None,
             &[
                 ("GIT_AUTHOR_NAME", "Wayland Nano"),
@@ -264,6 +271,17 @@ impl CheckpointStore {
                 ("GIT_COMMITTER_NAME", "Wayland Nano"),
                 ("GIT_COMMITTER_EMAIL", "wayland-nano@localhost"),
             ],
+        )?;
+        // Anchor the commit under a private ref BEFORE any eviction runs, so
+        // reachability (not index membership) decides what gc may prune.
+        self.git(
+            &[
+                "update-ref",
+                &checkpoint_ref(&checkpoint_id),
+                &checkpoint_id,
+            ],
+            None,
+            &[],
         )?;
         let checkpoint = CheckpointInfo {
             id: checkpoint_id.clone(),
@@ -274,14 +292,26 @@ impl CheckpointStore {
             tree_digest,
             created_nanos: now_nanos(),
         };
-        let mut evicted = 0u32;
         index.checkpoints.push(checkpoint.clone());
-        while index.checkpoints.len() > MAX_CHECKPOINTS
-            || index.checkpoints.iter().map(|c| c.total_bytes).sum::<u64>() > MAX_STORE_BYTES
+        // Retention: at most MAX_CHECKPOINTS entries, logical bytes under the
+        // ceiling, and — the actual bound — the on-disk store under the
+        // ceiling. The just-created checkpoint is never evicted by its own
+        // create; a single checkpoint larger than the cap is kept and
+        // reported rather than phantom-created.
+        let mut evicted_ids: Vec<String> = Vec::new();
+        while index.checkpoints.len() > 1
+            && (index.checkpoints.len() > MAX_CHECKPOINTS
+                || index.checkpoints.iter().map(|c| c.total_bytes).sum::<u64>() > MAX_STORE_BYTES)
         {
-            index.checkpoints.remove(0);
-            evicted = evicted.saturating_add(1);
+            evicted_ids.push(index.checkpoints.remove(0).id);
         }
+        self.prune_evicted(&evicted_ids)?;
+        while index.checkpoints.len() > 1 && self.store_disk_bytes() > MAX_STORE_BYTES {
+            let id = index.checkpoints.remove(0).id;
+            self.prune_evicted(std::slice::from_ref(&id))?;
+            evicted_ids.push(id);
+        }
+        let evicted = u32::try_from(evicted_ids.len()).unwrap_or(u32::MAX);
         validate_checkpoint_created(
             &checkpoint.id,
             &self.workspace_key,
@@ -289,6 +319,16 @@ impl CheckpointStore {
             &checkpoint.tree_digest,
         )
         .map_err(|_| CheckpointError::unavailable("checkpoint metadata invalid"))?;
+        // Durable state FIRST, journal claim LAST: a crash before the append
+        // loses the claim but never leaves replay chasing a checkpoint whose
+        // manifest/index were never persisted. A failed final append leaves
+        // only restorable on-disk truth (the ref-anchored commit, manifest,
+        // and index entry), which is tolerated.
+        self.write_manifest(&Manifest {
+            checkpoint_id,
+            entries: manifest_entries,
+        })?;
+        self.save_index(&index)?;
         self.append(
             coordinator,
             session_id,
@@ -303,11 +343,6 @@ impl CheckpointStore {
                 evicted,
             },
         )?;
-        self.write_manifest(&Manifest {
-            checkpoint_id,
-            entries: manifest_entries,
-        })?;
-        self.save_index(&index)?;
         Ok(CreateResult {
             checkpoint,
             evicted,
@@ -360,6 +395,53 @@ impl CheckpointStore {
             ensure_success(output, NanoErrorKind::CheckpointUnavailable)?;
         }
         Ok(())
+    }
+
+    /// Best-effort migration for stores written before ref-anchored pruning:
+    /// anchor every indexed checkpoint under its private ref so the first
+    /// post-eviction gc cannot prune live checkpoint objects. A missing
+    /// commit object is skipped here and fails loudly at restore instead.
+    fn anchor_existing_refs(&self) {
+        let Ok(index) = self.load_index() else {
+            return;
+        };
+        if index.checkpoints.is_empty() {
+            return;
+        }
+        let existing = self
+            .git_stdout(
+                &["for-each-ref", "--format=%(refname)", REF_PREFIX],
+                None,
+                &[],
+            )
+            .unwrap_or_default();
+        for checkpoint in &index.checkpoints {
+            let reference = checkpoint_ref(&checkpoint.id);
+            if !existing.lines().any(|line| line == reference) {
+                let _ = self.git(&["update-ref", &reference, &checkpoint.id], None, &[]);
+            }
+        }
+    }
+
+    /// Drop each evicted checkpoint's private ref and manifest, then run one
+    /// bounded gc so the now-unreachable objects actually leave the disk.
+    /// Callers are the eviction loops only, so gc frequency is bounded by
+    /// eviction frequency.
+    fn prune_evicted(&self, ids: &[String]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        for id in ids {
+            self.git(&["update-ref", "-d", &checkpoint_ref(id)], None, &[])?;
+            let _ = fs::remove_file(self.root.join("manifests").join(format!("{id}.json")));
+        }
+        self.git(&["gc", "--prune=now", "--quiet"], None, &[])?;
+        Ok(())
+    }
+
+    /// Actual on-disk size of the whole store (repo.git + manifests + index).
+    fn store_disk_bytes(&self) -> u64 {
+        dir_bytes(&self.root)
     }
 
     fn capture_paths(&self) -> Result<(Vec<String>, Vec<String>)> {
@@ -800,14 +882,49 @@ fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
     let bytes = serde_json::to_vec(value)
         .map_err(|_| CheckpointError::unavailable("checkpoint metadata invalid"))?;
-    fs::write(&tmp, bytes)
-        .map_err(|_| CheckpointError::unavailable("checkpoint metadata unavailable"))?;
+    {
+        let mut file = fs::File::create(&tmp)
+            .map_err(|_| CheckpointError::unavailable("checkpoint metadata unavailable"))?;
+        file.write_all(&bytes)
+            .map_err(|_| CheckpointError::unavailable("checkpoint metadata unavailable"))?;
+        // The journal claim follows these writes, so the bytes must be
+        // durable — not merely renamed — before any claim can reference them.
+        file.sync_all()
+            .map_err(|_| CheckpointError::unavailable("checkpoint metadata unavailable"))?;
+    }
     if path.exists() {
         fs::remove_file(path)
             .map_err(|_| CheckpointError::unavailable("checkpoint metadata unavailable"))?;
     }
     fs::rename(tmp, path)
         .map_err(|_| CheckpointError::unavailable("checkpoint metadata unavailable"))
+}
+
+fn checkpoint_ref(id: &str) -> String {
+    format!("{REF_PREFIX}{id}")
+}
+
+/// Recursive regular-file byte total; never follows symlinks.
+fn dir_bytes(path: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            let Ok(meta) = fs::symlink_metadata(&entry_path) else {
+                continue;
+            };
+            if meta.is_dir() && !meta.file_type().is_symlink() {
+                pending.push(entry_path);
+            } else if meta.is_file() {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    total
 }
 fn digest_manifest(entries: &[ManifestEntry]) -> Result<String> {
     let bytes = serde_json::to_vec(entries)
@@ -957,5 +1074,127 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// Crash window between durable persist and the journal claim: the append
+    /// fails (torn journal path) AFTER manifest+index are persisted. No
+    /// phantom claim may exist — the durable state survives, the claim does
+    /// not, and replay never chases a checkpoint that was never persisted.
+    #[test]
+    fn failed_final_append_leaves_durable_state_without_phantom_claim() {
+        let (dir, workspace, home, coordinator) = fixture();
+        let journal_path = dir.path().join("journal.jsonl");
+        let store = CheckpointStore::open(&home, &workspace).unwrap();
+        let first = store.create(&coordinator, "s", None).unwrap();
+        // Tear the journal path: the final CheckpointCreated append fails
+        // typed (fail-closed torn-journal check in JournalCoordinator).
+        fs::remove_file(&journal_path).unwrap();
+        let err = store.create(&coordinator, "s", None).unwrap_err();
+        assert_eq!(err.kind, NanoErrorKind::CheckpointUnavailable);
+        // Durable-first: both checkpoints are listed and manifested even
+        // though the second claim never landed.
+        let listed = store.list().unwrap();
+        assert_eq!(listed.len(), 2);
+        let orphan = listed
+            .iter()
+            .find(|c| c.id != first.checkpoint.id)
+            .map(|c| c.id.clone())
+            .unwrap();
+        assert!(
+            home.join("wayland-nano-checkpoints")
+                .join(store.workspace_key())
+                .join("manifests")
+                .join(format!("{orphan}.json"))
+                .is_file()
+        );
+        // Resume with a fresh journal: replay sees no claim lacking durable
+        // state (the torn journal was empty; the claim direction never runs
+        // ahead of persistence).
+        let coordinator = JournalCoordinator::open(&journal_path).unwrap();
+        let journal = read_journal(&journal_path).unwrap();
+        assert!(
+            journal
+                .envelopes
+                .iter()
+                .all(|e| !matches!(e.op, Op::CheckpointCreated { .. }))
+        );
+        // The un-claimed checkpoint is restorable truth, not a phantom.
+        let restored = store.restore(&coordinator, "s", &orphan).unwrap();
+        assert_eq!(restored.checkpoint_id, orphan);
+        // And every claim that DID land resolves to persisted index state.
+        let listed_ids: BTreeSet<String> =
+            store.list().unwrap().into_iter().map(|c| c.id).collect();
+        let journal = read_journal(&journal_path).unwrap();
+        for envelope in &journal.envelopes {
+            if let Op::CheckpointCreated { checkpoint_id, .. } = &envelope.op {
+                assert!(
+                    listed_ids.contains(checkpoint_id),
+                    "phantom claim: {checkpoint_id}"
+                );
+            }
+        }
+    }
+
+    /// Eviction must shrink the ACTUAL on-disk store: evicted checkpoints
+    /// lose their private ref, their commit/blobs are pruned by gc, and the
+    /// store stays bounded — never accumulating every payload version forever.
+    #[test]
+    fn eviction_prunes_object_store_below_cap() {
+        let (_dir, workspace, home, coordinator) = fixture();
+        let store = CheckpointStore::open(&home, &workspace).unwrap();
+        const PAYLOAD: usize = 2 * 1024 * 1024;
+        let rounds = MAX_CHECKPOINTS + 8;
+        let mut ids = Vec::new();
+        for round in 0..rounds as u64 {
+            // Incompressible (xorshift) payload so object bytes track content.
+            let mut bytes = vec![0u8; PAYLOAD];
+            let mut state = 0x9E37_79B9_7F4A_7C15u64 ^ (round + 1);
+            for chunk in bytes.chunks_mut(8) {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                chunk.copy_from_slice(&state.to_le_bytes());
+            }
+            fs::write(workspace.join("payload.bin"), &bytes).unwrap();
+            if round == 0 {
+                run(&workspace, &["add", "payload.bin"]);
+            }
+            ids.push(store.create(&coordinator, "s", None).unwrap().checkpoint.id);
+        }
+        let listed = store.list().unwrap();
+        assert_eq!(listed.len(), MAX_CHECKPOINTS);
+        let evicted = &ids[..rounds - MAX_CHECKPOINTS];
+        assert!(evicted.iter().all(|id| listed.iter().all(|c| &c.id != id)));
+        // Every retained checkpoint is anchored by a private ref, 1:1.
+        let refs = store
+            .git_stdout(
+                &["for-each-ref", "--format=%(refname)", REF_PREFIX],
+                None,
+                &[],
+            )
+            .unwrap();
+        let ref_ids: BTreeSet<&str> = refs
+            .lines()
+            .filter_map(|line| line.strip_prefix(REF_PREFIX))
+            .collect();
+        assert_eq!(ref_ids.len(), MAX_CHECKPOINTS);
+        assert!(listed.iter().all(|c| ref_ids.contains(c.id.as_str())));
+        // Evicted commits (and their unique blobs) are actually pruned.
+        for id in evicted {
+            assert!(
+                store.git(&["cat-file", "-e", id], None, &[]).is_err(),
+                "evicted commit {id} survived gc"
+            );
+        }
+        // The on-disk store is bounded: below the cap, and strictly below
+        // the un-pruned accumulation of every payload version.
+        let disk = store.store_disk_bytes();
+        assert!(disk <= MAX_STORE_BYTES, "store {disk} exceeds cap");
+        let unpruned = (rounds as u64) * (PAYLOAD as u64);
+        assert!(disk < unpruned, "store {disk} not pruned below {unpruned}");
+        // A retained checkpoint still restores after all the pruning.
+        let target = listed.last().unwrap().id.clone();
+        let restored = store.restore(&coordinator, "s", &target).unwrap();
+        assert_eq!(restored.checkpoint_id, target);
     }
 }
