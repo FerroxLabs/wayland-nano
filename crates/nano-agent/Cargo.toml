@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# S10-only scripted driver. Packaged artifacts never enable this feature.
+soak-fake-model = []
+
 [dependencies]
 nano-core = { version = "0.1.0", path = "../nano-core" }
 nano-hooks = { version = "0.1.0", path = "../nano-hooks" }

@@ -826,6 +826,12 @@ promotes/closes entries; builders append only.
 - Add a real `plugin update` transaction; v1 update is remove plus freshly consented install.
 - Add `${VAR}` environment indirection for MCP plugin specs without adding a credential channel.
 
+## S10 soak harness follow-ups
+
+- A loopback HTTP fake remains the preferred upgrade when the provider endpoint gains an override seam; the feature-gated in-process fake intentionally bypasses `nano-egress` and HTTP/stream parsing, as accepted by the locked S10 design.
+- Run the mandatory 10 × 30-minute no-kill baseline set and one elevated Windows x64 eight-hour receipt before making a stable-gate claim. The local 60-second smoke is harness evidence only.
+- Add a Unix owner receipt after the Windows gate receipt; Unix stays recommended rather than gate-blocking.
+
 ## Wave-2 fix lane (branch fix/w2-agent, 2026-08-14) — F-1, F-27 item 6, F-P3-5 FIXED on branch, owner closes
 
 Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-2026-08-14.md`.
