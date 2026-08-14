@@ -1,6 +1,6 @@
 {
  "version": 1,
- "notes": "P2a \u00c2\u00a76.3 static vision-capability catalog \u00e2\u20ac\u201d fail-closed, EXACT model ids only (no wildcard/prefix matching). Every entry ships image_in:false until the \u00c2\u00a713 leg-6 live vision probe (randomized multi-digit exact-match + two negative controls + three trials) flips it, with the recorded artifact named in `proven` (a path under shared/fixtures/flux/vision/). Aliases (flux-auto/standard/fast/reasoning) are NEVER blessed in v1: a single probe proves an alias routed to vision ONCE, not routing STABILITY. Excluded families (flux-image generation, flux-voice*, codestral/devstral/qwen-coder/llama/deepseek/sonar/glm/qwen served ids) are unproven \u00e2\u2021\u2019 false; several are listed explicitly for reviewability, the rest are absent \u00e2\u2021\u2019 false.",
+ "notes": "P2a §6.3 static vision-capability catalog - fail-closed, EXACT model ids only (no wildcard/prefix matching). Every image_in:true entry names its proof artifact in `proven` (a path under shared/fixtures/flux/vision/). Pinned leaves carry the §13 leg-6 probe manifests (randomized multi-digit exact-match + two negative controls + three trials). F-P2B-1 (2026-08-14): the four routing ALIASES (flux-auto/standard/fast/reasoning) are now blessed - the owner Flux media contract (shared/reviews/stable-wave/flux-media-contract-2026-08-14.md, owner-measured 12/12 on all four aliases, both API shapes) forbids /v1/models capability gating (\"assume vision works\"), and the local probe capture (shared/fixtures/flux/vision/flux-openai-wire/20260814_probe_capture.json) proves genuine image ingestion for flux-auto on BOTH wires. This supersedes the P2a D6 aliases-never-blessed rule for these four ids. Excluded families (flux-image generation, flux-voice*, codestral/devstral/qwen-coder/llama/deepseek/sonar/glm/qwen served ids) stay false; several are listed explicitly for reviewability, the rest are absent => false.",
  "entries": {
   "flux-pinned-claude-opus": {
    "image_in": true,
@@ -123,20 +123,20 @@
    "proven": "shared/fixtures/flux/vision/flux-pinned-nova-lite/20260813T073822Z_manifest.json"
   },
   "flux-auto": {
-   "image_in": false,
-   "proven": null
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-openai-wire/20260814_manifest.json"
   },
   "flux-standard": {
-   "image_in": false,
-   "proven": null
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-openai-wire/20260814_manifest.json"
   },
   "flux-fast": {
-   "image_in": false,
-   "proven": null
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-openai-wire/20260814_manifest.json"
   },
   "flux-reasoning": {
-   "image_in": false,
-   "proven": null
+   "image_in": true,
+   "proven": "shared/fixtures/flux/vision/flux-openai-wire/20260814_manifest.json"
   },
   "flux-image": {
    "image_in": false,

@@ -798,28 +798,13 @@ fn p2b_anthropic_tool_result_images_native_arm_pinned() {
     );
 }
 
-/// §3.4 rung 3 (RC2 RULED): an image-bearing result is REFUSED on the
-/// completions and responses surfaces BEFORE any network I/O — the error is
+/// §3.4 rung 3 (RC2 RULED, retained): an image-bearing result is still
+/// REFUSED on the responses surface BEFORE any network I/O — the error is
 /// the typed refusal, never a connect/transport error, so the refusal is
 /// provably zero-egress (no listener, no fixture server, no packet).
 #[tokio::test]
-async fn p2b_completions_and_responses_refuse_tool_result_images_with_zero_egress() {
+async fn p2b_responses_refuses_tool_result_images_with_zero_egress() {
     let (request, _parts) = p2b_image_result_request();
-    let completions = crate::flux_completions::FluxCompletionsClient::new(
-        nano_egress::client::EgressClient::flux(),
-    );
-    let err = completions
-        .complete_with_hooks(&request, "sk-test", &crate::types::CallHooks::none())
-        .await
-        .expect_err("completions surface refuses image-bearing results");
-    assert!(
-        matches!(
-            &err,
-            ModelError::UnsupportedParam { param, surface, .. }
-                if param == "tool_result_images" && surface == "flux-completions"
-        ),
-        "typed rung-3 refusal, not a transport error: {err:?}"
-    );
     let responses =
         crate::flux_responses::FluxResponsesClient::new(nano_egress::client::EgressClient::flux());
     let err = responses
@@ -834,4 +819,56 @@ async fn p2b_completions_and_responses_refuse_tool_result_images_with_zero_egres
         ),
         "typed rung-3 refusal, not a transport error: {err:?}"
     );
+}
+
+/// F-P2B-1 (2026-08-14): the completions surface no longer refuses
+/// image-bearing tool results — the RC2 refusal predated the live probe
+/// (shared/fixtures/flux/vision/flux-openai-wire/20260814_probe_capture.json).
+/// The tool message stays text-only (the completions tool role cannot carry
+/// parts); the images ride a TRAILING USER message as base64 data-URI
+/// image_url parts — the shape the probe verified end-to-end. Pinned: the
+/// sibling text-only result keeps the plain-string form, and every image
+/// URL is a data: URI (a remote URL can never pass through).
+#[test]
+fn p2b_completions_tool_result_images_ride_a_trailing_user_message() {
+    let (request, _parts) = p2b_image_result_request();
+    let labels =
+        "[Image #1 from tool view_image — 1x1 png]\n[Image #2 from tool view_image — 1x1 png]";
+    let body = build_request_body(&request);
+    // NOTE: one logical message maps to ONE tool message carrying its FIRST
+    // ToolResult (pre-existing completions behavior — parallel results in a
+    // single message are a known completions-wedge, unchanged by F-P2B-1);
+    // the assistant's empty text projects as "".
+    assert_eq!(
+        body["messages"],
+        serde_json::json!([
+            {"role": "user", "content": "look at these"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "t1", "type": "function", "function": {"name": "view_image", "arguments": "{\"path\":\"a.png\"}"}},
+                {"id": "t2", "type": "function", "function": {"name": "fs_read", "arguments": "{\"path\":\"b.txt\"}"}}
+            ]},
+            {"role": "tool", "content": labels, "tool_call_id": "t1"},
+            {"role": "user", "content": [
+                {"type": "text", "text": labels},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,b25l"}},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,dHdv"}}
+            ]}
+        ])
+    );
+    // Every image part is an inlined data URI — never a remote URL (Flux
+    // media contract 2026-08-14, rule 2).
+    for part in body["messages"][3]["content"]
+        .as_array()
+        .expect("array content")
+        .iter()
+        .skip(1)
+    {
+        assert!(
+            part["image_url"]["url"]
+                .as_str()
+                .expect("url string")
+                .starts_with("data:image/"),
+            "data-URI only: {part}"
+        );
+    }
 }

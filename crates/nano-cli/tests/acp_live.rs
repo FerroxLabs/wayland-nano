@@ -1146,13 +1146,16 @@ fn session_new_advertises_the_fixture_catalog_with_honest_caps() {
         );
     }
 
-    // Capability honesty: text-only prompts; MCP is advertised stdio-only
-    // (the block's PRESENCE is Desktop's stdio flag — acpTypes.ts — with
-    // http/sse honestly false), and it is backed by the live mcp_* tests
-    // below. skills remain unproven and unadvertised.
+    // Capability honesty: text + (F-P2B-1, 2026-08-14) image — the startup
+    // leaf is flux-auto, now vision-blessed in the vendored catalog on the
+    // owner Flux media contract + the local flux-openai-wire probe capture
+    // (shared/fixtures/flux/vision/flux-openai-wire/). MCP is advertised
+    // stdio-only (the block's PRESENCE is Desktop's stdio flag —
+    // acpTypes.ts — with http/sse honestly false), and it is backed by the
+    // live mcp_* tests below. skills remain unproven and unadvertised.
     let caps = &client.init_response["result"]["agentCapabilities"];
     assert_eq!(caps["promptCapabilities"]["text"], true);
-    assert_eq!(caps["promptCapabilities"]["image"], false);
+    assert_eq!(caps["promptCapabilities"]["image"], true);
     assert_eq!(caps["promptCapabilities"]["embeddedContext"], false);
     assert_eq!(
         caps["mcpCapabilities"],

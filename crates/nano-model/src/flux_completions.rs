@@ -106,13 +106,14 @@ impl OpenAiCompletionsClient {
         api_key: &str,
         hooks: &CallHooks<'_>,
     ) -> Result<ModelResponse, ModelError> {
-        if request.has_tool_result_images() {
-            return Err(ModelError::UnsupportedParam {
-                param: "tool_result_images".into(),
-                surface: "flux-completions".into(),
-                message: "image-bearing tool results require anthropic-messages in RC2".into(),
-            });
-        }
+        // F-P2B-1 (2026-08-14): image-bearing tool results are no longer
+        // refused on this surface — the RC2 refusal predated the live
+        // evidence. `build_request_body` carries them as a trailing USER
+        // message of base64 data-URI image_url parts, the exact shape the
+        // 2026-08-14 probe proved end-to-end on POST /v1/chat/completions
+        // (shared/fixtures/flux/vision/flux-openai-wire/20260814_probe_capture.json).
+        // Every image is loader-inlined base64; a remote http(s) URL can
+        // never reach the wire (Flux media contract 2026-08-14, rule 2).
         // Rung-3 rejections (and every param decision) happen HERE — before
         // a single packet: plan first, network second.
         let mut body = build_request_body(request);
@@ -178,7 +179,13 @@ impl OpenAiCompletionsClient {
 }
 
 pub fn build_request_body(request: &ModelRequest) -> serde_json::Value {
-    let messages: Vec<serde_json::Value> = request.messages.iter().map(message_to_wire).collect();
+    // F-P2B-1: flat_map — an image-bearing ToolResult emits its (text-only)
+    // tool message AND a trailing user message carrying the images.
+    let messages: Vec<serde_json::Value> = request
+        .messages
+        .iter()
+        .flat_map(message_to_wire_all)
+        .collect();
     let mut body = serde_json::json!({
         "model": request.model,
         "messages": messages,
@@ -193,6 +200,38 @@ pub fn build_request_body(request: &ModelRequest) -> serde_json::Value {
         body["tool_choice"] = serde_json::json!("auto");
     }
     body
+}
+
+/// F-P2B-1: one logical message → one or two wire messages. The
+/// completions `tool` role is text-only, so an image-bearing ToolResult
+/// emits its tool message (text: the label lines) PLUS a trailing USER
+/// message whose content is the label lines followed by one base64
+/// data-URI image_url part per image — the shape the 2026-08-14 probe
+/// verified on this wire (the pixel data and its placeholder labels stay
+/// adjacent). Data URIs only; remote URLs never pass through (Flux media
+/// contract 2026-08-14, rule 2).
+fn message_to_wire_all(message: &Message) -> Vec<serde_json::Value> {
+    let mut out = vec![message_to_wire(message)];
+    // The image-bearing block specifically (a message mixing a text-only
+    // first result with an image-bearing second must not silently drop the
+    // pixels — the blind-answer failure mode the contract warns about).
+    if let Some(ContentBlock::ToolResult {
+        content, images, ..
+    }) = message
+        .content
+        .iter()
+        .find(|b| matches!(b, ContentBlock::ToolResult { images, .. } if !images.is_empty()))
+    {
+        let mut parts = vec![serde_json::json!({"type": "text", "text": content})];
+        parts.extend(images.iter().map(|image| {
+            serde_json::json!({
+                "type": "image_url",
+                "image_url": {"url": format!("data:{};base64,{}", image.mime, image.data)},
+            })
+        }));
+        out.push(serde_json::json!({"role": "user", "content": parts}));
+    }
+    out
 }
 
 fn message_to_wire(message: &Message) -> serde_json::Value {

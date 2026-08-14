@@ -11,9 +11,16 @@
 //! - every `image_in: true` entry MUST name its §13 leg-6 proof artifact
 //!   under `shared/fixtures/flux/vision/` — enforced at parse time, so an
 //!   unproven `true` can never load (AGENTS.md "evidence before claims");
-//! - aliases (`flux-auto`/`flux-standard`/`flux-fast`/`flux-reasoning`)
-//!   are NEVER blessed in v1 — a single probe proves an alias routed to
-//!   vision once, not routing stability;
+//! - aliases (`flux-auto`/`flux-standard`/`flux-fast`/`flux-reasoning`):
+//!   the P2a v1 rule was NEVER-blessed (a single probe proved an alias
+//!   routed to vision once, not routing stability). F-P2B-1 (2026-08-14)
+//!   supersedes it for these four ids: the owner Flux media contract
+//!   (shared/reviews/stable-wave/flux-media-contract-2026-08-14.md) forbids
+//!   `/v1/models` capability gating ("until we publish modalities: assume
+//!   vision works") and owner-measured 12/12 correct image probes on all
+//!   four aliases on BOTH API shapes; the local capture
+//!   (shared/fixtures/flux/vision/flux-openai-wire/20260814_probe_capture.json)
+//!   proves genuine ingestion for `flux-auto` on both wires;
 //! - overrides are TIGHTENING-ONLY (r2 codex-F9): a config override may
 //!   turn a proven entry OFF; the false→true (positive) override is a
 //!   typed config error, never silently applied.
@@ -183,18 +190,30 @@ mod tests {
     }
 
     #[test]
-    fn vendored_catalog_parses_and_is_all_unproven() {
+    fn vendored_catalog_parses_and_aliases_are_probe_blessed() {
         let catalog = VisionCatalog::vendored().expect("vendored catalog parses");
         assert!(!catalog.is_empty());
-        // Initial state: every entry ships image_in:false until the §13
-        // leg-6 live probes flip them with recorded fixtures (the honesty
-        // rule). Aliases stay false even after probing begins (D6).
+        // F-P2B-1 (2026-08-14): the four routing aliases are blessed on the
+        // owner Flux media contract ("assume vision works", 12/12 on all
+        // four, both wires) plus the local flux-openai-wire capture —
+        // superseding the P2a D6 aliases-never-blessed posture. Every
+        // blessed alias cites the fixture-tree proof artifact.
         for alias in ["flux-auto", "flux-standard", "flux-fast", "flux-reasoning"] {
             assert!(
-                !catalog.image_in(alias),
-                "alias {alias} is never blessed in v1"
+                catalog.image_in(alias),
+                "alias {alias} is blessed (F-P2B-1)"
+            );
+            let proven = catalog
+                .proven(alias)
+                .expect("blessed alias names its proof");
+            assert!(
+                proven.starts_with(PROOF_ARTIFACT_PREFIX),
+                "proof artifact under the fixture tree: {proven}"
             );
         }
+        // Excluded families stay fail-closed.
+        assert!(!catalog.image_in("flux-pinned-codestral"));
+        assert!(!catalog.image_in("flux-image"));
     }
 
     #[test]
