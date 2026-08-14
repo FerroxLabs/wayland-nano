@@ -1612,7 +1612,15 @@ done
     /// receiving ITS answer, not the retired call's late one.
     #[tokio::test]
     async fn cancel_aborts_in_flight_mcp_call_end_to_end() {
-        let marker_dir = tempfile::tempdir().unwrap();
+        // The contained unix child may only write under the host cwd —
+        // anchor the marker under target/ (OS temp would be a denied
+        // write, silently losing the observation on unix CI legs).
+        let scratch = std::env::current_dir().expect("cwd").join("target");
+        std::fs::create_dir_all(&scratch).expect("fixture scratch root");
+        let marker_dir = tempfile::Builder::new()
+            .prefix("nano-agent-cancel-marker-")
+            .tempdir_in(&scratch)
+            .unwrap();
         let marker = marker_dir.path().join("cancel-observed.txt");
         #[cfg(windows)]
         let (command, args) = {
