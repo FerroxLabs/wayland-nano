@@ -36,7 +36,6 @@ use crate::op::RoutingOutcome;
 use crate::op::TurnOutcome;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::collections::HashSet;
 
 /// P5 §4.1: one turn's journaled routing-ladder record — the candidate
 /// snapshot, the per-rung attempt begins, and the receipts, keyed by
@@ -195,7 +194,9 @@ pub struct SessionState {
     /// Set when the fold hit a structural failure (see [`ReplayError`]);
     /// `fold` records it, `fold_strict` returns it.
     pub integrity_error: Option<ReplayError>,
-    seen_ids: HashSet<String>,
+    // BTreeSet, not HashSet: derived Debug output is order-deterministic —
+    // replay-parity tests compare SessionState via Debug formatting.
+    seen_ids: BTreeSet<String>,
     /// Envelopes applied so far — position 0 carries the session identity.
     applied: u64,
     /// Remaining envelopes in a fork's imported region (C11), when inside one.
