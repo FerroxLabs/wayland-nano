@@ -25,6 +25,7 @@ async-trait = "0.1"
 base64 = "0.22"
 dirs-next = "2"
 nano-agent = { version = "0.1.0", path = "../nano-agent" }
+nano-hooks = { version = "0.1.0", path = "../nano-hooks" }
 nano-core = { version = "0.1.0", path = "../nano-core" }
 nano-egress = { version = "0.1.0", path = "../nano-egress" }
 # F-36 (P3 §6.3): the OAuth record_grant producer converts

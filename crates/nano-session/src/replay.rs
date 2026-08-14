@@ -359,7 +359,7 @@ impl SessionState {
             }
             // Assistant text is transcript, not execution state: replay cares
             // about open work and durable effects, not the wording of replies.
-            Op::AssistantText { .. } => {}
+            Op::AssistantText { .. } | Op::HookDecision { .. } => {}
             // Steers and schema re-asks (C9) are model-visible user text —
             // transcript, not execution state; the context rebuild (acp_mode
             // messages_from_envelopes) folds them, SessionState does not.
@@ -612,4 +612,42 @@ pub fn is_rfc3339_utc_minute(value: &str) -> bool {
         && (11..=12).all(&digit)
         && (14..=15).all(&digit)
         && &value[17..19] == "00"
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::*;
+    use crate::op::{HookEvent, HookOutcome, Op};
+
+    #[test]
+    fn hook_decision_is_conversation_neutral_on_replay() {
+        let mut state = SessionState::new();
+        let before = (
+            state.open_turn.clone(),
+            state.open_tool_calls.clone(),
+            state.compaction.clone(),
+            state.last_compaction_summary.clone(),
+        );
+        state.apply(&OpEnvelope::new(
+            "hook-1",
+            "now",
+            Op::HookDecision {
+                turn_id: "turn-1".into(),
+                event: HookEvent::PreToolUse,
+                handler_id: "hooks.toml:pre_tool_use:0:0".into(),
+                matcher_input: Some("shell".into()),
+                outcome: HookOutcome::Pass,
+                duration_ms: 4,
+            },
+        ));
+        assert_eq!(
+            before,
+            (
+                state.open_turn,
+                state.open_tool_calls,
+                state.compaction,
+                state.last_compaction_summary,
+            )
+        );
+    }
 }

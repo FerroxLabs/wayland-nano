@@ -113,6 +113,36 @@ pub struct BootstrappedSession {
     pub turn_counter: u64,
 }
 
+#[derive(Debug)]
+pub struct HookedBootstrappedSession {
+    session: BootstrappedSession,
+    hooks: Arc<nano_hooks::HookEngine>,
+}
+
+impl std::ops::Deref for HookedBootstrappedSession {
+    type Target = BootstrappedSession;
+    fn deref(&self) -> &Self::Target {
+        &self.session
+    }
+}
+
+impl Drop for HookedBootstrappedSession {
+    fn drop(&mut self) {
+        let run = run_lifecycle_hook(
+            self.hooks.clone(),
+            nano_hooks::HookEvent::SessionEnd,
+            Some("drop"),
+            serde_json::json!({"hook_event_name":"SessionEnd", "session_id":self.session_id, "reason":"drop"}),
+        );
+        append_lifecycle_decisions(
+            &self.journal_path,
+            &self.session_id,
+            nano_session::op::HookEvent::SessionEnd,
+            &run,
+        );
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum BootstrapError {
     #[error("invalid session id: {0}")]
@@ -154,6 +184,46 @@ pub fn is_fs_safe_session_id(id: &str) -> bool {
 /// state is the strict fold (a fork lineage overrun is a typed error, never
 /// a silent short fold).
 pub fn bootstrap_session(
+    sessions_dir: &Path,
+    cwd: &Path,
+    seed: SessionSeed,
+) -> Result<BootstrappedSession, BootstrapError> {
+    bootstrap_base(sessions_dir, cwd, seed)
+}
+
+pub fn bootstrap_session_with_hooks(
+    sessions_dir: &Path,
+    cwd: &Path,
+    seed: SessionSeed,
+    hooks: Arc<nano_hooks::HookEngine>,
+) -> Result<HookedBootstrappedSession, BootstrapError> {
+    let source = if matches!(seed, SessionSeed::New) {
+        "startup"
+    } else {
+        "resume"
+    };
+    let mut session = bootstrap_base(sessions_dir, cwd, seed)?;
+    {
+        let run = run_lifecycle_hook(
+            hooks.clone(),
+            nano_hooks::HookEvent::SessionStart,
+            Some(source),
+            serde_json::json!({"hook_event_name":"SessionStart", "session_id":session.session_id, "source":source}),
+        );
+        append_lifecycle_decisions(
+            &session.journal_path,
+            &session.session_id,
+            nano_session::op::HookEvent::SessionStart,
+            &run,
+        );
+        if let Ok(report) = read_journal(&session.journal_path) {
+            session.envelopes = report.envelopes;
+        }
+    }
+    Ok(HookedBootstrappedSession { session, hooks })
+}
+
+fn bootstrap_base(
     sessions_dir: &Path,
     cwd: &Path,
     seed: SessionSeed,
@@ -202,8 +272,6 @@ pub fn bootstrap_session(
                 .iter()
                 .filter(|e| matches!(e.op, Op::SessionBegin { .. }))
                 .count();
-            // A fresh SessionBegin marks the resume in the journal itself
-            // (audit trail; replay treats non-genesis begins as inert).
             let writer = JournalCoordinator::open(&journal_path)?;
             writer.append(&OpEnvelope::new(
                 format!("{id}-begin-{}", begin_count + 1),
@@ -223,6 +291,59 @@ pub fn bootstrap_session(
                 state,
                 turn_counter,
             })
+        }
+    }
+}
+
+fn run_lifecycle_hook(
+    hooks: Arc<nano_hooks::HookEngine>,
+    event: nano_hooks::HookEvent,
+    matcher: Option<&str>,
+    payload: serde_json::Value,
+) -> nano_hooks::HookRun {
+    let matcher = matcher.map(str::to_string);
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map(|runtime| runtime.block_on(hooks.run(event, matcher.as_deref(), &payload)))
+            .unwrap_or_default()
+    })
+    .join()
+    .unwrap_or_default()
+}
+
+fn append_lifecycle_decisions(
+    journal_path: &Path,
+    session_id: &str,
+    event: nano_session::op::HookEvent,
+    run: &nano_hooks::HookRun,
+) {
+    let Ok(writer) = JournalCoordinator::open(journal_path) else {
+        eprintln!("wayland-nano: lifecycle hook decision journal unavailable");
+        return;
+    };
+    for (index, decision) in run.decisions.iter().enumerate() {
+        let envelope = OpEnvelope::new(
+            format!("{session_id}-hook-{}-{}", std::process::id(), index),
+            "now",
+            Op::HookDecision {
+                turn_id: session_id.to_string(),
+                event,
+                handler_id: decision.handler_id.clone(),
+                matcher_input: decision.matcher_input.clone(),
+                outcome: match decision.outcome {
+                    nano_hooks::HookOutcome::Pass => nano_session::op::HookOutcome::Pass,
+                    nano_hooks::HookOutcome::Blocked => nano_session::op::HookOutcome::Blocked,
+                    nano_hooks::HookOutcome::Failed => nano_session::op::HookOutcome::Failed,
+                    nano_hooks::HookOutcome::Timeout => nano_session::op::HookOutcome::Timeout,
+                },
+                duration_ms: decision.duration_ms,
+            },
+        );
+        if writer.append(&envelope).is_err() {
+            eprintln!("wayland-nano: lifecycle hook decision journal unavailable");
+            break;
         }
     }
 }

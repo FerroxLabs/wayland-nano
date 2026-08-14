@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 nano-core = { version = "0.1.0", path = "../nano-core" }
+nano-hooks = { version = "0.1.0", path = "../nano-hooks" }
 nano-skills = { version = "0.1.0", path = "../nano-skills" }
 nano-mcp = { version = "0.1.0", path = "../nano-mcp" }
 nano-tools = { version = "0.1.0", path = "../nano-tools" }

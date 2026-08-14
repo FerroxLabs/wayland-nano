@@ -417,6 +417,45 @@ pub async fn compact_messages(
     image_influenced_before: bool,
     emit: &mut (dyn FnMut(Op) -> bool + Send),
 ) -> Result<(), CompactionError> {
+    compact_messages_with_hooks(
+        model,
+        model_name,
+        messages,
+        compaction_id,
+        covers_op_ids,
+        changed_files,
+        image_influenced_before,
+        emit,
+        None,
+        "compaction",
+        "auto",
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn compact_messages_with_hooks(
+    model: &dyn ModelDriver,
+    model_name: &str,
+    messages: &mut Vec<Message>,
+    compaction_id: &str,
+    covers_op_ids: Vec<String>,
+    changed_files: Vec<String>,
+    image_influenced_before: bool,
+    emit: &mut (dyn FnMut(Op) -> bool + Send),
+    hooks: Option<&nano_hooks::HookEngine>,
+    turn_id: &str,
+    trigger: &str,
+) -> Result<(), CompactionError> {
+    if let Some(hooks) = hooks {
+        let run = hooks.run(nano_hooks::HookEvent::PreCompact, Some(trigger), &serde_json::json!({"hook_event_name":"PreCompact", "turn_id":turn_id, "trigger":trigger})).await;
+        emit_compaction_hook_decisions(
+            emit,
+            turn_id,
+            nano_session::op::HookEvent::PreCompact,
+            &run,
+        );
+    }
     if !emit(Op::CompactionBegin {
         compaction_id: compaction_id.to_string(),
     }) {
@@ -469,9 +508,41 @@ pub async fn compact_messages(
         });
         return Err(CompactionError::JournalWrite);
     }
+    if let Some(hooks) = hooks {
+        let run = hooks.run(nano_hooks::HookEvent::PostCompact, Some(trigger), &serde_json::json!({"hook_event_name":"PostCompact", "turn_id":turn_id, "trigger":trigger})).await;
+        emit_compaction_hook_decisions(
+            emit,
+            turn_id,
+            nano_session::op::HookEvent::PostCompact,
+            &run,
+        );
+    }
     // Complete is durable; the swap itself is infallible.
     *messages = build_compacted_history(std::mem::take(messages), &summary);
     Ok(())
+}
+
+fn emit_compaction_hook_decisions(
+    emit: &mut (dyn FnMut(Op) -> bool + Send),
+    turn_id: &str,
+    event: nano_session::op::HookEvent,
+    run: &nano_hooks::HookRun,
+) {
+    for decision in &run.decisions {
+        let _ = emit(Op::HookDecision {
+            turn_id: turn_id.to_string(),
+            event,
+            handler_id: decision.handler_id.clone(),
+            matcher_input: decision.matcher_input.clone(),
+            outcome: match decision.outcome {
+                nano_hooks::HookOutcome::Pass => nano_session::op::HookOutcome::Pass,
+                nano_hooks::HookOutcome::Blocked => nano_session::op::HookOutcome::Blocked,
+                nano_hooks::HookOutcome::Failed => nano_session::op::HookOutcome::Failed,
+                nano_hooks::HookOutcome::Timeout => nano_session::op::HookOutcome::Timeout,
+            },
+            duration_ms: decision.duration_ms,
+        });
+    }
 }
 
 /// One summarization call against the CURRENT model: prompt appended as a

@@ -282,6 +282,14 @@
     },
     {
       "hint": "",
+      "kind": "hook_blocked",
+      "retryable": false,
+      "surface": "tool_card",
+      "title": "Blocked by lifecycle hook",
+      "wireCode": -32603
+    },
+    {
+      "hint": "",
       "kind": "pty_session_gone",
       "retryable": false,
       "surface": "tool_card",

@@ -4,7 +4,9 @@
 //! States (every one testable): RECEIVE → UNDERSTAND → PLAN → ACT → OBSERVE
 //! → CONTINUE/REPLAN → VERIFY → COMPLETE. No cognitive theatre.
 
-use crate::compact::{AutoCompactGuard, CompactionConfig, TokenTracker, compact_messages};
+use crate::compact::{
+    AutoCompactGuard, CompactionConfig, TokenTracker, compact_messages_with_hooks,
+};
 use crate::loop_protection::{
     BudgetTracker, NoProgressTracker, ProgressAction, ProgressSignals, RepeatAction, RepeatBreaker,
     ToolCallKey, TurnBudget,
@@ -251,6 +253,53 @@ pub struct TurnEngine<'a> {
     pub robustness: TurnRobustness<'a>,
 }
 
+pub struct HookedTurnEngine<'a> {
+    engine: TurnEngine<'a>,
+    hooks: &'a nano_hooks::HookEngine,
+}
+
+impl HookedTurnEngine<'_> {
+    pub async fn run_turn_with_context_messages(
+        &self,
+        turn_id: &str,
+        input: &str,
+        context: Vec<Message>,
+    ) -> TurnResult {
+        self.engine
+            .run_turn_inner(
+                turn_id,
+                TurnInput::text(input),
+                context,
+                None,
+                None,
+                false,
+                Some(self.hooks),
+            )
+            .await
+    }
+
+    pub async fn run_turn_streaming_with_context(
+        &self,
+        turn_id: &str,
+        input: &str,
+        prior: Vec<Message>,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+        sink: &mut (dyn FnMut(&OpEnvelope) -> bool + Send),
+    ) -> TurnResult {
+        self.engine
+            .run_turn_inner(
+                turn_id,
+                TurnInput::text(input),
+                prior,
+                cancel,
+                Some(sink),
+                false,
+                Some(self.hooks),
+            )
+            .await
+    }
+}
+
 /// The C9 robustness seams, bundled so hosts opt in wholesale. All-off is
 /// exactly the pre-C9 engine.
 #[derive(Default)]
@@ -426,6 +475,16 @@ impl ApprovalGate for ApproveAll {
 }
 
 impl<'a> TurnEngine<'a> {
+    pub fn set_hooks(self, hooks: &'a nano_hooks::HookEngine) -> HookedTurnEngine<'a> {
+        HookedTurnEngine {
+            engine: self,
+            hooks,
+        }
+    }
+
+    pub fn with_hooks(self, hooks: &'a nano_hooks::HookEngine) -> HookedTurnEngine<'a> {
+        self.set_hooks(hooks)
+    }
     pub async fn run_turn(&self, turn_id: &str, input: &str) -> TurnResult {
         self.run_turn_cancellable(turn_id, input, None).await
     }
@@ -448,6 +507,7 @@ impl<'a> TurnEngine<'a> {
             None,
             None,
             false,
+            None,
         )
         .await
     }
@@ -461,8 +521,16 @@ impl<'a> TurnEngine<'a> {
         input: &str,
         context: Vec<Message>,
     ) -> TurnResult {
-        self.run_turn_inner(turn_id, TurnInput::text(input), context, None, None, false)
-            .await
+        self.run_turn_inner(
+            turn_id,
+            TurnInput::text(input),
+            context,
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
     }
 
     /// Runs a turn, checking the cancellation flag between steps. A fired
@@ -482,6 +550,7 @@ impl<'a> TurnEngine<'a> {
             cancel,
             None,
             false,
+            None,
         )
         .await
     }
@@ -506,6 +575,7 @@ impl<'a> TurnEngine<'a> {
             cancel,
             Some(sink),
             false,
+            None,
         )
         .await
     }
@@ -528,6 +598,7 @@ impl<'a> TurnEngine<'a> {
             cancel,
             Some(sink),
             false,
+            None,
         )
         .await
     }
@@ -558,10 +629,12 @@ impl<'a> TurnEngine<'a> {
             cancel,
             Some(sink),
             image_influenced_before,
+            None,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)] // hook handle joins the existing turn execution bundle
     async fn run_turn_inner(
         &self,
         turn_id: &str,
@@ -570,6 +643,7 @@ impl<'a> TurnEngine<'a> {
         cancel: Option<&std::sync::atomic::AtomicBool>,
         sink: Option<&mut (dyn FnMut(&OpEnvelope) -> bool + Send)>,
         image_influenced_before: bool,
+        lifecycle_hooks: Option<&nano_hooks::HookEngine>,
     ) -> TurnResult {
         let mut ops: Vec<OpEnvelope> = Vec::new();
         let mut next_id = 0u32;
@@ -600,6 +674,31 @@ impl<'a> TurnEngine<'a> {
                 input_blocks: input.manifest(),
             },
         );
+
+        if let Some(hooks) = lifecycle_hooks {
+            let prompt = input.projection();
+            let run = hooks
+                .run(
+                    nano_hooks::HookEvent::UserPromptSubmit,
+                    None,
+                    &serde_json::json!({
+                        "hook_event_name": "UserPromptSubmit",
+                        "turn_id": turn_id,
+                        "prompt": prompt,
+                    }),
+                )
+                .await;
+            if !emit_hook_decisions(&mut emit, &mut ops, turn_id, &run) {
+                return hook_failed_turn(
+                    ops,
+                    NanoErrorKind::JournalUnavailable,
+                    "journal append failed for UserPromptSubmit hook",
+                );
+            }
+            if let Some(reason) = run.blocking_reason() {
+                return hook_failed_turn(ops, NanoErrorKind::HookBlocked, reason);
+            }
+        }
 
         let mut history = vec![TurnState::Receive];
         let mut state = TurnState::Receive;
@@ -670,6 +769,7 @@ impl<'a> TurnEngine<'a> {
         // re-ask): both reset here, so each turn gets exactly one of each.
         let mut auth_retry_used = false;
         let mut reask_used = false;
+        let mut stop_continuation_used = false;
         // C9 rate-limit coalescing: latest-wins per iteration. The Mutex
         // pair is written by the observation closure (an Fn) and flushed to
         // the host observer at loop top and turn end.
@@ -735,7 +835,7 @@ impl<'a> TurnEngine<'a> {
                     let covers_op_ids = ops.iter().map(|e| e.id.clone()).collect();
                     let changed_files = collect_changed_files(&ops);
                     let mut journal_emit = |op: Op| emit(&mut ops, op);
-                    let outcome = compact_messages(
+                    let outcome = compact_messages_with_hooks(
                         self.model,
                         &self.model_name,
                         &mut messages,
@@ -744,6 +844,9 @@ impl<'a> TurnEngine<'a> {
                         changed_files,
                         image_influenced_before,
                         &mut journal_emit,
+                        lifecycle_hooks,
+                        turn_id,
+                        "auto",
                     )
                     .await;
                     if let Err(err) = outcome {
@@ -1045,7 +1148,7 @@ impl<'a> TurnEngine<'a> {
                     let covers_op_ids = ops.iter().map(|e| e.id.clone()).collect();
                     let changed_files = collect_changed_files(&ops);
                     let mut journal_emit = |op: Op| emit(&mut ops, op);
-                    let outcome = compact_messages(
+                    let outcome = compact_messages_with_hooks(
                         self.model,
                         &self.model_name,
                         &mut messages,
@@ -1054,6 +1157,9 @@ impl<'a> TurnEngine<'a> {
                         changed_files,
                         image_influenced_before,
                         &mut journal_emit,
+                        lifecycle_hooks,
+                        turn_id,
+                        "auto",
                     )
                     .await;
                     if let Err(err) = outcome {
@@ -1216,6 +1322,37 @@ impl<'a> TurnEngine<'a> {
                     transition(&mut state, &mut history, TurnState::Understand);
                     continue;
                 }
+                if let Some(hooks) = lifecycle_hooks {
+                    let run = hooks
+                        .run(
+                            nano_hooks::HookEvent::Stop,
+                            None,
+                            &serde_json::json!({
+                                "hook_event_name": "Stop",
+                                "turn_id": turn_id,
+                                "last_assistant_message": final_text,
+                                "stop_hook_active": stop_continuation_used,
+                            }),
+                        )
+                        .await;
+                    if !emit_hook_decisions(&mut emit, &mut ops, turn_id, &run) {
+                        state = TurnState::Failed(TypedError::new(
+                            NanoErrorKind::JournalUnavailable,
+                            "journal append failed for Stop hook",
+                        ));
+                        break;
+                    }
+                    if let Some(reason) = run.blocking_reason()
+                        && !stop_continuation_used
+                    {
+                        stop_continuation_used = true;
+                        messages.push(Message::system(format!(
+                            "Lifecycle Stop hook requires one continuation: {reason}"
+                        )));
+                        transition(&mut state, &mut history, TurnState::Understand);
+                        continue;
+                    }
+                }
                 // No more actions: verify then complete.
                 transition(&mut state, &mut history, TurnState::Verify);
                 emit(
@@ -1356,7 +1493,68 @@ impl<'a> TurnEngine<'a> {
                         continue;
                     }
                 }
+                if let Some(hooks) = lifecycle_hooks {
+                    let run = hooks
+                        .run(
+                            nano_hooks::HookEvent::PreToolUse,
+                            Some(&call.name),
+                            &serde_json::json!({
+                                "hook_event_name": "PreToolUse",
+                                "turn_id": turn_id,
+                                "tool_use_id": call.id,
+                                "tool_name": call.name,
+                                "tool_input": call.arguments,
+                            }),
+                        )
+                        .await;
+                    if !emit_hook_decisions(&mut emit, &mut ops, turn_id, &run) {
+                        state = TurnState::Failed(TypedError::new(
+                            NanoErrorKind::JournalUnavailable,
+                            "journal append failed for PreToolUse hook",
+                        ));
+                        break;
+                    }
+                    if let Some(reason) = run.blocking_reason() {
+                        let text = format!("blocked by lifecycle hook: {reason}");
+                        if !emit(
+                            &mut ops,
+                            Op::ToolResult {
+                                call_id: call.id.clone(),
+                                ok: false,
+                                output_digest: format!("len:{}", text.len()),
+                                changed_files: vec![],
+                                error_kind: Some(NanoErrorKind::HookBlocked),
+                                image_refs: vec![],
+                            },
+                        ) {
+                            state = TurnState::Failed(TypedError::new(
+                                NanoErrorKind::JournalUnavailable,
+                                "journal append failed for hook denial result",
+                            ));
+                            break;
+                        }
+                        messages.push(Message::tool_result(&call.id, text, true));
+                        continue;
+                    }
+                }
                 let outcome = self.tools.execute_cancellable(call, cancel).await;
+                if let Some(hooks) = lifecycle_hooks {
+                    let run = hooks
+                        .run(
+                            nano_hooks::HookEvent::PostToolUse,
+                            Some(&call.name),
+                            &serde_json::json!({
+                                "hook_event_name": "PostToolUse",
+                                "turn_id": turn_id,
+                                "tool_use_id": call.id,
+                                "tool_name": call.name,
+                                "tool_input": call.arguments,
+                                "ok": outcome.ok,
+                            }),
+                        )
+                        .await;
+                    let _ = emit_hook_decisions(&mut emit, &mut ops, turn_id, &run);
+                }
                 let image_result = self.tools.take_image_result(&call.id);
                 step_progress.files_changed |= outcome.progress.files_changed;
                 step_progress.process_outcome_changed |= outcome.progress.process_outcome_changed;
@@ -1533,4 +1731,61 @@ fn collect_changed_files(ops: &[OpEnvelope]) -> Vec<String> {
     files.sort();
     files.dedup();
     files
+}
+
+fn emit_hook_decisions(
+    emit: &mut impl FnMut(&mut Vec<OpEnvelope>, Op) -> bool,
+    ops: &mut Vec<OpEnvelope>,
+    turn_id: &str,
+    run: &nano_hooks::HookRun,
+) -> bool {
+    run.decisions.iter().all(|decision| {
+        emit(
+            ops,
+            Op::HookDecision {
+                turn_id: turn_id.to_string(),
+                event: hook_event_op(decision, run),
+                handler_id: decision.handler_id.clone(),
+                matcher_input: decision.matcher_input.clone(),
+                outcome: match decision.outcome {
+                    nano_hooks::HookOutcome::Pass => nano_session::op::HookOutcome::Pass,
+                    nano_hooks::HookOutcome::Blocked => nano_session::op::HookOutcome::Blocked,
+                    nano_hooks::HookOutcome::Failed => nano_session::op::HookOutcome::Failed,
+                    nano_hooks::HookOutcome::Timeout => nano_session::op::HookOutcome::Timeout,
+                },
+                duration_ms: decision.duration_ms,
+            },
+        )
+    })
+}
+
+fn hook_event_op(
+    decision: &nano_hooks::HookDecision,
+    _run: &nano_hooks::HookRun,
+) -> nano_session::op::HookEvent {
+    match decision.handler_id.split(':').nth(1) {
+        Some("pre_tool_use") => nano_session::op::HookEvent::PreToolUse,
+        Some("post_tool_use") => nano_session::op::HookEvent::PostToolUse,
+        Some("user_prompt_submit") => nano_session::op::HookEvent::UserPromptSubmit,
+        Some("stop") => nano_session::op::HookEvent::Stop,
+        Some("session_start") => nano_session::op::HookEvent::SessionStart,
+        Some("session_end") => nano_session::op::HookEvent::SessionEnd,
+        Some("pre_compact") => nano_session::op::HookEvent::PreCompact,
+        Some("post_compact") => nano_session::op::HookEvent::PostCompact,
+        _ => nano_session::op::HookEvent::Unknown,
+    }
+}
+
+fn hook_failed_turn(ops: Vec<OpEnvelope>, kind: NanoErrorKind, reason: &str) -> TurnResult {
+    let failed = TurnState::Failed(TypedError::new(kind, reason));
+    TurnResult {
+        state: failed.clone(),
+        history: vec![TurnState::Receive, failed],
+        steps: 0,
+        tool_calls: 0,
+        final_text: reason.to_string(),
+        ops,
+        usage: nano_model::types::Usage::default(),
+        turn_usage: None,
+    }
 }
