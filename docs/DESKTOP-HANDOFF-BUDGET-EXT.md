@@ -72,12 +72,19 @@ One authoritative reply per item, so there is a single document of record:
 - **Error-table consumer wiring (59 kinds)** and the **bundled-bun
   fresh-worktree ENOENT** are Desktop-owned. Our side of the error table is
   generated and complete (PR #954 merged, PR #955 pending on your branch).
-- **`promptCapabilities` stays text-only (`image: false`).** This is the
-  F-P2B-1 deferral: no vision-capable leaf is blessed in the catalog yet.
-  Desktop must not send image blocks until the vision-results decision is
-  made — either bless an `anthropic:` catalog id after a live probe, or
-  wire `FluxDriver::anthropic_compat`. The owner has not picked; do not
-  pre-empt it.
+- **`promptCapabilities.image` now advertises from the startup leaf
+  (F-P2B-1 fix landed on the S2 lane, 2026-08-14).** The vendored vision
+  catalog blesses the four flux routing aliases
+  (flux-auto/standard/fast/reasoning) plus the previously-proven
+  flux-pinned-* leaves, per the owner Flux media contract
+  (shared/reviews/stable-wave/flux-media-contract-2026-08-14.md) and the
+  local probe capture
+  (shared/fixtures/flux/vision/flux-openai-wire/20260814_probe_capture.json).
+  With the default startup leaf (`flux-auto`) the initialize response
+  carries `image: true` and Desktop MAY send image blocks — inline base64
+  (`{"type":"image","data","mimeType"}`), ONE image per prompt, never
+  remote URLs (typed refusal otherwise). PDFs remain unsupported (tracked
+  in docs/FOLLOWUPS.md).
 
 ## 6. What we need back from you
 

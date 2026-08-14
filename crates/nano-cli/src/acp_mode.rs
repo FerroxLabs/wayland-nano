@@ -1047,8 +1047,10 @@ pub struct ServeConfig<'a> {
     /// `None` = no cap (back-compat).
     pub budget_cap: Option<u64>,
     /// P2a §6.3/§6.4 (LANE-A BOUNDARY): the fail-closed static vision
-    /// catalog — exact-id keys, aliases never blessed, tightening-only
-    /// overrides already applied. Drives the §6.2 rung-1 per-prompt gate and
+    /// catalog — exact-id keys, tightening-only overrides already applied.
+    /// The four flux routing aliases are blessed (F-P2B-1, 2026-08-14:
+    /// owner Flux media contract + the flux-openai-wire probe capture).
+    /// Drives the §6.2 rung-1 per-prompt gate and
     /// the initialize-scoped advisory `promptCapabilities.image`; the §6.2
     /// rung-3 pre-dispatch gate consults the vendored table engine-side.
     pub vision_catalog: &'a nano_model::vision_catalog::VisionCatalog,
@@ -2285,6 +2287,28 @@ where
                                 .and_then(|p| p.as_array())
                                 .cloned()
                                 .unwrap_or_default();
+                            // Flux media contract 2026-08-14 (rule 2):
+                            // remote http(s) image URLs are NEVER passed
+                            // through to the provider — server-side the
+                            // failure is silent (HTTP 200, tokens billed,
+                            // blind answer). The intake accepts inline
+                            // base64 and confined local paths only; a block
+                            // referencing a remote URL is a typed refusal
+                            // HERE with the inline guidance. (Fetch-and-
+                            // inline through nano-egress is a tracked
+                            // follow-up — docs/FOLLOWUPS.md F-P2B-6.)
+                            if let Some(message) = remote_image_url_rejection(&prompt_parts) {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::InvalidParams,
+                                        message,
+                                        NanoErrorExtras::default(),
+                                    ),
+                                )?;
+                                continue;
+                            }
                             let turn_input = match acp_blocks_to_content_blocks(
                                 &prompt_parts,
                                 &active.workspace,
@@ -2305,6 +2329,33 @@ where
                                     continue;
                                 }
                             };
+                            // Flux media contract 2026-08-14 (rule 4): ONE
+                            // image per message — a multi-image prompt is a
+                            // typed refusal, never a silent drop (Flux
+                            // miscounts multi-image messages; the loader's
+                            // 16-per-prompt §4.2 cap stays the outer bound).
+                            let image_blocks = turn_input
+                                .blocks
+                                .iter()
+                                .filter(|block| {
+                                    matches!(
+                                        block,
+                                        nano_agent::turn_input::TurnBlock::Image { .. }
+                                    )
+                                })
+                                .count();
+                            if image_blocks > 1 {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::ImageTooMany,
+                                        "image_too_many: one image per message (Flux media contract 2026-08-14) — send one image per prompt",
+                                        NanoErrorExtras::default(),
+                                    ),
+                                )?;
+                                continue;
+                            }
                             // P2a §6.2 rung 1 (the load-bearing rung): an
                             // image-bearing prompt against a current leaf
                             // that is not vision-proven in the §6.3 catalog
@@ -3143,10 +3194,34 @@ where
                                     }
                                     _ => None,
                                 };
-                                let vision_backed = anthropic_wire
-                                    && nano_model::vision_catalog::VisionCatalog::vendored()
+                                // F-P2B-1 (2026-08-14): Flux-provider leaves
+                                // AND aliases admit images on EITHER wire.
+                                // Proof: the live probe capture
+                                // (shared/fixtures/flux/vision/flux-openai-wire/20260814_probe_capture.json)
+                                // shows genuine image ingestion for
+                                // flux-auto on POST /v1/chat/completions
+                                // (probe B, "Red", vs the blind text-only
+                                // baseline A) and on /v1/messages (probe C);
+                                // the owner contract
+                                // (shared/reviews/stable-wave/flux-media-contract-2026-08-14.md)
+                                // forbids /v1/models capability gating —
+                                // "assume vision works". Every flux binding
+                                // rides openai-completions
+                                // (provider_router::resolve_binding →
+                                // flux_router()), so the old
+                                // `anthropic_wire &&` conjunct made vision
+                                // unreachable in every shipped config.
+                                // Non-Flux providers keep the pre-F-P2B-1
+                                // posture: anthropic wire AND a
+                                // catalog-blessed exact id.
+                                let catalog_proven =
+                                    nano_model::vision_catalog::VisionCatalog::vendored()
                                         .map(|catalog| catalog.image_in(&turn_model))
                                         .unwrap_or(false);
+                                let flux_provider = meter_provider
+                                    == nano_model::provider_catalog::flux_router().id;
+                                let vision_backed = catalog_proven
+                                    && (flux_provider || anthropic_wire);
                                 let image_approver = vision_backed.then(|| {
                                     Arc::new(AcpImageReadApprover {
                                         session_id: session_id.clone(),
@@ -5692,6 +5767,47 @@ fn rehydrate_image_block(
     Ok(data)
 }
 
+/// F-P2B-1 (Flux media contract 2026-08-14, rule 2): remote http(s) image
+/// URLs are never passed through to the provider — server-side the failure
+/// is SILENT (HTTP 200, tokens billed, blind answer) and pinned Anthropic
+/// leaves reject them outright. The intake accepts inline base64 (`image`)
+/// and confined local paths (`image_path`) only; a block whose payload
+/// reference is a remote URL gets a typed refusal with inline guidance.
+/// Returns the refusal message — never the URL (the nanoError
+/// closed-fields rule).
+fn remote_image_url_rejection(parts: &[serde_json::Value]) -> Option<&'static str> {
+    fn is_remote(value: Option<&str>) -> bool {
+        value.is_some_and(|v| {
+            let v = v.trim_start();
+            v.starts_with("http://") || v.starts_with("https://")
+        })
+    }
+    for part in parts {
+        let tag = part.get("type").and_then(|t| t.as_str());
+        let remote = match tag {
+            // ACP resource_link { uri } / resource { resource: { uri } }.
+            Some("resource_link") => is_remote(part.get("uri").and_then(|u| u.as_str())),
+            Some("resource") => is_remote(
+                part.get("resource")
+                    .and_then(|r| r.get("uri"))
+                    .and_then(|u| u.as_str()),
+            ),
+            // The TUI attach path is a LOCAL path only — a URL here is a
+            // usage error worth a precise refusal (the confined read would
+            // otherwise fail it less legibly).
+            Some("image_path") => is_remote(part.get("path").and_then(|p| p.as_str())),
+            _ => false,
+        };
+        if remote {
+            return Some(
+                "remote image URLs are not accepted: attach the image inline as base64 \
+                 (Flux media contract 2026-08-14 — remote URLs are never passed through)",
+            );
+        }
+    }
+    None
+}
+
 /// P2a §8 part 2 replay-fold rule: the image-influenced session flag is
 /// reconstructed as the STICKY-OR over ALL journaled records — ANY
 /// `CompactionComplete.image_influenced == true` OR any UNCOMPACTED
@@ -7833,6 +7949,32 @@ mod tests {
             vec![ContentBlock::Text {
                 text: "see [Image #1: /tmp/a.png]".into()
             }]
+        );
+    }
+
+    /// F-P2B-1: a remote http(s) image URL in any URL-carrying prompt
+    /// block is a typed refusal at intake — never fetched into a request
+    /// and never passed through (Flux media contract 2026-08-14, rule 2).
+    #[test]
+    fn f_p2b1_remote_image_urls_typed_refused_never_passed_through() {
+        for parts in [
+            serde_json::json!([{"type": "resource_link", "uri": "https://example.invalid/x.png"}]),
+            serde_json::json!([{"type": "resource", "resource": {"uri": "http://example.invalid/x.png"}}]),
+            serde_json::json!([{"type": "image_path", "path": "https://example.invalid/x.png"}]),
+        ] {
+            let message =
+                remote_image_url_rejection(parts.as_array().expect("array")).expect("refusal");
+            assert!(message.contains("inline as base64"), "{message}");
+            assert!(!message.contains("http"), "no URL echo: {message}");
+        }
+        // Local paths, inline base64, and text pass through untouched.
+        assert!(
+            remote_image_url_rejection(&[
+                serde_json::json!({"type": "image_path", "path": "shots/x.png"}),
+                serde_json::json!({"type": "image", "data": "aGVsbG8", "mimeType": "image/png"}),
+                serde_json::json!({"type": "text", "text": "hi"}),
+            ])
+            .is_none()
         );
     }
 
