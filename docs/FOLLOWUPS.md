@@ -1081,3 +1081,55 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
 - **Close means:** heap-profile the acp-host turn path under the soak
   workload, fix the retaining structure, and a 1h verification soak at
   max cadence shows slope <= 16 MiB/h (budgets.json, owner-locked).
+
+## F-46: S4 hooks dead on the acp-host surface — FIXED at 85b5e2c
+
+- **Filed:** 2026-08-15, post-stable audit: the S4 hook engine
+  (`crates/nano-hooks`) only loaded in `crates/nano-cli/src/exec_mode.rs`
+  and `crates/nano-cli/src/host_mode.rs`. The acp-host (Desktop + TUI — the
+  primary product surface) never constructed a `HookEngine`, so a configured
+  hooks.toml was inert exactly where it matters; the S4 lane had flagged the
+  acp wiring as "integrator work" and it never landed.
+- **Fix (this lane):** the engine is loaded ONCE per acp-host process from
+  the same `<nano_home>/hooks.toml` source exec/host read (config under
+  nano_home, TOML, command handlers only — a Desktop-run host and a CLI exec
+  see identical hooks), carried on `ServeConfig::hooks`, and threaded into
+  every session's TurnEngine through a new hooked
+  `run_turn_streaming_with_context_blocks` entry
+  (`crates/nano-agent/src/turn.rs`). Per-turn behavior now matches exec/host
+  exactly: PreToolUse blocks AFTER approval, PostToolUse notify,
+  UserPromptSubmit blocking, Stop one-continuation, PreCompact/PostCompact
+  notify (auto path via the hooked engine; the manual `session/compact`
+  path now calls `compact_messages_with_hooks` with trigger "manual").
+  SessionStart fires at session/new ("startup") and session/load ("resume");
+  SessionEnd fires best-effort at the three session-close points (host exit,
+  session replaced by session/new, session replaced by session/load) — the
+  S4 Drop-based SessionEnd in `bootstrap.rs` never landed on any surface, so
+  acp is the first surface where it fires at all. Lifecycle decisions journal
+  through the session's JournalCoordinator (P3 §3.3 one append authority,
+  never the bootstrap lane's open-per-call second writer) with
+  process-counter envelope ids (replay dedupes duplicate ids, so the
+  bootstrap `{sid}-hook-{pid}-{index}` scheme would have silently dropped
+  decisions across runs). Fail-closed preserved: a broken hooks.toml
+  degrades to stderr warnings + zero hooks, never a dead host; blocking-hook
+  failures still block per the S4 design.
+- **Not wired (accepted, out of scope):** C6 child task turns
+  (`TaskRegistry` builds child engines inside nano-agent) run hook-free on
+  EVERY surface, exec/host included — parity, not a regression. The
+  `bootstrap_session_with_hooks` / `HookedBootstrappedSession` seam remains
+  unused dead code (exec/host bootstrap without it); the acp surface does
+  not route through `bootstrap_session`, so the seam was left untouched
+  rather than force-fit.
+- **Evidence:** `crates/nano-cli/tests/s4_hooks_acp.rs` — wire-level battery
+  over the real `acp_mode::serve` loop (scripted model, recording mock
+  tools, real journal, real hook engine over a test hooks.toml): PreToolUse
+  block denies after approval with the journaled HookDecision(Blocked) +
+  `hook_blocked` ToolResult shape and the executor never runs; a read_only
+  gate denial fires NO hook (after-approval ordering); notify hooks
+  (SessionStart/UserPromptSubmit/PostToolUse) journal Pass while the turn
+  completes; a resumed session fires SessionStart "resume" and blocks
+  identically; a broken hooks.toml degrades to warnings. Gates green:
+  `cargo fmt --check`, `cargo clippy --workspace --all-targets --
+  -D warnings`, `cargo test --workspace` (exit 0, no ACL env failures).
+- **Close means:** closed by the fix; owner may verify on the next Desktop
+  run with a hooks.toml installed.

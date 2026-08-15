@@ -245,6 +245,7 @@ impl Harness {
                 let vision_catalog = nano_model::vision_catalog::VisionCatalog::vendored()
                     .expect("vendored vision catalog parses");
                 let attachment_home = sessions_dir_for_thread.parent().expect("root");
+                let hooks = nano_hooks::HookEngine::empty();
                 let config = acp_mode::ServeConfig {
                     sessions_dir: &sessions_dir_for_thread,
                     default_model: "mock",
@@ -266,6 +267,7 @@ impl Harness {
                     budget_cap: None,
                     vision_catalog: &vision_catalog,
                     attachment_home,
+                    hooks: &hooks,
                     routing: &DEFAULT_ROUTING,
                 };
                 acp_mode::serve(

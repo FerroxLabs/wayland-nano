@@ -340,6 +340,32 @@ impl HookedTurnEngine<'_> {
             )
             .await
     }
+
+    /// The hooked twin of [`TurnEngine::run_turn_streaming_with_context_blocks`]
+    /// (P2a §5.2.1): identical streaming semantics over the authoritative
+    /// [`TurnInput`], with the lifecycle hook engine live (the acp-host
+    /// prompt path routes here).
+    pub async fn run_turn_streaming_with_context_blocks(
+        &self,
+        turn_id: &str,
+        input: TurnInput,
+        prior: Vec<Message>,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+        sink: &mut (dyn FnMut(&OpEnvelope) -> bool + Send),
+        image_influenced_before: bool,
+    ) -> TurnResult {
+        self.engine
+            .run_turn_inner(
+                turn_id,
+                input,
+                prior,
+                cancel,
+                Some(sink),
+                image_influenced_before,
+                Some(self.hooks),
+            )
+            .await
+    }
 }
 
 /// The C9 robustness seams, bundled so hosts opt in wholesale. All-off is
