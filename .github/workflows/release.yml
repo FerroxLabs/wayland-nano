@@ -15,7 +15,8 @@ on:
 
 permissions:
   contents: write # GitHub release assets (Desktop bundling downloads from these)
-  id-token: write # npm provenance (Sigstore OIDC)
+  id-token: write # npm provenance (Sigstore OIDC) + build-provenance attestation
+  attestations: write # SLSA provenance for the release archives (Desktop's bundling gate)
 
 jobs:
   build:
@@ -155,18 +156,14 @@ jobs:
           esac
           npm publish --provenance --access public --tag "$DIST_TAG"
 
-      - name: GitHub release assets (Desktop bundling source)
+      - name: Stage GitHub release archives
         working-directory: packaging/npm
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           VERSION=$(node -p "require('./package.json').version")
-          TAG="v$VERSION"
           # One zip per platform + a combined shasums manifest — the exact
           # shape Desktop's prepareWaylandNano.js downloads and verifies.
-          assets=()
           manifest="{}"
           for dir in binaries/*/; do
             pkg=$(basename "$dir")
@@ -175,9 +172,32 @@ jobs:
             (cd "$dir" && zip -q "$OLDPWD/$zip" "$bin")
             sha=$(sha256sum "$zip" | cut -d' ' -f1)
             manifest=$(echo "$manifest" | jq --arg k "$pkg" --arg v "$sha" '. + {($k): $v}')
-            assets+=("$zip")
           done
           echo "$manifest" | jq . > "wayland-nano-${VERSION}-shasums.json"
+
+      # Desktop REFUSES to bundle a runtime whose archive carries no SLSA
+      # provenance: verifyWNanoRuntime in scripts/verify-packaged-resources.js
+      # requires an attestation signed by THIS workflow, and fails closed
+      # otherwise. Attest BEFORE the upload so a published asset is never left
+      # unattested. The globs cover exactly the files staged above.
+      - name: Attest release archives (SLSA provenance)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            packaging/npm/wayland-nano-*.zip
+            packaging/npm/wayland-nano-*-shasums.json
+
+      - name: Publish GitHub release assets (Desktop bundling source)
+        working-directory: packaging/npm
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v$VERSION"
+          assets=()
+          for zip in wayland-nano-"${VERSION}"-*.zip; do assets+=("$zip"); done
           assets+=("wayland-nano-${VERSION}-shasums.json")
           gh release create "$TAG" --title "Wayland Nano $VERSION" --generate-notes "${assets[@]}" \
             || gh release upload "$TAG" "${assets[@]}" --clobber
