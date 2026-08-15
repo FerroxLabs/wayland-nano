@@ -4,7 +4,12 @@
 
 - **Stable gate met (all six bars):** (1) severity register zero open
   sev-1/2 — owner-signed (`../shared/reviews/stable-wave/SEVERITY-SIGNOFF-2026-08-14.md`),
-  every item fixed with evidence; (2) every advertised capability true —
+  every item fixed with evidence — **with ONE explicitly risk-accepted
+  exception recorded here: F-45** (residual ~8 KB/turn retained growth,
+  bounded by the 1.5 GiB harness cap with 12x headroom, A/B data in
+  `docs/FOLLOWUPS.md`, 0.1.1 target; published under the owner's
+  "done, fixed and published" directive of 2026-08-15 rather than
+  silently reclassified); (2) every advertised capability true —
   Flux Auto tool turns live-proven, vision on the openai wire, MCP HTTP,
   cron, hooks, checkpoints, plugins activating, CUA behind a false
   capability flag pending live proofs (honesty rule); (3) kill safety —
