@@ -6,6 +6,7 @@ import { createInterface } from 'node:readline';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
+import { baselineMedians, evaluateB1 } from './budget-eval.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..', '..');
@@ -173,8 +174,9 @@ const peak = (field) => Math.max(0, ...samples.map((entry) => Number(entry[field
 const durationMs = Date.now() - startedAt.getTime();
 const rate = turns / (durationMs / 3600000);
 const result = (id, status, detail) => ({ id, name: budgets[id].name, status, detail });
+const b1 = evaluateB1(samples, budgets.B1);
 const results = [
-  result('B1', peak('privateWorkingSetBytes') <= budgets.B1.absoluteBytes ? 'PASS' : 'FAIL', `peak=${peak('privateWorkingSetBytes')}`),
+  result('B1', b1.status, JSON.stringify(b1.detail)),
   result('B2', process.platform === 'win32' ? (peak('handles') <= budgets.B2.absolute ? 'PASS' : 'FAIL') : 'SKIP', `peak=${peak('handles')}`),
   result('B3', peak('threads') <= budgets.B3.absolute ? 'PASS' : 'FAIL', `peak=${peak('threads')}`),
   result('B4', process.platform === 'win32' ? 'SKIP' : (peak('openFds') <= budgets.B4.absolute ? 'PASS' : 'FAIL'), `peak=${peak('openFds')}`),
@@ -193,7 +195,7 @@ const manifest = {
   dirty: Boolean(spawnSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' }).stdout.trim()),
   started_at: startedAt.toISOString(), finished_at: new Date().toISOString(), durationMs, mode, seed, turnCount: turns, kills,
   binary: { path: binary, sha256: await sha256(binary), features: ['nano-agent/soak-fake-model'], rustc },
-  baselineMedians: samples[0] ?? {}, sampleSeriesDigest: await sha256(samplePath), sessionJournalPath: journalPath,
+  baselineMedians: baselineMedians(samples), sampleSeriesDigest: await sha256(samplePath), sessionJournalPath: journalPath,
   counts: { pass: results.filter((entry) => entry.status === 'PASS').length, fail: results.filter((entry) => entry.status === 'FAIL').length, skip: results.filter((entry) => entry.status === 'SKIP').length },
   results,
 };
