@@ -102,6 +102,21 @@ pub async fn run(
     let coordinator = nano_session::JournalCoordinator::open(&journal)
         .map(std::sync::Arc::new)
         .map_err(std::io::Error::other)?;
+    // S7: open the workspace checkpoint store at this journal-open site and
+    // run the kill-mid-restore recovery sweep over the persisted tail (this
+    // host's journal is a fixed name, so a kill-mid-restore from a previous
+    // process IS this journal's tail) BEFORE the first turn. `None` is the
+    // typed, loud skip — nothing checkpoint-related registers.
+    let journal_tail = nano_session::read_journal(&journal)
+        .map(|report| report.envelopes)
+        .unwrap_or_default();
+    let checkpoint_store = nano_cli::acp_mode::open_checkpoint_store(
+        nano_home,
+        workspace,
+        &coordinator,
+        "protocol-host",
+        &journal_tail,
+    );
     let gate = nano_cli::session_tools::PlanAwareApproval::new(plan.clone(), workspace);
 
     // MCP: register configured servers (parsed above for the §6.1 egress
@@ -160,10 +175,28 @@ pub async fn run(
     // P3 §3.2/§4.3: the MCP session tools on this host too.
     let executor = nano_agent::mcp_session_tools::McpSessionToolExecutor::new(
         Some(mcp_registry.clone()),
-        coordinator,
+        coordinator.clone(),
         "protocol-host".into(),
         &executor,
     );
+    // S7: the workspace checkpoint tools — journal-first through the
+    // session's coordinator against the store opened (and recovery-swept)
+    // above. The gate (PlanAwareApproval) approves create/list/restore on
+    // this trust-all surface but denies restore under the plan posture.
+    // Registered ONLY when the store opened — `None` was a typed, loud skip.
+    let checkpoint_executor;
+    let executor: &dyn nano_agent::turn::ToolExecutor = match &checkpoint_store {
+        Some(store) => {
+            checkpoint_executor = nano_agent::checkpoint_tools::CheckpointToolExecutor::new(
+                store.clone(),
+                coordinator,
+                "protocol-host".into(),
+                &executor,
+            );
+            &checkpoint_executor
+        }
+        None => &executor,
+    };
 
     // C5: cross-session memory. The store is <nano_home>/memory; read tools
     // and injection are always on over the user-managed store, write tools
@@ -174,7 +207,7 @@ pub async fn run(
         .unwrap_or(false);
     let memory_store = nano_agent::memory::MemoryStore::new(nano_home);
     let executor =
-        nano_agent::memory::MemoryToolExecutor::new(memory_store.clone(), memory_write, &executor);
+        nano_agent::memory::MemoryToolExecutor::new(memory_store.clone(), memory_write, executor);
 
     // Skills: default roots are <nano_home>/skills and <workspace>/.nano/skills;
     // installed skills plugins join the same discovery roots. Same fail-closed
@@ -207,6 +240,11 @@ pub async fn run(
         ));
     }
     tool_definitions.extend(nano_agent::memory::memory_tool_definitions(memory_write));
+    // S7: the checkpoint definitions advertise exactly when the store
+    // opened — the executor wrap above is the servicing half.
+    if checkpoint_store.is_some() {
+        tool_definitions.extend(nano_agent::wiring::checkpoint_tool_definitions());
+    }
     // S9: the protocol host advertises the CUA surface, but its gate
     // (PlanAwareApproval) has NO prompt channel and CUA always prompts
     // (§2.2) — every cua_* call denies there. The engine seam stays unwired

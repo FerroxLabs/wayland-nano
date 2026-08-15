@@ -25,6 +25,9 @@ async-trait = "0.1"
 base64 = "0.22"
 dirs-next = "2"
 nano-agent = { version = "0.1.0", path = "../nano-agent" }
+# S7 seam: the checkpoint store is opened at session bootstrap (recovery
+# sweep) and shared into the per-turn CheckpointToolExecutor wrap.
+nano-checkpoints = { version = "0.1.0", path = "../nano-checkpoints" }
 nano-hooks = { version = "0.1.0", path = "../nano-hooks" }
 nano-core = { version = "0.1.0", path = "../nano-core" }
 # S9: the ACP host constructs the CUA backend/policy (backends::for_platform,
