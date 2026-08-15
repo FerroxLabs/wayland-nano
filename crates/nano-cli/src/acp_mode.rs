@@ -245,6 +245,14 @@ struct Session {
     /// surface). Session-scoped: the §2.2 seen-app set and the §4.2
     /// re-screenshot flag die with the session.
     cua: Option<Arc<nano_agent::cua::CuaSession>>,
+    /// S7: the workspace checkpoint store opened ONCE at session start —
+    /// the kill-mid-restore recovery sweep ran at the same open (the
+    /// journal-open sites), and the per-turn executor wrap clones this Arc.
+    /// `None` = the store is unavailable (a non-git-root workspace, a
+    /// gitless host, or a busy store lock): the checkpoint tools are NOT
+    /// advertised, and the typed skip was logged at open time — fail-closed,
+    /// never a silent drop.
+    checkpoints: Option<Arc<nano_checkpoints::CheckpointStore>>,
 }
 
 /// P4 §3.4: the review completion watcher. Polls the registry's C6
@@ -1681,6 +1689,19 @@ where
                             }
                             let rules =
                                 std::sync::Arc::new(std::sync::RwLock::new(session_rules));
+                            // S7: open the checkpoint store at this
+                            // journal-open site and run the kill-mid-restore
+                            // recovery sweep. A fresh journal cannot carry a
+                            // dangling RestoreBegin, so the sweep is a no-op
+                            // here; the store open (typed, loud on failure)
+                            // is what the per-turn registration needs.
+                            let checkpoints = open_checkpoint_store(
+                                config.attachment_home,
+                                &cwd,
+                                &coordinator,
+                                &session_id,
+                                &[],
+                            );
                             session = Some(Session {
                                 id: session_id.clone(),
                                 workspace: cwd,
@@ -1712,6 +1733,7 @@ where
                                 // S9: a fresh session has no ambiguous tail
                                 // (§4.2) — the resume flag starts disarmed.
                                 cua: cua_session_for(config.attachment_home, false),
+                                checkpoints,
                             });
                             write_out(
                                 &out,
@@ -2143,6 +2165,19 @@ where
                             }
                             let rules =
                                 std::sync::Arc::new(std::sync::RwLock::new(session_rules));
+                            // S7: open the checkpoint store at this
+                            // journal-open site and run the kill-mid-restore
+                            // recovery sweep over the replayed tail — a
+                            // RestoreBegin without its End re-applies
+                            // idempotently and journals the recovered End
+                            // BEFORE the first turn.
+                            let checkpoints = open_checkpoint_store(
+                                config.attachment_home,
+                                &cwd,
+                                &coordinator,
+                                session_id,
+                                &report.envelopes,
+                            );
                             session = Some(Session {
                                 id: session_id.to_string(),
                                 workspace: cwd,
@@ -2193,6 +2228,7 @@ where
                                     config.attachment_home,
                                     !folded.interrupted_cua.is_empty(),
                                 ),
+                                checkpoints,
                             });
                             write_out(
                                 &out,
@@ -2843,6 +2879,10 @@ where
                             // fail-closed at session/new|load) is the turn's
                             // append authority — no per-turn writer.
                             let turn_coordinator = active.coordinator.clone();
+                            // S7: the session's checkpoint store (None = the
+                            // typed skip at session start — nothing
+                            // checkpoint-related registers this turn).
+                            let turn_checkpoints = active.checkpoints.clone();
                             // C11 §3.1/§6: the SessionGuard is the ONE
                             // exclusion mechanism — interactive turns hold it
                             // for the turn's lifetime so a fork or cron fire
@@ -3699,6 +3739,37 @@ where
                                 );
                                 tool_definitions
                                     .push(nano_agent::cron::cronjob_tool_definition());
+                                // S7 (the integrator seam, locked design
+                                // item 4): the workspace checkpoint tools —
+                                // journal-first through the session's
+                                // coordinator against the store opened (and
+                                // recovery-swept) at session start. The
+                                // gate's checkpoint arm (1h) is the
+                                // authorization: create/list approve in
+                                // every mode; restore is plan/read_only
+                                // deny, default prompt, full_auto approve,
+                                // always-prompt under the image clamp.
+                                // Registered ONLY when the store opened —
+                                // a `None` store was a typed, loud skip at
+                                // session start, never a silent drop.
+                                let checkpoint_executor;
+                                let executor: &dyn nano_agent::turn::ToolExecutor =
+                                    match &turn_checkpoints {
+                                        Some(store) => {
+                                            tool_definitions.extend(
+                                                nano_agent::wiring::checkpoint_tool_definitions(),
+                                            );
+                                            checkpoint_executor =
+                                                nano_agent::checkpoint_tools::CheckpointToolExecutor::new(
+                                                    store.clone(),
+                                                    turn_coordinator.clone(),
+                                                    session_id.clone(),
+                                                    &executor,
+                                                );
+                                            &checkpoint_executor
+                                        }
+                                        None => &executor,
+                                    };
                                 // P3 §3.2/§4.3: the MCP session tools
                                 // (tool_search / mcp_list_resources /
                                 // mcp_read_resource) ride the shared registry
@@ -3709,7 +3780,7 @@ where
                                         Some(turn_mcp.clone()),
                                         turn_coordinator.clone(),
                                         session_id.clone(),
-                                        &executor,
+                                        executor,
                                     );
                                 // C6: the task family routes through the
                                 // session's registry
@@ -5570,6 +5641,40 @@ impl<W: Write + Send> ApprovalGate for AcpApproval<W> {
                 self.prompt_host(call)
             };
         }
+        // 1h. S7 (locked design item 4): the checkpoint classes. Create and
+        //     list mutate only journaled/nano_home state — approved in EVERY
+        //     mode, plan posture included (the todo rationale, deliberately
+        //     NOT inherited from SESSION_TOOL_NAMES). Restore is a workspace
+        //     mutation that can overwrite AGENTS.md by effect, so the arm
+        //     checks the plan posture first (typed deny in every mode),
+        //     then the image-influenced clamp (the human prompt in EVERY
+        //     mode — the S7 hardening: restore rides the 2b clamp), then
+        //     the mode ladder: read_only typed deny, default host prompt,
+        //     full_auto approve. Placed BEFORE the plan-posture arm (2) so
+        //     create/list stay available while planning.
+        if let Some(class) = nano_agent::wiring::checkpoint_approval_class(&call.name) {
+            return match class {
+                nano_agent::wiring::CheckpointApprovalClass::Create
+                | nano_agent::wiring::CheckpointApprovalClass::List => ApprovalDecision::Approve,
+                nano_agent::wiring::CheckpointApprovalClass::Restore => {
+                    let plan_active = self.plan.lock().unwrap_or_else(|p| p.into_inner()).active;
+                    if plan_active {
+                        ApprovalDecision::Deny
+                    } else if self.image_influenced.load(Ordering::SeqCst) {
+                        match self.effective_mode() {
+                            PermissionMode::ReadOnly => ApprovalDecision::Deny,
+                            _ => self.prompt_host(call),
+                        }
+                    } else {
+                        match self.effective_mode() {
+                            PermissionMode::ReadOnly => ApprovalDecision::Deny,
+                            PermissionMode::Default => self.prompt_host(call),
+                            PermissionMode::FullAuto => ApprovalDecision::Approve,
+                        }
+                    }
+                }
+            };
+        }
         // 2. C10 §3 plan posture — enforcement AT THE GATE, before the mode
         //    arms, in every C2 mode including full_auto: fs_write/fs_edit
         //    pass ONLY for the session's plan file (a creation-safe
@@ -5923,6 +6028,46 @@ pub fn is_read_only_tool(name: &str) -> bool {
         || name.starts_with("task_status")
         || name.starts_with("task_result")
         || name.starts_with("task_list")
+}
+
+/// S7 seam: open the workspace checkpoint store at a journal-open site and
+/// run the kill-mid-restore recovery sweep over the journal tail BEFORE the
+/// first turn — kill-resume consistency must not depend on the model ever
+/// calling a checkpoint tool. Fail-closed both ways: an unavailable store
+/// (no system git, a non-git-root workspace, a busy store lock) is a typed,
+/// LOUD skip that registers nothing, never a silent drop; a failed sweep is
+/// a typed loud error and the journal still names the dangling Begin, so
+/// the next session open retries the idempotent recovery. Shared by every
+/// host (acp session/new + session/load, exec, protocol-host).
+pub fn open_checkpoint_store(
+    nano_home: &std::path::Path,
+    workspace: &std::path::Path,
+    coordinator: &Arc<nano_session::JournalCoordinator>,
+    session_id: &str,
+    journal_tail: &[nano_session::op::OpEnvelope],
+) -> Option<Arc<nano_checkpoints::CheckpointStore>> {
+    let store = match nano_checkpoints::CheckpointStore::open(nano_home, workspace) {
+        Ok(store) => Arc::new(store),
+        Err(err) => {
+            eprintln!(
+                "wayland-nano: checkpoint tools unavailable ({:?}): {err}",
+                err.kind
+            );
+            return None;
+        }
+    };
+    match store.recover_interrupted_restore(coordinator, session_id, journal_tail) {
+        Ok(Some(recovery)) => eprintln!(
+            "wayland-nano: recovered an interrupted checkpoint restore (id {})",
+            recovery.checkpoint_id
+        ),
+        Ok(None) => {}
+        Err(err) => eprintln!(
+            "wayland-nano: checkpoint restore recovery failed ({:?}): {err}",
+            err.kind
+        ),
+    }
+    Some(store)
 }
 
 /// Interprets a `session/request_permission` response. Approves only an
@@ -7512,6 +7657,129 @@ mod tests {
         // analogue): approval comes ONLY from the explicit arm above.
         assert!(!is_read_only_tool("cronjob"));
         assert!(!nano_agent::wiring::SESSION_TOOL_NAMES.contains(&"cronjob"));
+    }
+
+    /// S7 (locked design item 4) checkpoint gate matrix: create/list
+    /// approve in EVERY mode — they mutate only journaled/nano_home state
+    /// (the todo rationale, deliberately NOT inherited from
+    /// SESSION_TOOL_NAMES). Restore is a workspace mutation that can
+    /// overwrite AGENTS.md by effect: typed-denied in read_only and under
+    /// the plan posture (every mode, never a prompt), prompted in default
+    /// (rejection denies), auto-approved in full_auto — and ALWAYS prompted
+    /// in every mode under the image-influenced clamp (the S7 hardening).
+    #[test]
+    fn s7_checkpoint_gate_matrix() {
+        let ws = workspace();
+        let restore = || {
+            call(
+                "checkpoint_restore",
+                serde_json::json!({"checkpoint_id": "c1"}),
+            )
+        };
+        // create/list: silent approve in all three modes — and under the
+        // plan posture too (they mutate no workspace state).
+        for mode in [
+            PermissionMode::ReadOnly,
+            PermissionMode::Default,
+            PermissionMode::FullAuto,
+        ] {
+            let rig = TestGate::new(mode, &ws.0, true, None);
+            rig.plan.lock().unwrap_or_else(|p| p.into_inner()).active = true;
+            for name in ["checkpoint_create", "checkpoint_list"] {
+                assert_eq!(
+                    rig.gate.approve(&call(name, serde_json::json!({}))),
+                    ApprovalDecision::Approve,
+                    "{mode:?}+plan must approve {name}"
+                );
+            }
+            assert_eq!(
+                rig.prompt_count(),
+                0,
+                "{mode:?} never prompts for create/list"
+            );
+        }
+        // read_only: restore is a categorical typed deny, never a prompt.
+        let rig = TestGate::new(PermissionMode::ReadOnly, &ws.0, true, None);
+        assert_eq!(rig.gate.approve(&restore()), ApprovalDecision::Deny);
+        assert_eq!(rig.prompt_count(), 0, "read_only never prompts for restore");
+        // default: restore resolves through the host prompt — an allow
+        // approves, a rejection denies.
+        let rig = TestGate::new(PermissionMode::Default, &ws.0, true, Some("allow"));
+        assert_eq!(rig.gate.approve(&restore()), ApprovalDecision::Approve);
+        assert_eq!(rig.prompt_count(), 1, "default prompts for restore");
+        let rig = TestGate::new(PermissionMode::Default, &ws.0, true, Some("reject"));
+        assert_eq!(rig.gate.approve(&restore()), ApprovalDecision::Deny);
+        assert_eq!(rig.prompt_count(), 1);
+        // full_auto: restore approves silently (no clamp set).
+        let rig = TestGate::new(PermissionMode::FullAuto, &ws.0, true, None);
+        assert_eq!(rig.gate.approve(&restore()), ApprovalDecision::Approve);
+        assert_eq!(rig.prompt_count(), 0, "full_auto auto-approves restore");
+        // The plan posture typed-denies restore in EVERY mode, no prompt.
+        for mode in [
+            PermissionMode::ReadOnly,
+            PermissionMode::Default,
+            PermissionMode::FullAuto,
+        ] {
+            let rig = TestGate::new(mode, &ws.0, true, Some("allow"));
+            rig.plan.lock().unwrap_or_else(|p| p.into_inner()).active = true;
+            assert_eq!(
+                rig.gate.approve(&restore()),
+                ApprovalDecision::Deny,
+                "plan+{mode:?} must deny checkpoint_restore"
+            );
+            assert_eq!(
+                rig.prompt_count(),
+                0,
+                "plan+{mode:?} never prompts for restore"
+            );
+        }
+        // The image-influenced clamp: restore takes the human prompt in
+        // EVERY mode (a restore can overwrite AGENTS.md by effect);
+        // read_only's categorical deny is stricter still.
+        for mode in [PermissionMode::Default, PermissionMode::FullAuto] {
+            let rig = TestGate::new(mode, &ws.0, true, Some("allow"));
+            rig.image_influenced.store(true, Ordering::SeqCst);
+            assert_eq!(
+                rig.gate.approve(&restore()),
+                ApprovalDecision::Approve,
+                "clamp+{mode:?} restore resolves through the prompt"
+            );
+            assert_eq!(
+                rig.prompt_count(),
+                1,
+                "clamp+{mode:?} must PROMPT for restore (no auto-approve)"
+            );
+        }
+        let rig = TestGate::new(PermissionMode::ReadOnly, &ws.0, true, Some("allow"));
+        rig.image_influenced.store(true, Ordering::SeqCst);
+        assert_eq!(rig.gate.approve(&restore()), ApprovalDecision::Deny);
+        assert_eq!(
+            rig.prompt_count(),
+            0,
+            "clamp+read_only denies without a prompt"
+        );
+        // The names match NEITHER fast path: approval comes ONLY from the
+        // explicit arm above (the cronjob pin's checkpoint analogue).
+        for name in nano_agent::wiring::CHECKPOINT_TOOL_NAMES {
+            assert!(
+                !is_read_only_tool(name),
+                "{name} must not be a read-only fast path"
+            );
+            assert!(
+                !nano_agent::wiring::SESSION_TOOL_NAMES.contains(&name),
+                "{name} must not join the auto-approve-coupled SESSION_TOOL_NAMES"
+            );
+        }
+        // C6: children never see the checkpoint surface — the explicit
+        // filter in child_tool_definitions (not the SESSION_TOOL_NAMES
+        // list) is what excludes them.
+        let child = nano_agent::wiring::child_tool_definitions(false, false);
+        for name in nano_agent::wiring::CHECKPOINT_TOOL_NAMES {
+            assert!(
+                !child.iter().any(|def| def.name == name),
+                "{name} must be absent from the child tool surface"
+            );
+        }
     }
 
     /// P4 §4.3/§13: the four follow-ups are NOT re-gated outside read_only

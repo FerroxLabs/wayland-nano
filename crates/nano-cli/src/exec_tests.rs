@@ -962,3 +962,372 @@ done
     assert!(!alive, "MCP child {pid} must be reaped when exec exits");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// S7 (locked design item 4) exec checkpoint gate matrix: create/list
+/// approve in EVERY mode (journaled/nano_home state only); restore is
+/// categorically denied in read_only, auto-denied in default (it would
+/// prompt interactively and exec can never prompt), and auto-approved in
+/// full_auto. Under the image-influenced clamp restore is denied in EVERY
+/// mode — exec cannot show the clamp's mandatory prompt.
+#[test]
+fn s7_exec_gate_checkpoint_matrix() {
+    let dir = tmpdir("gate-ckpt");
+    let policy = fake_policy();
+    let call = |name: &str| ToolCall {
+        id: "c".into(),
+        name: name.into(),
+        arguments: serde_json::json!({"checkpoint_id": "c1"}),
+    };
+    for mode in [
+        PermissionMode::ReadOnly,
+        PermissionMode::Default,
+        PermissionMode::FullAuto,
+    ] {
+        for name in ["checkpoint_create", "checkpoint_list"] {
+            assert_eq!(
+                exec_gate_decision(&call(name), mode, &policy, &dir, true, &no_rules()),
+                ApprovalDecision::Approve,
+                "{mode:?}: {name} approves in exec"
+            );
+        }
+        let expected = match mode {
+            PermissionMode::FullAuto => ApprovalDecision::Approve,
+            _ => ApprovalDecision::Deny,
+        };
+        assert_eq!(
+            exec_gate_decision(
+                &call("checkpoint_restore"),
+                mode,
+                &policy,
+                &dir,
+                true,
+                &no_rules()
+            ),
+            expected,
+            "{mode:?}: checkpoint_restore"
+        );
+    }
+    // The names match NEITHER fast path (the acp pin's exec analogue).
+    for name in nano_agent::wiring::CHECKPOINT_TOOL_NAMES {
+        assert!(!crate::acp_mode::is_read_only_tool(name));
+        assert!(!nano_agent::wiring::SESSION_TOOL_NAMES.contains(&name));
+    }
+    // The image-influenced clamp denies restore in EVERY mode on this
+    // non-interactive surface (full_auto included).
+    for mode in [
+        PermissionMode::ReadOnly,
+        PermissionMode::Default,
+        PermissionMode::FullAuto,
+    ] {
+        let events = std::sync::Arc::new(Mutex::new(ExecEvents::new(Vec::new(), "s".into())));
+        let gate = crate::exec_mode::ExecApproval {
+            mode,
+            policy: policy.clone(),
+            cwd: dir.clone(),
+            sandbox_available: true,
+            events,
+            image_influenced: true,
+            rules: no_rules(),
+            rule_denial: std::sync::Arc::new(Mutex::new(None)),
+        };
+        assert_eq!(
+            nano_agent::turn::ApprovalGate::approve(&gate, &call("checkpoint_restore")),
+            ApprovalDecision::Deny,
+            "clamp+{mode:?}: checkpoint_restore denies outright in exec"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A scripted driver for the checkpoint e2e: checkpoint_create → fs_write
+/// (modify the captured file) → checkpoint_restore (the id recovered from
+/// the create tool result in the conversation) → final text. Also records
+/// the advertised tool surface from the first request.
+#[derive(Debug, Default, Clone)]
+struct CheckpointScript {
+    step: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    seen_tools: std::sync::Arc<Mutex<Vec<String>>>,
+}
+
+/// Recovers the checkpoint id from the create tool result in the
+/// conversation (the ToolResult content is the executor's JSON output:
+/// `{"checkpoint_id":"<40-hex git commit id>",...}`).
+fn checkpoint_id_from_request(request: &ModelRequest) -> Option<String> {
+    request
+        .messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .filter_map(|block| match block {
+            nano_model::types::ContentBlock::ToolResult { content, .. } => Some(content),
+            _ => None,
+        })
+        .filter_map(|content| serde_json::from_str::<serde_json::Value>(content).ok())
+        .find_map(|value| value.get("checkpoint_id")?.as_str().map(str::to_string))
+}
+
+#[async_trait::async_trait]
+impl ModelDriver for CheckpointScript {
+    async fn complete(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError> {
+        {
+            let mut seen = self.seen_tools.lock().unwrap();
+            if seen.is_empty() {
+                *seen = request.tools.iter().map(|tool| tool.name.clone()).collect();
+            }
+        }
+        match self.step.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => tool_response(ToolCall {
+                id: "ck-1".into(),
+                name: "checkpoint_create".into(),
+                arguments: serde_json::json!({"label": "e2e"}),
+            }),
+            1 => tool_response(ToolCall {
+                id: "ck-2".into(),
+                name: "fs_write".into(),
+                arguments: serde_json::json!({"path": "a.txt", "content": "modified"}),
+            }),
+            2 => {
+                let id = checkpoint_id_from_request(request)
+                    .expect("the create tool result carried the checkpoint id");
+                tool_response(ToolCall {
+                    id: "ck-3".into(),
+                    name: "checkpoint_restore".into(),
+                    arguments: serde_json::json!({"checkpoint_id": id}),
+                })
+            }
+            _ => text_response("done"),
+        }
+    }
+}
+
+/// Real fs tools over the workspace (the checkpoint store only accepts a
+/// git-rooted workspace, and fs_write must really modify the file — the
+/// oracle is the filesystem, never self-report).
+fn real_tools(
+    home: PathBuf,
+) -> impl Fn(
+    &std::path::Path,
+    PermissionMode,
+) -> (
+    nano_agent::wiring::RealToolExecutor,
+    nano_core::permissions::FileSystemSandboxPolicy,
+) {
+    move |workspace: &std::path::Path, _mode| {
+        let policy = nano_core::permissions::PermissionProfile::workspace_write()
+            .file_system_sandbox_policy();
+        let fs = nano_tools::fs::FsTools::new(policy.clone(), workspace);
+        let shell = nano_tools::shell::ShellTool::new(&home, workspace);
+        (
+            nano_agent::wiring::RealToolExecutor::new(fs, shell, workspace),
+            policy,
+        )
+    }
+}
+
+fn git(workspace: &std::path::Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args(args)
+        .current_dir(workspace)
+        .status()
+        .expect("git spawn");
+    assert!(status.success(), "git {args:?} failed");
+}
+
+/// run_fake_shared with an explicit dir/workspace (the checkpoint tests
+/// need a git-rooted workspace and the session id from the first run).
+async fn run_fake_on(
+    dir: &std::path::Path,
+    sessions: &std::path::Path,
+    workspace: &std::path::Path,
+    model: FakeModel,
+    params: &ExecParams,
+) -> ExecRun {
+    let shared = std::sync::Arc::new(Mutex::new(Vec::<u8>::new()));
+    let ladder_model = model.clone();
+    let exit = run_exec_with(
+        sessions,
+        dir,
+        workspace,
+        params,
+        "fake-model",
+        move || model.clone(),
+        move || ladder_model.clone(),
+        real_tools(dir.to_path_buf()),
+        false,
+        false,
+        &[],
+        &IMPLICIT_ROUTING,
+        SharedWriter(shared.clone()),
+    )
+    .await;
+    let text = String::from_utf8(shared.lock().unwrap().clone()).unwrap();
+    let events = text
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect();
+    ExecRun { exit, events }
+}
+
+/// S7 end-to-end on the exec surface: a session creates a checkpoint,
+/// modifies the captured file, and restores it — the advertised surface
+/// carries the three tools, the gate approves each call in full_auto, the
+/// journal carries the create/restore ops, and the filesystem is the
+/// oracle: the restored file is byte-identical to the captured content.
+#[tokio::test]
+async fn s7_exec_checkpoint_create_modify_restore() {
+    let dir = tmpdir("ckpt-e2e");
+    let sessions = dir.join("sessions");
+    let workspace = dir.join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+    git(&workspace, &["init"]);
+    std::fs::write(workspace.join("a.txt"), "original").unwrap();
+    git(&workspace, &["add", "a.txt"]);
+
+    let script = CheckpointScript::default();
+    let shared = std::sync::Arc::new(Mutex::new(Vec::<u8>::new()));
+    let mut run_params = params("checkpoint e2e");
+    run_params.mode = PermissionMode::FullAuto;
+    let ladder_script = script.clone();
+    let exit = run_exec_with(
+        &sessions,
+        &dir,
+        &workspace,
+        &run_params,
+        "fake-model",
+        {
+            let script = script.clone();
+            move || script.clone()
+        },
+        move || ladder_script.clone(),
+        real_tools(dir.clone()),
+        false,
+        false,
+        &[],
+        &IMPLICIT_ROUTING,
+        SharedWriter(shared.clone()),
+    )
+    .await;
+    assert_eq!(exit, 0);
+
+    // The advertised surface carried all three checkpoint tools.
+    let seen = script.seen_tools.lock().unwrap().clone();
+    for name in nano_agent::wiring::CHECKPOINT_TOOL_NAMES {
+        assert!(
+            seen.iter().any(|tool| tool == name),
+            "{name} not advertised"
+        );
+    }
+    // Every scripted call succeeded (no approval_denied, no failed result).
+    let text = String::from_utf8(shared.lock().unwrap().clone()).unwrap();
+    assert!(!text.contains("approval_denied"), "{text}");
+    let events: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let tool_names: Vec<&str> = events
+        .iter()
+        .filter(|e| e["type"] == "tool_call")
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tool_names,
+        ["checkpoint_create", "fs_write", "checkpoint_restore"]
+    );
+    for event in events.iter().filter(|e| e["type"] == "tool_result") {
+        assert_eq!(event["ok"], true, "tool result failed: {event}");
+    }
+    // The fs oracle: restore returned the file to the captured content.
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+        "original"
+    );
+    // The journal carries the checkpoint ops (digest-only events).
+    let session_id = events[0]["session_id"].as_str().unwrap();
+    let journal = std::fs::read_to_string(sessions.join(format!("{session_id}.jsonl"))).unwrap();
+    assert!(journal.contains("\"checkpoint_created\""), "{journal}");
+    assert!(
+        journal.contains("\"checkpoint_restore_begin\""),
+        "{journal}"
+    );
+    assert!(journal.contains("\"checkpoint_restore_end\""), "{journal}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// S7 kill-mid-restore recovery: a session whose journal tail carries a
+/// RestoreBegin WITHOUT its End (the simulated kill) is swept at the next
+/// run's journal open — the checkpoint re-applies idempotently to the exact
+/// tree (fs oracle) and the recovered End lands on the journal.
+#[tokio::test]
+async fn s7_exec_resume_recovers_interrupted_restore() {
+    let dir = tmpdir("ckpt-recover");
+    let sessions = dir.join("sessions");
+    let workspace = dir.join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+    git(&workspace, &["init"]);
+    std::fs::write(workspace.join("a.txt"), "original").unwrap();
+    git(&workspace, &["add", "a.txt"]);
+
+    // Run 1: create a checkpoint, then finish cleanly.
+    let model = FakeModel::with(vec![
+        tool_response(ToolCall {
+            id: "ck-1".into(),
+            name: "checkpoint_create".into(),
+            arguments: serde_json::json!({}),
+        }),
+        text_response("done"),
+    ]);
+    let mut run_params = params("create a checkpoint");
+    run_params.mode = PermissionMode::FullAuto;
+    let run = run_fake_on(&dir, &sessions, &workspace, model, &run_params).await;
+    assert_eq!(run.exit, 0);
+    let session_id = run.events[0]["session_id"].as_str().unwrap().to_string();
+
+    // Simulate the kill mid-restore: journal a RestoreBegin with NO End
+    // (hand-built like the store's own begin op), then corrupt the file as
+    // a partial apply would leave it.
+    let store = nano_checkpoints::CheckpointStore::open(&dir, &workspace).unwrap();
+    let checkpoint = store.list().unwrap().into_iter().next().unwrap();
+    let journal_path = sessions.join(format!("{session_id}.jsonl"));
+    {
+        let coordinator = nano_session::JournalCoordinator::open(&journal_path).unwrap();
+        coordinator
+            .append(&nano_session::op::OpEnvelope::new(
+                "kill-restore-begin-1",
+                "now",
+                nano_session::op::Op::CheckpointRestoreBegin {
+                    checkpoint_id: checkpoint.id.clone(),
+                    safety_checkpoint_id: checkpoint.id.clone(),
+                    file_count: checkpoint.file_count,
+                    tree_digest: checkpoint.tree_digest.clone(),
+                },
+            ))
+            .unwrap();
+    }
+    std::fs::write(workspace.join("a.txt"), "corrupted").unwrap();
+
+    // Run 2: resume. The sweep at the journal open re-applies the
+    // checkpoint BEFORE the first turn and journals the recovered End.
+    let model = FakeModel::with(vec![text_response("resumed")]);
+    let mut resume_params = params("resume");
+    resume_params.mode = PermissionMode::FullAuto;
+    resume_params.resume = Some(ResumeTarget::Id(session_id));
+    let run = run_fake_on(&dir, &sessions, &workspace, model, &resume_params).await;
+    assert_eq!(run.exit, 0);
+
+    // The fs oracle: the interrupted restore converged to the checkpoint.
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+        "original"
+    );
+    // The journal names the recovery: a restore End with recovered=true
+    // follows the dangling Begin.
+    let journal = std::fs::read_to_string(&journal_path).unwrap();
+    let begin = journal
+        .find("\"checkpoint_restore_begin\"")
+        .expect("begin op");
+    let end = journal[begin..]
+        .find("\"checkpoint_restore_end\"")
+        .map(|at| begin + at)
+        .expect("recovered end op");
+    assert!(journal[end..].contains("\"recovered\":true"), "{journal}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

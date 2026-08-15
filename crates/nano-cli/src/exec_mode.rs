@@ -267,6 +267,23 @@ pub fn exec_gate_decision(
     if call.name == "cronjob" {
         return ApprovalDecision::Deny;
     }
+    // S7 (locked design item 4): checkpoint create/list mutate only
+    // journaled/nano_home state — approved in EVERY mode. Restore is a
+    // workspace mutation: read_only denies categorically, default would
+    // prompt interactively (auto-deny on this non-interactive surface),
+    // full_auto approves. The image-influenced clamp denies restore in
+    // EVERY mode — exec can never show the clamp's mandatory prompt (the
+    // clamp lives in ExecApproval::approve, above this function).
+    if let Some(class) = nano_agent::wiring::checkpoint_approval_class(&call.name) {
+        return match class {
+            nano_agent::wiring::CheckpointApprovalClass::Create
+            | nano_agent::wiring::CheckpointApprovalClass::List => ApprovalDecision::Approve,
+            nano_agent::wiring::CheckpointApprovalClass::Restore => match mode {
+                PermissionMode::FullAuto => ApprovalDecision::Approve,
+                _ => ApprovalDecision::Deny,
+            },
+        };
+    }
     // S9 §2.2/§3: computer use ALWAYS prompts (uncontainable by
     // construction — no mode auto-approves it), and exec can never prompt,
     // so every cua_* call auto-denies in EVERY mode. Pinned explicitly like
@@ -327,19 +344,24 @@ impl<W: Write + Send> ApprovalGate for ExecApproval<W> {
         // requires explicit human approval — impossible on this
         // non-interactive surface, so it is DENIED (fail closed), exactly
         // the posture exec already applies to anything that would prompt.
-        let decision =
-            if self.image_influenced && crate::acp_mode::is_protected_trust_mutation(call) {
-                ApprovalDecision::Deny
-            } else {
-                exec_gate_decision(
-                    call,
-                    self.mode,
-                    &self.policy,
-                    &self.cwd,
-                    self.sandbox_available,
-                    &self.rules,
-                )
-            };
+        // S7: checkpoint_restore rides the same clamp — it can overwrite
+        // AGENTS.md by effect, so under the clamp it always prompts
+        // interactively and is therefore denied outright here.
+        let decision = if self.image_influenced
+            && (crate::acp_mode::is_protected_trust_mutation(call)
+                || call.name == "checkpoint_restore")
+        {
+            ApprovalDecision::Deny
+        } else {
+            exec_gate_decision(
+                call,
+                self.mode,
+                &self.policy,
+                &self.cwd,
+                self.sandbox_available,
+                &self.rules,
+            )
+        };
         if decision == ApprovalDecision::Deny {
             // P4 §2.6/§8: a Deny RULE's denial is typed (`shell_rule_denied`)
             // and names the rule; mode/host denials stay `approval_denied`.

@@ -1133,3 +1133,39 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
   -D warnings`, `cargo test --workspace` (exit 0, no ACL env failures).
 - **Close means:** closed by the fix; owner may verify on the next Desktop
   run with a hooks.toml installed.
+
+## F-46: checkpoints shipped unreachable — the S7 integrator seam was never wired — FIXED
+
+- **Filed:** 2026-08-15, from the post-stable audit: the S7 checkpoints
+  engine merged but `checkpoint_tool_definitions()` /
+  `CHECKPOINT_TOOL_NAMES` (crates/nano-agent/src/wiring.rs) and
+  `CheckpointToolExecutor` (crates/nano-agent/src/checkpoint_tools.rs) had
+  ZERO production callers — nothing in acp_mode.rs / exec_run.rs /
+  host_mode.rs / the TUI registered them, while the stable gate claimed
+  checkpoints work.
+- **Fix:** 22d651d wires the S7 deviation-request seam on all three live
+  surfaces (the TUI rides acp-host): per-turn tool-definition extend +
+  `CheckpointToolExecutor` wrap beside the cronjob registration (acp), the
+  same wrap on exec and protocol-host, the locked-design approval arms
+  (acp arm 1h: create/list approve every mode, restore plan/read_only
+  typed deny, default prompt, full_auto approve, always-prompt under the
+  image-influenced clamp; exec: create/list approve, restore full_auto
+  only and clamp-denied — the deviation request's predicted explicit arm,
+  since exec's catch-all would have denied restore even in full_auto;
+  protocol-host: restore denied under the plan posture), and the
+  kill-mid-restore recovery sweep at every journal-open site (acp
+  session/new + session/load, exec, protocol-host) via the shared
+  `open_checkpoint_store`. A store that cannot open (gitless host,
+  non-git-root workspace, busy lock) is a typed, loud skip that registers
+  nothing — fail-closed, never a silent drop.
+- **Evidence:** acp gate matrix (`s7_checkpoint_gate_matrix`), exec gate
+  matrix + image clamp (`s7_exec_gate_checkpoint_matrix`), protocol-host
+  posture arm
+  (`plan_aware_approval_denies_checkpoint_restore_under_the_posture`),
+  exec end-to-end create → modify → restore with the filesystem oracle
+  (`s7_exec_checkpoint_create_modify_restore`), kill-mid-restore recovery
+  via exec resume (`s7_exec_resume_recovers_interrupted_restore`), the
+  child-surface pin inside the acp matrix; gate-all green (fmt check,
+  clippy -D warnings, cargo test --workspace).
+- **Close means:** closed by the fix commit; this entry is the audit
+  trail.

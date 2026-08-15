@@ -134,6 +134,18 @@ where
             return 2;
         }
     };
+    // S7: open the workspace checkpoint store at this journal-open site and
+    // run the kill-mid-restore recovery sweep over the bootstrapped tail
+    // BEFORE the first turn — a resumed session's dangling RestoreBegin
+    // re-applies idempotently and journals the recovered End. `None` is the
+    // typed, loud skip: nothing checkpoint-related registers this run.
+    let checkpoint_store = crate::acp_mode::open_checkpoint_store(
+        nano_home,
+        workspace,
+        &journal,
+        &session.session_id,
+        &session.envelopes,
+    );
     let journal_sequence = Arc::new(AtomicU64::new(1));
     let context = crate::acp_mode::messages_from_envelopes(&session.envelopes);
 
@@ -267,6 +279,25 @@ where
         session.session_id.clone(),
         &journal,
     );
+    // S7: the workspace checkpoint tools ride beside the cron wrapper —
+    // journal-first through the session's coordinator against the store
+    // opened (and recovery-swept) above. The exec GATE arms them (create/
+    // list approve in every mode; restore approves only in full_auto and
+    // auto-denies under the image clamp) — registered ONLY when the store
+    // opened.
+    let with_checkpoints;
+    let with_cron: &dyn nano_agent::turn::ToolExecutor = match &checkpoint_store {
+        Some(store) => {
+            with_checkpoints = nano_agent::checkpoint_tools::CheckpointToolExecutor::new(
+                store.clone(),
+                journal.clone(),
+                session.session_id.clone(),
+                &with_cron,
+            );
+            &with_checkpoints
+        }
+        None => &with_cron,
+    };
     // P3: the registry is SHARED (executor + session-tool wrapper), the
     // elicitation bridge auto-declines on this non-interactive surface
     // (§5.2: would-prompt ⇒ deny), and the journaled hydration state is
@@ -316,7 +347,7 @@ where
             eprintln!("wayland-nano: {notice}");
         }
     }
-    let with_mcp = nano_agent::mcp::McpToolExecutor::from_shared(mcp_registry.clone(), &with_cron);
+    let with_mcp = nano_agent::mcp::McpToolExecutor::from_shared(mcp_registry.clone(), with_cron);
     let with_mcp = nano_agent::mcp_session_tools::McpSessionToolExecutor::new(
         (!mcp_specs.is_empty()).then(|| mcp_registry.clone()),
         journal.clone(),
@@ -324,6 +355,12 @@ where
         &with_mcp,
     );
     let mut extra_definitions = vec![nano_agent::cron::cronjob_tool_definition()];
+    // S7: the checkpoint definitions advertise exactly when the store
+    // opened — the executor wrap above is the servicing half of the same
+    // condition.
+    if checkpoint_store.is_some() {
+        extra_definitions.extend(nano_agent::wiring::checkpoint_tool_definitions());
+    }
     // S9 §3: CUA tool definitions register only outside read_only (posture,
     // strictest-wins). Exec can never prompt and CUA always prompts, so the
     // exec gate auto-denies every cua_* call in every mode (pinned arm) —

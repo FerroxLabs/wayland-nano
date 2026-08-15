@@ -731,6 +731,20 @@ impl nano_agent::turn::ApprovalGate for PlanAwareApproval {
         if nano_agent::cua::is_cua_tool(&call.name) {
             return nano_agent::turn::ApprovalDecision::Deny;
         }
+        // S7 (locked design item 4): checkpoint_restore is a workspace
+        // mutation the read-only planning posture forbids — deny it while
+        // the posture is active, exactly like a non-plan-file write. Create
+        // and list mutate only journaled/nano_home state and keep the
+        // trust-all baseline below.
+        if call.name == "checkpoint_restore"
+            && self
+                .posture
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .active
+        {
+            return nano_agent::turn::ApprovalDecision::Deny;
+        }
         match posture_allows(&self.posture, call, &self.workspace) {
             Some(true) => nano_agent::turn::ApprovalDecision::Approve,
             Some(false) => nano_agent::turn::ApprovalDecision::Deny,
@@ -1024,6 +1038,41 @@ mod tests {
                 "{name}: no prompt channel ⇒ deny (never trust-all)"
             );
         }
+    }
+
+    /// S7 (locked design item 4): on the protocol host's trust-all surface
+    /// the checkpoint tools approve at baseline, but checkpoint_restore —
+    /// a workspace mutation — denies under the plan posture exactly like a
+    /// non-plan-file write; create/list (journaled/nano_home state only)
+    /// stay approved either way.
+    #[test]
+    fn plan_aware_approval_denies_checkpoint_restore_under_the_posture() {
+        use nano_agent::turn::{ApprovalDecision, ApprovalGate};
+        let (tmp, posture) = posture_fixture();
+        let gate = PlanAwareApproval::new(posture.clone(), tmp.path());
+        let call = |name: &str| nano_model::types::ToolCall {
+            id: "c".into(),
+            name: name.into(),
+            arguments: serde_json::json!({"checkpoint_id": "c1"}),
+        };
+        // Baseline: all three approve (trust-all parity).
+        for name in nano_agent::wiring::CHECKPOINT_TOOL_NAMES {
+            assert_eq!(gate.approve(&call(name)), ApprovalDecision::Approve);
+        }
+        // Posture on: restore denies; create/list are unaffected.
+        posture.lock().unwrap().active = true;
+        assert_eq!(
+            gate.approve(&call("checkpoint_restore")),
+            ApprovalDecision::Deny
+        );
+        assert_eq!(
+            gate.approve(&call("checkpoint_create")),
+            ApprovalDecision::Approve
+        );
+        assert_eq!(
+            gate.approve(&call("checkpoint_list")),
+            ApprovalDecision::Approve
+        );
     }
 
     #[test]

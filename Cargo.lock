@@ -1570,6 +1570,7 @@ dependencies = [
  "dirs-next",
  "libc",
  "nano-agent",
+ "nano-checkpoints",
  "nano-core",
  "nano-cua",
  "nano-egress",
