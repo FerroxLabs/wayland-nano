@@ -257,7 +257,9 @@ mod tests {
     static PRICING_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn pricing_env_guard() -> std::sync::MutexGuard<'static, ()> {
-        PRICING_ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        PRICING_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[test]
