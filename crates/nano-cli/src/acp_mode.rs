@@ -148,9 +148,28 @@ struct Session {
     /// Turns started in this session (restored from the journal on load), so
     /// turn ids — and therefore envelope ids — never collide across resumes.
     turn_counter: u64,
-    /// Conversation context rebuilt from the journal; the next prompt starts
-    /// with these messages so the model sees the full prior history.
-    context: Vec<Message>,
+    /// S10 soak fix: the incrementally-folded journal → context state (see
+    /// [`ContextFold`]). The conversation the next prompt starts from is
+    /// MATERIALIZED from this fold (prefix cache + the folded messages) —
+    /// the journal is folded once per appended byte via a byte-offset tail
+    /// read, never re-read whole per turn. session/load primes it from the
+    /// one permitted full read (the kill-resume path is unchanged).
+    fold: ContextFold,
+    /// The bounded prefix blocks (AGENTS.md / plan / todo), re-rendered at
+    /// session start and at every turn completion — the EXACT render points
+    /// the pre-S10 wholesale rebuild used, so F-C10-1's pinned timing
+    /// stands: a mid-session AGENTS.md edit lands one turn late in
+    /// acp_mode (documented deviation; host_mode re-reads per turn).
+    prefix_cache: Vec<Message>,
+    /// S9 §4.2: the interrupted-CUA resume note, set at session/load and
+    /// materialized into every prompt until the first turn completes (the
+    /// pre-S10 wholesale rebuild dropped it at the same point).
+    cua_resume_block: Option<String>,
+    /// A successful manual session/compact's compacted context: prompts
+    /// start from EXACTLY it (the pre-S10 `active.context` semantics) until
+    /// the first later turn completion supersedes it with the journal fold
+    /// — exactly like the old wholesale rebuild superseded it.
+    context_override: Option<Vec<Message>>,
     /// The session's current model id (set via session/set_model, validated
     /// against the advertised catalog). The next turn's model request carries
     /// exactly this id.
@@ -1475,10 +1494,20 @@ where
                                 }
                             };
                             let todos = Arc::new(Mutex::new(Vec::new()));
-                            // C10 §4: a fresh session's context starts with
+                            // C10 §4: a fresh session's prefix starts with
                             // the bounded, UNTRUSTED-labeled AGENTS.md block
-                            // (rendered fresh per rebuild), nothing else.
-                            let context = session_context_prefix(&cwd, &todos, &plan);
+                            // (re-rendered at the pre-S10 rebuild points:
+                            // session start and every turn completion).
+                            let prefix_cache = session_context_prefix(&cwd, &todos, &plan);
+                            // S10: a fresh session's fold starts empty; the
+                            // offset sits past the just-journaled SessionBegin
+                            // (context-neutral on every fold consumer), so the
+                            // first turn completion folds only new bytes.
+                            let mut fold = ContextFold::new();
+                            fold.offset = std::fs::metadata(&journal)
+                                .map(|meta| meta.len())
+                                .unwrap_or(0);
+                            fold.bytes_read = fold.offset;
                             // C6: replacing a live session tears its children
                             // down first (bounded, then detach).
                             if let Some(old) = session.take() {
@@ -1555,7 +1584,10 @@ where
                                 _ownership: ownership,
                                 coordinator,
                                 turn_counter: 0,
-                                context,
+                                fold,
+                                prefix_cache,
+                                cua_resume_block: None,
+                                context_override: None,
                                 model: config.default_model.to_string(),
                                 // P5: a fresh session starts on the default
                                 // (implicit or configured) — never a pin.
@@ -1767,11 +1799,12 @@ where
                             } else {
                                 None
                             };
-                            let (context_messages, attachment_issues) =
-                                messages_from_envelopes_rehydrating(
-                                    &report.envelopes,
-                                    attachment_store.as_ref(),
-                                );
+                            // S10: the ONE full read this session ever makes
+                            // primes the incremental fold (kill-resume keeps
+                            // the full-rebuild authority); later turns advance
+                            // from byte-offset tail reads only.
+                            let (mut fold, attachment_issues) =
+                                ContextFold::prime(&report.envelopes, attachment_store.as_ref());
                             for issue in &attachment_issues {
                                 write_out(
                                     &out,
@@ -1865,19 +1898,33 @@ where
                             // session off the carried window.
                             mcp_session_notices(&out, session_id, &mcp, Some(&folded))?;
                             let todos = Arc::new(Mutex::new(folded.todos.clone()));
-                            let mut context = session_context_prefix(&cwd, &todos, &plan);
-                            context.extend(context_messages);
+                            // C10 §2/§4: the bounded prefix blocks, rendered
+                            // at the same point the pre-S10 rebuild rendered
+                            // them (the todo cell is already restored above).
+                            let prefix_cache = session_context_prefix(&cwd, &todos, &plan);
                             // S9 §4.2: unpaired CUA actions at the journal
                             // tail (kill between append and dispatch return)
-                            // are ambiguous — the input may have landed. Tell
-                            // the model which actions were interrupted; the
-                            // bridge's resume flag (armed below) enforces the
-                            // mandatory-first-screenshot rule mechanically.
-                            if !folded.interrupted_cua.is_empty() {
-                                context.push(Message::system(cua_interrupted_block(
-                                    &folded.interrupted_cua,
-                                )));
-                            }
+                            // are ambiguous — the input may have landed. The
+                            // note rides every prompt until the first turn
+                            // completes (the point the pre-S10 wholesale
+                            // rebuild dropped it); the bridge's resume flag
+                            // (armed below) enforces the mandatory-first-
+                            // screenshot rule mechanically.
+                            let cua_resume_block = if folded.interrupted_cua.is_empty() {
+                                None
+                            } else {
+                                Some(cua_interrupted_block(&folded.interrupted_cua))
+                            };
+                            // The fold's byte offset sits past EVERY load-time
+                            // append (the resume SessionBegin marker and any
+                            // §4.1 ConsumedInflight receipts above) — all of
+                            // them context-neutral on every fold consumer, so
+                            // the primed fold equals the fold of the whole
+                            // file at this offset.
+                            fold.offset = std::fs::metadata(&journal)
+                                .map(|meta| meta.len())
+                                .unwrap_or(0);
+                            fold.bytes_read = fold.offset;
                             // C6: replacing a live session tears its children
                             // down first (bounded, then detach).
                             if let Some(old) = session.take() {
@@ -1904,11 +1951,9 @@ where
                                 ));
                                 meter.reseed(&usage, folded.budget_granted_tokens);
                             }
-                            let image_influenced = Arc::new(
-                                std::sync::atomic::AtomicBool::new(
-                                    image_influenced_from_envelopes(&report.envelopes),
-                                ),
-                            );
+                            let image_influenced = Arc::new(std::sync::atomic::AtomicBool::new(
+                                fold.image_influenced(),
+                            ));
                             let mut registry = nano_agent::tasks::TaskRegistry::new(
                                 &task_nano_home,
                                 &cwd,
@@ -1965,7 +2010,10 @@ where
                                 _ownership: ownership,
                                 coordinator,
                                 turn_counter,
-                                context,
+                                fold,
+                                prefix_cache,
+                                cua_resume_block,
+                                context_override: None,
                                 // The journal does not persist the model pick,
                                 // so a resumed session restarts on the default.
                                 // Follow-up: journal an Op::SetModel so a resume
@@ -2597,7 +2645,13 @@ where
                             active.cancel.store(false, Ordering::SeqCst);
                             active.turn_counter += 1;
                             let turn_id = format!("{}-turn-{}", active.id, active.turn_counter);
-                            let mut prior_context = active.context.clone();
+                            // S10: materialize the prompt's context from the
+                            // incremental fold (ONE build, moved into the
+                            // turn below — no clone of a separately-retained
+                            // session context; the session retains the fold
+                            // alone). The override arm keeps the manual
+                            // session/compact semantics byte-exact.
+                            let mut prior_context = active.prompt_context();
                             // C1: resolve this turn's context-management
                             // config against the ACTIVE model's catalog
                             // window. Overrides are downward-only; an
@@ -3886,7 +3940,10 @@ where
                             let driver = make_driver(&binding);
                             let model_name = binding.model.clone();
                             let session_id = active.id.clone();
-                            let mut context = std::mem::take(&mut active.context);
+                            // S10: materialize the compaction input from the
+                            // fold (the same assembled context a prompt would
+                            // start from — the pre-S10 `active.context`).
+                            let mut context = active.prompt_context();
                             // P2a §8 part 2: capture the provenance inputs
                             // BEFORE the swap — the session's sticky flag
                             // and whether the compacted context held images.
@@ -3998,10 +4055,17 @@ where
                                 &mut emit,
                             )
                             .await;
-                            // On failure the context came back untouched
-                            // (compact_messages never swaps without a durable
-                            // Complete); on success it IS the compacted one.
-                            active.context = context;
+                            // On failure the fold is untouched (compact_messages
+                            // never swaps without a durable Complete) and no
+                            // override installs — the next prompt materializes
+                            // the same pre-compaction context again; on
+                            // success the compacted context IS the override
+                            // the next prompt starts from, until the first
+                            // later turn completion supersedes it with the
+                            // journal fold (the pre-S10 rebuild semantics).
+                            if outcome.is_ok() {
+                                active.context_override = Some(context);
+                            }
                             // P2a §8 part 2 flow-back: the journaled
                             // provenance (= before OR any-image-evicted;
                             // eviction happens iff the context held an image)
@@ -4540,61 +4604,46 @@ where
                 // queue, and a steer between turns rejects closed.
                 *current_steer.lock().unwrap_or_else(|p| p.into_inner()) = None;
                 let (final_text, answer) = outcome;
-                // Fold the just-finished turn into the session's context so
-                // the NEXT prompt continues the conversation (same rebuild
-                // path session/load uses — one honest code path).
+                // S10 soak fix: fold the just-finished turn into the
+                // session's INCREMENTAL journal fold so the NEXT prompt
+                // continues the conversation. The old code re-read and
+                // re-folded the WHOLE journal here after every turn (60 MB
+                // at soak h7, 4+ full passes — the PWS creep); the fold now
+                // advances over only the appended bytes, through the SAME
+                // per-envelope reducer the session/load full rebuild uses
+                // (byte-for-byte equal by construction, test-pinned). The
+                // journal stays the authority: a kill still resumes through
+                // the unchanged full-rebuild session/load path.
                 if let Some(active) = session.as_mut()
                     && active.id == turn_session
                 {
-                    match read_journal(&active.journal) {
-                        Ok(report) => {
+                    match active.fold.advance(&active.journal, config.attachment_home) {
+                        Ok(attachment_issues) => {
                             // C10: refresh the todo cell from the journal
                             // fold (TodoSet ops land via the session tools
-                            // mid-turn) and rebuild with the bounded prefix
-                            // blocks (AGENTS.md re-read FRESH here, so an
-                            // edit between turns is picked up).
+                            // mid-turn) and re-render the bounded prefix
+                            // blocks at the SAME point the pre-S10 wholesale
+                            // rebuild did — F-C10-1's pinned one-turn-late
+                            // AGENTS.md timing is unchanged.
                             *active.todos.lock().unwrap_or_else(|p| p.into_inner()) =
-                                SessionState::fold(&report.envelopes).todos;
-                            let mut context = session_context_prefix(
+                                active.fold.todos.clone();
+                            active.prefix_cache = session_context_prefix(
                                 &active.workspace,
                                 &active.todos,
                                 &active.plan,
                             );
                             // P2a: refresh the sticky §9.1 flag from the
                             // journal fold (sticky-OR over ALL records —
-                            // belt-and-braces beside the live sink fold),
-                            // and rehydrate image manifests through the SAME
-                            // §5.3 site session/load uses. A store failure
-                            // here degrades loudly (placeholders + notices),
-                            // never aborts the session between turns.
-                            let influenced = image_influenced_from_envelopes(&report.envelopes);
+                            // belt-and-braces beside the live sink fold).
+                            let influenced = active.fold.image_influenced();
                             active
                                 .image_influenced
                                 .fetch_or(influenced, Ordering::SeqCst);
-                            let attachment_store =
-                                if journal_has_image_manifests(&report.envelopes) {
-                                    match AttachmentStore::open(config.attachment_home) {
-                                        Ok(store) => Some(store),
-                                        Err(err) => {
-                                            // Fail-loud degradation: every
-                                            // manifest entry becomes the §5.3
-                                            // placeholder below.
-                                            eprintln!(
-                                                "wayland-nano: attachment store open failed between turns: {err}"
-                                            );
-                                            None
-                                        }
-                                    }
-                                } else {
-                                    None
-                                };
-                            let (rebuilt, attachment_issues) =
-                                messages_from_envelopes_rehydrating(
-                                    &report.envelopes,
-                                    attachment_store.as_ref(),
-                                );
-                            context.extend(rebuilt);
-                            active.context = context;
+                            // The first completed turn supersedes both
+                            // load-time prompt extras, at the same point
+                            // the old wholesale rebuild dropped them.
+                            active.cua_resume_block = None;
+                            active.context_override = None;
                             for issue in &attachment_issues {
                                 write_out(
                                     &out,
@@ -5810,6 +5859,27 @@ fn session_context_prefix(
     messages
 }
 
+impl Session {
+    /// The conversation a prompt (or a manual compaction) starts from: a
+    /// successful manual compact's override verbatim, else the cached prefix
+    /// blocks (re-rendered at the pre-S10 rebuild points — F-C10-1's pinned
+    /// timing stands) + the incrementally-folded journal messages + the S9
+    /// §4.2 resume block until the first turn completes. This is the ONE
+    /// materialization — the session retains the fold plus the bounded
+    /// prefix cache, never a second full context copy.
+    fn prompt_context(&self) -> Vec<Message> {
+        if let Some(overridden) = &self.context_override {
+            return overridden.clone();
+        }
+        let mut context = self.prefix_cache.clone();
+        context.extend(self.fold.materialized());
+        if let Some(block) = &self.cua_resume_block {
+            context.push(Message::system(block.clone()));
+        }
+        context
+    }
+}
+
 /// S9: construct the session's CUA bridge — fail-closed on every axis
 /// (§5.4/Q5): no platform backend (unsupported platform, or the Wayland
 /// compositor probe refused) or an attachment-store failure means NO bridge,
@@ -6074,106 +6144,225 @@ fn remote_image_url_rejection(parts: &[serde_json::Value]) -> Option<&'static st
     None
 }
 
-/// P2a §8 part 2 replay-fold rule: the image-influenced session flag is
-/// reconstructed as the STICKY-OR over ALL journaled records — ANY
-/// `CompactionComplete.image_influenced == true` OR any UNCOMPACTED
-/// image-bearing `input_blocks` manifest (a manifest is compacted once some
-/// `CompactionComplete.covers_op_ids` covers its TurnBegin envelope id).
-/// Never the LATEST record: a false-negative record cannot reopen the §9.1
-/// clamp on resume.
-pub fn image_influenced_from_envelopes(envelopes: &[OpEnvelope]) -> bool {
-    let mut covered: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut any_influenced = false;
-    for envelope in envelopes {
-        if let Op::CompactionComplete {
-            image_influenced,
-            covers_op_ids,
-            ..
-        } = &envelope.op
-        {
-            any_influenced |= *image_influenced;
-            covered.extend(covers_op_ids.iter().map(String::as_str));
-        }
-    }
-    if any_influenced {
-        return true;
-    }
-    envelopes.iter().any(|envelope| {
-        let present = match &envelope.op {
-            Op::TurnBegin { input_blocks, .. } => input_blocks
-                .iter()
-                .any(|b| matches!(b, InputBlock::ImageRef(_))),
-            Op::ToolResult { image_refs, .. } => !image_refs.is_empty(),
-            _ => false,
-        };
-        present && !covered.contains(envelope.id.as_str())
-    })
-}
-
-/// Whether any journaled manifest references an attachment — the store is
-/// opened (with its §5.5 fail-closed audit) only when one does.
-fn journal_has_image_manifests(envelopes: &[OpEnvelope]) -> bool {
-    envelopes.iter().any(|envelope| match &envelope.op {
+/// Whether one envelope references an attachment — the per-envelope
+/// predicate behind `journal_has_image_manifests` and the fold's store gate.
+fn envelope_has_image_manifest(envelope: &OpEnvelope) -> bool {
+    match &envelope.op {
         Op::TurnBegin { input_blocks, .. } => input_blocks
             .iter()
             .any(|b| matches!(b, InputBlock::ImageRef(_))),
         Op::ToolResult { image_refs, .. } => !image_refs.is_empty(),
         _ => false,
-    })
+    }
 }
 
-/// Rebuilds model-consumable conversation context from journaled ops. Tool
-/// payloads are NOT persisted (digest-only journals), so a restored tool
-/// result carries an explicit elision marker instead of the original output:
-/// the model sees that the call happened and whether it succeeded, never a
-/// fabricated payload.
-/// Rebuilds model-consumable conversation context from journaled ops. Tool
-/// payloads are NOT persisted (digest-only journals), so a restored tool
-/// result carries an explicit elision marker instead of the original output:
-/// the model sees that the call happened and whether it succeeded, never a
-/// fabricated payload. `CompactionComplete` folds through the canonical
-/// builder (C1 §6), so a resumed context is byte-identical to the live
-/// post-compaction one over the compacted prefix. Pub for the C1 replay /
-/// fault-injection tests; not part of the wire surface.
+/// S10 soak fix: the carried state of the journal → context fold, advanced
+/// between turns from an incremental byte-offset tail read
+/// (`nano_session::reader::read_journal_from`) instead of re-reading and
+/// re-folding the whole journal after EVERY turn (the 8h soak defect: the
+/// acp-host re-read a 60 MB journal per turn at h7, 4+ full passes each).
 ///
-/// P2a §5.3 — THE SOLE image rehydration site: this signature is preserved
-/// for journal-only consumers (the C1 replay/fault-injection tests, exec and
-/// cron rebuilds). With no store handle, every image manifest entry degrades
-/// to the loud §5.3 placeholder (operator-logged MISSING) — never a silent
-/// drop. ACP session paths call [`messages_from_envelopes_rehydrating`]
-/// with the store and emit the test-asserted session/update notices.
-pub fn messages_from_envelopes(envelopes: &[OpEnvelope]) -> Vec<Message> {
-    messages_from_envelopes_rehydrating(envelopes, None).0
+/// Equivalence with the full rebuild is BY CONSTRUCTION: [`ContextFold::apply`]
+/// is the ONE per-envelope reducer behind both this incremental path and the
+/// full-rebuild functions below (`messages_from_envelopes*` /
+/// `image_influenced_from_envelopes` / `journal_has_image_manifests` are thin
+/// wrappers over a prime + read-out). Folding envelopes[0..n] incrementally
+/// therefore yields exactly the fold of envelopes[0..n] in one pass —
+/// test-pinned (digest equality across multi-turn sessions with tool calls,
+/// compaction, steers, images, and a kill-resume re-prime).
+///
+/// Retained state is the conversation itself (inherent — the journal is the
+/// authority and compaction bounds it) plus O(envelopes) auxiliaries (the
+/// dedup id set, tool-call name pairing, compaction coverage) — versus the
+/// old per-turn transient of the ENTIRE parsed journal.
+struct ContextFold {
+    /// Flushed messages (the full rebuild's `messages` vector, mid-fold).
+    messages: Vec<Message>,
+    /// Pending assistant content (the full rebuild's `assistant` buffer),
+    /// flushed into `messages` at the same fold points the one-pass fold
+    /// uses. Never flushed at advance boundaries: `materialized` applies
+    /// the same end-of-fold flush the one-pass fold applies at the tail.
+    assistant: Vec<ContentBlock>,
+    /// Tool call id → name (`None` once a duplicate id poisons pairing) —
+    /// the full rebuild's `call_names` map, retained across advances.
+    call_names: std::collections::HashMap<String, Option<String>>,
+    /// Envelope ids folded so far (the idempotent-fold dedup set).
+    seen: std::collections::HashSet<String>,
+    /// Attachment degradations raised since the last drain — the full
+    /// rebuild's `notices`, incrementally: only newly-folded envelopes.
+    notices: Vec<AttachmentIssue>,
+    /// §8 part 2 fold state: op ids covered by some `CompactionComplete`.
+    covered: std::collections::HashSet<String>,
+    /// Sticky-OR of every journaled `CompactionComplete.image_influenced`.
+    compaction_influenced: bool,
+    /// Ids of image-bearing manifests not yet covered by a compaction.
+    uncompacted_image_manifests: std::collections::HashSet<String>,
+    /// Whether ANY folded manifest references an attachment (store-open gate).
+    has_image_manifests: bool,
+    /// C10 §2: the replayed todo list (last-write-wins from `TodoSet` ops,
+    /// the same arm `SessionState`'s replay fold applies).
+    todos: Vec<TodoItem>,
+    /// Journal byte offset consumed so far; the next tail read starts here.
+    offset: u64,
+    /// Total journal bytes consumed by tail reads (the regression pin: each
+    /// journaled byte is read at most once per session lifetime).
+    bytes_read: u64,
 }
 
-/// P2a §5.3: the rehydrating variant — walks each non-compacted TurnBegin's
-/// `input_blocks` manifest IN ORDER: `Text` → `ContentBlock::Text`,
-/// `ImageRef` → a digest-verified `ContentBlock::Image` rebuilt at its
-/// manifest position. Missing/corrupt/tampered blobs become the loud
-/// placeholder at that position and an [`AttachmentIssue`] (the caller emits
-/// the C9-style session/update notice — test-asserted). Image bytes and
-/// digests NEVER reach `replay_frames` (the two-surface split).
-pub fn messages_from_envelopes_rehydrating(
-    envelopes: &[OpEnvelope],
-    attachments: Option<&AttachmentStore>,
-) -> (Vec<Message>, Vec<AttachmentIssue>) {
-    let mut notices = Vec::new();
-    let mut messages = Vec::new();
-    let mut assistant: Vec<ContentBlock> = Vec::new();
-    let mut call_names: std::collections::HashMap<String, Option<String>> =
-        std::collections::HashMap::new();
-    let mut seen = std::collections::HashSet::new();
-    let flush_assistant = |messages: &mut Vec<Message>, assistant: &mut Vec<ContentBlock>| {
-        if !assistant.is_empty() {
+impl ContextFold {
+    fn new() -> Self {
+        Self {
+            messages: Vec::new(),
+            assistant: Vec::new(),
+            call_names: std::collections::HashMap::new(),
+            seen: std::collections::HashSet::new(),
+            notices: Vec::new(),
+            covered: std::collections::HashSet::new(),
+            compaction_influenced: false,
+            uncompacted_image_manifests: std::collections::HashSet::new(),
+            has_image_manifests: false,
+            todos: Vec::new(),
+            offset: 0,
+            bytes_read: 0,
+        }
+    }
+
+    /// Prime the fold from a complete envelope stream (session/load and the
+    /// fail-safe re-prime): the same per-envelope reducer the incremental
+    /// path advances with. Returns the fold plus the degradation notices the
+    /// stream raised (the caller emits the §5.3 session/update notices).
+    fn prime(
+        envelopes: &[OpEnvelope],
+        attachments: Option<&AttachmentStore>,
+    ) -> (Self, Vec<AttachmentIssue>) {
+        let mut fold = Self::new();
+        for envelope in envelopes {
+            fold.apply(envelope, attachments);
+        }
+        let notices = std::mem::take(&mut fold.notices);
+        (fold, notices)
+    }
+
+    /// The model-consumable conversation at the current fold position:
+    /// `messages` plus the end-of-fold assistant flush the one-pass rebuild
+    /// applies at the journal tail. Equals `messages_from_envelopes*` over
+    /// every folded envelope, byte-for-byte.
+    fn materialized(&self) -> Vec<Message> {
+        let mut messages = self.messages.clone();
+        if !self.assistant.is_empty() {
             messages.push(Message {
                 role: Role::Assistant,
-                content: std::mem::take(assistant),
+                content: self.assistant.clone(),
             });
         }
-    };
-    for envelope in envelopes {
-        if !seen.insert(&envelope.id) {
-            continue; // idempotent fold: duplicate ids never double-apply
+        messages
+    }
+
+    /// The §8 part 2 sticky flag at the current fold position — identical to
+    /// `image_influenced_from_envelopes` over every folded envelope.
+    fn image_influenced(&self) -> bool {
+        self.compaction_influenced || !self.uncompacted_image_manifests.is_empty()
+    }
+
+    /// Advance the fold to the journal's current end, reading ONLY the bytes
+    /// appended since the last advance (the single-writer coordinator makes
+    /// whole-line appends, so the tail read is race-free; an unterminated
+    /// tail is left for the next read). Any delta-read failure re-primes
+    /// from ONE full read — the pre-fix behavior — so a replaced or shrunk
+    /// journal degrades to exactly what the old code did, and a genuinely
+    /// corrupt middle still fails loudly (the caller logs and keeps the
+    /// prior fold, exactly like the old keep-prior-context arm).
+    fn advance(
+        &mut self,
+        journal: &std::path::Path,
+        attachment_home: &std::path::Path,
+    ) -> std::io::Result<Vec<AttachmentIssue>> {
+        match nano_session::reader::read_journal_from(journal, self.offset) {
+            Ok(tail) => {
+                self.bytes_read += tail.next_offset - self.offset;
+                self.offset = tail.next_offset;
+                self.fold_with_store_gate(&tail.report.envelopes, attachment_home);
+                Ok(std::mem::take(&mut self.notices))
+            }
+            Err(delta_err) => {
+                eprintln!(
+                    "wayland-nano: incremental journal read failed ({delta_err}); re-priming from a full read"
+                );
+                let report = read_journal(journal)?;
+                *self = Self::new();
+                self.fold_with_store_gate(&report.envelopes, attachment_home);
+                self.offset = match report.torn_tail_at {
+                    Some(torn) => torn,
+                    None => std::fs::metadata(journal)
+                        .map(|meta| meta.len())
+                        .unwrap_or(0),
+                };
+                self.bytes_read = self.offset;
+                Ok(std::mem::take(&mut self.notices))
+            }
+        }
+    }
+
+    /// Fold a batch of envelopes, opening the attachment store under the
+    /// same gate the full rebuild uses (any image manifest in the folded
+    /// stream ⇒ the store is open for EVERY manifest in the batch, so a
+    /// batch-internal manifest rehydrates exactly like the one-pass fold).
+    /// A store failure degrades loudly (placeholders + notices), never
+    /// aborts the session between turns.
+    fn fold_with_store_gate(
+        &mut self,
+        envelopes: &[OpEnvelope],
+        attachment_home: &std::path::Path,
+    ) {
+        let batch_has_manifest = envelopes.iter().any(envelope_has_image_manifest);
+        let store = if self.has_image_manifests || batch_has_manifest {
+            match AttachmentStore::open(attachment_home) {
+                Ok(store) => Some(store),
+                Err(err) => {
+                    eprintln!("wayland-nano: attachment store open failed between turns: {err}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        for envelope in envelopes {
+            self.apply(envelope, store.as_ref());
+        }
+    }
+
+    /// The §8 part 2 manifest bookkeeping for one folded envelope: image
+    /// presence is tracked per envelope id so a later compaction's
+    /// `covers_op_ids` un-marks it exactly like the one-pass sticky-OR.
+    fn note_image_manifest(&mut self, envelope_id: &str, present: bool) {
+        if !present {
+            return;
+        }
+        self.has_image_manifests = true;
+        if !self.covered.contains(envelope_id) {
+            self.uncompacted_image_manifests
+                .insert(envelope_id.to_string());
+        }
+    }
+
+    fn flush_assistant(&mut self) {
+        if !self.assistant.is_empty() {
+            self.messages.push(Message {
+                role: Role::Assistant,
+                content: std::mem::take(&mut self.assistant),
+            });
+        }
+    }
+
+    /// The ONE per-envelope reducer (see the type-level equivalence note).
+    /// Rehydration walks each non-compacted TurnBegin's `input_blocks`
+    /// manifest IN ORDER: `Text` → `ContentBlock::Text`, `ImageRef` → a
+    /// digest-verified `ContentBlock::Image` rebuilt at its manifest
+    /// position. Missing/corrupt/tampered blobs become the loud §5.3
+    /// placeholder at that position and an [`AttachmentIssue`].
+    fn apply(&mut self, envelope: &OpEnvelope, attachments: Option<&AttachmentStore>) {
+        if !self.seen.insert(envelope.id.clone()) {
+            return; // idempotent fold: duplicate ids never double-apply
         }
         match &envelope.op {
             Op::TurnBegin {
@@ -6181,11 +6370,17 @@ pub fn messages_from_envelopes_rehydrating(
                 input_blocks,
                 ..
             } => {
-                flush_assistant(&mut messages, &mut assistant);
+                self.note_image_manifest(
+                    &envelope.id,
+                    input_blocks
+                        .iter()
+                        .any(|b| matches!(b, InputBlock::ImageRef(_))),
+                );
+                self.flush_assistant();
                 if input_blocks.is_empty() {
                     // Pre-P2a journal or a text-only turn: the projection IS
                     // the message — byte-identical to the pre-P2a fold.
-                    messages.push(Message::user(input.clone()));
+                    self.messages.push(Message::user(input.clone()));
                 } else {
                     // §5.2: walk the ordered manifest — NO string matching
                     // is ever performed; leading/trailing/adjacent/duplicate
@@ -6215,7 +6410,7 @@ pub fn messages_from_envelopes_rehydrating(
                                             "wayland-nano: attachment {word}: {}",
                                             issue.digest_prefix
                                         );
-                                        notices.push(issue);
+                                        self.notices.push(issue);
                                         // Lane A's placeholder fn is the ONE
                                         // source of the §5.3 text (12-char
                                         // prefix, never a raw digest).
@@ -6230,7 +6425,7 @@ pub fn messages_from_envelopes_rehydrating(
                             }
                         }
                     }
-                    messages.push(Message::user_blocks(blocks));
+                    self.messages.push(Message::user_blocks(blocks));
                 }
             }
             // C9 kill-resume fidelity: drained steers and the schema re-ask
@@ -6238,15 +6433,16 @@ pub fn messages_from_envelopes_rehydrating(
             // context is byte-identical to the live one. Undrained steers
             // are never journaled and never resurrect here.
             Op::SteerInput { text, .. } => {
-                flush_assistant(&mut messages, &mut assistant);
-                messages.push(Message::user(text.clone()));
+                self.flush_assistant();
+                self.messages.push(Message::user(text.clone()));
             }
             Op::SchemaReask { feedback, .. } => {
-                flush_assistant(&mut messages, &mut assistant);
-                messages.push(Message::user(feedback.clone()));
+                self.flush_assistant();
+                self.messages.push(Message::user(feedback.clone()));
             }
             Op::AssistantText { text, .. } => {
-                assistant.push(ContentBlock::Text { text: text.clone() });
+                self.assistant
+                    .push(ContentBlock::Text { text: text.clone() });
             }
             Op::ToolCall {
                 call_id,
@@ -6255,7 +6451,7 @@ pub fn messages_from_envelopes_rehydrating(
                 ..
             } => {
                 use std::collections::hash_map::Entry;
-                match call_names.entry(call_id.clone()) {
+                match self.call_names.entry(call_id.clone()) {
                     Entry::Vacant(slot) => {
                         slot.insert(Some(name.clone()));
                     }
@@ -6263,7 +6459,7 @@ pub fn messages_from_envelopes_rehydrating(
                         slot.insert(None);
                     }
                 }
-                assistant.push(ContentBlock::ToolUse {
+                self.assistant.push(ContentBlock::ToolUse {
                     id: call_id.clone(),
                     name: name.clone(),
                     input: args.clone(),
@@ -6277,7 +6473,8 @@ pub fn messages_from_envelopes_rehydrating(
                 image_refs,
                 ..
             } => {
-                flush_assistant(&mut messages, &mut assistant);
+                self.note_image_manifest(&envelope.id, !image_refs.is_empty());
+                self.flush_assistant();
                 // [R1] The ONE synthesized-result encoding, shared with the
                 // compaction repair pass and repeat-protection skips.
                 // C7/D5: a typed failure resumes as `<presentation> [output
@@ -6287,15 +6484,22 @@ pub fn messages_from_envelopes_rehydrating(
                     (false, Some(kind)) => {
                         format!("{} [output elided]", error_presentation(*kind))
                     }
-                    _ => format!(
-                        "[tool output elided from journal: ok={ok}, digest={output_digest}]"
-                    ),
+                    _ => {
+                        format!(
+                            "[tool output elided from journal: ok={ok}, digest={output_digest}]"
+                        )
+                    }
                 };
                 if image_refs.is_empty() {
-                    messages.push(Message::tool_result(call_id, content, !ok));
-                    continue;
+                    self.messages
+                        .push(Message::tool_result(call_id, content, !ok));
+                    return;
                 }
-                let tool_name = match call_names.get(call_id).and_then(|name| name.as_deref()) {
+                let tool_name = match self
+                    .call_names
+                    .get(call_id)
+                    .and_then(|name| name.as_deref())
+                {
                     Some(name) => name,
                     None => {
                         eprintln!(
@@ -6340,7 +6544,7 @@ pub fn messages_from_envelopes_rehydrating(
                                 "[Image #{} from tool {tool_name} unavailable: attachment {prefix} missing — do not describe it from memory]",
                                 index + 1
                             ));
-                            notices.push(AttachmentIssue {
+                            self.notices.push(AttachmentIssue {
                                 cause,
                                 digest_prefix: prefix,
                             });
@@ -6356,17 +6560,20 @@ pub fn messages_from_envelopes_rehydrating(
                             ) =>
                         {
                             drop(provenance);
-                            messages.push(Message::tool_result_with_images(
+                            self.messages.push(Message::tool_result_with_images(
                                 call_id, content, !ok, images,
                             ));
                         }
-                        _ => messages.push(Message::tool_result(call_id, content, !ok)),
+                        _ => self
+                            .messages
+                            .push(Message::tool_result(call_id, content, !ok)),
                     }
                 } else {
-                    messages.push(Message::tool_result(call_id, content, !ok));
+                    self.messages
+                        .push(Message::tool_result(call_id, content, !ok));
                 }
             }
-            Op::TurnEnd { .. } => flush_assistant(&mut messages, &mut assistant),
+            Op::TurnEnd { .. } => self.flush_assistant(),
             // [R1/R2] The canonical replay arm: fold the SAME
             // build_compacted_history the live path used, with the journaled
             // summary; later envelopes append after it. The pending-assistant
@@ -6376,22 +6583,88 @@ pub fn messages_from_envelopes_rehydrating(
             // own rules decide what survives, identically live and on replay.
             // Forged/malformed compaction ops are tolerated: no panics, and
             // real user messages survive the builder by construction.
-            Op::CompactionComplete { summary, .. } => {
-                flush_assistant(&mut messages, &mut assistant);
+            Op::CompactionComplete {
+                summary,
+                covers_op_ids,
+                image_influenced,
+                ..
+            } => {
+                // P2a §8 part 2: the sticky-OR over ALL journaled records —
+                // a false-negative record can never reopen the §9.1 clamp.
+                self.compaction_influenced |= *image_influenced;
+                for covered_id in covers_op_ids {
+                    self.covered.insert(covered_id.clone());
+                    self.uncompacted_image_manifests.remove(covered_id);
+                }
+                self.flush_assistant();
                 // P2a §8: the rehydrated history flows through the SAME
                 // canonical builder (images counted at 6,000 bytes, the
                 // deterministic placeholder eviction) — live and resumed
                 // contexts stay byte-identical by construction.
-                messages = nano_agent::compact::build_compacted_history(
-                    std::mem::take(&mut messages),
+                self.messages = nano_agent::compact::build_compacted_history(
+                    std::mem::take(&mut self.messages),
                     summary,
                 );
+            }
+            // Todo lists are CONTENT (C10 §2): replayed last-write-wins, the
+            // same arm `SessionState`'s replay fold applies.
+            Op::TodoSet { items } => {
+                self.todos = items.clone();
             }
             _ => {}
         }
     }
-    flush_assistant(&mut messages, &mut assistant);
-    (messages, notices)
+}
+
+/// P2a §8 part 2 replay-fold rule: the image-influenced session flag is
+/// reconstructed as the STICKY-OR over ALL journaled records — ANY
+/// `CompactionComplete.image_influenced == true` OR any UNCOMPACTED
+/// image-bearing `input_blocks` manifest (a manifest is compacted once some
+/// `CompactionComplete.covers_op_ids` covers its TurnBegin envelope id).
+/// Never the LATEST record: a false-negative record cannot reopen the §9.1
+/// clamp on resume.
+pub fn image_influenced_from_envelopes(envelopes: &[OpEnvelope]) -> bool {
+    ContextFold::prime(envelopes, None).0.image_influenced()
+}
+
+/// Whether any journaled manifest references an attachment — the store is
+/// opened (with its §5.5 fail-closed audit) only when one does.
+fn journal_has_image_manifests(envelopes: &[OpEnvelope]) -> bool {
+    ContextFold::prime(envelopes, None).0.has_image_manifests
+}
+
+/// Rebuilds model-consumable conversation context from journaled ops. Tool
+/// payloads are NOT persisted (digest-only journals), so a restored tool
+/// result carries an explicit elision marker instead of the original output:
+/// the model sees that the call happened and whether it succeeded, never a
+/// fabricated payload. `CompactionComplete` folds through the canonical
+/// builder (C1 §6), so a resumed context is byte-identical to the live
+/// post-compaction one over the compacted prefix. Pub for the C1 replay /
+/// fault-injection tests; not part of the wire surface.
+///
+/// P2a §5.3 — THE SOLE image rehydration site: this signature is preserved
+/// for journal-only consumers (the C1 replay/fault-injection tests, exec and
+/// cron rebuilds). With no store handle, every image manifest entry degrades
+/// to the loud §5.3 placeholder (operator-logged MISSING) — never a silent
+/// drop. ACP session paths run the SAME reducer through [`ContextFold`]
+/// (session/load primes with the store and emits the test-asserted
+/// session/update notices).
+pub fn messages_from_envelopes(envelopes: &[OpEnvelope]) -> Vec<Message> {
+    messages_from_envelopes_rehydrating(envelopes, None).0
+}
+
+/// P2a §5.3: the rehydrating variant — one pass of the shared
+/// [`ContextFold`] reducer over the whole stream with the caller's store,
+/// read out through the same end-of-fold flush the incremental
+/// [`ContextFold::materialized`] applies. Degradation notices ride back for
+/// the caller's C9-style session/update notices (test-asserted). Image
+/// bytes and digests NEVER reach `replay_frames` (the two-surface split).
+pub fn messages_from_envelopes_rehydrating(
+    envelopes: &[OpEnvelope],
+    attachments: Option<&AttachmentStore>,
+) -> (Vec<Message>, Vec<AttachmentIssue>) {
+    let (fold, notices) = ContextFold::prime(envelopes, attachments);
+    (fold.materialized(), notices)
 }
 
 /// Writes the ACP `session/update` frame for one journaled op, live.
@@ -9057,5 +9330,616 @@ mod tests {
             compaction("k1", vec!["r1".into()], true),
             compaction("k2", vec![], false),
         ]));
+    }
+
+    // ── S10 soak fix: the incremental journal fold ────────────────────────
+
+    /// The equivalence oracle: the incrementally-advanced fold MUST equal
+    /// the full rebuild over the whole journal at every turn boundary —
+    /// context messages (digest for digest), the replayed todos, the §8
+    /// part 2 sticky flag, and the store-open gate.
+    fn assert_fold_matches_full_rebuild(
+        fold: &ContextFold,
+        journal: &std::path::Path,
+        attachment_home: &std::path::Path,
+    ) {
+        let report = read_journal(journal).expect("full read");
+        let store = AttachmentStore::open(attachment_home).ok();
+        let (rebuilt, _) = messages_from_envelopes_rehydrating(&report.envelopes, store.as_ref());
+        let incremental = fold.materialized();
+        assert_eq!(
+            format!("{incremental:#?}"),
+            format!("{rebuilt:#?}"),
+            "context digest divergence: incremental fold != full rebuild"
+        );
+        assert_eq!(incremental, rebuilt, "context divergence");
+        assert_eq!(
+            fold.todos,
+            SessionState::fold(&report.envelopes).todos,
+            "todo replay divergence"
+        );
+        assert_eq!(
+            fold.image_influenced(),
+            image_influenced_from_envelopes(&report.envelopes),
+            "image-influenced divergence"
+        );
+        assert_eq!(
+            fold.has_image_manifests,
+            journal_has_image_manifests(&report.envelopes),
+            "store-gate divergence"
+        );
+    }
+
+    /// A scripted model for the engine leg: each turn drives the REAL turn
+    /// engine (its ops, through the same coordinator append discipline the
+    /// live sink uses) so the journal content shape is the engine's own.
+    #[derive(Debug)]
+    struct FoldScriptedModel {
+        responses: Mutex<Vec<nano_model::types::ModelResponse>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ModelDriver for FoldScriptedModel {
+        async fn complete(
+            &self,
+            _request: &nano_model::types::ModelRequest,
+        ) -> Result<nano_model::types::ModelResponse, nano_model::types::ModelError> {
+            Ok(self.responses.lock().unwrap().remove(0))
+        }
+    }
+
+    fn fold_text_response(text: &str) -> nano_model::types::ModelResponse {
+        nano_model::types::ModelResponse {
+            events: vec![
+                nano_model::types::ModelEvent::TextDelta(text.into()),
+                nano_model::types::ModelEvent::Done {
+                    stop_reason: "stop".into(),
+                },
+            ],
+            usage: nano_model::types::Usage::default(),
+            stop_reason: "stop".into(),
+            model: None,
+        }
+    }
+
+    fn fold_tool_response(call_id: &str, name: &str) -> nano_model::types::ModelResponse {
+        nano_model::types::ModelResponse {
+            events: vec![
+                nano_model::types::ModelEvent::ToolCallComplete(ToolCall {
+                    id: call_id.into(),
+                    name: name.into(),
+                    arguments: serde_json::json!({"path": "a.txt"}),
+                }),
+                nano_model::types::ModelEvent::Done {
+                    stop_reason: "tool_calls".into(),
+                },
+            ],
+            usage: nano_model::types::Usage::default(),
+            stop_reason: "tool_calls".into(),
+            model: None,
+        }
+    }
+
+    fn fold_test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// THE EQUIVALENCE PROOF, engine leg: N real turns (text + tool calls)
+    /// journaled through a real coordinator; after EVERY turn the
+    /// incremental fold (byte-offset tail read) must equal the full rebuild
+    /// byte-for-byte.
+    #[test]
+    fn incremental_fold_matches_full_rebuild_across_engine_turns() {
+        let ws = workspace();
+        let journal = ws.0.join("session.jsonl");
+        let (store_home, _store) = p2b_store("s10-engine");
+        let coordinator = Arc::new(nano_session::JournalCoordinator::open(&journal).unwrap());
+        coordinator
+            .append(&OpEnvelope::new(
+                "s-begin-1",
+                "now",
+                Op::SessionBegin {
+                    session_id: "s".into(),
+                    cwd: ws.0.display().to_string(),
+                },
+            ))
+            .expect("genesis append");
+        let rt = fold_test_runtime();
+        let model = FoldScriptedModel {
+            responses: Mutex::new(vec![
+                fold_tool_response("c1", "fs_read"),
+                fold_text_response("answer one"),
+                fold_text_response("answer two"),
+                fold_tool_response("c3", "fs_read"),
+                fold_text_response("answer three"),
+            ]),
+        };
+        let tools = NoopExecutor;
+        let engine = TurnEngine {
+            model: &model,
+            tools: &tools,
+            budget: TurnBudget::default(),
+            model_name: "mock".into(),
+            tool_definitions: vec![],
+            approval: None,
+            compaction: None,
+            robustness: TurnRobustness::default(),
+        };
+        let mut fold = ContextFold::new();
+        fold.offset = std::fs::metadata(&journal).unwrap().len();
+        fold.bytes_read = fold.offset;
+        for (index, input) in ["first prompt", "second prompt", "third prompt"]
+            .iter()
+            .enumerate()
+        {
+            let sink_coordinator = coordinator.clone();
+            let mut sink =
+                move |envelope: &OpEnvelope| -> bool { sink_coordinator.append(envelope).is_ok() };
+            let result = rt.block_on(engine.run_turn_streaming_with_context(
+                &format!("s-turn-{}", index + 1),
+                input,
+                fold.materialized(),
+                None,
+                &mut sink,
+            ));
+            assert!(
+                matches!(result.state, TurnState::Complete),
+                "turn {} completes: {:?}",
+                index + 1,
+                result.state
+            );
+            let notices = fold
+                .advance(&journal, &store_home.0)
+                .expect("advance after turn");
+            assert!(notices.is_empty(), "no attachments in the engine leg");
+            assert_fold_matches_full_rebuild(&fold, &journal, &store_home.0);
+        }
+        // The pin within the proof: each journaled byte was read EXACTLY
+        // once — the per-turn whole-journal re-read is gone.
+        assert_eq!(
+            fold.bytes_read,
+            std::fs::metadata(&journal).unwrap().len(),
+            "each journaled byte folded exactly once"
+        );
+    }
+
+    /// THE EQUIVALENCE PROOF, full-vocabulary leg: image manifests (prompt
+    /// AND tool-result), steers, a schema re-ask, todos, a CUA pair, a
+    /// compaction covering the image manifests, and a kill-resume re-prime —
+    /// the incremental fold must equal the full rebuild at EVERY step.
+    #[test]
+    fn incremental_fold_matches_full_rebuild_with_images_compaction_and_kill_resume() {
+        use nano_session::op::{CuaOutcome, ImageRef, TodoStatus};
+        let ws = workspace();
+        let journal = ws.0.join("session.jsonl");
+        let (store_home, store) = p2b_store("s10-synthetic");
+        let coordinator = Arc::new(nano_session::JournalCoordinator::open(&journal).unwrap());
+        let lease = store.acquire_write_lease().expect("lease");
+        let digest = store.put(&lease, b"s10-fake-png").expect("put blob");
+        let image_ref = ImageRef {
+            digest: digest.clone(),
+            mime: "image/png".into(),
+            bytes: 13,
+            width: 8,
+            height: 8,
+            normalized_from: None,
+            placeholder: "[Image #1: /tmp/x.png]".into(),
+        };
+        let mut sequence = 0u64;
+        let mut ids: Vec<String> = Vec::new();
+        fn append_tracked(
+            coordinator: &nano_session::JournalCoordinator,
+            sequence: &mut u64,
+            ids: &mut Vec<String>,
+            op: Op,
+        ) {
+            *sequence += 1;
+            let id = format!("env-{sequence}");
+            coordinator
+                .append(&OpEnvelope::new(id.clone(), "now", op))
+                .expect("append");
+            ids.push(id);
+        }
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::SessionBegin {
+                session_id: "s".into(),
+                cwd: ws.0.display().to_string(),
+            },
+        );
+        // session/load equivalent: prime from the ONE full read, offset at
+        // the current end.
+        let (mut fold, _) = ContextFold::prime(
+            &read_journal(&journal).expect("prime read").envelopes,
+            Some(&store),
+        );
+        fold.offset = std::fs::metadata(&journal).unwrap().len();
+        fold.bytes_read = fold.offset;
+        assert_fold_matches_full_rebuild(&fold, &journal, &store_home.0);
+
+        // Turn 1: an image-bearing prompt, a tool call whose result carries
+        // an image, assistant text.
+        let turn = "s-turn-1";
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::TurnBegin {
+                turn_id: turn.into(),
+                input: "[Image #1: /tmp/x.png]\nlook at this".into(),
+                input_blocks: vec![
+                    InputBlock::ImageRef(image_ref.clone()),
+                    InputBlock::Text {
+                        text: "look at this".into(),
+                    },
+                ],
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::AssistantText {
+                turn_id: turn.into(),
+                text: "I see it; reading the file".into(),
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::ToolCall {
+                turn_id: turn.into(),
+                call_id: "c1".into(),
+                name: "view_image".into(),
+                args: serde_json::json!({"path": "a.png"}),
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::ToolResult {
+                call_id: "c1".into(),
+                ok: true,
+                output_digest: "aa".repeat(32),
+                changed_files: vec![],
+                error_kind: None,
+                image_refs: vec![image_ref.clone()],
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::TurnEnd {
+                turn_id: turn.into(),
+                outcome: nano_session::op::TurnOutcome::Completed,
+                usage: None,
+            },
+        );
+        fold.advance(&journal, &store_home.0).expect("advance t1");
+        assert_fold_matches_full_rebuild(&fold, &journal, &store_home.0);
+        assert!(
+            fold.image_influenced(),
+            "uncompacted manifest is influential"
+        );
+
+        // Turn 2: text prompt + a drained steer + a schema re-ask + a todo
+        // set + a CUA action/result pair.
+        let turn = "s-turn-2";
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::TurnBegin {
+                turn_id: turn.into(),
+                input: "now change it".into(),
+                input_blocks: vec![],
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::SteerInput {
+                turn_id: turn.into(),
+                text: "actually use the other file".into(),
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::SchemaReask {
+                turn_id: turn.into(),
+                feedback: "return valid JSON only".into(),
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::AssistantText {
+                turn_id: turn.into(),
+                text: "done".into(),
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::TodoSet {
+                items: vec![nano_session::op::TodoItem {
+                    id: "t1".into(),
+                    content: "verify the change".into(),
+                    status: TodoStatus::Pending,
+                }],
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::CuaAction {
+                turn_id: turn.into(),
+                call_id: "cua-1".into(),
+                op_kind: "left_click".into(),
+                args_digest: "bb".repeat(32),
+                frontmost_app: None,
+                pre_shot: None,
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::CuaResult {
+                call_id: "cua-1".into(),
+                outcome: CuaOutcome::Completed,
+                post_shot: None,
+                error_kind: None,
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::TurnEnd {
+                turn_id: turn.into(),
+                outcome: nano_session::op::TurnOutcome::Completed,
+                usage: None,
+            },
+        );
+        fold.advance(&journal, &store_home.0).expect("advance t2");
+        assert_fold_matches_full_rebuild(&fold, &journal, &store_home.0);
+
+        // A compaction covering EVERYTHING so far (both image manifests),
+        // then turn 3 appends after it.
+        let covers = ids.clone();
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::CompactionBegin {
+                compaction_id: "k1".into(),
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::CompactionComplete {
+                compaction_id: "k1".into(),
+                summary: "turns 1-2 summarized".into(),
+                covers_op_ids: covers,
+                changed_files: vec![],
+                image_influenced: true,
+                mcp_hydration: None,
+            },
+        );
+        let turn = "s-turn-3";
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::TurnBegin {
+                turn_id: turn.into(),
+                input: "after compaction".into(),
+                input_blocks: vec![],
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::AssistantText {
+                turn_id: turn.into(),
+                text: "post-compaction answer".into(),
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::TurnEnd {
+                turn_id: turn.into(),
+                outcome: nano_session::op::TurnOutcome::Completed,
+                usage: None,
+            },
+        );
+        fold.advance(&journal, &store_home.0).expect("advance t3");
+        assert_fold_matches_full_rebuild(&fold, &journal, &store_home.0);
+        assert!(
+            fold.image_influenced(),
+            "the true compaction record keeps the flag sticky"
+        );
+
+        // KILL-RESUME: drop the fold, re-prime from the one full read
+        // (exactly what session/load does), then keep advancing.
+        let (mut fold, _) = ContextFold::prime(
+            &read_journal(&journal).expect("resume read").envelopes,
+            Some(&store),
+        );
+        fold.offset = std::fs::metadata(&journal).unwrap().len();
+        fold.bytes_read = fold.offset;
+        assert_fold_matches_full_rebuild(&fold, &journal, &store_home.0);
+        let turn = "s-turn-4";
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::TurnBegin {
+                turn_id: turn.into(),
+                input: "resumed prompt".into(),
+                input_blocks: vec![],
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::AssistantText {
+                turn_id: turn.into(),
+                text: "resumed answer".into(),
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::TurnEnd {
+                turn_id: turn.into(),
+                outcome: nano_session::op::TurnOutcome::Completed,
+                usage: None,
+            },
+        );
+        fold.advance(&journal, &store_home.0).expect("advance t4");
+        assert_fold_matches_full_rebuild(&fold, &journal, &store_home.0);
+
+        // KILL MID-TURN: a stranded TurnBegin + AssistantText (no TurnEnd)
+        // folds with the same tail-flush semantics the full rebuild applies.
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::TurnBegin {
+                turn_id: "s-turn-5".into(),
+                input: "interrupted prompt".into(),
+                input_blocks: vec![],
+            },
+        );
+        append_tracked(
+            &coordinator,
+            &mut sequence,
+            &mut ids,
+            Op::AssistantText {
+                turn_id: "s-turn-5".into(),
+                text: "partial answer cut off".into(),
+            },
+        );
+        fold.advance(&journal, &store_home.0)
+            .expect("advance stranded turn");
+        assert_fold_matches_full_rebuild(&fold, &journal, &store_home.0);
+    }
+
+    /// The memory regression pin: a scripted 200-turn session folds each
+    /// journaled byte EXACTLY ONCE (the per-turn whole-journal re-read is
+    /// the soak leak), the incrementally-built context equals the full
+    /// rebuild at every turn boundary (no hidden growth beyond the
+    /// conversation itself), and the fold's auxiliaries stay O(envelopes).
+    #[test]
+    fn incremental_fold_reads_each_journal_byte_once_across_200_turns() {
+        let ws = workspace();
+        let journal = ws.0.join("session.jsonl");
+        let (store_home, _store) = p2b_store("s10-200turns");
+        let coordinator = Arc::new(nano_session::JournalCoordinator::open(&journal).unwrap());
+        let mut sequence = 0u64;
+        let mut append = |op: Op| {
+            sequence += 1;
+            coordinator
+                .append(&OpEnvelope::new(format!("env-{sequence}"), "now", op))
+                .expect("append");
+        };
+        append(Op::SessionBegin {
+            session_id: "s".into(),
+            cwd: ws.0.display().to_string(),
+        });
+        let mut fold = ContextFold::new();
+        fold.offset = std::fs::metadata(&journal).unwrap().len();
+        fold.bytes_read = fold.offset;
+        for turn_index in 1..=200u32 {
+            let turn = format!("s-turn-{turn_index}");
+            append(Op::TurnBegin {
+                turn_id: turn.clone(),
+                input: format!("prompt {turn_index}: please inspect the widget"),
+                input_blocks: vec![],
+            });
+            append(Op::AssistantText {
+                turn_id: turn.clone(),
+                text: format!("answer {turn_index}: the widget is nominal"),
+            });
+            append(Op::ToolCall {
+                turn_id: turn.clone(),
+                call_id: format!("c-{turn_index}"),
+                name: "fs_read".into(),
+                args: serde_json::json!({"path": format!("file-{turn_index}.txt")}),
+            });
+            append(Op::ToolResult {
+                call_id: format!("c-{turn_index}"),
+                ok: true,
+                output_digest: format!("{:064x}", turn_index),
+                changed_files: vec![],
+                error_kind: None,
+                image_refs: vec![],
+            });
+            if turn_index % 25 == 0 {
+                append(Op::TodoSet {
+                    items: vec![nano_session::op::TodoItem {
+                        id: format!("todo-{turn_index}"),
+                        content: format!("follow up on turn {turn_index}"),
+                        status: nano_session::op::TodoStatus::Pending,
+                    }],
+                });
+            }
+            append(Op::TurnEnd {
+                turn_id: turn,
+                outcome: nano_session::op::TurnOutcome::Completed,
+                usage: None,
+            });
+            fold.advance(&journal, &store_home.0).expect("advance");
+            // Equivalence at every boundary, at soak-relevant scale.
+            if turn_index % 10 == 0 || turn_index == 200 {
+                assert_fold_matches_full_rebuild(&fold, &journal, &store_home.0);
+            }
+        }
+        // THE PIN: every journaled byte was read exactly once across the
+        // whole 200-turn session — no per-turn whole-journal re-read.
+        assert_eq!(
+            fold.bytes_read,
+            std::fs::metadata(&journal).unwrap().len(),
+            "each journaled byte folded exactly once across 200 turns"
+        );
+        // Auxiliaries are O(envelopes), never O(journal bytes): the dedup
+        // set tracks one small id per envelope, and the retained context is
+        // the conversation itself (asserted equal to the full rebuild at
+        // every boundary above — nothing more is retained).
+        let envelope_count = read_journal(&journal).expect("final read").envelopes.len();
+        assert_eq!(
+            fold.seen.len(),
+            envelope_count - 1,
+            "dedup set is O(envelopes); the genesis SessionBegin sits behind \
+             the primed offset (context-neutral, never folded)"
+        );
+        assert_eq!(
+            fold.call_names.len(),
+            200,
+            "one name entry per tool call, nothing more"
+        );
     }
 }

@@ -1006,3 +1006,55 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
 - **Close means:** nano-platform lands SpawnSpec; the `run_argv` helper in
   linux_wayland.rs (and the `osascript`/`xdotool` frontmost probes) route
   through it, with the fixed-argv/no-model-interpolation contract kept.
+
+## F-44: acp-host per-turn whole-journal rebuild was the 8h-soak memory creep — FIXED on fix/soak-mem-creep
+
+- **Filed:** 2026-08-15, soak-memfix lane, from the S10 8h soak
+  (run-20260814T180101592Z): acp-host PWS grew 28 → 218 MB over 7h and turn
+  throughput decayed −49%. Root cause: after EVERY turn the ACP host re-read
+  the whole session journal from disk (60 MB at h7) and rebuilt the context
+  from all of history — `read_journal` whole-file read plus 4+ full passes
+  (`SessionState::fold` for todos, `image_influenced_from_envelopes`,
+  `journal_has_image_manifests`,
+  `messages_from_envelopes_rehydrating`) per turn, then replaced
+  `Session.context` wholesale.
+- **Fix (this lane):** the journal → context fold is now INCREMENTAL. A
+  carried `ContextFold` (`crates/nano-cli/src/acp_mode.rs`) advances between
+  turns from a byte-offset tail read
+  (`nano_session::reader::read_journal_from`, whole-line appends under the
+  single-writer coordinator make delta reads race-free; an unterminated tail
+  is left for the next read; any delta-read failure re-primes from ONE full
+  read = the pre-fix behavior). `ContextFold::apply` is the ONE per-envelope
+  reducer behind both the incremental path and the full-rebuild functions,
+  so incremental == full rebuild byte-for-byte BY CONSTRUCTION — pinned by
+  digest-equality tests across engine-driven turns, the full op vocabulary
+  (images, steers, re-asks, todos, CUA pairs, compaction), a kill-resume
+  re-prime, and a 200-turn session where each journaled byte is read exactly
+  once. The journal stays the append-only authority: session/load keeps the
+  ONE full read (kill-resume path unchanged; S9 ambiguous-tail semantics
+  untouched). Chose the tail-read over folding the turn engine's op stream
+  because the sink never observes session-tool appends (TodoSet) or
+  cron/mode ops — the journal suffix is the only complete source, so
+  equivalence holds by construction rather than by argument. The session no
+  longer retains a materialized `context` Vec separate from the fold; the
+  prompt's assembled context is built ONCE from the fold and moved into the
+  engine (the per-prompt `active.context.clone()` deep copy is gone — the
+  engine's owned-Vec hand-off is the one irreducible copy). Manual
+  `session/compact` semantics preserved via `Session.context_override`;
+  the S9 §4.2 resume block rides prompts until the first turn completes,
+  the same point the old rebuild dropped it; the bounded prefix blocks are
+  re-rendered at the SAME points the old rebuild used (session start +
+  every turn completion, `Session.prefix_cache`), so F-C10-1's pinned
+  one-turn-late AGENTS.md timing stands unchanged.
+  `MeterState.samples` is now a bounded 64-sample windowed median (was an
+  unbounded Vec).
+- **Residual (accepted, documented):** `ContextFold` retains O(envelopes)
+  auxiliaries (dedup id set, tool-call name pairing ≈ tens of bytes per op)
+  for the session lifetime — bounded by op count, not journal bytes, and
+  trivial beside the conversation itself. A live session's attachment
+  degradation notice now fires once when the envelope folds instead of
+  re-firing per turn (the fail-loud placeholder + session/update notice are
+  unchanged; session/load re-derives and re-notices as before).
+- **Close means:** owner verifies the next 8h soak: acp-host PWS slope ≈
+  flat and no turn-throughput decay against the run-20260814T180101592Z
+  baseline; then close.

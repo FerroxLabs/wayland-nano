@@ -75,6 +75,13 @@ impl BudgetState {
 /// The warn threshold (P1 §4.1).
 const WARN_PCT: u64 = 80;
 
+/// S10 soak fix: the §3.5 median's sample window. The median estimates a
+/// TYPICAL recent response size (the conservative charge for a request that
+/// under-reported), so a sliding window of the most recent samples keeps the
+/// semantics while bounding retention — the old unbounded Vec grew one
+/// `u64` per model response for the process lifetime.
+const SAMPLE_WINDOW: usize = 64;
+
 #[derive(Debug, Default)]
 struct MeterState {
     /// Settled usage totals (token classes, microcents, priced, §3.5
@@ -88,9 +95,12 @@ struct MeterState {
     granted_tokens: u64,
     /// Outstanding reserved output across all in-flight reservations.
     reserved_output: u64,
-    /// Per-response totals feeding the §3.5 median (this process's samples;
-    /// a reseeded meter starts empty — median 0 until responses accrue).
-    samples: Vec<u64>,
+    /// Per-response totals feeding the §3.5 median — the MOST RECENT
+    /// [`SAMPLE_WINDOW`] samples of this process (a reseeded meter starts
+    /// empty — median 0 until responses accrue). Windowed, not lifetime:
+    /// the estimate tracks the session's current response-shape, never
+    /// grows unbounded.
+    samples: std::collections::VecDeque<u64>,
     /// The 80% warn fired for the current effective-limit position.
     warned: bool,
     /// A warn crossing awaiting emission (drained by the engine, which owns
@@ -129,11 +139,18 @@ impl MeterState {
         }
     }
 
+    fn record_sample(&mut self, total: u64) {
+        self.samples.push_back(total);
+        while self.samples.len() > SAMPLE_WINDOW {
+            self.samples.pop_front();
+        }
+    }
+
     fn median_sample(&self) -> u64 {
         if self.samples.is_empty() {
             return 0;
         }
-        let mut sorted = self.samples.clone();
+        let mut sorted: Vec<u64> = self.samples.iter().copied().collect();
         sorted.sort_unstable();
         sorted[sorted.len() / 2]
     }
@@ -235,9 +252,7 @@ impl CostMeter {
         );
         let mut state = self.lock();
         state.charged.add_sum(&delta);
-        state
-            .samples
-            .push(usage.input_tokens.saturating_add(usage.output_tokens));
+        state.record_sample(usage.input_tokens.saturating_add(usage.output_tokens));
         state.refresh_warn();
         delta
     }
@@ -606,6 +621,28 @@ output_per_mtok_usd = 2.0
             delta.applied_estimate,
             Some(1000),
             "max(request estimate + reserved, session median)"
+        );
+    }
+
+    /// S10 soak fix: the §3.5 sample window is BOUNDED (no per-process-
+    /// lifetime growth) and the median tracks the most recent window —
+    /// the "typical recent response" semantics, never a stale lifetime one.
+    #[test]
+    fn median_samples_are_bounded_to_the_recent_window() {
+        let meter = CostMeter::new("metered", catalog(), None);
+        // 2× the window of small samples, then a window of large ones.
+        for _ in 0..(SAMPLE_WINDOW * 2) {
+            meter.record_usage("model", &usage(10, 0));
+        }
+        for _ in 0..SAMPLE_WINDOW {
+            meter.record_usage("model", &usage(500, 500));
+        }
+        let state = meter.lock();
+        assert_eq!(state.samples.len(), SAMPLE_WINDOW, "bounded retention");
+        assert_eq!(
+            state.median_sample(),
+            1000,
+            "the median tracks the most recent window only"
         );
     }
 
