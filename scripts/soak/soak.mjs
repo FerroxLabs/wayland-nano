@@ -26,6 +26,19 @@ const eventPath = join(runDir, 'soak-journal.ndjson');
 const samplePath = join(runDir, 'soak-samples.ndjson');
 const manifestPath = join(runDir, `soak-manifest-${stamp}.json`);
 const budgets = JSON.parse(await readFile(join(here, 'budgets.json'), 'utf8'));
+// Preflight (learned 2026-08-15): a soak run against a binary built WITHOUT
+// the soak-fake-model feature fails every turn with model_protocol — the
+// run "completes" and burns hours before the verdict. The fake seam's
+// response model marker is a plain string in the compiled binary; if it is
+// absent the feature is absent. Check before doing any work.
+{
+  const blob = await readFile(binary);
+  if (!blob.includes('wayland-nano-soak-fake')) {
+    console.error(`S10 preflight FAIL: ${binary} lacks the soak-fake-model feature (marker 'wayland-nano-soak-fake' not found). Build with: cargo build --release -p nano-cli -F nano-agent/soak-fake-model`);
+    process.exit(2);
+  }
+  console.log('S10 preflight: fake-model seam present in binary');
+}
 await mkdir(runDir, { recursive: true });
 await mkdir(nanoHome, { recursive: true });
 await mkdir(workspace, { recursive: true });
