@@ -1134,7 +1134,7 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
 - **Close means:** closed by the fix; owner may verify on the next Desktop
   run with a hooks.toml installed.
 
-## F-46: checkpoints shipped unreachable — the S7 integrator seam was never wired — FIXED
+## F-47: checkpoints shipped unreachable — the S7 integrator seam was never wired — FIXED
 
 - **Filed:** 2026-08-15, from the post-stable audit: the S7 checkpoints
   engine merged but `checkpoint_tool_definitions()` /
