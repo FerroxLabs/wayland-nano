@@ -243,6 +243,25 @@ impl PricingCatalog {
 mod tests {
     use super::*;
 
+    /// `load_default` reads the NANO_PRICING_PATH env var, and Rust runs every
+    /// `#[test]` in ONE process across parallel threads, so `set_var` in one
+    /// test is visible to every other. Consolidating the override cases into a
+    /// single test body (below) serialized them against EACH OTHER but not
+    /// against the other `load_default` readers, which is why
+    /// `bundled_router_and_local_rows_have_honest_billing_status` intermittently
+    /// failed with `OverrideIo { path: ".../no-such.toml" }` — it read a sibling
+    /// test's override. Every `load_default` caller takes this lock.
+    ///
+    /// The guard is poison-tolerant: a panicking test must fail on its own
+    /// assertion, not poison the rest of the suite into a second failure.
+    static PRICING_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn pricing_env_guard() -> std::sync::MutexGuard<'static, ()> {
+        PRICING_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn cache_tokens_use_catalog_rates_without_becoming_free() {
         let raw = "[p.m]\ninput_per_mtok_usd = 10.0\noutput_per_mtok_usd = 20.0\ncache_read_per_mtok_usd = 1.0\ncache_write_per_mtok_usd = 12.0\n\n[p.no-cache-rate]\ninput_per_mtok_usd = 10.0\noutput_per_mtok_usd = 20.0\n";
@@ -313,6 +332,7 @@ output_per_mtok_usd = 2.0
 
     #[test]
     fn bundled_flux_rows_are_all_unpriced() {
+        let _env = pricing_env_guard();
         let cat = PricingCatalog::load_default().expect("bundled catalog parses");
         for (provider, alias) in [
             ("flux-router", "flux-auto"),
@@ -342,6 +362,7 @@ output_per_mtok_usd = 2.0
 
     #[test]
     fn bundled_router_and_local_rows_have_honest_billing_status() {
+        let _env = pricing_env_guard();
         let cat = PricingCatalog::load_default().expect("bundled catalog parses");
         for (provider, model) in [
             ("openrouter", "auto"),
@@ -422,6 +443,7 @@ output_per_mtok_usd = 15.0
     /// convention).
     #[test]
     fn override_failures_are_typed_and_bundled_loads_clean() {
+        let _env = pricing_env_guard();
         // Malformed override → typed Parse error naming the path.
         let dir = std::env::temp_dir().join(format!("nano-pricing-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

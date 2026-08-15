@@ -1522,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "nano-agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -1550,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "nano-checkpoints"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nano-core",
  "nano-session",
@@ -1563,7 +1563,7 @@ dependencies = [
 
 [[package]]
 name = "nano-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -1593,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "nano-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dirs-next",
  "dunce",
@@ -1610,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "nano-cua"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "nano-egress"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1641,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "nano-hooks"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "nano-sandbox",
@@ -1657,7 +1657,7 @@ dependencies = [
 
 [[package]]
 name = "nano-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -1678,7 +1678,7 @@ dependencies = [
 
 [[package]]
 name = "nano-model"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -1697,11 +1697,11 @@ dependencies = [
 
 [[package]]
 name = "nano-platform"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "nano-plugins"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "flate2",
  "nano-agent",
@@ -1719,7 +1719,7 @@ dependencies = [
 
 [[package]]
 name = "nano-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "dirs-next",
@@ -1739,7 +1739,7 @@ dependencies = [
 
 [[package]]
 name = "nano-repomap"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dunce",
  "globset",
@@ -1755,7 +1755,7 @@ dependencies = [
 
 [[package]]
 name = "nano-sandbox"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1787,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "nano-session"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "nano-model",
@@ -1801,7 +1801,7 @@ dependencies = [
 
 [[package]]
 name = "nano-skills"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pretty_assertions",
  "serde",
@@ -1812,7 +1812,7 @@ dependencies = [
 
 [[package]]
 name = "nano-tools"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "dirs-next",
@@ -1840,7 +1840,7 @@ dependencies = [
 
 [[package]]
 name = "nano-tui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossterm",
  "insta",
