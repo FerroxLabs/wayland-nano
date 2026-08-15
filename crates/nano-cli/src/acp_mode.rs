@@ -924,6 +924,15 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     // NEVER blocks the host; the sweep never runs on a partial reference
     // set (scan failure ⇒ skip).
     startup_attachment_sweep(nano_home, &sessions);
+    // S4 (F-46): the lifecycle hook engine, loaded ONCE per process from the
+    // SAME <nano_home>/hooks.toml source exec/host read — a Desktop-run host
+    // and a CLI exec see identical hooks. A defective config degrades to
+    // zero hooks + loud warnings (fail-closed, never a dead host); blocking
+    // hooks still block per the S4 design.
+    let hooks = nano_hooks::HookEngine::load(nano_home);
+    for warning in hooks.warnings() {
+        eprintln!("wayland-nano: {warning}");
+    }
     let config = ServeConfig {
         sessions_dir: &sessions,
         default_model: &default_model,
@@ -945,6 +954,7 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         budget_cap,
         vision_catalog: &vision_catalog,
         attachment_home: nano_home,
+        hooks: &hooks,
         routing: &routing_config,
     };
     serve(reader, writer, &config, make_driver, make_tools).await
@@ -1103,6 +1113,11 @@ pub struct ServeConfig<'a> {
     /// A's `AttachmentStore::open`). Opened lazily at intake/resume — open
     /// carries the §5.5 permission audit, fail-closed.
     pub attachment_home: &'a std::path::Path,
+    /// S4 (F-46): the process-wide lifecycle hook engine (loaded once at
+    /// startup from `<nano_home>/hooks.toml` — the same source exec/host
+    /// read). Threaded into every session's TurnEngine and the session
+    /// lifecycle events (SessionStart/SessionEnd).
+    pub hooks: &'a nano_hooks::HookEngine,
     /// P5 §1: the routing control surface — the explicit Auto opt-in
     /// (`NANO_ROUTING_AUTO`, absent = false) and the configured default pin
     /// (`NANO_DEFAULT_MODEL`). Production parses both with typed config
@@ -1153,6 +1168,59 @@ fn acquire_session_ownership(
             NanoErrorKind::JournalUnavailable,
             format!("cannot lock session journal: {err}"),
         )),
+    }
+}
+
+/// S4 (F-46): run one session-lifecycle hook (SessionStart / SessionEnd) on
+/// the acp surface and journal its decisions through the session's
+/// coordinator — the ONE append authority (P3 §3.3), never a second writer
+/// like the bootstrap lane's open-per-call helper. Both events are notify:
+/// a hook or journal failure logs and never kills the session (the
+/// `append_lifecycle_decisions` posture). Envelope ids carry a process-wide
+/// counter so SessionStart/SessionEnd decisions never collide with each
+/// other or across resumes — replay dedupes duplicate ids, so a collision
+/// would silently drop a decision at fold time.
+async fn run_session_lifecycle_hook(
+    hooks: &nano_hooks::HookEngine,
+    event: nano_hooks::HookEvent,
+    matcher: Option<&str>,
+    payload: serde_json::Value,
+    session_id: &str,
+    coordinator: &nano_session::JournalCoordinator,
+) {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let run = hooks.run(event, matcher, &payload).await;
+    let event_op = match event {
+        nano_hooks::HookEvent::SessionStart => nano_session::op::HookEvent::SessionStart,
+        nano_hooks::HookEvent::SessionEnd => nano_session::op::HookEvent::SessionEnd,
+        _ => nano_session::op::HookEvent::Unknown,
+    };
+    for decision in &run.decisions {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let envelope = OpEnvelope::new(
+            format!("{session_id}-hook-{n}"),
+            "now",
+            Op::HookDecision {
+                turn_id: session_id.to_string(),
+                event: event_op,
+                handler_id: decision.handler_id.clone(),
+                matcher_input: decision.matcher_input.clone(),
+                outcome: match decision.outcome {
+                    nano_hooks::HookOutcome::Pass => nano_session::op::HookOutcome::Pass,
+                    nano_hooks::HookOutcome::Blocked => nano_session::op::HookOutcome::Blocked,
+                    nano_hooks::HookOutcome::Failed => nano_session::op::HookOutcome::Failed,
+                    nano_hooks::HookOutcome::Timeout => nano_session::op::HookOutcome::Timeout,
+                    nano_hooks::HookOutcome::BoundedOutput => {
+                        nano_session::op::HookOutcome::BoundedOutput
+                    }
+                },
+                duration_ms: decision.duration_ms,
+            },
+        );
+        if coordinator.append(&envelope).is_err() {
+            eprintln!("wayland-nano: lifecycle hook decision journal unavailable");
+            break;
+        }
     }
 }
 
@@ -1309,6 +1377,19 @@ where
             // the process-exit backstop). The registry Drop would do this
             // too; doing it here keeps the ordering explicit.
             if let Some(active) = session.take() {
+                // S4 (F-46): SessionEnd, best-effort (a host kill never
+                // fires it — the clean-exit path is the only Drop point
+                // this surface has).
+                let ended_id = active.id.clone();
+                run_session_lifecycle_hook(
+                    config.hooks,
+                    nano_hooks::HookEvent::SessionEnd,
+                    Some("host_exit"),
+                    serde_json::json!({"hook_event_name":"SessionEnd", "session_id":ended_id, "reason":"host_exit"}),
+                    &ended_id,
+                    &active.coordinator,
+                )
+                .await;
                 active.tasks.teardown_all();
             }
             return Ok(0); // stdin closed and no turn in flight: clean exit
@@ -1450,6 +1531,19 @@ where
                                 )?;
                                 continue;
                             }
+                            // S4 (F-46): SessionStart (startup) — notify,
+                            // journaled BEFORE the fold offset is taken
+                            // below so the offset sits past these
+                            // (context-neutral) decisions too.
+                            run_session_lifecycle_hook(
+                                config.hooks,
+                                nano_hooks::HookEvent::SessionStart,
+                                Some("startup"),
+                                serde_json::json!({"hook_event_name":"SessionStart", "session_id":session_id, "source":"startup"}),
+                                &session_id,
+                                &coordinator,
+                            )
+                            .await;
                             let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                             *current_cancel.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(cancel.clone());
@@ -1511,6 +1605,17 @@ where
                             // C6: replacing a live session tears its children
                             // down first (bounded, then detach).
                             if let Some(old) = session.take() {
+                                // S4 (F-46): SessionEnd for the replaced
+                                // session, best-effort.
+                                run_session_lifecycle_hook(
+                                    config.hooks,
+                                    nano_hooks::HookEvent::SessionEnd,
+                                    Some("session_replaced"),
+                                    serde_json::json!({"hook_event_name":"SessionEnd", "session_id":old.id, "reason":"session_replaced"}),
+                                    &old.id,
+                                    &old.coordinator,
+                                )
+                                .await;
                                 old.tasks.teardown_all();
                                 // P4 §4.4: and its PTY sessions (explicit;
                                 // Drop is the backstop).
@@ -1691,6 +1796,18 @@ where
                             if session.as_ref().is_some_and(|s| s.id == session_id)
                                 && let Some(old) = session.take()
                             {
+                                // S4 (F-46): SessionEnd for the reloaded
+                                // session, best-effort (SessionStart
+                                // "resume" fires below).
+                                run_session_lifecycle_hook(
+                                    config.hooks,
+                                    nano_hooks::HookEvent::SessionEnd,
+                                    Some("session_replaced"),
+                                    serde_json::json!({"hook_event_name":"SessionEnd", "session_id":old.id, "reason":"session_replaced"}),
+                                    &old.id,
+                                    &old.coordinator,
+                                )
+                                .await;
                                 old.tasks.teardown_all();
                                 old.pty.terminate_all();
                             }
@@ -1773,6 +1890,19 @@ where
                                     },
                                 ));
                             }
+                            // S4 (F-46): SessionStart (resume) — notify,
+                            // journaled BEFORE the fold offset is taken
+                            // below so the offset sits past these
+                            // (context-neutral) decisions too.
+                            run_session_lifecycle_hook(
+                                config.hooks,
+                                nano_hooks::HookEvent::SessionStart,
+                                Some("resume"),
+                                serde_json::json!({"hook_event_name":"SessionStart", "session_id":session_id, "source":"resume"}),
+                                session_id,
+                                &coordinator,
+                            )
+                            .await;
                             // P2a §5.3: rehydrate image manifests from the
                             // blob store (opened, with its fail-closed §5.5
                             // audit, only when the journal references one);
@@ -1928,6 +2058,17 @@ where
                             // C6: replacing a live session tears its children
                             // down first (bounded, then detach).
                             if let Some(old) = session.take() {
+                                // S4 (F-46): SessionEnd for the replaced
+                                // session, best-effort.
+                                run_session_lifecycle_hook(
+                                    config.hooks,
+                                    nano_hooks::HookEvent::SessionEnd,
+                                    Some("session_replaced"),
+                                    serde_json::json!({"hook_event_name":"SessionEnd", "session_id":old.id, "reason":"session_replaced"}),
+                                    &old.id,
+                                    &old.coordinator,
+                                )
+                                .await;
                                 old.tasks.teardown_all();
                                 // P4 §4.4: and its PTY sessions (explicit;
                                 // Drop is the backstop).
@@ -3669,7 +3810,14 @@ where
                                             .as_deref()
                                             .map(|s| s as &dyn nano_agent::cua::CuaBridge),
                                     },
-                                };
+                                }
+                                // S4 (F-46): the process-wide hook engine —
+                                // PreToolUse blocks after approval,
+                                // PostToolUse/PreCompact/PostCompact notify,
+                                // UserPromptSubmit and Stop block per the S4
+                                // design; decisions journal through the turn
+                                // sink like exec/host.
+                                .with_hooks(config.hooks);
                                 let sink_session = session_id.clone();
                                 let sink_coordinator = turn_coordinator.clone();
                                 let journal_failer = config.journal_append_failer;
@@ -4041,7 +4189,12 @@ where
                                 }
                                 journaled
                             };
-                            let outcome = nano_agent::compact::compact_messages(
+                            // S4 (F-46): the manual compact fires
+                            // PreCompact/PostCompact notify hooks too (the
+                            // auto path gets them through the hooked
+                            // engine); trigger "manual" is the matcher
+                            // input, honest against the engine's "auto".
+                            let outcome = nano_agent::compact::compact_messages_with_hooks(
                                 &driver,
                                 &model_name,
                                 &mut context,
@@ -4053,6 +4206,9 @@ where
                                 // session value directly (r5).
                                 image_influenced_before,
                                 &mut emit,
+                                Some(config.hooks),
+                                "compaction",
+                                "manual",
                             )
                             .await;
                             // On failure the fold is untouched (compact_messages
