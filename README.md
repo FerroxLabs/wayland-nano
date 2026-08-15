@@ -72,18 +72,20 @@ Helper binaries: `wayland-nano-acp-profile` (metrics),
 `wayland-nano-spawn-profile` (nano-sandbox, Windows),
 `wayland-nano-linux-sandbox` (landlock/seccomp/bwrap helper, Linux).
 
-## Install (npm alpha)
+## Install (npm)
 
-`packaging/npm/` ships a zero-dependency package with prebuilt binaries —
-alpha, `private: true`, unsigned, not published to the public registry.
+`packaging/npm/` ships a zero-dependency package with prebuilt binaries for
+all five targets, published to the public registry with Sigstore provenance.
+Stable releases are on the `latest` dist-tag; preview channels use `next`.
 See `packaging/npm/README.md`:
 
 ```powershell
-pwsh packaging/npm/scripts/pack.ps1   # build release + stage binary
-cd packaging/npm; npm pack
-npm install -g ./waylandnano-nano-0.1.0-alpha.0.tgz
+npm install -g waylandnano
 wayland-nano doctor
 ```
+
+Local build instead: `pwsh packaging/npm/scripts/pack.ps1`, then
+`cd packaging/npm; npm pack; npm install -g ./waylandnano-<version>.tgz`.
 
 Acceptance evidence: `packaging/npm/ACCEPTANCE.md` (recorded under the old
 NanoK3 codename — offline clean-prefix install, doctor exit 0, ACP

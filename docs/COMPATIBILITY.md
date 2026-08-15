@@ -1,4 +1,4 @@
-# Compatibility matrix — Wayland Nano (Track B), alpha
+# Compatibility matrix — Wayland Nano (Track B), 0.1.0 (stable)
 
 Support levels, highest to lowest:
 
@@ -47,12 +47,12 @@ Support levels, highest to lowest:
 | Flux MCP (`/mcp/`) | **Upstream-blocked** — `tools/list` returns an empty catalog | COMP-FLX-011 (`docs/compliance/SCENARIO_CATALOG.md`) | Any invocable Flux MCP tool; blocked upstream, not by engineering |
 | Model catalog (`GET /v1/models`) | Implemented (live + fixture fallback) | `flux_models.rs` | Stable model IDs across Flux provider rotations |
 
-## Explicitly not claimed (alpha)
+## Explicitly not claimed (0.1.0)
 
 - Track A (`nano/`) interop or migration.
 - MCP/skills end-user capability flags beyond what `docs/STATUS.md` records as
   proven (honesty rule: flags stay false until end-to-end proof exists).
-- Publish/release automation — the release scaffold is owner-gated; CI
-  produces evidence artifacts only.
+- Release signing: binaries ship with Sigstore provenance attestations but
+  are NOT Authenticode/Apple-notarized (owner-gated externals).
 - Windows ARM64 provisioning, non-Ubuntu Linux, macOS hardened-runtime
   distribution, WSL1 (detected and warned, unsupported).

@@ -1,5 +1,32 @@
 # Wayland Nano (Track B) status
 
+## 2026-08-15 — 0.1.0 STABLE
+
+- **Stable gate met (all six bars):** (1) severity register zero open
+  sev-1/2 — owner-signed (`../shared/reviews/stable-wave/SEVERITY-SIGNOFF-2026-08-14.md`),
+  every item fixed with evidence; (2) every advertised capability true —
+  Flux Auto tool turns live-proven, vision on the openai wire, MCP HTTP,
+  cron, hooks, checkpoints, plugins activating, CUA behind a false
+  capability flag pending live proofs (honesty rule); (3) kill safety —
+  8h soak: 32,450 turns, 8 kills incl. chained kill-resume, ZERO orphans,
+  replay clean, zero watchdog breaches (`scripts/soak/evidence/run-20260814T180101592Z/`);
+  (4) fail-closed containment/egress unchanged; (5) soak receipt above +
+  B11 live segment (30/30 live turns + kill-resume, canary clean,
+  `.tmp/b11-live/`); (6) clean-machine install per tier via the npm
+  lifecycle evidence.
+- **Soak-found leak fixed** — per-turn full journal rebuild replaced with
+  an incremental fold (`798ecb0`; ~200x fewer bytes/turn, equivalence
+  proof incl. kill-resume); throughput verified no-decay at a sustained
+  5,445 turns/h (was −49% over 7h). Harness B1 oracle now enforces the
+  declared slope/ratio budgets (`0747ff7`). **F-45 filed:** residual
+  ~8 KB/turn retained growth in the host turn path (A/B experiment
+  exonerates repo_map; turn-machinery overhead, bounded by the absolute
+  harness cap with 12x headroom; targeted for 0.1.1 — see
+  `docs/FOLLOWUPS.md`).
+- **Wave-end audit:** one round, no Criticals, six Highs, all fixed and
+  merged (`../shared/reviews/stable-wave/WAVE-END-AUDIT-CODEX.md`).
+- **CI 6/6 green** at `60f0fd3` (final merged tree).
+
 ## 2026-08-14
 
 - **v0.1.0-rc.0 published to npm** — dist-tag `next`, 5-target matrix,

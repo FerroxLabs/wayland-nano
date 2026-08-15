@@ -1058,3 +1058,26 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
 - **Close means:** owner verifies the next 8h soak: acp-host PWS slope ≈
   flat and no turn-throughput decay against the run-20260814T180101592Z
   baseline; then close.
+
+## F-45: Residual ~8 KB/turn retained growth in the host turn path (S10 verification, sev-2)
+
+- **Filed:** 2026-08-15, from the 1h verification soak on the leak-fixed
+  binary (run-20260815T020556068Z) and two A/B runs.
+- **Data:** after `798ecb0` (incremental fold) removed the per-turn full
+  journal rebuild (200x fewer bytes read; throughput verified sustained
+  5,445 turns/h, no decay), the host still retains ~8-10 KB/turn
+  (~50 MB/h at max soak cadence): baseline 22.7 MB -> final 78.6 MB over
+  1h/5,448 turns. A/B experiment (10-min runs, seed 777 vs 778): growth
+  is IDENTICAL with and without `repo_map` calls (2->10 MB vs 2->11 MB)
+  — the repomap tool/index is exonerated; the overhead is in the turn
+  machinery itself (per-turn tool-definition rebuild, per-turn engine
+  construction, or an accumulating registry — structure not yet
+  identified; needs a heap profile, not more inference).
+- **Bounds/mitigation:** harness absolute memory cap (1.5 GiB) passes
+  with 12x headroom at receipt scale; compaction cycles and session
+  restart bound it in practice. The 8h receipt (run-20260814T180101592Z)
+  passes its budgets; the strengthened oracle (`0747ff7`) is what makes
+  this residual visible.
+- **Close means:** heap-profile the acp-host turn path under the soak
+  workload, fix the retaining structure, and a 1h verification soak at
+  max cadence shows slope <= 16 MiB/h (budgets.json, owner-locked).
