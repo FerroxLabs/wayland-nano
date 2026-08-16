@@ -21,8 +21,9 @@ use std::process::ExitCode;
 struct Target {
     path: PathBuf,
     bytes: String,
-    /// Monorepo mirrors are optional in standalone checkouts; the in-repo
-    /// artifact is mandatory everywhere.
+    /// The in-repo artifact is mandatory everywhere. The shared mirror is
+    /// mandatory whenever a monorepo is detected; Desktop mirrors remain
+    /// optional integration outputs.
     required: bool,
 }
 
@@ -53,7 +54,7 @@ fn targets() -> Vec<Target> {
         targets.push(Target {
             path: root.join("shared/contracts/nano-error-codes.json"),
             bytes: json.clone(),
-            required: false,
+            required: true,
         });
         // The Desktop mirror targets NANO_ERROR_TABLE_DESKTOP_DIR when set
         // (a feature-branch worktree of the Desktop repo — Desktop artifacts
@@ -79,43 +80,81 @@ fn targets() -> Vec<Target> {
     targets
 }
 
+fn check_targets(targets: &[Target]) -> bool {
+    let mut failed = false;
+    for target in targets {
+        match std::fs::read_to_string(&target.path) {
+            Ok(existing) if existing == target.bytes => {
+                println!("ok: {}", target.path.display());
+            }
+            Ok(_) => {
+                eprintln!("STALE: {} — rerun gen_error_table", target.path.display());
+                failed = true;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && !target.required => {
+                println!("skip (absent mirror): {}", target.path.display());
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!(
+                    "MISSING: {} ({err}) — run gen_error_table",
+                    target.path.display()
+                );
+                failed = true;
+            }
+            Err(err) => {
+                eprintln!("UNREADABLE: {} ({err})", target.path.display());
+                failed = true;
+            }
+        }
+    }
+    !failed
+}
+
 fn main() -> ExitCode {
     let check = std::env::args().any(|arg| arg == "--check");
     let targets = targets();
-    let mut failed = false;
-    for target in &targets {
-        if check {
-            match std::fs::read_to_string(&target.path) {
-                Ok(existing) if existing == target.bytes => {
-                    println!("ok: {}", target.path.display());
-                }
-                Ok(_) => {
-                    eprintln!("STALE: {} — rerun gen_error_table", target.path.display());
-                    failed = true;
-                }
-                Err(err) => {
-                    if target.required {
-                        eprintln!(
-                            "MISSING: {} ({err}) — run gen_error_table",
-                            target.path.display()
-                        );
-                        failed = true;
-                    } else {
-                        println!("skip (absent mirror): {}", target.path.display());
-                    }
-                }
-            }
+    if check {
+        return if check_targets(&targets) {
+            ExitCode::SUCCESS
         } else {
-            if let Some(parent) = target.path.parent() {
-                std::fs::create_dir_all(parent).expect("create artifact dir");
-            }
-            std::fs::write(&target.path, &target.bytes).expect("write artifact");
-            println!("wrote: {}", target.path.display());
-        }
+            ExitCode::FAILURE
+        };
     }
-    if failed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
+    for target in &targets {
+        if let Some(parent) = target.path.parent() {
+            std::fs::create_dir_all(parent).expect("create artifact dir");
+        }
+        std::fs::write(&target.path, &target.bytes).expect("write artifact");
+        println!("wrote: {}", target.path.display());
+    }
+    ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_shared_target_is_required_and_missing_fails_check() {
+        let configured = targets();
+        let shared = configured
+            .iter()
+            .find(|target| {
+                target
+                    .path
+                    .ends_with("shared/contracts/nano-error-codes.json")
+            })
+            .expect("monorepo checkout has canonical shared target");
+        assert!(shared.required);
+
+        let temp = tempfile::tempdir().expect("create isolated monorepo");
+        let missing = temp.path().join("shared/contracts/nano-error-codes.json");
+        let isolated = Target {
+            path: missing.clone(),
+            bytes: shared.bytes.clone(),
+            required: true,
+        };
+        assert!(!check_targets(&[isolated]));
+        assert!(!missing.exists(), "check mode must not create the mirror");
     }
 }

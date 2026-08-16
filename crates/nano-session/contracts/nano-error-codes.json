@@ -441,6 +441,14 @@
       "wireCode": -32602
     },
     {
+      "hint": "Select an advertised Flux Anthropic Messages leaf, then retry",
+      "kind": "model_lacks_pdf",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Selected model wire cannot carry PDF documents",
+      "wireCode": -32602
+    },
+    {
       "hint": "Corrupt or not really an image",
       "kind": "image_invalid",
       "retryable": false,

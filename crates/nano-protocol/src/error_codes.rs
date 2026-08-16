@@ -175,10 +175,14 @@ mod tests {
     /// merge added CheckpointUnavailable + CheckpointNotFound +
     /// CheckpointRestoreFailed (60 → 63); the S3 session-ownership slice
     /// (F-P4-3) added SessionBusy (63 → 64); the S9 CUA seam added the six
-    /// computer-use kinds (64 → 70).
+    /// computer-use kinds (64 → 70); WP-0.3 added ModelLacksPdf (70 → 71).
     #[test]
     fn shim_re_exports_the_canonical_table() {
-        assert_eq!(ALL_KINDS.len(), 70);
+        assert_eq!(ALL_KINDS.len(), 71);
+        assert_eq!(
+            spec(NanoErrorKind::ModelLacksPdf).title,
+            "Selected model wire cannot carry PDF documents"
+        );
         assert_eq!(
             spec(NanoErrorKind::ModelRateLimited).title,
             nano_session::error_codes::spec(NanoErrorKind::ModelRateLimited).title
