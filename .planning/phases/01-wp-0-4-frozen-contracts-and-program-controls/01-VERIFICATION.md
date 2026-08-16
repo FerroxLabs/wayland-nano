@@ -1,30 +1,25 @@
 ---
 phase: 01-wp-0-4-frozen-contracts-and-program-controls
-verified: 2026-08-16T00:00:00Z
-status: gaps_found
-score: 9/10 must-haves verified
+verified: 2026-08-16T13:22:00Z
+status: passed
+score: 10/10 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
-gaps:
-  - truth: "A WP cannot advance until its no-ff integration gate, push, and green CI result are recorded."
-    status: failed
-    reason: "Only builder-local evidence exists. The branch is 12 commits ahead of origin/master and 01-03-SUMMARY explicitly states detached integration, push, and CI are not live-proven and were not performed."
-    artifacts:
-      - path: ".planning/phases/01-wp-0-4-frozen-contracts-and-program-controls/01-03-SUMMARY.md"
-        issue: "Contains the correct promotion procedure but no merge commit, integration-gate result, push result, or observed full CI-matrix result."
-    missing:
-      - "Integrator no-ff merge in detached .tmp-wt-integ."
-      - "Successful just gate-all on the integration commit."
-      - "Push of detached HEAD:master and observed full CI matrix green."
-      - "Completed one-line evidence record with merge, integration-gate, and CI fields."
+re_verification:
+  previous_status: gaps_found
+  previous_score: 9/10
+  gaps_closed:
+    - "WP-0.4 was promoted by no-ff merge 03b02c9, the full integration gate passed, narrow owner catalog closure 0cd0c3f was pushed to master, the full gate passed again after closure, and CI run 31949197038 succeeded on all six matrix jobs for exact HEAD 0cd0c3f."
+  gaps_remaining: []
+  regressions: []
 ---
 
 # Phase 1: WP-0.4 Frozen Contracts and Program Controls Verification Report
 
 **Phase Goal:** Operators have four drift-protected contract artifacts and an enforceable, evidence-backed promotion process for every executable WP, while WP-0.1 remains an explicit owner-host-run handoff.
 **Verified:** 2026-08-16
-**Status:** gaps_found
-**Re-verification:** No — initial verification
+**Status:** passed
+**Re-verification:** Yes — after promotion and CI gap closure
 
 ## Goal Achievement
 
@@ -41,9 +36,9 @@ gaps:
 | 7 | Builder evidence records the bounded Critical/High audit/fix protocol and canary-clean captures. | VERIFIED | 01-03-SUMMARY records one High finding, one fix round, zero unresolved Critical/High findings, focused/full gates, and exact three-path canary coverage. Verifier reran the specified regex canary: clean. |
 | 8 | Subsequent WPs have an explicit isolated promotion procedure and I/R/L/evidence rules. | VERIFIED | 01-03-SUMMARY records start SHA, branch/tip, I/R/L separation, detached `.tmp-wt-integ`, `--no-ff`, full integration gate, canary, push, CI, and one-line report schema. |
 | 9 | The executor stays inside exact additive WP-0.4 ownership. | VERIFIED | Product changes after `f184c4a` match the exact corrected OWNS list and the catalog remains untouched. The sole earlier `docs/FOLLOWUPS.md` change is the mandated STOP/deviation control record: the standing rule requires a one-paragraph deviation request on a boundary conflict, and commit `f184c4a` changes only that record. It is an authorized program-control exception, not product ownership drift. |
-| 10 | Advancement is blocked until no-ff integration, push, and green CI are recorded. | FAILED | Branch is `feat/wp-0.4...origin/master [ahead 12]`; summary explicitly says integration/push/CI were not performed. Procedure is not execution evidence. |
+| 10 | Advancement is blocked until no-ff integration, push, and green CI are recorded. | VERIFIED | WP-0.4 was integrated through no-ff merge `03b02c9`; `just gate-all` passed on integration and again at post-catalog-closure master `0cd0c3f`; `origin/master` equals `0cd0c3f`; GitHub push run `31949197038` targets that exact SHA, concluded success, and all six matrix jobs succeeded. |
 
-**Score:** 9/10 truths verified (0 present, behavior-unverified)
+**Score:** 10/10 truths verified (0 present, behavior-unverified)
 
 ### Required Artifacts
 
@@ -54,7 +49,7 @@ gaps:
 | `crates/nano-session/src/op.rs` | Sorted exhaustive Op vocabulary | VERIFIED | 37 tags; verifier ran the exact named test, 1 passed. |
 | `crates/nano-protocol/tests/contracts.rs` | Independent root/schema/fixture tripwire | VERIFIED | 404 substantive lines; 3 behavioral tests pass and are included in workspace tests. |
 | `justfile` | Transitive gate wiring | VERIFIED | One generator command added; `gate-all: ... gate-gen-check` preserved. |
-| `01-03-SUMMARY.md` | Builder and promotion evidence | PARTIAL | Builder evidence and handoff are substantive; integrator/CI fields remain prospective. |
+| `01-03-SUMMARY.md` | Builder and promotion handoff evidence | VERIFIED | Builder evidence and serial handoff are substantive; execution is independently confirmed by merge `03b02c9`, master `0cd0c3f`, repeated integration gate, and CI run `31949197038`. |
 
 ### Key Link Verification
 
@@ -75,6 +70,8 @@ gaps:
 | Independent schema/tamper/fixture tripwire | `cargo test -p nano-protocol --test contracts -- --nocapture` | 3 passed | PASS |
 | Generator freshness | `just gate-gen-check` | both generator families current | PASS |
 | Complete local gate | `just gate-all` | fmt, clippy -D warnings, workspace tests, generator checks; exit 0 | PASS |
+| Post-promotion master gate | `just gate-all` at `0cd0c3f` | fmt, clippy -D warnings, workspace tests, generator checks; exit 0 | PASS |
+| Six-job CI matrix | `gh run view 31949197038 --json ...` | push run for `0cd0c3f`, conclusion success; 6/6 jobs succeeded | PASS |
 | Summary canary | exact PLAN regex scan over three summaries | no credential-shaped matches | PASS |
 
 ### Requirements Coverage
@@ -82,7 +79,7 @@ gaps:
 | Requirement | Status | Evidence |
 |---|---|---|
 | CTRL-01, CTRL-02, CTRL-03, CTRL-04, CTRL-06, CTRL-07, CTRL-08 | SATISFIED | Authoritative inputs, bounded audit, local gates, handoff, and no builder merge/push verified. |
-| CTRL-05 | BLOCKED | Integration merge/gate, push, and CI result are not yet recorded. |
+| CTRL-05 | SATISFIED | No-ff merge `03b02c9`, integration and post-closure full gates, pushed master `0cd0c3f`, and successful six-job CI run `31949197038` are verified. |
 | HOST-01 | SATISFIED | WP-0.1 explicitly remains unexecuted owner-host work. |
 | CTR-01, CTR-02, CTR-03, CTR-04, CTR-06 | SATISFIED | Four artifacts, deterministic derivation, endpoint validation, two tripwires, and owner-only closure verified. |
 | CTR-05 | SATISFIED | The product interval matches exact additive ownership; `f184c4a` is limited to the binding STOP/deviation record, and the executor never edited the catalog. |
@@ -93,13 +90,13 @@ No phase-created TBD/FIXME/XXX debt marker, placeholder implementation, or empty
 
 ### Human Verification Required
 
-None. The unresolved items require owner/integrator actions and recorded external results, not subjective inspection.
+None.
 
 ### Gaps Summary
 
-The product implementation and builder-local evidence are strong: all root contracts, derivation links, negative tripwires, exact ownership controls, gate reachability, and the complete local gate verify successfully. The phase cannot advance only because the roadmap explicitly requires no-ff integration, integration-gate, push, and green-CI evidence that does not yet exist.
+No gaps remain. All root contracts, derivation links, negative tripwires, exact ownership controls, gate reachability, builder and integration gates, narrow owner catalog closure, pushed master state, and the six-job CI matrix verify successfully. Phase 1 achieved its goal and is ready for the next serial phase.
 
 ---
 
-_Verified: 2026-08-16_
+_Verified: 2026-08-16T13:22:00Z_
 _Verifier: the agent (ferrox-verifier)_
