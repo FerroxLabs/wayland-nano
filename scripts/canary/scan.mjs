@@ -10,11 +10,14 @@
 
 import { createHash } from "node:crypto";
 import { execSync } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 
+// Preserve the legacy scanner's historical parent-root coverage while exact
+// include-list paths are governed relative to the current Git worktree.
 const ROOT = resolve(new URL("../../../", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+const REPO_ROOT = resolve(new URL("../../", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
 
 function resolveGovernedKey(repoRoot) {
   const candidates = [];
@@ -41,16 +44,16 @@ function exactScan(listPath, receiptPath, keyBytes) {
     throw new Error("include list must be a JSON array of non-empty file paths");
   }
   if (new Set(parsed).size !== parsed.length) throw new Error("include list contains duplicates");
-  const rootPrefix = ROOT.endsWith(sep) ? ROOT : ROOT + sep;
+  const rootPrefix = REPO_ROOT.endsWith(sep) ? REPO_ROOT : REPO_ROOT + sep;
   const inventory = parsed.map((listed) => {
-    const candidate = resolve(ROOT, listed);
+    const candidate = resolve(REPO_ROOT, listed);
     if (!candidate.startsWith(rootPrefix)) throw new Error(`include path escapes repository: ${listed}`);
     const file = realpathSync(candidate);
     if (!file.startsWith(rootPrefix)) throw new Error(`include path resolves outside repository: ${listed}`);
     if (!statSync(file).isFile()) throw new Error(`include path is not a file: ${listed}`);
     const bytes = readFileSync(file);
     return {
-      file: relative(ROOT, file).replaceAll("\\", "/"),
+      file: relative(REPO_ROOT, file).replaceAll("\\", "/"),
       sha256: createHash("sha256").update(bytes).digest("hex"),
       bytes: bytes.length,
       contains_key: bytes.includes(keyBytes),
@@ -106,24 +109,47 @@ function selfTestIncludeList() {
     if (!rejected) throw new Error("marker-mismatched candidate was accepted");
     // The core confines to ROOT, so copy the synthetic fixtures under its
     // already-ignored .tmp directory for the duration of the test.
-    const rootDir = mkdtempSync(join(ROOT, ".tmp-canary-self-test-"));
+    const rootDir = mkdtempSync(join(REPO_ROOT, ".tmp-canary-self-test-"));
     try {
       const rootArtifact = join(rootDir, "artifact.txt");
       const rootList = join(rootDir, "list.json");
       const rootReceipt = join(rootDir, "receipt.json");
       writeFileSync(rootArtifact, readFileSync(artifact));
-      writeFileSync(rootList, JSON.stringify([relative(ROOT, rootArtifact)]));
+      writeFileSync(rootList, JSON.stringify([relative(REPO_ROOT, rootArtifact)]));
       const result = exactScan(rootList, rootReceipt, key);
       if (result.hits !== 0 || result.results.length !== 1 || result.results[0].sha256.length !== 64) {
         throw new Error("clean exact-list scan failed");
       }
       writeFileSync(rootArtifact, Buffer.concat([Buffer.from("prefix"), key, Buffer.from("suffix")]));
       if (exactScan(rootList, rootReceipt, key).hits !== 1) throw new Error("synthetic hit was missed");
-      const duplicate = [relative(ROOT, rootArtifact), relative(ROOT, rootArtifact)];
+      const duplicate = [relative(REPO_ROOT, rootArtifact), relative(REPO_ROOT, rootArtifact)];
       writeFileSync(rootList, JSON.stringify(duplicate));
       let rejected = false;
       try { exactScan(rootList, rootReceipt, key); } catch { rejected = true; }
       if (!rejected) throw new Error("duplicate list was accepted");
+
+      writeFileSync(rootList, JSON.stringify([relative(REPO_ROOT, join(rootDir, "missing.txt"))]));
+      rejected = false;
+      try { exactScan(rootList, rootReceipt, key); } catch { rejected = true; }
+      if (!rejected) throw new Error("missing include-list file was accepted");
+
+      writeFileSync(rootList, JSON.stringify([relative(REPO_ROOT, join(REPO_ROOT, "..", "outside.txt"))]));
+      rejected = false;
+      try { exactScan(rootList, rootReceipt, key); } catch { rejected = true; }
+      if (!rejected) throw new Error("lexical out-of-repository path was accepted");
+
+      const outsideDir = join(dir, "outside-target");
+      const outsideArtifact = join(outsideDir, "artifact.txt");
+      const escapeLink = join(rootDir, "escape-link");
+      mkdirSync(outsideDir);
+      writeFileSync(outsideArtifact, "clean outside artifact");
+      // Directory junctions avoid Windows developer-mode requirements; other
+      // platforms exercise the equivalent realpath escape with a directory symlink.
+      symlinkSync(outsideDir, escapeLink, process.platform === "win32" ? "junction" : "dir");
+      writeFileSync(rootList, JSON.stringify([relative(REPO_ROOT, join(escapeLink, "artifact.txt"))]));
+      rejected = false;
+      try { exactScan(rootList, rootReceipt, key); } catch { rejected = true; }
+      if (!rejected) throw new Error("realpath out-of-repository path was accepted");
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }
@@ -144,7 +170,7 @@ if (process.argv[2] === "--include-list") {
     process.exit(2);
   }
   try {
-    const key = Buffer.from(readFileSync(resolveGovernedKey(ROOT), "utf8").trim(), "utf8");
+    const key = Buffer.from(readFileSync(resolveGovernedKey(REPO_ROOT), "utf8").trim(), "utf8");
     const result = exactScan(process.argv[3], process.argv[5], key);
     console.log(`scanned ${result.files_scanned} exact files (${result.bytes_scanned} bytes), hits=${result.hits} -> ${result.verdict}`);
     process.exit(result.hits === 0 ? 0 : 1);
