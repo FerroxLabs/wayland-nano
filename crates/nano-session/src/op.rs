@@ -1493,6 +1493,47 @@ pub enum Op {
     Unknown,
 }
 
+/// Complete, sorted wire vocabulary for [`Op`]'s internally tagged serde form.
+pub const OP_VOCABULARY: &[&str] = &[
+    "assistant_text",
+    "budget_grant",
+    "checkpoint_created",
+    "checkpoint_restore_begin",
+    "checkpoint_restore_end",
+    "child_usage_rollup",
+    "compaction_begin",
+    "compaction_cancel",
+    "compaction_complete",
+    "cron_created",
+    "cron_deleted",
+    "cron_fired",
+    "cua_action",
+    "cua_result",
+    "forked_from",
+    "goal_begin",
+    "goal_end",
+    "goal_status",
+    "hook_decision",
+    "mcp_elicitation",
+    "mcp_oauth_grant",
+    "mcp_tool_hydration",
+    "mode_set",
+    "plan_set",
+    "routing_attempt_begin",
+    "routing_receipt",
+    "routing_snapshot",
+    "schema_reask",
+    "session_begin",
+    "shell_rule_amended",
+    "steer_input",
+    "todo_set",
+    "tool_call",
+    "tool_result",
+    "turn_begin",
+    "turn_end",
+    "unknown",
+];
+
 /// One todo-list entry (C10 §2). The status vocabulary adopts the
 /// wcore/codex set (`pending`/`in_progress`/`completed`/`cancelled`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1575,5 +1616,307 @@ mod checkpoint_tests {
         for forbidden in ["path", "paths", "content", "manifest", "bytes"] {
             assert!(!object.contains_key(forbidden));
         }
+    }
+}
+
+#[cfg(test)]
+mod op_vocabulary_tests {
+    use super::*;
+
+    fn expected_tag(op: &Op) -> &'static str {
+        match op {
+            Op::SessionBegin { .. } => "session_begin",
+            Op::CheckpointCreated { .. } => "checkpoint_created",
+            Op::CheckpointRestoreBegin { .. } => "checkpoint_restore_begin",
+            Op::CheckpointRestoreEnd { .. } => "checkpoint_restore_end",
+            Op::TurnBegin { .. } => "turn_begin",
+            Op::ToolCall { .. } => "tool_call",
+            Op::ToolResult { .. } => "tool_result",
+            Op::HookDecision { .. } => "hook_decision",
+            Op::AssistantText { .. } => "assistant_text",
+            Op::TurnEnd { .. } => "turn_end",
+            Op::CompactionBegin { .. } => "compaction_begin",
+            Op::CompactionComplete { .. } => "compaction_complete",
+            Op::CompactionCancel { .. } => "compaction_cancel",
+            Op::TodoSet { .. } => "todo_set",
+            Op::PlanSet { .. } => "plan_set",
+            Op::ModeSet { .. } => "mode_set",
+            Op::SteerInput { .. } => "steer_input",
+            Op::SchemaReask { .. } => "schema_reask",
+            Op::ForkedFrom { .. } => "forked_from",
+            Op::GoalBegin { .. } => "goal_begin",
+            Op::GoalStatus { .. } => "goal_status",
+            Op::GoalEnd { .. } => "goal_end",
+            Op::CronFired { .. } => "cron_fired",
+            Op::CronCreated { .. } => "cron_created",
+            Op::CronDeleted { .. } => "cron_deleted",
+            Op::BudgetGrant { .. } => "budget_grant",
+            Op::ChildUsageRollup { .. } => "child_usage_rollup",
+            Op::McpToolHydration { .. } => "mcp_tool_hydration",
+            Op::McpElicitation { .. } => "mcp_elicitation",
+            Op::McpOauthGrant { .. } => "mcp_oauth_grant",
+            Op::RoutingSnapshot { .. } => "routing_snapshot",
+            Op::RoutingAttemptBegin { .. } => "routing_attempt_begin",
+            Op::RoutingReceipt { .. } => "routing_receipt",
+            Op::ShellRuleAmended { .. } => "shell_rule_amended",
+            Op::CuaAction { .. } => "cua_action",
+            Op::CuaResult { .. } => "cua_result",
+            Op::Unknown => "unknown",
+        }
+    }
+
+    #[test]
+    fn op_vocabulary_is_sorted_unique_exhaustive_and_matches_serde_tags() {
+        assert!(OP_VOCABULARY.windows(2).all(|pair| pair[0] < pair[1]));
+
+        let representatives = [
+            Op::SessionBegin {
+                session_id: "session".into(),
+                cwd: ".".into(),
+            },
+            Op::CheckpointCreated {
+                checkpoint_id: "checkpoint".into(),
+                workspace_key: "0123456789abcdef".into(),
+                parent: None,
+                file_count: 0,
+                total_bytes: 0,
+                tree_digest: "a".repeat(64),
+                evicted: 0,
+            },
+            Op::CheckpointRestoreBegin {
+                checkpoint_id: "checkpoint".into(),
+                safety_checkpoint_id: "safety".into(),
+                file_count: 0,
+                tree_digest: "a".repeat(64),
+            },
+            Op::CheckpointRestoreEnd {
+                checkpoint_id: "checkpoint".into(),
+                outcome: CheckpointRestoreOutcome::Applied,
+                recovered: false,
+            },
+            Op::TurnBegin {
+                turn_id: "turn".into(),
+                input: "input".into(),
+                input_blocks: Vec::new(),
+            },
+            Op::ToolCall {
+                turn_id: "turn".into(),
+                call_id: "call".into(),
+                name: "tool".into(),
+                args: serde_json::json!({}),
+            },
+            Op::ToolResult {
+                call_id: "call".into(),
+                ok: true,
+                output_digest: "a".repeat(64),
+                changed_files: Vec::new(),
+                error_kind: None,
+                image_refs: Vec::new(),
+            },
+            Op::HookDecision {
+                turn_id: "turn".into(),
+                event: HookEvent::PreToolUse,
+                handler_id: "handler".into(),
+                matcher_input: None,
+                outcome: HookOutcome::Pass,
+                duration_ms: 0,
+            },
+            Op::AssistantText {
+                turn_id: "turn".into(),
+                text: "text".into(),
+            },
+            Op::TurnEnd {
+                turn_id: "turn".into(),
+                outcome: TurnOutcome::Completed,
+                usage: None,
+            },
+            Op::CompactionBegin {
+                compaction_id: "compaction".into(),
+            },
+            Op::CompactionComplete {
+                compaction_id: "compaction".into(),
+                summary: "summary".into(),
+                covers_op_ids: Vec::new(),
+                changed_files: Vec::new(),
+                image_influenced: false,
+                mcp_hydration: None,
+            },
+            Op::CompactionCancel {
+                compaction_id: "compaction".into(),
+                reason: CompactionCancelReason::Unspecified,
+            },
+            Op::TodoSet { items: Vec::new() },
+            Op::PlanSet { active: false },
+            Op::ModeSet {
+                mode: "default".into(),
+            },
+            Op::SteerInput {
+                turn_id: "turn".into(),
+                text: "text".into(),
+            },
+            Op::SchemaReask {
+                turn_id: "turn".into(),
+                feedback: "feedback".into(),
+            },
+            Op::ForkedFrom {
+                parent_session_id: "parent".into(),
+                parent_op_id: "op".into(),
+                at_turn: None,
+                parent_digest_before: "a".repeat(64),
+                parent_digest_after: "a".repeat(64),
+                imported_ops: 0,
+            },
+            Op::GoalBegin {
+                goal_id: "goal".into(),
+                objective: "objective".into(),
+                budgets: GoalBudgets::default(),
+            },
+            Op::GoalStatus {
+                goal_id: "goal".into(),
+                status: GoalStatusKind::Active,
+                reason: GoalReason::Unspecified,
+            },
+            Op::GoalEnd {
+                goal_id: "goal".into(),
+                outcome: GoalOutcome::Complete,
+            },
+            Op::CronFired {
+                job_id: "job".into(),
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                occurrence_id: "occurrence".into(),
+                mode_at_fire: "default".into(),
+                coalesced: 0,
+            },
+            Op::CronCreated {
+                job_id: "job".into(),
+                session_id: "session".into(),
+                schedule: "* * * * *".into(),
+                prompt: "prompt".into(),
+                created_at: "2026-08-16T00:00:00Z".into(),
+            },
+            Op::CronDeleted {
+                job_id: "job".into(),
+                session_id: "session".into(),
+            },
+            Op::BudgetGrant {
+                grant_id: "grant".into(),
+                tokens: 1,
+                after_limit: 1,
+            },
+            Op::ChildUsageRollup {
+                task_id: "task".into(),
+                child_turn_id: "turn".into(),
+                outcome: TurnOutcome::Completed,
+                usage: TurnUsage::default(),
+            },
+            Op::McpToolHydration {
+                hydration_id: "hydration".into(),
+                entries: Vec::new(),
+            },
+            Op::McpElicitation {
+                elicitation_id: "elicitation".into(),
+                server_id: "srv_0123456789abcdef".into(),
+                call_id: "call".into(),
+                request_id: "request".into(),
+                card_id: 1,
+                action: McpElicitationAction::Accept,
+                schema_digest: "a".repeat(64),
+                answer_digest: "b".repeat(64),
+            },
+            Op::McpOauthGrant {
+                grant_id: "grant".into(),
+                server_id: "srv_0123456789abcdef".into(),
+                as_origin: "https://example.invalid".into(),
+                issuer: "https://example.invalid".into(),
+                endpoints: vec![GrantEndpoint {
+                    method: GrantMethod::Get,
+                    path: "/token".into(),
+                }],
+            },
+            Op::RoutingSnapshot {
+                turn_id: "turn".into(),
+                routing_mode: RoutingMode::ImplicitAliasPassthrough,
+                configured_reference: "model".into(),
+                attempt_budget: 1,
+                candidates: vec![RoutingCandidate {
+                    provider: "provider".into(),
+                    candidate: "model".into(),
+                    kind: CandidateKind::Alias,
+                    admitted: true,
+                    rejection: None,
+                }],
+                catalog_digest: "a".repeat(64),
+            },
+            Op::RoutingAttemptBegin {
+                turn_id: "turn".into(),
+                ordinal: 0,
+                routing_mode: RoutingMode::ImplicitAliasPassthrough,
+                provider: "provider".into(),
+                candidate: "model".into(),
+            },
+            Op::RoutingReceipt {
+                turn_id: "turn".into(),
+                ordinal: 0,
+                routing_mode: RoutingMode::ImplicitAliasPassthrough,
+                provider: "provider".into(),
+                configured_reference: "model".into(),
+                candidate: "model".into(),
+                outcome: RoutingOutcome::Committed,
+                failure: None,
+                status: Some(200),
+                attempts_consumed: 1,
+                selected: true,
+                response_model: Some("model".into()),
+                leaf_identity: LeafProvenance::ProviderReported,
+                usage: None,
+                exhaustion: None,
+                rejection: None,
+            },
+            Op::ShellRuleAmended {
+                amendment_id: "amendment".into(),
+                prefix: vec!["command".into()],
+                exact: true,
+                rule_digest: "a".repeat(64),
+            },
+            Op::CuaAction {
+                turn_id: "turn".into(),
+                call_id: "call".into(),
+                op_kind: "click".into(),
+                args_digest: "a".repeat(64),
+                frontmost_app: None,
+                pre_shot: None,
+            },
+            Op::CuaResult {
+                call_id: "call".into(),
+                outcome: CuaOutcome::Completed,
+                post_shot: None,
+                error_kind: None,
+            },
+            Op::Unknown,
+        ];
+
+        let mut serialized_tags = representatives
+            .iter()
+            .map(|op| {
+                let expected = expected_tag(op);
+                let value = serde_json::to_value(op).expect("representative Op serializes");
+                let serialized = value["type"]
+                    .as_str()
+                    .expect("internally tagged Op has a string type");
+                assert_eq!(serialized, expected);
+                serialized.to_owned()
+            })
+            .collect::<Vec<_>>();
+        serialized_tags.sort();
+
+        assert_eq!(serialized_tags.len(), OP_VOCABULARY.len());
+        assert_eq!(
+            serialized_tags,
+            OP_VOCABULARY
+                .iter()
+                .map(|tag| (*tag).to_owned())
+                .collect::<Vec<_>>()
+        );
     }
 }

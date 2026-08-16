@@ -158,7 +158,7 @@
   kill/archive recommended; salvage: hardlink spike + provisioning ADR +
   sandbox fixes). Rebrand committed (1efa0fe): wayland-nano binaries,
   NanoSandbox* machine state + fresh WFP GUIDs, @waylandnano/nano, Desktop
-  profiles re-registered. 4 frozen contracts in shared/contracts/. Sandbox
+  profiles re-registered. 4 frozen contracts in `contracts/`. Sandbox
   fix port-by-review + hardlink-race FIX landed (real hole: multi-link
   writes now denied; docs/audits/hardlink-race.md). PENDING OWNER:
   elevated migration run (uninstall NanoK3 → provision Wayland Nano).
@@ -342,8 +342,8 @@
 - **NPM SCAFFOLD** (f387c03): zero-dep installer + launcher, win32-x64 staged,
   win32-arm64 runtime-rejected per compile-gate-only rule.
 - **COMPLIANCE CATALOG** (973f5b7): docs/compliance/SCENARIO_CATALOG.md — 290-test
-  inventory keyed to COMP-* IDs + 16-gap register. NOTE: shared/contracts/ is EMPTY
-  (Track A freeze never landed, gap G-CTR-1) — catalog keys off SCORECARD §2 instead.
+  inventory keyed to COMP-* IDs + 16-gap register. NOTE: root `contracts/` contains the 4 frozen contracts
+  (WP-0.4 freeze landed; catalog path/closure awaits owner/integrator action).
 - Workspace: 290+ tests green, clippy -D warnings clean, HEAD = 973f5b7.
 
 ### Previous state (2026-08-10, post-compaction: Desktop registration DONE)

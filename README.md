@@ -14,7 +14,8 @@ egress chokepoint, and protocol hosts that let Wayland Desktop drive it.
 - Provenance ledger (every ported file): `UPSTREAM.md`
 - Current sprint state: `docs/STATUS.md`
 - Compliance scenario catalog: `docs/compliance/SCENARIO_CATALOG.md`
-- Shared contracts/fixtures: `../shared/`
+- Canonical frozen contracts: `contracts/`
+- Shared fixtures/evidence: `../shared/`
 - Flux live evidence: `../shared/fixtures/flux/FINDINGS.md`
 
 ## Crate layout
