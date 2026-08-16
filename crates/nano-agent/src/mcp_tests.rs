@@ -32,6 +32,128 @@ fn constants_are_pinned() {
     );
 }
 
+#[test]
+fn retained_bytes_is_stable_and_monotonic_for_registry_owned_state() {
+    let mut registry = McpRegistry::new();
+    let empty = registry.retained_bytes();
+    assert_eq!(empty, registry.retained_bytes(), "stable without mutation");
+
+    registry.startup_warnings.push("retained warning".repeat(8));
+    let warned = registry.retained_bytes();
+    assert!(warned > empty, "warning capacity must be represented");
+
+    let mut uris = BTreeSet::new();
+    uris.insert("file:///retained/resource/with/a/long/path".repeat(4));
+    registry.resource_cache.insert(
+        "server-with-retained-cache-key".repeat(4),
+        ResourceCache {
+            uris,
+            truncated: false,
+        },
+    );
+    let cached = registry.retained_bytes();
+    assert!(
+        cached > warned,
+        "resource cache ownership must be represented"
+    );
+    assert_eq!(
+        cached,
+        registry.retained_bytes(),
+        "stable after mutation settles"
+    );
+}
+
+#[test]
+fn retained_json_value_bytes_recurses_through_schema_nodes() {
+    let small = serde_json::json!({"type": "object"});
+    let large = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "payload": {"type": "string", "description": "x".repeat(512)}
+        }
+    });
+    assert_eq!(
+        retained_json_value_bytes(&small),
+        retained_json_value_bytes(&small)
+    );
+    assert!(retained_json_value_bytes(&large) > retained_json_value_bytes(&small));
+}
+
+#[test]
+fn retained_bytes_tracks_registered_tool_descriptors_and_schemas() {
+    let mut registry = McpRegistry::new();
+    let before = registry.retained_bytes();
+
+    let small_tools = serde_json::json!([{
+        "name": "lookup",
+        "description": "look up one item",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}}
+        }
+    }]);
+    let small = fake_server(
+        "retained-small",
+        &small_tools,
+        "{}",
+        &serde_json::json!([]),
+        None,
+        None,
+    );
+    assert_eq!(registry.register(small.spec).expect("register small"), 1);
+    let after_small = registry.retained_bytes();
+    assert!(
+        after_small > before,
+        "stored tool inventory must increase retained bytes"
+    );
+    assert_eq!(
+        after_small,
+        registry.retained_bytes(),
+        "repeated read is stable"
+    );
+
+    let large_tools = serde_json::json!([{
+        "name": "lookup_with_a_substantially_longer_retained_tool_name",
+        "description": "retained descriptor text ".repeat(24),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "object",
+                    "description": "retained nested schema text ".repeat(32),
+                    "properties": {
+                        "content": {"type": "string", "description": "x".repeat(512)}
+                    }
+                }
+            },
+            "required": ["payload"]
+        }
+    }]);
+    let large = fake_server(
+        "retained-large",
+        &large_tools,
+        "{}",
+        &serde_json::json!([]),
+        None,
+        None,
+    );
+    assert_eq!(registry.register(large.spec).expect("register large"), 1);
+    let after_large = registry.retained_bytes();
+    assert!(
+        after_large > after_small,
+        "larger descriptor/schema must increase retained bytes"
+    );
+    assert!(
+        after_large - after_small > after_small - before,
+        "larger tool/schema delta should exceed the small fixture delta"
+    );
+    assert_eq!(
+        after_large,
+        registry.retained_bytes(),
+        "repeated read is stable"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Canonical digest (§3.4)
 // ---------------------------------------------------------------------------

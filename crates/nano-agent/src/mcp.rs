@@ -636,6 +636,45 @@ impl McpRegistry {
         }
     }
 
+    /// Cheap, allocation-free estimate of bytes retained by registry-owned
+    /// collections and values. This deliberately excludes transient
+    /// `tool_definitions()` clones. `McpClient` is opaque across the crate
+    /// boundary, so only its inline `ServerEntry` storage is counted; client-
+    /// internal transport/dispatcher allocations are explicitly excluded.
+    pub fn retained_bytes(&self) -> u64 {
+        let mut bytes = self.servers.capacity() * std::mem::size_of::<ServerEntry>();
+        for server in &self.servers {
+            bytes += retained_spec_bytes(&server.spec);
+            bytes += retained_receipt_bytes(&server.receipt);
+            bytes += server.tools.capacity() * std::mem::size_of::<McpToolDescriptor>();
+            for tool in &server.tools {
+                bytes += tool.name.capacity();
+                bytes += tool.description.as_ref().map_or(0, String::capacity);
+                bytes += tool
+                    .input_schema
+                    .as_ref()
+                    .map_or(0, retained_json_value_bytes);
+            }
+            bytes += retained_string_set_bytes(&server.hydrated);
+            bytes += retained_string_vec_bytes(&server.churn_window);
+            bytes += server
+                .interrupted_call
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_ref()
+                .map_or(0, String::capacity);
+        }
+        bytes += retained_string_vec_bytes(&self.startup_warnings);
+        bytes += self.resource_cache.len() * std::mem::size_of::<(String, ResourceCache)>();
+        for (server, cache) in &self.resource_cache {
+            bytes += server.capacity() + retained_string_set_bytes(&cache.uris);
+        }
+        // The optional factory is an opaque Arc<dyn Fn>; its inline option is
+        // already part of `Self`, while closure-capture allocations are not
+        // introspectable without changing the public seam.
+        (std::mem::size_of::<Self>() + bytes) as u64
+    }
+
     /// The fair-share divisor (§3.1). Set to the number of configured
     /// servers BEFORE registration so admission is registration-order
     /// independent; unset falls back to servers-registered-so-far + 1.
@@ -1240,6 +1279,66 @@ impl McpRegistry {
             .iter()
             .find(|entry| entry.spec.name == server)
             .map(|_| (server.to_string(), tool.to_string()))
+    }
+}
+
+fn retained_string_vec_bytes(values: &Vec<String>) -> usize {
+    values.capacity() * std::mem::size_of::<String>()
+        + values.iter().map(String::capacity).sum::<usize>()
+}
+
+fn retained_string_set_bytes(values: &BTreeSet<String>) -> usize {
+    values.len() * std::mem::size_of::<String>()
+        + values.iter().map(String::capacity).sum::<usize>()
+}
+
+fn retained_spec_bytes(spec: &McpServerSpec) -> usize {
+    let mut bytes = spec.name.capacity();
+    bytes += match &spec.transport {
+        Transport::Stdio { command, args, env } => {
+            command.capacity()
+                + retained_string_vec_bytes(args)
+                + env.capacity() * std::mem::size_of::<(String, String)>()
+                + env
+                    .iter()
+                    .map(|(key, value)| key.capacity() + value.capacity())
+                    .sum::<usize>()
+        }
+        Transport::Http { url } => url.capacity(),
+    };
+    bytes
+        + match &spec.source {
+            SpecSource::Marketplace(id) => id.capacity(),
+            _ => 0,
+        }
+}
+
+fn retained_receipt_bytes(receipt: &McpRegistrationReceipt) -> usize {
+    receipt.instance_id.capacity()
+        + receipt.tools_digest.capacity()
+        + receipt.negotiated.protocol_version.capacity()
+        + retained_string_vec_bytes(&receipt.egress_origins)
+        + match &receipt.source {
+            SpecSource::Marketplace(id) => id.capacity(),
+            _ => 0,
+        }
+}
+
+fn retained_json_value_bytes(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::String(value) => value.capacity(),
+        serde_json::Value::Array(values) => {
+            values.capacity() * std::mem::size_of::<serde_json::Value>()
+                + values.iter().map(retained_json_value_bytes).sum::<usize>()
+        }
+        serde_json::Value::Object(values) => {
+            values.len() * std::mem::size_of::<(String, serde_json::Value)>()
+                + values
+                    .iter()
+                    .map(|(key, value)| key.capacity() + retained_json_value_bytes(value))
+                    .sum::<usize>()
+        }
+        _ => 0,
     }
 }
 
