@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Component;
 use std::path::Path;
@@ -26,11 +27,36 @@ fn parse(bytes: &[u8], name: &str) -> Result<Value, String> {
     serde_json::from_slice(bytes).map_err(|err| format!("{name}: malformed JSON: {err}"))
 }
 
+fn canonicalize(value: Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .into_iter()
+                .map(|(key, value)| (key, canonicalize(value)))
+                .collect::<BTreeMap<_, _>>()
+                .into_iter()
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.into_iter().map(canonicalize).collect()),
+        other => other,
+    }
+}
+
+fn parse_canonical(bytes: &[u8], artifact: &str) -> Result<Value, String> {
+    let value = parse(bytes, artifact)?;
+    let canonical = serde_json::to_vec(&canonicalize(value.clone()))
+        .map_err(|err| format!("{artifact}: canonical serialization failed: {err}"))?;
+    if bytes != canonical {
+        return Err(format!("{artifact}: bytes are not canonical"));
+    }
+    Ok(value)
+}
+
 fn load(root: &Path, artifact: &str) -> Result<Value, String> {
     let path = root.join("contracts").join(format!("{artifact}.json"));
     let bytes = std::fs::read(&path)
         .map_err(|err| format!("required root contract {}: {err}", path.display()))?;
-    parse(&bytes, artifact)
+    parse_canonical(&bytes, artifact)
 }
 
 fn common(value: &Value, artifact: &str) -> Result<(), String> {
@@ -303,6 +329,14 @@ fn missing_root_and_malformed_contracts_fail_closed() {
         parse(b"{not-json", "tampered")
             .unwrap_err()
             .contains("malformed JSON")
+    );
+    let root = repo_root();
+    let canonical = std::fs::read(root.join("contracts/capability-profile.json")).unwrap();
+    let mut whitespace_tamper = canonical;
+    whitespace_tamper.push(b'\n');
+    assert_eq!(
+        parse_canonical(&whitespace_tamper, "tampered").unwrap_err(),
+        "tampered: bytes are not canonical"
     );
 }
 
