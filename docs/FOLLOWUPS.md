@@ -1198,3 +1198,13 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
   artifacts or weaker substitute tripwires were created. Owner/integrator
   must expand the card's OWNS list to include the two required test/code
   surfaces, or amend the spec with an in-boundary derivation and test design.
+
+## DEV-WP-0.4B: frozen-contract artifacts are outside the Git repository
+
+- **Filed:** 2026-08-16, while executing plan `01-01` from baseline
+  `10484c4` on `feat/wp-0.4`.
+- **Conflict:** required `shared/contracts/*` files live outside the Git
+  repository and no `shared/*` paths are tracked, so Tasks 2–3 cannot be
+  committed atomically on the WP branch.
+- **Disposition:** no product edits occurred. Provide a tracked shared
+  repository/mount or authoritatively amend the ownership and commit contract.
