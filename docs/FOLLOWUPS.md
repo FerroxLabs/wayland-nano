@@ -1219,3 +1219,14 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
 - **Disposition:** no product code or soak measurement was started. Authorize
   the exact package-manifest feature-table slice or amend the feature contract;
   the executor must not infer broader nano-cli manifest ownership.
+
+## DEV-WP-0.2B: governed canary scanner cannot cover WP soak evidence
+
+- **Filed:** 2026-08-16 during the WP-0.2 plan audit from baseline `566e3ac`.
+- **Conflict:** every retained capture requires a real-key canary, but
+  `scripts/canary/scan.mjs` scans only its fixed legacy target map and WP-0.2
+  does not own that file. Credential-shape matching cannot substitute for the
+  binding actual-key-in-memory comparison.
+- **Disposition:** no soak was started. Authorize only an additive exact-file
+  include-list option and coverage receipt in the governed scanner, or require
+  an equivalent owner-run scanner step; never expose the key value.
