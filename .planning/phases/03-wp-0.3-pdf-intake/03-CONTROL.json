@@ -89,6 +89,7 @@
                            ".planning/ROADMAP.md",
                            "crates/nano-agent/src/turn_input.rs",
                            "crates/nano-cli/src/acp_mode.rs",
+                           "crates/nano-cli/src/bin/gen_error_table.rs",
                            "crates/nano-model/data/providerCatalog.vendored.json",
                            "crates/nano-model/fixtures-flux/pdf/control-request.json",
                            "crates/nano-model/fixtures-flux/pdf/document-request.json",

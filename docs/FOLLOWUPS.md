@@ -1299,3 +1299,6 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
   `RECORDED_SHA256` and exact endpoint/scope assertions, the build.rs-generated golden,
   and one exact `UPSTREAM.md` ledger/endpoint-review row. No other catalog, test,
   golden, build-script, routing, or provenance edit is authorized.
+### DEV-WP-0.3C — D9 generator allowlist omission (RESOLVED 2026-08-17)
+
+Plan 03-02 referenced and executed `crates/nano-cli/src/bin/gen_error_table.rs`, and the authoritative WP-0.3 GOALS/spec explicitly own that generator, but its `files_modified` entry was accidentally omitted when the D9 exact allowlist was frozen. A bounded review fix correctly made the mandatory canonical shared mirror fail closed, then D9 stopped on the omission before commit. The integrator recorded this deviation and repaired only the Plan 03-02 declaration plus the matching exact `wp03_control_v1.repo_allowlist` entry; no broader ownership was granted, and the full D9 check must pass before the product change is committed.
