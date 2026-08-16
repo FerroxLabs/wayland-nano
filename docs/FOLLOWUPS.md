@@ -1208,3 +1208,68 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
   committed atomically on the WP branch.
 - **Disposition:** no product edits occurred. Provide a tracked shared
   repository/mount or authoritatively amend the ownership and commit contract.
+
+## DEV-WP-0.2A: mem-stats feature requires the nano-cli package manifest
+
+- **Filed:** 2026-08-16 while researching WP-0.2 from baseline `566e3ac` on
+  `feat/wp-0.2`.
+- **Conflict:** the WP requires a feature-gated `nano-cli/mem-stats` surface,
+  but its OWNS list grants the root virtual `Cargo.toml` and not
+  `crates/nano-cli/Cargo.toml`, where Cargo package features must be declared.
+- **Disposition:** no product code or soak measurement was started. Authorize
+  the exact package-manifest feature-table slice or amend the feature contract;
+  the executor must not infer broader nano-cli manifest ownership.
+- **Owner authorization (2026-08-16):** signed. Grant only the
+  `crates/nano-cli/Cargo.toml` `mem-stats` feature-table slice; reporter
+  configured-path failures fail startup; retain and force-add only exact
+  canary-covered soak runs; select a suspect only at >=60% of positive
+  accounted growth with a >=10 percentage-point lead, otherwise `neither`;
+  interpret `sessions_map` as current `Option<Session>` cardinality 0/1; use
+  B1 for WP acceptance while reporting fake-mode B11 separately.
+
+## DEV-WP-0.2B: governed canary scanner cannot cover WP soak evidence
+
+- **Filed:** 2026-08-16 during the WP-0.2 plan audit from baseline `566e3ac`.
+- **Conflict:** every retained capture requires a real-key canary, but
+  `scripts/canary/scan.mjs` scans only its fixed legacy target map and WP-0.2
+  does not own that file. Credential-shape matching cannot substitute for the
+  binding actual-key-in-memory comparison.
+- **Disposition:** no soak was started. Authorize only an additive exact-file
+  include-list option and coverage receipt in the governed scanner, or require
+  an equivalent owner-run scanner step; never expose the key value.
+- **Owner authorization (2026-08-16):** signed. Grant only additive
+  `--include-list <exact-list.json> --receipt <exact-receipt.json>` behavior
+  plus its synthetic self-test in `scripts/canary/scan.mjs`. Exact-list mode
+  may compare the real key in memory, but must never print, persist, echo, or
+  embed its value; default scanner behavior remains unchanged.
+
+## WP-0.2 900-second profile failure (Plan 02-02)
+
+- **Run:** `scripts/soak/evidence/run-20260816T161856444Z` from `4a53c86`.
+- **Disposition:** the first wrapper attempt was aborted after roughly 42
+  seconds and 8 turns (`exit 124`). It has no completed manifest or usable
+  reporter series and is therefore `aborted/unclassified`: it selects no arm
+  and cannot authorize a correction or one-hour receipt.
+- **Canary:** the exact-list scanner failed closed because its required
+  repo-local `.secrets/flux-test-key` path is absent in the isolated worktree.
+  It emitted no receipt or secret value. The defense-in-depth
+  `wp02-credential-shapes-v1` scan passed with zero hits but cannot substitute.
+- **Corrected rerun:** `run-20260816T163631293Z` completed 901,636 ms and
+  produced 57 reporter rows plus 15 aligned oracle samples across three PID
+  segments. Exact-value canary passed over both retained attempts (12 files,
+  269,655 bytes, zero hits). Eligible fold auxiliaries explained 28.094% of
+  positive accounted growth and measured MCP registry growth was 0%; under
+  the owner-signed 60%/10-point rule and independent evidence-review PASS,
+  measured `neither` is confirmed. Plan 02-03 applied no product correction;
+  F-45 remains OPEN. B1 and scaled B5 failed; no one-hour receipt ran.
+- **Plan 02-04 eligibility:** INELIGIBLE/NO-RECEIPT. Because no measured
+  correction landed, the 3,600-second B1 acceptance run was not started; B1
+  and B11 acceptance are not evaluated or claimed. F-45 remains OPEN. No
+  budget, harness, product, `.gitignore`, or evidence-staging change occurred.
+- **Plan 02-05 audit/handoff:** one High was found and fixed in the single
+  bounded round: exact-list paths were resolved from the linked-worktree
+  parent instead of the current worktree root. Exact-list mode now uses the
+  worktree root while legacy default coverage keeps its historical root;
+  synthetic resolver/inventory tests and focused suites pass. `just gate-all`
+  (including `gate-gen-check`) and opt-in reporter/release gates pass. Final
+  status remains measured-neither, F-45 OPEN, no 3,600-second receipt.

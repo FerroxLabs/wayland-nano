@@ -1,0 +1,14 @@
+{
+  "binary_path": "D:\\Development\\waylandnano\\wayland-nano\\.tmp-wt-vc-wp-0.2\\target\\release\\wayland-nano.exe",
+  "started_at": "2026-08-16T16:36:31.1968895Z",
+  "pre_pids": [],
+  "post_pids": [],
+  "node_pid": 86144,
+  "exit_code": 1,
+  "timed_out": false,
+  "error": "",
+  "taskkill_exit": null,
+  "taskkill_waited": false,
+  "cleanup_verdict": "clean",
+  "finished_at": "2026-08-16T16:51:35.0164281Z"
+}

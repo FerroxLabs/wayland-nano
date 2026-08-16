@@ -1,0 +1,15 @@
+{"at":"2026-08-16T16:36:33.8357884Z","pid":11832,"privateWorkingSetBytes":2293760,"workingSetBytes":14258176,"handles":191,"threads":7,"openFds":null,"nanoHomeBytes":246,"descendants":[75080]}
+{"at":"2026-08-16T16:37:35.1833351Z","pid":11832,"privateWorkingSetBytes":5038080,"workingSetBytes":20029440,"handles":218,"threads":5,"openFds":null,"nanoHomeBytes":98859,"descendants":[75080]}
+{"at":"2026-08-16T16:38:36.3753136Z","pid":11832,"privateWorkingSetBytes":6586368,"workingSetBytes":21184512,"handles":216,"threads":5,"openFds":null,"nanoHomeBytes":290816,"descendants":[75080]}
+{"at":"2026-08-16T16:39:37.1479712Z","pid":11832,"privateWorkingSetBytes":7909376,"workingSetBytes":21995520,"handles":216,"threads":5,"openFds":null,"nanoHomeBytes":485208,"descendants":[75080]}
+{"at":"2026-08-16T16:40:38.7174403Z","pid":11832,"privateWorkingSetBytes":33644544,"workingSetBytes":46465024,"handles":216,"threads":5,"openFds":null,"nanoHomeBytes":676002,"descendants":[75080]}
+{"at":"2026-08-16T16:41:39.7969065Z","pid":51352,"privateWorkingSetBytes":7553024,"workingSetBytes":22151168,"handles":220,"threads":7,"openFds":null,"nanoHomeBytes":861354,"descendants":[49832]}
+{"at":"2026-08-16T16:42:40.8477060Z","pid":51352,"privateWorkingSetBytes":9179136,"workingSetBytes":23592960,"handles":218,"threads":5,"openFds":null,"nanoHomeBytes":1053816,"descendants":[49832]}
+{"at":"2026-08-16T16:43:42.0706424Z","pid":51352,"privateWorkingSetBytes":10416128,"workingSetBytes":24719360,"handles":216,"threads":5,"openFds":null,"nanoHomeBytes":1239012,"descendants":[49832]}
+{"at":"2026-08-16T16:44:43.6999157Z","pid":51352,"privateWorkingSetBytes":33869824,"workingSetBytes":46964736,"handles":216,"threads":5,"openFds":null,"nanoHomeBytes":1429820,"descendants":[49832]}
+{"at":"2026-08-16T16:45:44.4113699Z","pid":51352,"privateWorkingSetBytes":35950592,"workingSetBytes":49201152,"handles":216,"threads":5,"openFds":null,"nanoHomeBytes":1614964,"descendants":[49832]}
+{"at":"2026-08-16T16:46:45.6770858Z","pid":65140,"privateWorkingSetBytes":10596352,"workingSetBytes":25309184,"handles":216,"threads":6,"openFds":null,"nanoHomeBytes":1796740,"descendants":[88096]}
+{"at":"2026-08-16T16:47:47.4565706Z","pid":65140,"privateWorkingSetBytes":11198464,"workingSetBytes":25690112,"handles":218,"threads":5,"openFds":null,"nanoHomeBytes":1981119,"descendants":[88096]}
+{"at":"2026-08-16T16:48:48.1253734Z","pid":65140,"privateWorkingSetBytes":18755584,"workingSetBytes":32387072,"handles":216,"threads":5,"openFds":null,"nanoHomeBytes":2158411,"descendants":[88096]}
+{"at":"2026-08-16T16:49:49.1466167Z","pid":65140,"privateWorkingSetBytes":38879232,"workingSetBytes":51937280,"handles":216,"threads":5,"openFds":null,"nanoHomeBytes":2341272,"descendants":[88096]}
+{"at":"2026-08-16T16:50:51.0375906Z","pid":65140,"privateWorkingSetBytes":44429312,"workingSetBytes":55316480,"handles":216,"threads":5,"openFds":null,"nanoHomeBytes":2525948,"descendants":[88096]}

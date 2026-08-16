@@ -70,7 +70,14 @@ This milestone promotes the approved Wayland Nano 0.2 verified-change program th
   4. Merge through detached `.tmp-wt-integ` with `--no-ff`, rerun the complete `just gate-all`, and preserve the locked soak budgets.
   5. Push integration `HEAD:master`; require CI green before Phase 3 and record the full one-line promotion result.
 
-**Plans**: TBD
+**Plans**: 5 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Authorize the package-manifest slice and implement the exact measurement reporter.
+- [ ] 02-02-PLAN.md — Run the 900-second profile and lock exactly one measured decision arm.
+- [ ] 02-03-PLAN.md — Implement only the selected fold/tool correction or record the neither terminal arm.
+- [ ] 02-04-PLAN.md — Run the eligible one-hour B1 acceptance and retain canary-clean evidence.
+- [ ] 02-05-PLAN.md — Audit, run the full local gate, and produce the builder-only handoff.
 
 ### Phase 3: WP-0.3 PDF Intake
 
