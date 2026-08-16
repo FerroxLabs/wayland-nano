@@ -1181,3 +1181,20 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
   but the bin's documented output contract is broken).
 - **Close means:** interpolate (or drop) the placeholder and pin the output
   contract with a test.
+
+## DEV-WP-0.4: frozen-contract tripwires cross the locked ownership boundary
+
+- **Filed:** 2026-08-16, during WP-0.4 execution from `origin/master` at
+  `7e47a10`.
+- **Conflict:** the WP-0.4 goal card limits ownership to
+  `shared/contracts/**`, `crates/nano-cli/src/bin/gen_contracts.rs`, one
+  `justfile` recipe, and the owner-managed catalog entry. The authoritative
+  hardening spec additionally requires modifying
+  `crates/nano-session/src/op.rs` to add and exhaustively test
+  `OP_VOCABULARY`, plus adding a workspace schema-validation test under
+  `crates/nano-protocol`. Those required edits are outside the card's OWNS
+  boundary.
+- **Disposition:** WP-0.4 stopped before implementation; no partial contract
+  artifacts or weaker substitute tripwires were created. Owner/integrator
+  must expand the card's OWNS list to include the two required test/code
+  surfaces, or amend the spec with an in-boundary derivation and test design.
