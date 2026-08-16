@@ -10,11 +10,109 @@
 
 import { createHash } from "node:crypto";
 import { execSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync, writeFileSync, existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readdirSync, readFileSync, writeFileSync, existsSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
 
 const ROOT = resolve(new URL("../../../", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
 const KEY_PATH = join(ROOT, ".secrets/flux-test-key");
+
+function exactScan(listPath, receiptPath, keyBytes) {
+  const parsed = JSON.parse(readFileSync(listPath, "utf8"));
+  if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string" || item.length === 0)) {
+    throw new Error("include list must be a JSON array of non-empty file paths");
+  }
+  if (new Set(parsed).size !== parsed.length) throw new Error("include list contains duplicates");
+  const rootPrefix = ROOT.endsWith(sep) ? ROOT : ROOT + sep;
+  const inventory = parsed.map((listed) => {
+    const candidate = resolve(ROOT, listed);
+    if (!candidate.startsWith(rootPrefix)) throw new Error(`include path escapes repository: ${listed}`);
+    const file = realpathSync(candidate);
+    if (!file.startsWith(rootPrefix)) throw new Error(`include path resolves outside repository: ${listed}`);
+    if (!statSync(file).isFile()) throw new Error(`include path is not a file: ${listed}`);
+    const bytes = readFileSync(file);
+    return {
+      file: relative(ROOT, file).replaceAll("\\", "/"),
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      bytes: bytes.length,
+      contains_key: bytes.includes(keyBytes),
+    };
+  });
+  const hits = inventory.filter((item) => item.contains_key).length;
+  const receipt = {
+    scanner: "wayland-nano/scripts/canary/scan.mjs exact include-list",
+    at: new Date().toISOString(),
+    key_fingerprint_sha256: createHash("sha256").update(keyBytes).digest("hex"),
+    files_scanned: inventory.length,
+    bytes_scanned: inventory.reduce((sum, item) => sum + item.bytes, 0),
+    hits,
+    verdict: hits === 0 ? "PASS — key appears in zero artifacts" : `FAIL — key found in ${hits} artifact(s)`,
+    results: inventory,
+  };
+  writeFileSync(receiptPath, JSON.stringify(receipt, null, 2));
+  return receipt;
+}
+
+function selfTestIncludeList() {
+  const dir = mkdtempSync(join(tmpdir(), "nano-canary-self-test-"));
+  try {
+    // Exercise the core with a synthetic credential only. The production key
+    // path is deliberately unreachable from this branch.
+    const key = Buffer.from("synthetic-canary-key-never-production", "utf8");
+    const artifact = join(dir, "artifact.txt");
+    const list = join(dir, "list.json");
+    const receipt = join(dir, "receipt.json");
+    writeFileSync(artifact, "clean synthetic artifact");
+    // The core confines to ROOT, so copy the synthetic fixtures under its
+    // already-ignored .tmp directory for the duration of the test.
+    const rootDir = mkdtempSync(join(ROOT, ".tmp-canary-self-test-"));
+    try {
+      const rootArtifact = join(rootDir, "artifact.txt");
+      const rootList = join(rootDir, "list.json");
+      const rootReceipt = join(rootDir, "receipt.json");
+      writeFileSync(rootArtifact, readFileSync(artifact));
+      writeFileSync(rootList, JSON.stringify([relative(ROOT, rootArtifact)]));
+      const result = exactScan(rootList, rootReceipt, key);
+      if (result.hits !== 0 || result.results.length !== 1 || result.results[0].sha256.length !== 64) {
+        throw new Error("clean exact-list scan failed");
+      }
+      writeFileSync(rootArtifact, Buffer.concat([Buffer.from("prefix"), key, Buffer.from("suffix")]));
+      if (exactScan(rootList, rootReceipt, key).hits !== 1) throw new Error("synthetic hit was missed");
+      const duplicate = [relative(ROOT, rootArtifact), relative(ROOT, rootArtifact)];
+      writeFileSync(rootList, JSON.stringify(duplicate));
+      let rejected = false;
+      try { exactScan(rootList, rootReceipt, key); } catch { rejected = true; }
+      if (!rejected) throw new Error("duplicate list was accepted");
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  console.log("include-list self-test PASS");
+}
+
+if (process.argv[2] === "--self-test-include-list") {
+  selfTestIncludeList();
+  process.exit(0);
+}
+
+if (process.argv[2] === "--include-list") {
+  if (process.argv[4] !== "--receipt" || !process.argv[3] || !process.argv[5] || process.argv.length !== 6) {
+    console.error("usage: node scan.mjs --include-list <exact-list.json> --receipt <exact-receipt.json>");
+    process.exit(2);
+  }
+  try {
+    const key = Buffer.from(readFileSync(KEY_PATH, "utf8").trim(), "utf8");
+    const result = exactScan(process.argv[3], process.argv[5], key);
+    console.log(`scanned ${result.files_scanned} exact files (${result.bytes_scanned} bytes), hits=${result.hits} -> ${result.verdict}`);
+    process.exit(result.hits === 0 ? 0 : 1);
+  } catch (error) {
+    console.error(`exact include-list scan failed: ${error.message}`);
+    process.exit(2);
+  }
+}
+
 const RECEIPT_OUT = process.argv[2];
 if (!RECEIPT_OUT) {
   console.error("usage: node scan.mjs <receipt-out.json>");
