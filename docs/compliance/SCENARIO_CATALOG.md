@@ -8,12 +8,13 @@ contract requirement it proves. Do not renumber existing IDs; append new ones.
 
 ## Contract basis
 
-`shared/contracts/` is **empty** — the P1 frozen-contract artifacts from Track A
-have not landed there yet (SCORECARD §1: Track A produces, Track B adopts
-verbatim). Until they do, the operative frozen references are:
+Repository-root `contracts/` is the tracked authority for the four P1 frozen
+contracts. The outer `shared/contracts/` directory is optional evidence
+mirroring only. The operative frozen references are:
 
 | Ref | Artifact |
 |---|---|
+| `CONTRACTS` | `contracts/` (capability profile, journal semantics, Flux endpoint contract, and event types; canonical JSON plus prose) |
 | `SCORECARD` | `shared/SCORECARD.md` §2 checkpoint criteria (C1.1–C1.6, C2.1–C2.5, C3.1–C3.4) |
 | `CORPUS` | `shared/fixtures/desktop-core-v1/POINTER.md` → `desktop/contracts/wayland-desktop-core/v1/` (pinned producer commit `d0aa0abc…`), replayed from the immutable copy at `resources/upstreams/wayland-desktop/contracts/wayland-desktop-core/v1` |
 | `FLUX` | `shared/fixtures/flux/FINDINGS.md` (recorded live wire truth, batches 1–2) |
@@ -239,7 +240,7 @@ README is corrected.
 | G-C2-1 | C2.3: Desktop-facing frame stream + <600s frame-cadence conformance test | **closed**: `streamed_turn_cadence_orders_frames_and_flushes_between_them` in nano-protocol host tests (order + per-frame flush asserted) | — |
 | G-C2-2 | C2.4: cold-start / idle-RSS / active-RSS for the agent path | **closed**: `docs/metrics/C2-metrics.md` via `nanok3-acp-profile` — spawn→ready median 5.41ms, initialize 0.02ms, ~3.16M frames/s codec throughput (measured, repro commands included) | — |
 | G-C3-1 | C3.1 full leg: **real** Desktop launches real runtime (negotiate→…→resume) | **closed** (2026-08-10): live CDP-driven runs on the `wl-cdp` Desktop worktree — picker `custom:nanok3` selected, fs_read tool card completed, streamed correct answer (2 independent conversations); permission round-trip (Allow once → write verified on disk) + cancel mid-turn (`session/cancel`, fail-closed, session survives); full app restart → `session/load` SUCCESS with no fallback → codeword oracle recalled exactly (protocol/DB-level verification — Desktop branch `cfc318ab` has a transcript-rendering regression, an external Desktop-side bug, reported). Evidence: `shared/reviews/C3/trackb-desktop-live-evidence.md` (see its Reading guide) + screenshots. 4 Desktop bugs found+reported (orphaned custom-agent UI, assistants/customAgents spawn-key mismatch, broken `where` cli_check, transcript rendering) | — |
-| G-CTR-1 | Frozen contract artifacts in `shared/contracts/` (capability profile, journal semantics, Flux endpoint contract, event types) | Track A has not produced them; Track B must adopt verbatim — catalog currently keys off SCORECARD/POINTER/FINDINGS | Track A P1 freeze |
+| G-CTR-1 | Frozen contract artifacts in repository-root `contracts/` (capability profile, journal semantics, Flux endpoint contract, event types) | **closed**: WP-0.4 added the tracked canonical JSON/prose set, deterministic generator drift checks, independent schema/tamper tests, and `gate-all` enforcement (merge `03b02c9`) | — |
 
 ## Maintenance rules
 
