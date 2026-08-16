@@ -41,7 +41,7 @@ model confidence and self-report never substitute for a green gate.
 
 - ✓ Native Rust runtime, fail-closed containment, typed policy seams, append-only session journal, and provider-neutral execution loop — existing v0.1.1 product.
 - ✓ Attested multi-target release pipeline consumed by Wayland Desktop — existing v0.1.1 release.
-- ✓ Full workspace quality gate: formatting, clippy with warnings denied, and workspace tests — existing repository contract.
+- ✓ Full workspace quality gate: `just gate-all` — formatting, clippy with warnings denied, workspace tests, and generated-artifact drift checks — existing repository contract.
 
 ### Active
 
@@ -67,17 +67,24 @@ model confidence and self-report never substitute for a green gate.
 ## Execution Model
 
 - Execute one WP promotion at a time in the master document's dependency order.
-- Use a dedicated worktree and branch from current `origin/master` for every WP.
+- Before every WP, fetch and resolve current `origin/master`, record its exact SHA,
+  and create a clean dedicated worktree and canonical branch `feat/wp-<id>` at
+  that SHA. The historical `466f030` plan baseline is provenance, not a frozen
+  execution base; stale `.tmp-wt-*` worktrees are never source truth.
 - Use parallel subagent swarms only for independent research, planning, audits,
   verification, or explicitly disjoint owned files.
 - Serialize edits to hot seams including `acp_mode.rs`, `crates/nano-verify/**`,
   generated artifacts, and integration state.
 - Give every builder explicit file ownership and an isolated worktree. Builders
   never merge or push.
+- Ferrox `git.branching_strategy` remains `none` intentionally: the integrator creates
+  each canonical `feat/wp-<id>` branch and worktree manually at the recorded
+  `origin/master` SHA because generic Ferrox phase branches do not satisfy the WP card.
 - Per WP: implement within OWNS/NEVER-TOUCH, run one Critical/High audit, one fix
-  round, fix verification, and the complete local gate.
+  round, fix verification, and the complete local `just gate-all` gate, including
+  `gate-gen-check`.
 - Integrate one branch at a time through detached `.tmp-wt-integ` using
-  `--no-ff`; re-run the full gate, push `HEAD:master`, and require CI green before
+  `--no-ff`; re-run `just gate-all`, push `HEAD:master`, and require CI green before
   promoting the next dependency.
 - Report one line per WP: WP, commits, local/integration gate, and CI result.
 
