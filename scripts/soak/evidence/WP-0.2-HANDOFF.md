@@ -35,11 +35,11 @@ Audit scope was the complete WP diff from `566e3ac`, including correctness, secu
 
 | Severity | Finding | Disposition |
 |---|---|---|
-| High | Exact-list inventory paths are worktree-relative, but the scanner used its historical `../../../` parent root, causing linked-worktree inventory mismatch. | Fixed in the single bounded round: exact-list mode uses current worktree root; legacy default coverage retains the historical root. Synthetic self-test and focused suites pass. |
-| High | Exact-list self-tests did not explicitly prove missing-file, lexical traversal, and realpath junction/symlink escape rejection. | Fixed in the authorized bounded final review round with fail-closed synthetic fixtures. |
-| High | Promotion instructions incorrectly required the cached evidence diff to equal the full inventory, including unchanged tracked files. | Fixed in the authorized bounded final review round with the complete-index, stage-0 equality, and changed-subset invariant below. |
+| High | Exact-list inventory paths are worktree-relative, but the scanner used its historical `../../../` parent root, causing linked-worktree inventory mismatch. | Fixed in one continuous bounded fix round: exact-list mode uses current worktree root; legacy default coverage retains the historical root. Synthetic self-test and focused suites pass. |
+| High | Exact-list self-tests did not explicitly prove missing-file, lexical traversal, and realpath junction/symlink escape rejection. | Fixed in that same continuous bounded final fix round with fail-closed synthetic fixtures. |
+| High | Promotion instructions incorrectly required the cached evidence diff to equal the full inventory, including unchanged tracked files. | Fixed in that same continuous bounded final fix round with the complete-index, stage-0 equality, and changed-subset invariant below. |
 
-No Critical findings and no unresolved High findings remain. The initial bounded scanner-root fix and the authorized bounded final review-fix round are complete. No secret path or value was printed or persisted.
+No Critical findings and no unresolved High findings remain. Commit `beeb5e2` was pre-profile implementation work. Commits `af71316` and `94ca424` form one continuous bounded final fix round; `5301d49` records the subsequent independent recheck and handoff. No secret path or value was printed or persisted.
 
 ## Gates
 
@@ -55,7 +55,7 @@ The first `just gate-all` invocation was externally terminated at a 120-second t
 
 ## Evidence closure instructions
 
-After this handoff is finalized, the builder independently enumerates both exact run roots plus this file, freezes the normalized sorted inventory, performs the governed exact-value scan, and verifies exact list/filesystem/receipt hash-and-byte equality. The integrator should repeat those equalities, verify `.gitignore` is unchanged, require the complete indexed approved set to equal the scanned inventory, require every stage-0 blob hash and byte count to equal the scanned worktree file, and require the cached approved diff to equal only the changed approved inventory subset before promotion. Unchanged already-tracked inventory need not appear in the cached diff.
+The canonical final receipt is embedded under `## Final exact-value canary receipt` in `.planning/phases/02-wp-0-2-memory-hardening/02-06-SUMMARY.md`. It covers exact run roots plus this handoff; the summary is excluded from the 17-file inventory to avoid self-reference. The integrator should repeat list, filesystem, hash, and byte equalities; verify unchanged `.gitignore`; match the indexed set to the inventory; match each stage-0 blob to bytes; and require the cached diff to equal the changed inventory subset. Unchanged tracked files need not be cached.
 
 ## Integrator checklist
 
