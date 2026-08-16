@@ -10,7 +10,7 @@ Prove each MEM requirement at the narrowest reliable layer and retain enough exa
 |---|---|---|---|
 | MEM-01 | Exact closed NDJSON schema; 25-turn append cadence; inert feature/default states; no ACP stdout/stderr records; configured sink and later-write failures follow the signed policy; PWS and size accounting work; sessions_map is 0/1 | `cargo test -p nano-cli acp_mode::tests::mem_stats --features mem-stats` plus default `cargo check -p nano-cli --all-targets` | Focused test output and exact `run-<id>/mem-stats.ndjson` |
 | MEM-02 | One 900-second run correlates retained fields with external PWS per PID using the signed quantitative threshold and tie rule | Combined-feature release build, `node scripts/soak/test-budgets.mjs`, strict exact-path NDJSON parser | `run-<id>/WP-0.2-PROFILE-DECISION.md`, mem-stats, samples, manifest |
-| MEM-03 | Exactly one fold/tool/neither arm is signed; diff contains only that arm; failed/inconclusive measurement resolves to neither | Exact decision-path grep and baseline diff audit | Signed decision plus Plan 03 correction or explicit no-op record |
+| MEM-03 | Exactly one fold/tool/measured-neither arm is signed only after a completed manifest and sufficient correlation; wrapper abort remains unclassified | Classified-state and exact decision-path grep plus baseline diff audit | Signed classified decision, or blocked aborted/unclassified audit record |
 | MEM-04 | Fold arm preserves full-rebuild equivalence and bounds auxiliaries; tool arm proves reuse/invalidation/hydration; neither makes no correction | Existing equivalence oracle, new selected-arm regression, `cargo test -p nano-agent` | Test logs and selected-arm diff/no-op record |
 | MEM-05 | Eligible correction completes 3600 seconds and all B1 absolute/end-ratio/slope checks pass; B11 stays separate; ineligible paths make no acceptance claim | Existing `evaluateB1` unit gate plus exact-run manifest/sample evaluation | `run-<id>/WP-0.2-B1-ACCEPTANCE.md`, manifest, sample digest, F-45 disposition |
 
@@ -37,13 +37,19 @@ The executor never precreates a run directory. For each eligible 900s and 3600s 
 
 The profile and eligible receipt paths are retained as two distinct exact resolved run directories. The neither/ineligible path retains only the profile run and its explicit Plan 04 no-op record.
 
+## Profile classification and one rerun
+
+The known failed attempt is not profile evidence: orchestration aborted at approximately 42 seconds after 8 turns, below the 25-turn reporter cadence. It is `aborted/unclassified`; missing reporter rows cannot select neither. Retain its audit artifacts for final exact-value canary coverage.
+
+One clean rerun is permitted with budgets/harness unchanged. Before launch, PowerShell 5.1 durably writes a unique OS-temp audit JSON containing the exact release-binary path and true pre-run PID set. It starts node hidden, waits 1200000ms in try/finally, tree-kills and waits on timeout/error, performs the external exact-binary leak check, and always appends node PID, exit/error/timeout, taskkill exit/wait, post PIDs, and cleanup verdict. Verification parses that persisted record, requires post-minus-pre empty, requires kill exit0+wait for timeout/error, and independently requires current exact-binary PIDs be a subset of the recorded pre-set. Adjacent recomputed fake baselines are forbidden.
+
 ## Exact-value canary and cached-set equality
 
 Execution blocks unless DEV-WP-0.2B signs ownership of only `scripts/canary/scan.mjs` for additive exact include-list/receipt and synthetic self-test modes. The extension is implemented and self-tested before profiling. Default scanner behavior remains unchanged. Final include-list mode internally reads the real key, never prints or writes its value, scans every exact listed file bytewise, and emits exact relative path/full SHA-256/bytes, key fingerprint, hits and verdict. Credential-shape pattern `wp02-credential-shapes-v1` may run as defense-in-depth but never substitutes for this exact-value scan.
 
 After the final handoff is created and closed, the last task makes no later evidence-tree writes:
 
-1. Independently recurse every file under the trusted exact profile run and optional eligible receipt run, add the exact `scripts/soak/evidence/WP-0.2-HANDOFF.md`, normalize to repo-relative slash paths, and reject duplicates or out-of-root paths.
+1. Independently recurse every file under all trusted exact aborted-attempt runs, the classified profile run when present, and optional eligible receipt run; add the exact handoff, normalize repo-relative, and reject duplicate/out-of-root paths.
 2. Parse the supplied normalized inventory and require exact `Compare-Object` equality with the independently derived set before invoking the scanner.
 3. Invoke the authorized include-list scanner. Missing/duplicate/out-of-root/unreadable file, scan error, nonzero hit, absent fingerprint, or non-PASS verdict fails.
 4. Independently recompute every listed full SHA-256 and byte count and require exact equality with receipt rows and exact file-set equality.
@@ -66,6 +72,7 @@ Native commands are sequenced as `command; if ($LASTEXITCODE -ne 0) { exit $LAST
 | tool selected | tool regression/correction record | eligible 1h run if tests green | FIXED only on B1 pass | yes |
 | neither selected | explicit no-op record and standard summary | explicit INELIGIBLE no-op record and standard summary | OPEN with measurements | yes |
 | prerequisite/acceptance failure | failure record and summary | INELIGIBLE/FAILED record and summary | OPEN | yes, for blocked handoff |
+| wrapper aborted/unclassified after allowed rerun | explicit blocked-classification/no-product record + normal summary | explicit blocked-classification/no-receipt record + normal summary | OPEN, no arm claim | yes, blocked audit handoff |
 
 ## Full gates
 
