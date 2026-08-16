@@ -10,12 +10,30 @@
 
 import { createHash } from "node:crypto";
 import { execSync } from "node:child_process";
-import { readdirSync, readFileSync, writeFileSync, existsSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 
 const ROOT = resolve(new URL("../../../", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
-const KEY_PATH = join(ROOT, ".secrets/flux-test-key");
+
+function resolveGovernedKey(repoRoot) {
+  const candidates = [];
+  for (let cursor = resolve(repoRoot); ; cursor = dirname(cursor)) {
+    const candidate = join(cursor, ".secrets", "flux-test-key");
+    if (existsSync(candidate)) candidates.push(candidate);
+    const parent = dirname(cursor);
+    if (parent === cursor) break;
+  }
+  if (candidates.length !== 1) {
+    throw new Error(candidates.length === 0 ? "governed key candidate missing" : "governed key candidate ambiguous");
+  }
+  const outer = dirname(dirname(candidates[0]));
+  const marker = join(outer, "wayland-nano");
+  if (!existsSync(marker) || !statSync(marker).isDirectory()) {
+    throw new Error("governed key candidate marker mismatch");
+  }
+  return candidates[0];
+}
 
 function exactScan(listPath, receiptPath, keyBytes) {
   const parsed = JSON.parse(readFileSync(listPath, "utf8"));
@@ -63,6 +81,29 @@ function selfTestIncludeList() {
     const list = join(dir, "list.json");
     const receipt = join(dir, "receipt.json");
     writeFileSync(artifact, "clean synthetic artifact");
+    const resolverRoot = join(dir, "governed", "wayland-nano", ".tmp-worktree");
+    mkdirSync(resolverRoot, { recursive: true });
+    mkdirSync(join(dir, "governed", ".secrets"), { recursive: true });
+    writeFileSync(join(dir, "governed", ".secrets", "flux-test-key"), key);
+    if (!resolveGovernedKey(resolverRoot).endsWith(join(".secrets", "flux-test-key"))) {
+      throw new Error("unique governed candidate was not resolved");
+    }
+    const zeroRoot = join(dir, "zero", "wayland-nano", ".tmp-worktree");
+    mkdirSync(zeroRoot, { recursive: true });
+    let rejected = false;
+    try { resolveGovernedKey(zeroRoot); } catch { rejected = true; }
+    if (!rejected) throw new Error("zero governed candidates were accepted");
+    mkdirSync(join(resolverRoot, ".secrets"), { recursive: true });
+    writeFileSync(join(resolverRoot, ".secrets", "flux-test-key"), key);
+    rejected = false;
+    try { resolveGovernedKey(resolverRoot); } catch { rejected = true; }
+    if (!rejected) throw new Error("multiple governed candidates were accepted");
+    const mismatchRoot = join(dir, "mismatch-repo");
+    mkdirSync(join(mismatchRoot, ".secrets"), { recursive: true });
+    writeFileSync(join(mismatchRoot, ".secrets", "flux-test-key"), key);
+    rejected = false;
+    try { resolveGovernedKey(mismatchRoot); } catch { rejected = true; }
+    if (!rejected) throw new Error("marker-mismatched candidate was accepted");
     // The core confines to ROOT, so copy the synthetic fixtures under its
     // already-ignored .tmp directory for the duration of the test.
     const rootDir = mkdtempSync(join(ROOT, ".tmp-canary-self-test-"));
@@ -103,7 +144,7 @@ if (process.argv[2] === "--include-list") {
     process.exit(2);
   }
   try {
-    const key = Buffer.from(readFileSync(KEY_PATH, "utf8").trim(), "utf8");
+    const key = Buffer.from(readFileSync(resolveGovernedKey(ROOT), "utf8").trim(), "utf8");
     const result = exactScan(process.argv[3], process.argv[5], key);
     console.log(`scanned ${result.files_scanned} exact files (${result.bytes_scanned} bytes), hits=${result.hits} -> ${result.verdict}`);
     process.exit(result.hits === 0 ? 0 : 1);
@@ -119,7 +160,7 @@ if (!RECEIPT_OUT) {
   process.exit(2);
 }
 
-const key = readFileSync(KEY_PATH, "utf8").trim();
+const key = readFileSync(resolveGovernedKey(ROOT), "utf8").trim();
 const keySha = createHash("sha256").update(key).digest("hex");
 
 // ---- coverage set: every text-bearing artifact a frame/log/session/dump can live in ----
