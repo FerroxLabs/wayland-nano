@@ -1208,3 +1208,14 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
   committed atomically on the WP branch.
 - **Disposition:** no product edits occurred. Provide a tracked shared
   repository/mount or authoritatively amend the ownership and commit contract.
+
+## DEV-WP-0.2A: mem-stats feature requires the nano-cli package manifest
+
+- **Filed:** 2026-08-16 while researching WP-0.2 from baseline `566e3ac` on
+  `feat/wp-0.2`.
+- **Conflict:** the WP requires a feature-gated `nano-cli/mem-stats` surface,
+  but its OWNS list grants the root virtual `Cargo.toml` and not
+  `crates/nano-cli/Cargo.toml`, where Cargo package features must be declared.
+- **Disposition:** no product code or soak measurement was started. Authorize
+  the exact package-manifest feature-table slice or amend the feature contract;
+  the executor must not infer broader nano-cli manifest ownership.
