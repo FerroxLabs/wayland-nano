@@ -1,39 +1,26 @@
 ---
 phase: 02-wp-0-2-memory-hardening
-verified: 2026-08-17T00:00:00+07:00
-status: gaps_found
-score: 5/7 must-haves verified
+verified: 2026-08-17T00:53:29+07:00
+status: passed
+score: 7/7 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
-gaps:
-  - truth: "Every retained WP-0.2 evidence artifact is covered by a final exact-value canary receipt after the handoff is frozen."
-    status: failed
-    reason: "The persisted receipt covers only the earlier 12-file profile inventory (269655 bytes). No receipt proves the handoff's claimed final 17-file/281189-byte closure, including the later no-fix, ineligible-acceptance, and handoff artifacts."
-    artifacts:
-      - path: "scripts/soak/evidence/run-20260816T163631293Z/canary-receipt.json"
-        issue: "files_scanned is 12 and its paths are the pre-fix parent-root form prefixed with .tmp-wt-vc-wp-0.2."
-      - path: "scripts/soak/evidence/WP-0.2-HANDOFF.md"
-        issue: "Claims a final 17-file scan, but no matching persisted receipt exists."
-    missing:
-      - "A governed exact-value receipt over the frozen final evidence inventory, with exact file/hash/byte equality and zero hits."
-  - truth: "The phase performs one Critical/High audit and at most one bounded fix round."
-    status: failed
-    reason: "The handoff explicitly distinguishes an initial bounded scanner-root fix from an authorized final review-fix round; that is two fix rounds and contradicts the binding one-round maximum."
-    artifacts:
-      - path: "scripts/soak/evidence/WP-0.2-HANDOFF.md"
-        issue: "Lines 38-42 record fixes in a single bounded round and a separate final review-fix round."
-      - path: ".planning/phases/02-wp-0-2-memory-hardening/02-01-SUMMARY.md"
-        issue: "Required Plan 01 output is absent."
-    missing:
-      - "Owner disposition for the second fix round, or a corrected auditable record proving all High fixes were one round."
-      - "The required 02-01-SUMMARY.md reporter implementation handoff."
+re_verification:
+  previous_status: gaps_found
+  previous_score: 5/7
+  gaps_closed:
+    - "Final 17-file exact-value canary receipt is embedded as canonical verification metadata and independently matches every source artifact hash and byte count."
+    - "Commit chronology and corrected handoff prove beeb5e2 was pre-profile work and af71316 plus 94ca424 were one continuous bounded final fix round."
+    - "The required 02-01-SUMMARY.md now exists and is grounded in inspected commits and rerun evidence."
+  gaps_remaining: []
+  regressions: []
 ---
 
 # Phase 2: WP-0.2 Memory Hardening Verification Report
 
 **Phase Goal:** Operators can identify the measured source of retained turn growth and, when the profile supports a fix, run for one hour within the locked B1 budget without semantic fold regression.
-**Status:** gaps_found
-**Re-verification:** No — initial verification
+**Status:** passed
+**Re-verification:** Yes — after gap closure commits `2d34933` and `a288e0b`
 
 ## Goal Achievement
 
@@ -46,10 +33,10 @@ gaps:
 | 3 | The signed quantitative rule legitimately selects exactly one terminal arm. | VERIFIED | Signed rule requires >=60% positive accounted growth and >=10-point lead. Neither eligible suspect reaches 60%, so `selected_arm: neither` is the only eligible arm; the aborted 42-second attempt remains unclassified. |
 | 4 | Only the selected arm is implemented, and semantic fold behavior is preserved. | VERIFIED | No post-profile fold/tool correction landed. Both named incremental-fold/full-rebuild tests passed independently. The reporter/MCP accounting changes predate selection and are measurement instrumentation, not a speculative correction. |
 | 5 | F-45 closes only after an eligible 3600-second B1 receipt. | VERIFIED | F-45 remains OPEN; the acceptance artifact says receipt not run/ineligible and B1/B11 not evaluated. No 3600-second receipt or acceptance claim exists. |
-| 6 | Final retained evidence is canary-clean and independently integrity-checkable. | FAILED | Existing receipt proves only the earlier 12-file profile set, not the claimed final 17-file closure. |
-| 7 | Ownership and promotion controls are obeyed, including at most one fix round. | FAILED | File ownership and branch boundaries pass, but the handoff explicitly records two fix rounds; Plan 01's required SUMMARY is also absent. |
+| 6 | Final retained evidence is canary-clean and independently integrity-checkable. | VERIFIED | Embedded canonical receipt contains 17 unique rows and 281189 bytes with zero hits; independent re-verification matched every current file's SHA-256 and byte count. |
+| 7 | Ownership and promotion controls are obeyed, including at most one fix round. | VERIFIED | Commit order proves `beeb5e2` was pre-profile implementation work; adjacent `af71316` and `94ca424` form the single continuous final fix round, followed by the `5301d49` recheck/handoff. The missing Plan 01 summary is restored. |
 
-**Score:** 5/7 truths verified
+**Score:** 7/7 truths verified
 
 ### Required Artifacts and Wiring
 
@@ -59,8 +46,8 @@ gaps:
 | `crates/nano-agent/src/mcp.rs` | VERIFIED | Recursive retained-byte accounting is within GOALS' `crates/nano-agent/**` ownership and is consumed by the reporter snapshot. |
 | `scripts/canary/scan.mjs` | VERIFIED | Signed exact-list slice is substantive; syntax and synthetic confinement/self-tests pass. |
 | Profile manifest/reporter/oracle/decision | VERIFIED | Completed manifest, sufficient rows/samples, clean wrapper topology, reproducible neither arithmetic. |
-| Final canary receipt | FAILED | No persisted 17-file final receipt; current receipt is the earlier 12-file artifact. |
-| `02-01-SUMMARY.md` | MISSING | Plan 01 explicitly requires it, while Plans 02-05 summaries exist. |
+| Final canary receipt | VERIFIED | Canonical receipt embedded in `02-06-SUMMARY.md`; 17 rows, 281189 bytes, zero hits, independently hash/size checked. |
+| `02-01-SUMMARY.md` | VERIFIED | Reconstructed from inspected implementation commits and retained/rerun evidence without inventing RED-phase history. |
 
 ### Requirements Coverage
 
@@ -91,11 +78,11 @@ gaps:
 - Worktree was clean before and after verification. No merge, push, CI, or promotion was performed.
 - No unreferenced TBD/FIXME/XXX debt marker was added in the phase diff.
 
-### Gaps Summary
+### Re-verification Summary
 
-The substantive memory result is sound: the signed rule yields measured-neither, no correction is eligible, F-45 correctly stays OPEN, and no 3600-second receipt is required or claimed. Promotion is nevertheless blocked by two auditable control failures: final canary coverage lacks a matching persisted receipt, and the handoff records two fix rounds despite the one-round cap. The missing Plan 01 summary is included with the latter completion-record gap.
+All prior gaps are closed. The substantive memory result remains unchanged and valid: the signed rule yields measured-neither, no correction is eligible, F-45 stays OPEN, and no 3600-second receipt is required or claimed. Final evidence now has independently checkable exact-value coverage, the audit chronology satisfies the one-round cap, and the Plan 01 summary is present. No regression or human-verification item remains.
 
 ---
 
-_Verified: 2026-08-17T00:00:00+07:00_
+_Verified: 2026-08-17T00:53:29+07:00_
 _Verifier: ferrox-verifier_
