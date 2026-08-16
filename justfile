@@ -24,6 +24,7 @@ gate-deny:
 # C7: generated error-table artifacts must be byte-fresh (drift tripwire)
 gate-gen-check:
     cargo run -p nano-cli --bin gen_error_table -- --check
+    cargo run -p nano-cli --bin gen_contracts -- --check
 
 # Live tests (Flux + MCP + slices) — requires the key in env, never in CI logs
 gate-live:
