@@ -101,7 +101,22 @@ Plans:
   4. Merge through detached `.tmp-wt-integ` with `--no-ff` and rerun the complete `just gate-all` on the integration commit.
   5. Push integration `HEAD:master`; require CI green before Phase 4 and record the full one-line promotion result.
 
-**Plans**: TBD
+**Plans**: 13 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — Initialize the fail-closed ownership preflight and durable phase control.
+- [ ] 03-02-PLAN.md — Add the typed incompatible-wire refusal and regenerate mandatory mirrors.
+- [ ] 03-03-PLAN.md — Add universal/turn document types and exact Anthropic encoding.
+- [ ] 03-04-PLAN.md — Seal inline and confined-path ACP PDF validation.
+- [ ] 03-05-PLAN.md — Wire attachment persistence, resume, and Anthropic-only leaf dispatch.
+- [ ] 03-06-PLAN.md — Run the single identity-bound Critical/High audit.
+- [ ] 03-07-PLAN.md — Run the dynamic-leaf live proof and exact seven-file canary validation.
+- [ ] 03-08-PLAN.md — Run D9 closure/full gates and write the builder-only handoff.
+- [ ] 03-09-PLAN.md — Add the durable DocumentRef journal and GC reachability contract.
+- [ ] 03-10-PLAN.md — Apply zero or one bounded Critical/High fix commit.
+- [ ] 03-11-PLAN.md — Independently recheck the exact committed audit/fix bytes.
+- [ ] 03-12-PLAN.md — Complete generated-golden and provenance fixes in the same bounded round.
+- [ ] 03-13-PLAN.md — Finalize the exact bounded-round audit metadata.
 
 ### Phase 4: WP-1 Gate and Receipt Foundation
 

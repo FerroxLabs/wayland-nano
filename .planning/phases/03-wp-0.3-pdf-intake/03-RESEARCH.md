@@ -220,20 +220,97 @@ HTTP 200 or a fluent answer does not prove PDF ingestion. The acceptance oracle 
 - The shared media contract is empirical owner evidence, not official documentation. Its exact document shape and anti-blind token observation are project-locked, while multi-page/large-PDF behavior remains explicitly unverified. [VERIFIED: recorded contract]
 - `SPEC-WP-INTERFACES.md` is authoritative for verification artifacts but provides no additional PDF schema beyond general hardening context; WP-0.3's operative PDF contract is the hardening spec plus recorded media contract. [VERIFIED: canonical interface spec review]
 
+## Resolved Decisions (RESOLVED 2026-08-17)
+
+The focused decision round closes every former open question. These choices are planning locks derived from the binding WP-0.3 spec, current type/error/routing patterns, and the recorded Flux probe contract. [VERIFIED: canonical specs and current code]
+
+### D1. Ownership correction is a hard Wave 0 gate
+
+Before product edits, the owner/card must grant document-manifest-only edits to `crates/nano-session/src/op.rs` and document-reference-GC-only edits to `crates/nano-session/src/attachment_store.rs`. The phase remains blocked without this correction; no alternate manifest or second store is permitted. [VERIFIED: locked `DocumentRef` design and current `InputBlock`/GC code]
+
+### D2. Exact typed error vocabulary
+
+Lock the Rust variant as `NanoErrorKind::ModelLacksPdf`, serialized by the existing snake-case enum contract as `model_lacks_pdf`. It is a non-retryable `ErrorResponse` with JSON-RPC code `-32602`, title `Selected model wire cannot carry PDF documents`, and hint `Select an advertised Flux Anthropic Messages leaf, then retry`. It is used only when a PDF-bearing turn resolves to a non-`AnthropicMessages` leaf; malformed intake uses the policy in D4. Add it to the exhaustive mapping and `ALL_KINDS`, update both pinned counts 70 → 71, and regenerate mirrors. [VERIFIED: existing `ModelLacksVision`/error-table patterns; locked typed-refusal requirement]
+
+### D3. Exact `DocumentRef`, projection, and live schemas
+
+Lock the additive journal type to:
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentRef {
+    pub digest: String,      // lowercase 64-hex SHA-256 of stored PDF bytes
+    pub mime: String,        // exactly "application/pdf"
+    pub bytes: u64,
+    pub placeholder: String,
+}
+```
+
+`InputBlock::DocumentRef(DocumentRef)`, `TurnBlock::Document { reference, data }`, and `ContentBlock::Document { media_type, data }` are parallel additive variants. Inline projection is exactly `[Document #N: attached PDF]`; path projection is exactly `[Document #N: <canonical display path>]`; missing/corrupt replay projection is exactly `[Document #N unavailable: attachment <12-hex-prefix> missing from store — do not answer from memory]`. `N` is the one-based document ordinal, independent of image ordinal. `data` is standard base64 without a data-URI prefix and is never journaled. No width, height, or `normalized_from` fields exist because PDFs are transported opaquely and are never decoded as images. [VERIFIED: locked additive design; established image manifest pattern]
+
+### D4. ACP validation-kind policy
+
+Use existing kinds unless the failure is the incompatible resolved wire. Missing `data`/`path`/`mimeType`, malformed base64, unsupported document tag fields, non-`application/pdf` claim, claim/sniff mismatch, bad `%PDF-` offset-zero magic, and a non-`.pdf` path are `InvalidParams`. Path authorization/open failures remain `FsReadDenied` or `FsSensitiveDenied`. A decoded or path-read PDF over 20 MiB is `ImageTooLarge` only if the existing cross-attachment cap kind is intentionally retained; to avoid misleading public vocabulary, the locked choice is instead `InvalidParams` with bounded message `document exceeds the 20 MiB intake ceiling`. A second PDF is `InvalidParams` with bounded message `one PDF document per message`. Store publication/open failures remain `AttachmentStoreError`; missing/corrupt replay uses `AttachmentMissing` plus the document-specific placeholder/notice. Only `ModelLacksPdf` is newly added. Messages name the rejected rule/tag, never echo payload bytes, raw base64, or sensitive paths. [VERIFIED: existing typed boundary and the WP's one-new-refusal grant]
+
+### D5. Exact Flux Anthropic-bound runtime leaf
+
+Provision one reviewed canonical vendored entry `flux-router-anthropic` with `base_url=https://api.fluxrouter.ai`, `wire=anthropic-messages`, `api_path=/anthropic/v1/messages`, `env_var=FLUX_API_KEY`, and `proven=true`, under the narrow DEV-WP-0.3B grant. Refresh the normalized `RECORDED_SHA256`, regenerate `tests/golden/provider_catalog.golden.rs` only from `nano-model/build.rs` in a unique target directory, assert the exact endpoint/scope, and add the exact root `UPSTREAM.md` provenance/endpoint-review row. No other catalog/test/golden/build/routing/provenance change is allowed. [VERIFIED: catalog drift/golden contract and canonical endpoint evidence]
+
+The active leaf is exactly `flux-router-anthropic:flux-auto`. `WAYLAND_NANO_PROVIDERS=[{"provider":"flux-router-anthropic","models":["flux-auto"],"hasKey":true}]` may select only the canonical entry/model/key availability; endpoint, wire, API path, and env-var injection fields are prohibited. Credential provisioning is path-only via `FLUX_API_KEY_FILE=<absolute path to waylandnano/.secrets/flux-test-key>`. The normal runtime path resolves the canonical entry as `WireKind::AnthropicMessages`; direct client/curl proof is prohibited. Bare `flux-auto` remains the OpenAI negative control. [VERIFIED: canonical catalog and runtime resolver]
+
+This new row is not PDF-aware rerouting: it is an explicit operator-advertised binding selected as the active session model. No document inspection changes candidate selection or silently switches endpoints. [VERIFIED: locked no-reroute rule]
+
+### D6. Live quote and quantitative anti-blind oracle
+
+The committed one-page PDF contains exactly one unique oracle line in selectable text: `WAYLAND NANO PDF ORACLE 7F3A: copper owls navigate by moonlit checksum.` The prompt is exactly `Return the complete oracle sentence from the attached PDF, preserving capitalization and punctuation.` Success requires the response to contain that full sentence byte-for-byte. [VERIFIED: deterministic acceptance decision grounded in the spec's known-quote requirement]
+
+Run a text-only control through the same active leaf, model, prompt, host process configuration, and max-token setting immediately before the PDF turn. Let `delta = pdf_input_tokens - control_input_tokens`; require `control_input_tokens > 0`, `pdf_input_tokens > control_input_tokens`, and `delta >= 1000`. The threshold is conservative relative to the recorded same-file observation of 94 blind versus 1,650 correct prompt tokens (delta 1,556), while remaining quantitative and resistant to minor wrapper-token drift. Record both raw counts and delta; no approximate prose-only pass is accepted. [VERIFIED: recorded Flux media contract lines 61-64]
+
+The historical 94/1,650 figures prove the threshold's provenance but do not substitute for the new runtime-path measurement. If the exact quote or threshold fails, F-P2B-4 stays OPEN and Phase 3 is incomplete. Multi-page/large-PDF and per-page accounting remain explicitly open follow-ups. [VERIFIED: WP-0.3 definition of done and recorded limits]
+
+### D7. Concrete opt-in ignored live harness
+
+Place the harness as a `#[cfg(test)]` ignored async test inside the already-owned `crates/nano-cli/src/acp_mode.rs`, named `pdf_live_active_leaf_runtime_path`. It must drive `serve` with ACP frames: initialize/session-new → select `flux-router-anthropic:flux-auto` → text-only control prompt → PDF prompt using the real ACP `document_path` intake → capture model response and usage observation. It must assert the resolved binding/wire, exact quote, quantitative delta, persisted request/response evidence, and no direct-client construction in the test. [VERIFIED: exact OWNS and existing `serve` test seam]
+
+Command on Windows PowerShell:
+
+```powershell
+$env:FLUX_API_KEY_FILE = (Resolve-Path '..\..\.secrets\flux-test-key').Path
+$env:WAYLAND_NANO_PROVIDERS = '[{"provider":"flux-router-anthropic","models":["flux-auto"],"hasKey":true}]'
+cargo test -p nano-cli pdf_live_active_leaf_runtime_path -- --ignored --nocapture
+```
+
+The test self-skips with a clear reason only when `FLUX_API_KEY_FILE` is absent. Once invoked with that variable, missing/unreadable credential, missing PDF, incompatible binding, network failure, quote mismatch, missing usage, or sub-threshold delta is a hard failure. [VERIFIED: project live-test posture]
+
+### D8. Durable, non-self-referential canary receipt
+
+The current scanner's exact-list mode confines inputs to the worktree, while the authoritative captures live in sibling `shared/fixtures/flux/pdf/`. Keep byte-identical evidence copies under owned `crates/nano-model/fixtures-flux/pdf/`. The final harness writes exactly seven paired inputs—PDF, control request, document request, document response, usage/control summary, session transcript, and evidence manifest—then verifies every pair has the same full SHA-256 and byte count. Build the exact seven normalized in-repo paths into a unique OS-temp include-list file. Only after equality succeeds, run:
+
+```powershell
+node scripts/canary/scan.mjs --include-list <unique-os-temp-seven-path-list.json> --receipt D:\Development\waylandnano\shared\fixtures\flux\pdf\canary-receipt.json
+```
+
+The include list excludes `canary-receipt.json`, so the receipt never attempts to hash itself. Require `files_scanned == 7`, lowercase 64-hex fingerprint, `hits == 0`, PASS, exact result-path set equality with no duplicates/extras, and every full SHA-256/byte count against current files. Paired-hash equality extends proof to authoritative shared copies. `evidence-manifest.json` is created before the scan and included among the seven; it records both repo/shared names and hashes but never the final receipt hash. Do not use the legacy broad scan. [VERIFIED: `scan.mjs` exact-list implementation and ownership boundaries]
+
+### D9. Fail-closed ownership and outside-repository verification on Windows
+
+At Wave 0 record a SHA-256 inventory of every pre-existing file under the only allowed outside-repo roots: `D:\Development\waylandnano\shared\fixtures\flux\pdf` and the single generated mirror `D:\Development\waylandnano\shared\contracts\nano-error-codes.json`. At each task and phase end:
+
+1. Run `git status --porcelain=v1 --untracked-files=all` and `git diff --name-only d8702f22f76aac7dc2d7fcc77b34e4482557ee12` in the worktree; normalize separators and reject any path outside the explicit granted list plus the approved `op.rs`/`attachment_store.rs` correction. [VERIFIED: baseline and ownership card]
+2. Resolve every changed path with PowerShell `Resolve-Path -LiteralPath`; require it to be under the worktree root, or exactly under the two shared roots above; reject `LinkType`/reparse-point ancestors and any resolved escape. Missing/unresolvable changed paths fail the check rather than being ignored. [VERIFIED: Windows worktree/shared layout]
+3. Re-inventory the shared roots and reject any changed/new/deleted shared file except `shared/fixtures/flux/pdf/**` and the generator-produced error mirror. Require the error mirror hash to equal generator output and require every shared PDF evidence file to match its owned in-repo evidence pair. [VERIFIED: generator and evidence design]
+4. Run `git diff --check`; then `cargo run -p nano-cli --bin gen_error_table -- --check` and `just gate-all`. Any ownership verifier ambiguity or inaccessible path is a hard failure and blocks completion. [VERIFIED: project gates]
+
+`D:\Development\waylandnano` is not itself a Git repository, so repository status alone cannot police sibling `shared/`; the explicit pre/post hash inventory is mandatory. No scan or verifier traverses or writes `D:\Development\waylandnano\nano` or `resources/upstreams`. [VERIFIED: local `git`/filesystem probe and AGENTS boundary]
+
 ## Assumptions Log
 
-| # | Claim | Risk if wrong |
-|---|---|---|
-| A1 | The new typed kind should be named `ModelLacksPdf` / `model_lacks_pdf`; the spec says “e.g.” rather than locking the spelling. [ASSUMED] | Public error vocabulary changes; owner should lock the exact symbol/wire name in the ownership correction. |
-| A2 | Document placeholders should use `[Document #n: …]` and missing-document text should be document-specific. [ASSUMED] | Replay/UI text contract differs; lock wording before snapshot tests. |
-| A3 | PDF `DocumentRef` needs digest, MIME, bytes, and placeholder but no image dimensions/normalization fields. [ASSUMED] | Journal schema changes; owner should approve the exact struct fields. |
+All former assumptions were resolved by D1-D9. There are no remaining user-confirmation assumptions for planning. [VERIFIED: focused decision round]
 
-## Open Questions
+## Open Questions — RESOLVED
 
-1. **Will the owner grant `op.rs` and `attachment_store.rs`?** Required before product work; there is no safe in-scope workaround. [VERIFIED: ownership/code dependency]
-2. **What exact error vocabulary is locked?** Recommend `ModelLacksPdf` serialized as `model_lacks_pdf`, non-retryable `ErrorResponse`, with guidance to select an Anthropic Messages binding. [ASSUMED]
-3. **Which configured model provides the live Anthropic leaf?** Current Flux catalog is OpenAI-completions. The live plan must identify/provision an existing proven Anthropic binding without changing routing policy; otherwise implementation can be complete but PDF live proof is blocked. [VERIFIED: current catalog/router]
-4. **Should invalid PDF content reuse generic/image kinds or add document-specific validation kinds?** The spec requires typed rejection but grants only one new typed refusal explicitly. Recommend use `InvalidParams` for malformed base64/MIME/magic, a bounded existing storage error for store failure, and reserve the new kind solely for incompatible wire unless the owner expands the error grant. [ASSUMED]
+None. Phase execution is nevertheless conditionally blocked until D1's ownership correction is recorded and D5's path-provisioned credential/live route can run. A missing or failed live proof is a failed phase gate, not an open question and not a deferrable follow-up. [VERIFIED: locked completion criteria]
 
 ## Sources
 
@@ -258,4 +335,4 @@ None used. No external package or vendor-document decision was needed; this phas
 - Live model availability: MEDIUM — current incompatible Flux binding is verified, but an eligible live Anthropic binding/key was not probed during research. [VERIFIED: catalog; credential intentionally uninspected]
 
 **Research date:** 2026-08-17  
-**Valid until:** 2026-09-16, or immediately stale if `origin/master`, the WP-0.3 ownership card, provider catalog, or Flux media contract changes. [ASSUMED]
+**Valid until:** 2026-09-16 as the planning freshness window; treat it as immediately stale if `origin/master`, the WP-0.3 ownership card, provider catalog, or Flux media contract changes. [VERIFIED: Ferrox research freshness policy and project dependency boundaries]

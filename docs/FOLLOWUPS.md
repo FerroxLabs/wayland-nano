@@ -1289,3 +1289,13 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
   nano-session contracts JSON and shared/contracts mirror remain mandatory, while any
   sibling desktop mirrors are optional generator-only owner/integrator refreshes and
   cannot satisfy standalone CI/DoD or be committed by the WP branch.
+
+## DEV-WP-0.3B: canonical Flux Anthropic catalog/provenance authority — RESOLVED
+
+- **Boundary deviation/resolution (2026-08-17):** the mandatory active
+  `flux-router-anthropic` runtime leaf cannot obtain endpoint/wire authority from
+  `WAYLAND_NANO_PROVIDERS`; that payload selects only a canonical provider/model/key
+  state. WP-0.3 narrowly owns the vendored catalog JSON, the provider-catalog
+  `RECORDED_SHA256` and exact endpoint/scope assertions, the build.rs-generated golden,
+  and one exact `UPSTREAM.md` ledger/endpoint-review row. No other catalog, test,
+  golden, build-script, routing, or provenance edit is authorized.

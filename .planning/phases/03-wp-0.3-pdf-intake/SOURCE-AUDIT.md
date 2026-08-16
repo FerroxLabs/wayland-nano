@@ -1,0 +1,28 @@
+# Phase 03 Multi-Source Coverage Audit
+
+| SOURCE | ID | Feature / requirement | Plan | Status | Notes |
+|---|---|---|---|---|---|
+| GOAL | — | Close F-P2B-4 with Anthropic document-block PDF intake, live anti-blind proof, and typed incompatible-wire refusal | 03-01..03-11 | COVERED | Preflight, intake, audit/fix/recheck, live evidence, closure, and handoff chain. |
+| REQ | PDF-01 | Inline/path validation, count, cap, sniff, MIME/extension, typed refusals | 03-04 | COVERED | Closed converter test table. |
+| REQ | PDF-02 | Additive `DocumentRef` and document blocks; image contract unchanged | 03-01, 03-03 | COVERED | No rename or generic attachment ref. |
+| REQ | PDF-03 | Exact Anthropic block; explicit D5 active catalog leaf; pre-network OpenAI refusal; no drop/reroute | 03-02, 03-03, 03-05 | COVERED | Normal runtime binding controls dispatch; no direct client proof. |
+| REQ | PDF-04 | Digest-verified kill/resume plus GC reachability | 03-01, 03-05 | COVERED | Existing attachment store reused. |
+| REQ | PDF-05 | Mandatory D6 exact quote, same-path delta >=1000, paired evidence, exact seven-file non-self-referential canary, metering note | 03-05, 03-07, 03-08 | COVERED | Any missing/failing proof blocks Phase 3 and leaves F-P2B-4 OPEN. |
+| REQ | PDF-06 | Canonical typed error and mandatory generated Nano/shared mirrors | 03-02 | COVERED | Optional Desktop refresh is owner/integrator-only and non-DoD. |
+| RESEARCH | — | Three-view TurnInput invariant and dependency order | 03-01, 03-03, 03-04, 03-05 | COVERED | Manifest, projection, and live blocks derive from one ordered input. |
+| RESEARCH | D1 | Exact two-file session grant is a hard pre-edit gate | 03-01 | COVERED | `op.rs` and `attachment_store.rs` only for named document slices. |
+| RESEARCH | D2 | Exact ModelLacksPdf vocabulary/presentation/count | 03-02 | COVERED | Full source mapping and generator parity. |
+| RESEARCH | D3 | Exact DocumentRef fields and projection/replay strings | 03-01, 03-03, 03-05 | COVERED | No unresolved schema/placeholder assumption. |
+| RESEARCH | D4 | Existing-kind validation policy and bounded messages | 03-04 | COVERED | Only incompatible wire adds a new kind. |
+| RESEARCH | D5 | Canonical flux-router-anthropic catalog entry plus selector-only runtime payload | 03-03, 03-05, 03-07 | COVERED | Drift pin, generated golden, provenance, runtime path, and bare negative control. |
+| RESEARCH | D6 | Exact oracle/prompt and >=1000 same-path token delta | 03-05, 03-07 | COVERED | Raw counts and 94/1650 provenance are durable evidence. |
+| RESEARCH | D7 | Concrete ignored ACP runtime live harness and command | 03-05, 03-07 | COVERED | Explicit invocation is fail-closed. |
+| RESEARCH | D8 | Paired repo/shared evidence and exact seven-file non-self-referential receipt | 03-07, 03-08 | COVERED | Manifest absence is fatal; current paths/hashes/bytes are exhaustively verified. |
+| RESEARCH | D9 | Executable OWNS/reparse verifier and durable external SHA manifests | 03-01..03-08 | COVERED | Initialize precedes product mutation; every task Checks; final Closure exact-compares. |
+| RESEARCH | — | Existing confinement/store/base64/hash stack; no new dependency | 03-01, 03-04 | COVERED | No package install task. |
+| RESEARCH | — | Anthropic-only live path and OpenAI-bound negative control | 03-03, 03-05, 03-07 | COVERED | Canonical entry supplies endpoint; selector payload cannot inject it. |
+| RESEARCH | D9 | Ownership preflight is the sole first predecessor before every product mutation | 03-01; all product plans depend on it | COVERED | Script/control initialization only in Wave 1. |
+| RESEARCH | — | One Critical/High audit, one continuous bounded fix round with zero-to-two grouped commits and canonical fix.commits[] and final commit/tree metadata finalization, independent committed-byte recheck, full gate, builder-only handoff | 03-06, 03-10, 03-12, 03-13, 03-11, 03-08 | COVERED | Durable schema-closed audit JSON and no merge/push/CI authority. |
+| CONTEXT | — | No CONTEXT.md decisions supplied | — | EXCLUDED | Binding decisions are in master/spec/GOALS and DEV-WP-0.3A. |
+
+No deferred capability, PDF parsing/extraction, Files API, multi-document support, routing-policy change, attachment-store redesign, `ImageRef` rename, `ToolResult` change, Desktop-owned commit, `../nano/` write, or `../resources/upstreams/` write appears in the plan set.
