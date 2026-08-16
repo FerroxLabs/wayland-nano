@@ -105,6 +105,229 @@ use std::io::{BufRead, Write};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "mem-stats")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct MemStatsRecord {
+    ts: String,
+    pid: u32,
+    turn: u64,
+    fold_messages: u64,
+    fold_assistant: u64,
+    fold_call_names: u64,
+    fold_seen: u64,
+    fold_covered: u64,
+    fold_uncompacted_image_manifests: u64,
+    fold_todos: u64,
+    prefix_cache: u64,
+    context_override: u64,
+    sessions_map: u64,
+    mcp_registry: u64,
+    pws_bytes: u64,
+}
+
+#[cfg(feature = "mem-stats")]
+#[derive(Debug, Clone, Copy, Default)]
+struct MemStatsSnapshot {
+    fold_messages: u64,
+    fold_assistant: u64,
+    fold_call_names: u64,
+    fold_seen: u64,
+    fold_covered: u64,
+    fold_uncompacted_image_manifests: u64,
+    fold_todos: u64,
+    prefix_cache: u64,
+    context_override: u64,
+    mcp_registry: u64,
+}
+
+#[cfg(feature = "mem-stats")]
+struct MemStatsWriter(std::fs::File);
+
+#[cfg(feature = "mem-stats")]
+impl MemStatsWriter {
+    fn from_env() -> std::io::Result<Option<Self>> {
+        Self::from_path(std::env::var_os("NANO_MEM_STATS"))
+    }
+
+    fn from_path(path: Option<std::ffi::OsString>) -> std::io::Result<Option<Self>> {
+        let Some(path) = path else { return Ok(None) };
+        if path.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "NANO_MEM_STATS is empty",
+            ));
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map(|file| Some(Self(file)))
+    }
+
+    fn emit(
+        &mut self,
+        turn: u64,
+        snapshot: MemStatsSnapshot,
+        sessions_map: u64,
+    ) -> std::io::Result<()> {
+        if turn == 0 || turn % 25 != 0 {
+            return Ok(());
+        }
+        let record = MemStatsRecord {
+            ts: utc_timestamp(),
+            pid: std::process::id(),
+            turn,
+            fold_messages: snapshot.fold_messages,
+            fold_assistant: snapshot.fold_assistant,
+            fold_call_names: snapshot.fold_call_names,
+            fold_seen: snapshot.fold_seen,
+            fold_covered: snapshot.fold_covered,
+            fold_uncompacted_image_manifests: snapshot.fold_uncompacted_image_manifests,
+            fold_todos: snapshot.fold_todos,
+            prefix_cache: snapshot.prefix_cache,
+            context_override: snapshot.context_override,
+            sessions_map,
+            mcp_registry: snapshot.mcp_registry,
+            pws_bytes: process_private_working_set()?,
+        };
+        serde_json::to_writer(&mut self.0, &record).map_err(std::io::Error::other)?;
+        self.0.write_all(b"\n")?;
+        self.0.flush()
+    }
+}
+
+#[cfg(feature = "mem-stats")]
+fn retained_json_bytes<T: serde::Serialize>(value: &T) -> u64 {
+    serde_json::to_vec(value).map_or(0, |bytes| bytes.len() as u64)
+}
+
+#[cfg(feature = "mem-stats")]
+fn retained_blocks_bytes(blocks: &Vec<ContentBlock>) -> u64 {
+    blocks.capacity() as u64 * std::mem::size_of::<ContentBlock>() as u64
+        + blocks
+            .iter()
+            .map(|block| match block {
+                ContentBlock::Text { text } => text.capacity() as u64,
+                ContentBlock::ToolUse { id, name, input } => {
+                    id.capacity() as u64 + name.capacity() as u64 + retained_json_bytes(input)
+                }
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    images,
+                    ..
+                } => {
+                    tool_use_id.capacity() as u64
+                        + content.capacity() as u64
+                        + images
+                            .iter()
+                            .map(|image| (image.mime.capacity() + image.data.capacity()) as u64)
+                            .sum::<u64>()
+                }
+                ContentBlock::Image { mime, data } => (mime.capacity() + data.capacity()) as u64,
+            })
+            .sum::<u64>()
+}
+
+#[cfg(feature = "mem-stats")]
+fn retained_messages_bytes(messages: &Vec<Message>) -> u64 {
+    messages.capacity() as u64 * std::mem::size_of::<Message>() as u64
+        + messages
+            .iter()
+            .map(|message| retained_blocks_bytes(&message.content))
+            .sum::<u64>()
+}
+
+#[cfg(feature = "mem-stats")]
+fn retained_string_set_bytes(values: &std::collections::HashSet<String>) -> u64 {
+    values.capacity() as u64 * std::mem::size_of::<String>() as u64
+        + values
+            .iter()
+            .map(|value| value.capacity() as u64)
+            .sum::<u64>()
+}
+
+#[cfg(feature = "mem-stats")]
+fn retained_call_names_bytes(values: &std::collections::HashMap<String, Option<String>>) -> u64 {
+    values.capacity() as u64 * std::mem::size_of::<(String, Option<String>)>() as u64
+        + values
+            .iter()
+            .map(|(key, value)| {
+                key.capacity() as u64 + value.as_ref().map_or(0, |name| name.capacity() as u64)
+            })
+            .sum::<u64>()
+}
+
+#[cfg(feature = "mem-stats")]
+fn retained_todos_bytes(values: &Vec<TodoItem>) -> u64 {
+    values.capacity() as u64 * std::mem::size_of::<TodoItem>() as u64
+        + values
+            .iter()
+            .map(|todo| (todo.id.capacity() + todo.content.capacity()) as u64)
+            .sum::<u64>()
+}
+
+#[cfg(feature = "mem-stats")]
+fn utc_timestamp() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    iso8601_utc(seconds)
+}
+
+#[cfg(feature = "mem-stats")]
+fn iso8601_utc(seconds: u64) -> String {
+    let days = (seconds / 86_400) as i64;
+    let day_seconds = seconds % 86_400;
+    // Howard Hinnant's civil-from-days transform, with Unix epoch offset.
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    let hour = day_seconds / 3_600;
+    let minute = day_seconds % 3_600 / 60;
+    let second = day_seconds % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+#[cfg(all(feature = "mem-stats", windows))]
+fn process_private_working_set() -> std::io::Result<u64> {
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let mut counters = unsafe { std::mem::zeroed::<PROCESS_MEMORY_COUNTERS_EX>() };
+    counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+    let ok = unsafe {
+        GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            (&mut counters as *mut PROCESS_MEMORY_COUNTERS_EX).cast(),
+            counters.cb,
+        )
+    };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(counters.PrivateUsage as u64)
+    }
+}
+
+#[cfg(all(feature = "mem-stats", not(windows)))]
+fn process_private_working_set() -> std::io::Result<u64> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "private working set reporting is Windows-only",
+    ))
+}
+
 /// Frames the stdin reader thread forwards to the main loop.
 #[derive(Debug)]
 enum Inbound {
@@ -1243,6 +1466,36 @@ async fn run_session_lifecycle_hook(
 /// together with the EXACT filesystem policy the executor was built from —
 /// the approval gate's advisory containment check must run the same policy
 /// value, never a separately reconstructed nominally-equivalent one.
+#[cfg(feature = "mem-stats")]
+fn mem_stats_snapshot(session: &Session) -> MemStatsSnapshot {
+    let mcp = session
+        .mcp
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    MemStatsSnapshot {
+        fold_messages: retained_messages_bytes(&session.fold.messages),
+        fold_assistant: retained_blocks_bytes(&session.fold.assistant),
+        fold_call_names: retained_call_names_bytes(&session.fold.call_names),
+        fold_seen: retained_string_set_bytes(&session.fold.seen),
+        fold_covered: retained_string_set_bytes(&session.fold.covered),
+        fold_uncompacted_image_manifests: retained_string_set_bytes(
+            &session.fold.uncompacted_image_manifests,
+        ),
+        fold_todos: retained_todos_bytes(&session.fold.todos),
+        prefix_cache: retained_messages_bytes(&session.prefix_cache),
+        context_override: session
+            .context_override
+            .as_ref()
+            .map_or(0, retained_messages_bytes),
+        mcp_registry: mcp.retained_bytes(),
+    }
+}
+
+#[cfg(feature = "mem-stats")]
+fn option_cardinality<T>(value: &Option<T>) -> u64 {
+    u64::from(value.is_some())
+}
+
 pub async fn serve<R, W, FD, FT, D, T>(
     reader: R,
     writer: W,
@@ -1269,6 +1522,8 @@ where
     D: ModelDriver + 'static,
     T: ToolExecutor,
 {
+    #[cfg(feature = "mem-stats")]
+    let mut mem_stats = MemStatsWriter::from_env()?;
     let out = Arc::new(Mutex::new(writer));
     let pending: PendingMap = Arc::new(Mutex::new(std::collections::HashMap::new()));
     // P5 §5/S1: the production tool-capability catalog — vendored (parse-
@@ -4841,6 +5096,8 @@ where
                 // (byte-for-byte equal by construction, test-pinned). The
                 // journal stays the authority: a kill still resumes through
                 // the unchanged full-rebuild session/load path.
+                #[cfg(feature = "mem-stats")]
+                let sessions_map = option_cardinality(&session);
                 if let Some(active) = session.as_mut()
                     && active.id == turn_session
                 {
@@ -4871,6 +5128,14 @@ where
                             // the old wholesale rebuild dropped them.
                             active.cua_resume_block = None;
                             active.context_override = None;
+                            #[cfg(feature = "mem-stats")]
+                            if let Some(reporter) = mem_stats.as_mut() {
+                                reporter.emit(
+                                    active.turn_counter,
+                                    mem_stats_snapshot(active),
+                                    sessions_map,
+                                )?;
+                            }
                             for issue in &attachment_issues {
                                 write_out(
                                     &out,
@@ -10365,5 +10630,112 @@ mod tests {
             200,
             "one name entry per tool call, nothing more"
         );
+    }
+
+    #[cfg(feature = "mem-stats")]
+    #[test]
+    fn mem_stats_schema_is_exact_and_denies_unknown_fields() {
+        assert_eq!(iso8601_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso8601_utc(951_827_696), "2000-02-29T12:34:56Z");
+        let record = MemStatsRecord {
+            ts: "1Z".into(),
+            pid: 1,
+            turn: 25,
+            fold_messages: 2,
+            fold_assistant: 3,
+            fold_call_names: 4,
+            fold_seen: 5,
+            fold_covered: 6,
+            fold_uncompacted_image_manifests: 7,
+            fold_todos: 8,
+            prefix_cache: 9,
+            context_override: 10,
+            sessions_map: 1,
+            mcp_registry: 11,
+            pws_bytes: 12,
+        };
+        let value = serde_json::to_value(&record).unwrap();
+        let mut keys: Vec<_> = value.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        let mut expected = vec![
+            "ts",
+            "pid",
+            "turn",
+            "fold_messages",
+            "fold_assistant",
+            "fold_call_names",
+            "fold_seen",
+            "fold_covered",
+            "fold_uncompacted_image_manifests",
+            "fold_todos",
+            "prefix_cache",
+            "context_override",
+            "sessions_map",
+            "mcp_registry",
+            "pws_bytes",
+        ];
+        expected.sort();
+        assert_eq!(keys, expected);
+        let mut invalid = value;
+        invalid
+            .as_object_mut()
+            .unwrap()
+            .insert("extra".into(), 1.into());
+        assert!(serde_json::from_value::<MemStatsRecord>(invalid).is_err());
+    }
+
+    #[cfg(feature = "mem-stats")]
+    #[test]
+    fn mem_stats_is_inert_without_a_path_and_rejects_unwritable_path() {
+        assert!(MemStatsWriter::from_path(None).unwrap().is_none());
+        let dir = tempfile::tempdir().unwrap();
+        assert!(MemStatsWriter::from_path(Some(dir.path().as_os_str().to_owned())).is_err());
+    }
+
+    #[cfg(feature = "mem-stats")]
+    #[test]
+    fn mem_stats_emits_independent_jsonl_at_exact_cadence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.jsonl");
+        let mut writer = MemStatsWriter::from_path(Some(path.clone().into_os_string()))
+            .unwrap()
+            .unwrap();
+        let snapshot = MemStatsSnapshot {
+            fold_messages: 17,
+            ..Default::default()
+        };
+        writer
+            .emit(25, snapshot, option_cardinality(&None::<()>))
+            .unwrap();
+        writer
+            .emit(50, snapshot, option_cardinality(&Some(())))
+            .unwrap();
+        drop(writer);
+        let lines: Vec<_> = std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<MemStatsRecord>(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!((lines[0].turn, lines[1].turn), (25, 50));
+        assert_eq!((lines[0].sessions_map, lines[1].sessions_map), (0, 1));
+        assert_eq!(lines[0].fold_messages, 17);
+    }
+
+    #[cfg(feature = "mem-stats")]
+    #[test]
+    fn mem_stats_accounting_is_stable_and_monotonic_for_retained_values() {
+        let empty: Vec<Message> = Vec::new();
+        let one = vec![Message::user("retained")];
+        assert_eq!(retained_messages_bytes(&one), retained_messages_bytes(&one));
+        assert!(retained_messages_bytes(&one) > retained_messages_bytes(&empty));
+        assert_eq!(option_cardinality(&None::<()>), 0);
+        assert_eq!(option_cardinality(&Some(())), 1);
+    }
+
+    #[cfg(all(feature = "mem-stats", windows))]
+    #[test]
+    fn mem_stats_windows_private_working_set_is_nonzero() {
+        assert!(process_private_working_set().unwrap() > 0);
     }
 }

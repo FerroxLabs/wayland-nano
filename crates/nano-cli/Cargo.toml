@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+mem-stats = []
+
 [[bin]]
 name = "wayland-nano"
 path = "src/main.rs"
@@ -68,4 +72,4 @@ libc = "0.2"
 # assigns it to the nano-sandbox Job Object before resume. windows-sys
 # stays on the workspace-pinned 0.52.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_System_Threading"] }
+windows-sys = { version = "0.52", features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }
