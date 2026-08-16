@@ -1219,6 +1219,13 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
 - **Disposition:** no product code or soak measurement was started. Authorize
   the exact package-manifest feature-table slice or amend the feature contract;
   the executor must not infer broader nano-cli manifest ownership.
+- **Owner authorization (2026-08-16):** signed. Grant only the
+  `crates/nano-cli/Cargo.toml` `mem-stats` feature-table slice; reporter
+  configured-path failures fail startup; retain and force-add only exact
+  canary-covered soak runs; select a suspect only at >=60% of positive
+  accounted growth with a >=10 percentage-point lead, otherwise `neither`;
+  interpret `sessions_map` as current `Option<Session>` cardinality 0/1; use
+  B1 for WP acceptance while reporting fake-mode B11 separately.
 
 ## DEV-WP-0.2B: governed canary scanner cannot cover WP soak evidence
 
@@ -1230,3 +1237,8 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
 - **Disposition:** no soak was started. Authorize only an additive exact-file
   include-list option and coverage receipt in the governed scanner, or require
   an equivalent owner-run scanner step; never expose the key value.
+- **Owner authorization (2026-08-16):** signed. Grant only additive
+  `--include-list <exact-list.json> --receipt <exact-receipt.json>` behavior
+  plus its synthetic self-test in `scripts/canary/scan.mjs`. Exact-list mode
+  may compare the real key in memory, but must never print, persist, echo, or
+  embed its value; default scanner behavior remains unchanged.
