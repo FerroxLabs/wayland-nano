@@ -53,12 +53,13 @@ After the final handoff is created and closed, the last task makes no later evid
 2. Parse the supplied normalized inventory and require exact `Compare-Object` equality with the independently derived set before invoking the scanner.
 3. Invoke the authorized include-list scanner. Missing/duplicate/out-of-root/unreadable file, scan error, nonzero hit, absent fingerprint, or non-PASS verdict fails.
 4. Independently recompute every listed full SHA-256 and byte count and require exact equality with receipt rows and exact file-set equality.
-5. Force-add each exact file individually; no wildcard or directory staging.
-6. Enumerate ALL cached files and call `git check-ignore --no-index -- &lt;path&gt;` per path. Exit 0 means ignored, 1 means not ignored, and greater than 1 fails.
-7. Reject every ignored cached path outside the exact approved run prefix(es) plus exact handoff. Require every scanned inventory file cached and exact equality between scanned inventory and the cached approved evidence set.
-8. Require `.gitignore` unchanged. No unscanned evidence write follows final inventory creation.
+5. Add each exact file individually. Every inventory path must exist in the index via `git ls-files --error-unmatch`, but already tracked byte-identical evidence need not appear in cached diff.
+6. Enumerate the full indexed set under approved exact run prefixes plus handoff and require exact equality with scanned inventory. For every path require one stage-0 entry, `git hash-object --no-filters` equality with its index OID, index blob size equality with scanned/current bytes, and no unstaged delta.
+7. Require all newly created/modified approved evidence staged: cached approved diff is an exact subset of inventory and equals the approved `git diff HEAD` set.
+8. Enumerate ALL cached files and call `git check-ignore --no-index -- &lt;path&gt;` per path. Exit 0 means ignored, 1 means not ignored, and greater than 1 fails; reject ignored cached paths outside inventory.
+9. Require `.gitignore` unchanged and no indexed approved evidence outside scanned inventory. No unscanned evidence write follows.
 
-Plan 05's `<automated>` gate itself reruns the include-list scanner, parses the true canary receipt, recomputes every hash/byte count, proves exact receipt/inventory equality and hits=0, verifies every inventory file is force-added, applies `git check-ignore --no-index` to every cached path, proves cached-approved/scanned equality, checks `.gitignore`, and confirms the builder branch/status. Descriptive handoff prose cannot satisfy this gate.
+Plan 05's automated gate reruns the scanner, proves receipt/inventory equality and hits=0, proves full index/scanned equality and per-file index/worktree byte identity, requires changed evidence staged without requiring unchanged tracked evidence in cached diff, applies `git check-ignore --no-index`, and checks `.gitignore` plus branch/status.
 
 ## Command failure contract
 
