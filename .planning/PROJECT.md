@@ -115,4 +115,4 @@ scope. New capabilities require an explicit master-plan amendment before they
 enter the roadmap.
 
 ---
-*Last updated: 2026-08-16 after Ferrox brownfield onboarding*
+*Last updated: 2026-08-16 after WP-0.4 promotion and six-job CI verification*

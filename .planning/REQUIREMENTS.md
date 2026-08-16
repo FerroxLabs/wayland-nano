@@ -8,18 +8,18 @@
 
 ### Program Control
 
-- [ ] **CTRL-01**: Every WP reads and obeys `AGENTS.md`, the master frame, its full WP spec, the canonical interface contract where applicable, and its GOALS card before implementation.
-- [ ] **CTRL-02**: Every WP changes only files inside its explicit OWNS boundary and records a deviation instead of routing around a boundary conflict.
-- [ ] **CTRL-03**: Before every WP, current `origin/master` is fetched and resolved to a recorded SHA; a clean isolated worktree and canonical `feat/wp-<id>` branch are created at that SHA, and builders never merge or push WP branches.
-- [ ] **CTRL-04**: Every WP completes one Critical/High audit, at most one fix round, fix verification, and `just gate-all` (formatting, clippy with warnings denied, workspace tests, and `gate-gen-check`) before integration.
-- [ ] **CTRL-05**: The integrator merges one WP at a time with `--no-ff`, re-runs `just gate-all`, pushes detached integration HEAD to `master`, and confirms CI green before the next promotion.
-- [ ] **CTRL-06**: Captured evidence is canary-scanned and contains no Flux key value; the key is referenced by path only.
-- [ ] **CTRL-07**: Generated artifacts are regenerated through their generator and never hand-edited; new dependencies require cargo-deny-clean justification.
-- [ ] **CTRL-08**: Completion reporting distinguishes Implemented, Reachable, and Live-proven claims and reports WP, commits, gate, and CI in one line.
+- [x] **CTRL-01**: Every WP reads and obeys `AGENTS.md`, the master frame, its full WP spec, the canonical interface contract where applicable, and its GOALS card before implementation.
+- [x] **CTRL-02**: Every WP changes only files inside its explicit OWNS boundary and records a deviation instead of routing around a boundary conflict.
+- [x] **CTRL-03**: Before every WP, current `origin/master` is fetched and resolved to a recorded SHA; a clean isolated worktree and canonical `feat/wp-<id>` branch are created at that SHA, and builders never merge or push WP branches.
+- [x] **CTRL-04**: Every WP completes one Critical/High audit, at most one fix round, fix verification, and `just gate-all` (formatting, clippy with warnings denied, workspace tests, and `gate-gen-check`) before integration.
+- [x] **CTRL-05**: The integrator merges one WP at a time with `--no-ff`, re-runs `just gate-all`, pushes detached integration HEAD to `master`, and confirms CI green before the next promotion.
+- [x] **CTRL-06**: Captured evidence is canary-scanned and contains no Flux key value; the key is referenced by path only.
+- [x] **CTRL-07**: Generated artifacts are regenerated through their generator and never hand-edited; new dependencies require cargo-deny-clean justification.
+- [x] **CTRL-08**: Completion reporting distinguishes Implemented, Reachable, and Live-proven claims and reports WP, commits, gate, and CI in one line.
 
 ### WP-0.1 Owner Gate
 
-- [ ] **HOST-01**: WP-0.1 remains owner/host-run because its CUA evidence requires an interactive Windows desktop and manual 100%/150% display scaling; autonomous execution records the handoff and does not simulate proof.
+- [x] **HOST-01**: WP-0.1 remains owner/host-run because its CUA evidence requires an interactive Windows desktop and manual 100%/150% display scaling; autonomous execution records the handoff and does not simulate proof.
 
 ### WP-0.2 Memory Hardening
 
@@ -40,12 +40,12 @@
 
 ### WP-0.4 Frozen Contracts
 
-- [ ] **CTR-01**: Four byte-canonical JSON artifacts exist for capability profile, journal semantics, Flux endpoint contract, and event-type vocabulary with freeze and change-control metadata.
-- [ ] **CTR-02**: Capability, journal vocabulary, and event vocabulary/count artifacts derive deterministically from current source or corpus inputs and regenerate byte-identically.
-- [ ] **CTR-03**: The Flux endpoint artifact contains all six evidence-backed endpoints and schema validation verifies required fields and fixture paths.
-- [ ] **CTR-04**: Generator `--check` and workspace schema tests fail closed on deliberately stale or tampered contract artifacts.
-- [ ] **CTR-05**: The WP-0.4 ownership card explicitly grants the additive `nano-session/src/op.rs` and `nano-protocol` contract-test changes required by its spec before implementation; the executor does not infer broader crate ownership.
-- [ ] **CTR-06**: The owner-managed G-CTR-1 catalog closure is reported as ready but is not self-approved by the executor.
+- [x] **CTR-01**: Four byte-canonical JSON artifacts exist for capability profile, journal semantics, Flux endpoint contract, and event-type vocabulary with freeze and change-control metadata.
+- [x] **CTR-02**: Capability, journal vocabulary, and event vocabulary/count artifacts derive deterministically from current source or corpus inputs and regenerate byte-identically.
+- [x] **CTR-03**: The Flux endpoint artifact contains all six evidence-backed endpoints and schema validation verifies required fields and fixture paths.
+- [x] **CTR-04**: Generator `--check` and workspace schema tests fail closed on deliberately stale or tampered contract artifacts.
+- [x] **CTR-05**: The WP-0.4 ownership card explicitly grants the additive `nano-session/src/op.rs` and `nano-protocol` contract-test changes required by its spec before implementation; the executor does not infer broader crate ownership.
+- [x] **CTR-06**: The owner-managed G-CTR-1 catalog closure is reported as ready but is not self-approved by the executor.
 
 ### WP-1 Gate and Receipt Foundation
 
