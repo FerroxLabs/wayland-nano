@@ -1266,3 +1266,10 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
   correction landed, the 3,600-second B1 acceptance run was not started; B1
   and B11 acceptance are not evaluated or claimed. F-45 remains OPEN. No
   budget, harness, product, `.gitignore`, or evidence-staging change occurred.
+- **Plan 02-05 audit/handoff:** one High was found and fixed in the single
+  bounded round: exact-list paths were resolved from the linked-worktree
+  parent instead of the current worktree root. Exact-list mode now uses the
+  worktree root while legacy default coverage keeps its historical root;
+  synthetic resolver/inventory tests and focused suites pass. `just gate-all`
+  (including `gate-gen-check`) and opt-in reporter/release gates pass. Final
+  status remains measured-neither, F-45 OPEN, no 3,600-second receipt.
