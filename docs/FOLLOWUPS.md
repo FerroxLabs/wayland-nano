@@ -1262,3 +1262,7 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
   the owner-signed 60%/10-point rule and independent evidence-review PASS,
   measured `neither` is confirmed. Plan 02-03 applied no product correction;
   F-45 remains OPEN. B1 and scaled B5 failed; no one-hour receipt ran.
+- **Plan 02-04 eligibility:** INELIGIBLE/NO-RECEIPT. Because no measured
+  correction landed, the 3,600-second B1 acceptance run was not started; B1
+  and B11 acceptance are not evaluated or claimed. F-45 remains OPEN. No
+  budget, harness, product, `.gitignore`, or evidence-staging change occurred.
