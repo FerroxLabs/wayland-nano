@@ -1,7 +1,7 @@
 ---
 profile_state: classified
 selected_arm: neither
-owner_confirmation: pending
+owner_confirmation: confirmed_by_signed_rule_and_independent_review
 ---
 
 # WP-0.2 900-second profile decision
@@ -54,4 +54,4 @@ The independent oracle and reporter PWS series agree directionally in every PID 
 
 `selected_arm: neither`
 
-This is measured-neither, pending the blocking owner confirmation checkpoint. No correction or one-hour receipt is authorized before confirmation.
+This measured-neither result is confirmed by the owner-signed quantitative rule (`a2c8e6d`) and independent evidence-review PASS. No product correction or one-hour receipt is eligible.

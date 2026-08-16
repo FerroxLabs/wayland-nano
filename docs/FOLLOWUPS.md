@@ -1259,5 +1259,6 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
   segments. Exact-value canary passed over both retained attempts (12 files,
   269,655 bytes, zero hits). Eligible fold auxiliaries explained 28.094% of
   positive accounted growth and measured MCP registry growth was 0%; under
-  the signed 60%/10-point rule the proposed arm is measured `neither`, pending
-  owner confirmation. B1 and scaled B5 failed; no fix or one-hour receipt ran.
+  the owner-signed 60%/10-point rule and independent evidence-review PASS,
+  measured `neither` is confirmed. Plan 02-03 applied no product correction;
+  F-45 remains OPEN. B1 and scaled B5 failed; no one-hour receipt ran.
