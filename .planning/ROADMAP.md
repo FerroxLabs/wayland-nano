@@ -17,7 +17,7 @@ This milestone promotes the approved Wayland Nano 0.2 verified-change program th
 > `node scripts/gen-roadmap-index.cjs --write`.
 
 - [x] **Phase 1: WP-0.4 Frozen Contracts and Program Controls** - Freeze the four machine-checkable contracts and establish the evidence-backed serial promotion discipline. (completed 2026-08-16)
-- [ ] **Phase 2: WP-0.2 Memory Hardening** - Measure retained growth, apply only the profile-selected correction, and prove the locked memory budget.
+- [x] **Phase 2: WP-0.2 Memory Hardening** - Measure retained growth, apply only the profile-selected correction, and prove the locked memory budget. (completed 2026-08-17)
 - [ ] **Phase 3: WP-0.3 PDF Intake** - Deliver validated, resumable PDF intake over the Anthropic document wire with fail-closed routing.
 - [ ] **Phase 4: WP-1 Gate and Receipt Foundation** - Deliver canonical gate execution and independently checkable red-green receipt primitives.
 - [ ] **Phase 5: WP-2 Gated Climb** - Deliver the budgeted, opaque-feedback, ratcheted climb engine.
@@ -73,11 +73,12 @@ This milestone promotes the approved Wayland Nano 0.2 verified-change program th
 **Plans**: 5 plans
 
 Plans:
-- [ ] 02-01-PLAN.md — Authorize the package-manifest slice and implement the exact measurement reporter.
-- [ ] 02-02-PLAN.md — Run the 900-second profile and lock exactly one measured decision arm.
-- [ ] 02-03-PLAN.md — Implement only the selected fold/tool correction or record the neither terminal arm.
-- [ ] 02-04-PLAN.md — Run the eligible one-hour B1 acceptance and retain canary-clean evidence.
-- [ ] 02-05-PLAN.md — Audit, run the full local gate, and produce the builder-only handoff.
+
+- [x] 02-01-PLAN.md — Authorize the package-manifest slice and implement the exact measurement reporter.
+- [x] 02-02-PLAN.md — Run the 900-second profile and lock exactly one measured decision arm.
+- [x] 02-03-PLAN.md — Implement only the selected fold/tool correction or record the neither terminal arm.
+- [x] 02-04-PLAN.md — Run the eligible one-hour B1 acceptance and retain canary-clean evidence.
+- [x] 02-05-PLAN.md — Audit, run the full local gate, and produce the builder-only handoff.
 
 ### Phase 3: WP-0.3 PDF Intake
 
@@ -225,7 +226,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. WP-0.4 Frozen Contracts and Program Controls | 3/3 | Complete | 2026-08-16 |
-| 2. WP-0.2 Memory Hardening | 0/TBD | Not started | - |
+| 2. WP-0.2 Memory Hardening | 6/6 | Complete | 2026-08-17 |
 | 3. WP-0.3 PDF Intake | 0/TBD | Not started | - |
 | 4. WP-1 Gate and Receipt Foundation | 0/TBD | Not started | - |
 | 5. WP-2 Gated Climb | 0/TBD | Not started | - |

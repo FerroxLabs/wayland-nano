@@ -23,11 +23,11 @@
 
 ### WP-0.2 Memory Hardening
 
-- [ ] **MEM-01**: A feature-gated `NANO_MEM_STATS=<path>` NDJSON reporter emits the exact retained-structure schema at the specified cadence without contaminating ACP stdout or stderr protocols.
-- [ ] **MEM-02**: A recorded short soak identifies whether fold auxiliaries, tool-definition clones, or neither are the dominant retained-growth source using measured per-structure and PWS deltas.
-- [ ] **MEM-03**: Only the profile-selected fix arm is implemented; if neither suspect dominates, the WP stops with evidence and an open follow-up rather than applying a speculative fix.
-- [ ] **MEM-04**: Any landed fix preserves the incremental-fold/full-rebuild equivalence oracle and adds the spec-required size/bounding assertion.
-- [ ] **MEM-05**: A one-hour receipt soak satisfies the locked B1 budget, including slope at or below 16 MiB/hour, before F-45 can be marked fixed.
+- [x] **MEM-01**: A feature-gated `NANO_MEM_STATS=<path>` NDJSON reporter emits the exact retained-structure schema at the specified cadence without contaminating ACP stdout or stderr protocols.
+- [x] **MEM-02**: A recorded short soak identifies whether fold auxiliaries, tool-definition clones, or neither are the dominant retained-growth source using measured per-structure and PWS deltas.
+- [x] **MEM-03**: Only the profile-selected fix arm is implemented; if neither suspect dominates, the WP stops with evidence and an open follow-up rather than applying a speculative fix.
+- [x] **MEM-04**: Any landed fix preserves the incremental-fold/full-rebuild equivalence oracle and adds the spec-required size/bounding assertion.
+- [x] **MEM-05**: A one-hour receipt soak satisfies the locked B1 budget, including slope at or below 16 MiB/hour, before F-45 can be marked fixed.
 
 ### WP-0.3 PDF Intake
 

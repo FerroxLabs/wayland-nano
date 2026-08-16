@@ -1,6 +1,6 @@
 ---
 phase: 02-wp-0-2-memory-hardening
-verified: 2026-08-17T00:53:29+07:00
+verified: 2026-08-17T01:19:09+07:00
 status: passed
 score: 7/7 must-haves verified
 behavior_unverified: 0
@@ -14,6 +14,16 @@ re_verification:
     - "The required 02-01-SUMMARY.md now exists and is grounded in inspected commits and rerun evidence."
   gaps_remaining: []
   regressions: []
+promotion:
+  merge_commit: 902906dd1ae262e3bbdbbde0de5a2008583dc693
+  baseline_parent: 566e3acdd6f6fb3025432bf4f8a22e2dec021efe
+  wp_tip_parent: 8e012202811a9648d835639d19491009513a24e4
+  origin_master: 902906dd1ae262e3bbdbbde0de5a2008583dc693
+  integration_gate: passed
+  github_run: 31963154943
+  github_attempt: 2
+  github_conclusion: success
+  github_matrix: 6/6 green
 ---
 
 # Phase 2: WP-0.2 Memory Hardening Verification Report
@@ -74,15 +84,28 @@ re_verification:
 - Diff is descended from baseline `566e3ac` and confined to the WP branch/worktree.
 - Product changes are within GOALS ownership; the manifest and scanner slices have recorded signed grants.
 - No changes exist under `nano/` or `resources/upstreams/`.
-- No secret value was observed; the receipt stores a fingerprint only. This does not cure the missing final coverage receipt.
-- Worktree was clean before and after verification. No merge, push, CI, or promotion was performed.
+- No secret value was observed; the final receipt stores a fingerprint only and covers all 17 frozen source captures.
+- Builder verification performed no merge, push, CI, or promotion. Post-promotion verification confirms the authorized integration evidence below and made no further merge, push, or CI action.
 - No unreferenced TBD/FIXME/XXX debt marker was added in the phase diff.
+
+### Promotion Verification
+
+| Check | Evidence | Status |
+|---|---|---|
+| Promoted SHA | Detached integration `HEAD` and `origin/master` both resolve to `902906dd1ae262e3bbdbbde0de5a2008583dc693`. | PASS |
+| No-ff ancestry | Merge commit has exactly two parents: baseline `566e3acdd6f6fb3025432bf4f8a22e2dec021efe` and WP tip `8e012202811a9648d835639d19491009513a24e4`; the WP tip is an ancestor. | PASS |
+| Integration worktree | Clean before the verifier report edit; detached at the promoted merge. | PASS |
+| Integration local gate | Independent `just gate-all` completed with exit code 0, including workspace tests and both generated-artifact checks. | PASS |
+| GitHub CI | Run `31963154943`, SHA `902906dd…`, attempt 2 completed `success`; all six matrix jobs are green. | PASS |
+| Failed-job rerun integrity | Attempt 1 failed only `gate (ubuntu-24.04-arm, arm64)` at `nano-sandbox` test `system_bwrap_warning_reports_user_namespace_failures` (`loopback: Failed RTM_NEWADDR`). The failed-job rerun used the same head SHA and passed; merge content is identical to WP tip outside planning metadata, proving no intervening code/test fix. | PASS |
 
 ### Re-verification Summary
 
 All prior gaps are closed. The substantive memory result remains unchanged and valid: the signed rule yields measured-neither, no correction is eligible, F-45 stays OPEN, and no 3600-second receipt is required or claimed. Final evidence now has independently checkable exact-value coverage, the audit chronology satisfies the one-round cap, and the Plan 01 summary is present. No regression or human-verification item remains.
 
+Promotion is also complete and verified: the exact no-ff merge is on `origin/master`, the integration gate passes, and GitHub run `31963154943` is finally green across all six jobs after the same-SHA transient ARM sandbox-probe rerun.
+
 ---
 
-_Verified: 2026-08-17T00:53:29+07:00_
+_Verified: 2026-08-17T01:19:09+07:00_
 _Verifier: ferrox-verifier_
