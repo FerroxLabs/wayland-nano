@@ -1273,3 +1273,19 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
   synthetic resolver/inventory tests and focused suites pass. `just gate-all`
   (including `gate-gen-check`) and opt-in reporter/release gates pass. Final
   status remains measured-neither, F-45 OPEN, no 3,600-second receipt.
+
+## DEV-WP-0.3A: PDF journal/store authority boundary — RESOLVED
+
+- **Boundary deviation/resolution (2026-08-17):** the one-round WP-0.3 audit found
+  that the required additive `DocumentRef` journal serde/digest contract and the
+  attachment-store reachability/retention/orphan/malformed-reference battery crossed
+  the original OWNS list (`SPEC-WP0-hardening.md` WP-0.3 type-plumbing requirement and
+  `03-RESEARCH.md` journal/store test evidence). Owner authority is now narrowed to
+  `op.rs` for only the additive `DocumentRef`/`InputBlock::DocumentRef` contract
+  comments/tests and `attachment_store.rs` for only production `DocumentRef` journal
+  reachability plus retention/orphan/malformed-reference handling and their comments/tests;
+  store redesign, `ImageRef` rename, `ToolResult` changes, and broader session work
+  remain excluded. The audit also resolved generator authority: the tracked in-repo
+  nano-session contracts JSON and shared/contracts mirror remain mandatory, while any
+  sibling desktop mirrors are optional generator-only owner/integrator refreshes and
+  cannot satisfy standalone CI/DoD or be committed by the WP branch.
