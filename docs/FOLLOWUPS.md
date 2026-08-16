@@ -1169,3 +1169,15 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
   clippy -D warnings, cargo test --workspace).
 - **Close means:** closed by the fix commit; this entry is the audit
   trail.
+
+## F-48: provision dry-run bin never prints its payload (raw-string literal)
+
+- **Filed:** 2026-08-15, by the WP4 gate-card reconciliation lane.
+- **Defect:** `crates/nano-sandbox/src/bin/provision_dry_run/main.rs:31` prints the
+  launch line with a RAW string (`println!(r"...{b64}")`), so the `{b64}`
+  placeholder is never interpolated — the base64 payload never reaches stdout.
+  The WP4 provision gate re-encodes from the extracted JSON instead.
+- **Severity:** SEV-3 (test-tooling surface; the provision gate works around it,
+  but the bin's documented output contract is broken).
+- **Close means:** interpolate (or drop) the placeholder and pin the output
+  contract with a test.
