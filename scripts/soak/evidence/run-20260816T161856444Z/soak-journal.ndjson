@@ -1,0 +1,22 @@
+{"at":"2026-08-16T16:18:58.901Z","type":"host_stderr","text":"wayland-nano: web_search backend ladder: flux\n"}
+{"at":"2026-08-16T16:18:58.953Z","type":"host_stderr","text":"wayland-nano: checkpoint tools unavailable (CheckpointUnavailable): workspace git unavailable\n"}
+{"at":"2026-08-16T16:18:58.954Z","type":"run_start","mode":"ci","durationSeconds":900,"seed":1010,"pid":45712,"sessionId":"wayland-nano-session-1786897138904646800-1"}
+{"at":"2026-08-16T16:18:59.833Z","type":"turn_start","turn":1,"workload":"subagent"}
+{"at":"2026-08-16T16:18:59.970Z","type":"turn_end","turn":1,"status":"PASS"}
+{"at":"2026-08-16T16:18:59.971Z","type":"turn_start","turn":2,"workload":"model"}
+{"at":"2026-08-16T16:19:00.115Z","type":"turn_end","turn":2,"status":"PASS"}
+{"at":"2026-08-16T16:19:00.129Z","type":"turn_start","turn":3,"workload":"search"}
+{"at":"2026-08-16T16:19:00.269Z","type":"turn_end","turn":3,"status":"PASS"}
+{"at":"2026-08-16T16:19:00.270Z","type":"turn_start","turn":4,"workload":"exec"}
+{"at":"2026-08-16T16:19:02.787Z","type":"turn_end","turn":4,"status":"PASS"}
+{"at":"2026-08-16T16:19:02.787Z","type":"turn_start","turn":5,"workload":"mcp"}
+{"at":"2026-08-16T16:19:39.107Z","type":"turn_end","turn":5,"status":"PASS"}
+{"at":"2026-08-16T16:19:39.107Z","type":"turn_start","turn":6,"workload":"compaction"}
+{"at":"2026-08-16T16:19:39.267Z","type":"turn_end","turn":6,"status":"PASS"}
+{"at":"2026-08-16T16:19:39.268Z","type":"turn_start","turn":7,"workload":"subagent"}
+{"at":"2026-08-16T16:19:39.444Z","type":"turn_end","turn":7,"status":"PASS"}
+{"at":"2026-08-16T16:19:39.444Z","type":"turn_start","turn":8,"workload":"model"}
+{"at":"2026-08-16T16:19:39.603Z","type":"turn_end","turn":8,"status":"PASS"}
+{"at":"2026-08-16T16:19:39.603Z","type":"turn_start","turn":9,"workload":"search"}
+{"at":"2026-08-16T16:19:40.736Z","type":"turn_end","status":"injected_kill","message":"Error: host exited code=4294967295 signal=null"}
+{"at":"2026-08-16T16:19:40.736Z","type":"turn_start","turn":9,"workload":"mcp"}

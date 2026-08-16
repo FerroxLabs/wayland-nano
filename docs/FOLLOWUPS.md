@@ -1242,3 +1242,22 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
   plus its synthetic self-test in `scripts/canary/scan.mjs`. Exact-list mode
   may compare the real key in memory, but must never print, persist, echo, or
   embed its value; default scanner behavior remains unchanged.
+
+## WP-0.2 900-second profile failure (Plan 02-02)
+
+- **Run:** `scripts/soak/evidence/run-20260816T161856444Z` from `4a53c86`.
+- **Disposition:** the first wrapper attempt was aborted after roughly 42
+  seconds and 8 turns (`exit 124`). It has no completed manifest or usable
+  reporter series and is therefore `aborted/unclassified`: it selects no arm
+  and cannot authorize a correction or one-hour receipt.
+- **Canary:** the exact-list scanner failed closed because its required
+  repo-local `.secrets/flux-test-key` path is absent in the isolated worktree.
+  It emitted no receipt or secret value. The defense-in-depth
+  `wp02-credential-shapes-v1` scan passed with zero hits but cannot substitute.
+- **Corrected rerun:** `run-20260816T163631293Z` completed 901,636 ms and
+  produced 57 reporter rows plus 15 aligned oracle samples across three PID
+  segments. Exact-value canary passed over both retained attempts (12 files,
+  269,655 bytes, zero hits). Eligible fold auxiliaries explained 28.094% of
+  positive accounted growth and measured MCP registry growth was 0%; under
+  the signed 60%/10-point rule the proposed arm is measured `neither`, pending
+  owner confirmation. B1 and scaled B5 failed; no fix or one-hour receipt ran.

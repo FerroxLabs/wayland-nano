@@ -1,0 +1,83 @@
+{
+  "scanner": "wayland-nano/scripts/canary/scan.mjs exact include-list",
+  "at": "2026-08-16T16:55:26.332Z",
+  "key_fingerprint_sha256": "6e311219369524f5b852dfd92db4b48b72d7fc6176e0bf318e9734e35bd7d10f",
+  "files_scanned": 12,
+  "bytes_scanned": 269655,
+  "hits": 0,
+  "verdict": "PASS — key appears in zero artifacts",
+  "results": [
+    {
+      "file": ".tmp-wt-vc-wp-0.2/scripts/soak/evidence/run-20260816T161856444Z/canary-exact-list.json",
+      "sha256": "10ad94b0855b941785708f0a194c9d77e8ef173b668f968ae00451e6dabc2720",
+      "bytes": 316,
+      "contains_key": false
+    },
+    {
+      "file": ".tmp-wt-vc-wp-0.2/scripts/soak/evidence/run-20260816T161856444Z/soak-journal.ndjson",
+      "sha256": "5e6b339241e9857fe1fdad2c38e873bffee29827d5fc1ce92dcd48270526041f",
+      "bytes": 2020,
+      "contains_key": false
+    },
+    {
+      "file": ".tmp-wt-vc-wp-0.2/scripts/soak/evidence/run-20260816T161856444Z/soak-samples.ndjson",
+      "sha256": "ed108953095b8b3f2c8231fc2007f92556c2ca84d40ab8e43795b32e4b00e166",
+      "bytes": 193,
+      "contains_key": false
+    },
+    {
+      "file": ".tmp-wt-vc-wp-0.2/scripts/soak/evidence/run-20260816T161856444Z/WP-0.2-PROFILE-DECISION.md",
+      "sha256": "a4cd7d0f67a29ffad8ab6d54b8009aa1320fd47a6b98a31c4e61583076c556b6",
+      "bytes": 3493,
+      "contains_key": false
+    },
+    {
+      "file": ".tmp-wt-vc-wp-0.2/scripts/soak/evidence/run-20260816T163631293Z/mem-stats.ndjson",
+      "sha256": "e78a60002a5896f37fb7b11857f95053fedb0c13fc7ec782c14a79ae22af7801",
+      "bytes": 17229,
+      "contains_key": false
+    },
+    {
+      "file": ".tmp-wt-vc-wp-0.2/scripts/soak/evidence/run-20260816T163631293Z/soak-journal.ndjson",
+      "sha256": "e5e16e771e8c8e24c5e74742fd27f591c0c5d787d9f4c300f1996bfdbb149892",
+      "bytes": 236218,
+      "contains_key": false
+    },
+    {
+      "file": ".tmp-wt-vc-wp-0.2/scripts/soak/evidence/run-20260816T163631293Z/soak-manifest-20260816T163631293Z.json",
+      "sha256": "559d61a32738b0af2125c94ac60a18483c2a347a14ff69d670858f93bc400239",
+      "bytes": 3383,
+      "contains_key": false
+    },
+    {
+      "file": ".tmp-wt-vc-wp-0.2/scripts/soak/evidence/run-20260816T163631293Z/soak-samples.ndjson",
+      "sha256": "7752c533cca8505c2085bc4fc045b98613c070e0e524b2f94444c6ff40b6bb82",
+      "bytes": 2954,
+      "contains_key": false
+    },
+    {
+      "file": ".tmp-wt-vc-wp-0.2/scripts/soak/evidence/run-20260816T163631293Z/wrapper-audit.json",
+      "sha256": "85c9b3325631fbe92ef8c6fec1d2baff945c3482a77804e169e837973b5d11c9",
+      "bytes": 427,
+      "contains_key": false
+    },
+    {
+      "file": ".tmp-wt-vc-wp-0.2/scripts/soak/evidence/run-20260816T163631293Z/wrapper-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "contains_key": false
+    },
+    {
+      "file": ".tmp-wt-vc-wp-0.2/scripts/soak/evidence/run-20260816T163631293Z/wrapper-stdout.log",
+      "sha256": "222db915a2674862d2275a47752b564a74db560bbbe251ff6ef7dd5382382542",
+      "bytes": 233,
+      "contains_key": false
+    },
+    {
+      "file": ".tmp-wt-vc-wp-0.2/scripts/soak/evidence/run-20260816T163631293Z/WP-0.2-PROFILE-DECISION.md",
+      "sha256": "b2ef6ab78de2f2bdf592f64331786aaf19718bc020aa2ee43890dedaa70ba344",
+      "bytes": 3189,
+      "contains_key": false
+    }
+  ]
+}

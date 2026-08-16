@@ -1,0 +1,131 @@
+{
+  "gate": "S10",
+  "track": "B",
+  "source_sha": "8e769f1dc0ee3e62b95d574c11f1f78987ed2d88",
+  "dirty": true,
+  "started_at": "2026-08-16T16:36:32.607Z",
+  "finished_at": "2026-08-16T16:51:34.333Z",
+  "durationMs": 901636,
+  "mode": "ci",
+  "seed": 1010,
+  "turnCount": 1441,
+  "kills": [
+    {
+      "pid": 11832,
+      "point": "mid-turn",
+      "descendantsBefore": [
+        75080
+      ],
+      "orphans": [],
+      "replay": true
+    },
+    {
+      "pid": 51352,
+      "point": "chained-kill-resume",
+      "descendantsBefore": [
+        49832
+      ],
+      "orphans": [],
+      "replay": true
+    }
+  ],
+  "binary": {
+    "path": "D:\\Development\\waylandnano\\wayland-nano\\.tmp-wt-vc-wp-0.2\\target\\release\\wayland-nano.exe",
+    "sha256": "36de8aaf6f6b653e8e6c9882e515f15fea9f8900c845937396993583adfcfcef",
+    "features": [
+      "nano-agent/soak-fake-model"
+    ],
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)"
+  },
+  "baselineMedians": {
+    "pid": 31592,
+    "privateWorkingSetBytes": 8544256,
+    "workingSetBytes": 22872064,
+    "handles": 216,
+    "threads": 5,
+    "openFds": 0,
+    "nanoHomeBytes": 768678,
+    "descendants": 62456
+  },
+  "sampleSeriesDigest": "7752c533cca8505c2085bc4fc045b98613c070e0e524b2f94444c6ff40b6bb82",
+  "sessionJournalPath": "C:\\Users\\seand\\AppData\\Local\\Temp\\wayland-nano-s10-home-86144-1010\\sessions\\wayland-nano-session-1786898193187035200-1.jsonl",
+  "counts": {
+    "pass": 8,
+    "fail": 2,
+    "skip": 2
+  },
+  "results": [
+    {
+      "id": "B1",
+      "name": "RSS growth",
+      "status": "FAIL",
+      "detail": "{\"peakBytes\":44429312,\"absoluteBytes\":1610612736,\"baselineBytes\":8544256,\"finalBytes\":44429312,\"endRatio\":5.1999,\"endRatioMax\":1.25,\"slopeBytesPerHour\":122767904,\"slopeMaxBytesPerHour\":16777216,\"checks\":{\"absolute\":true,\"endRatio\":false,\"slope\":false}}"
+    },
+    {
+      "id": "B2",
+      "name": "handle count",
+      "status": "PASS",
+      "detail": "peak=220"
+    },
+    {
+      "id": "B3",
+      "name": "thread count",
+      "status": "PASS",
+      "detail": "peak=7"
+    },
+    {
+      "id": "B4",
+      "name": "open FDs",
+      "status": "SKIP",
+      "detail": "peak=0"
+    },
+    {
+      "id": "B5",
+      "name": "journal growth",
+      "status": "FAIL",
+      "detail": "bytes=2594938"
+    },
+    {
+      "id": "B6",
+      "name": "NANO_HOME disk",
+      "status": "PASS",
+      "detail": "bytes=2525948"
+    },
+    {
+      "id": "B7",
+      "name": "orphan processes",
+      "status": "PASS",
+      "detail": "orphans=0"
+    },
+    {
+      "id": "B8",
+      "name": "torn journal",
+      "status": "PASS",
+      "detail": "{\"path\":\"C:\\\\Users\\\\seand\\\\AppData\\\\Local\\\\Temp\\\\wayland-nano-s10-home-86144-1010\\\\sessions\\\\wayland-nano-session-1786898193187035200-1.jsonl\",\"parsedOps\":8649,\"tornMiddle\":0,\"tornTail\":0,\"replayClean\":true}"
+    },
+    {
+      "id": "B9",
+      "name": "turn throughput",
+      "status": "PASS",
+      "detail": "turnsPerHour=5753.54"
+    },
+    {
+      "id": "B10",
+      "name": "typed error rate",
+      "status": "PASS",
+      "detail": "typed=0 unknown=0"
+    },
+    {
+      "id": "B11",
+      "name": "live segment",
+      "status": "SKIP",
+      "detail": "fake-only run"
+    },
+    {
+      "id": "B12",
+      "name": "watchdog",
+      "status": "PASS",
+      "detail": "breaches=0"
+    }
+  ]
+}
