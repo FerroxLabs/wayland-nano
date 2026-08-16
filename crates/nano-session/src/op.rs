@@ -606,6 +606,55 @@ pub const MAX_GOAL_SUMMARY_LEN: usize = 2000;
 /// before ANY path use on journal read (§5.3).
 pub use nano_model::image_result::ImageRef;
 
+/// The durable half of an attached PDF: metadata plus the content digest,
+/// never the document bytes or their base64 encoding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DocumentRef {
+    pub digest: String,
+    pub mime: String,
+    pub bytes: u64,
+    pub placeholder: String,
+}
+
+impl<'de> Deserialize<'de> for DocumentRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            digest: String,
+            mime: String,
+            bytes: u64,
+            placeholder: String,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        if wire.digest.len() != 64
+            || !wire
+                .digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(serde::de::Error::custom(
+                "document digest must be 64 lowercase hexadecimal characters",
+            ));
+        }
+        if wire.mime != "application/pdf" {
+            return Err(serde::de::Error::custom(
+                "document mime must be application/pdf",
+            ));
+        }
+        Ok(Self {
+            digest: wire.digest,
+            mime: wire.mime,
+            bytes: wire.bytes,
+            placeholder: wire.placeholder,
+        })
+    }
+}
+
 /// One entry of the ordered input-block manifest journaled on
 /// `Op::TurnBegin` (P2a §5.2): the machine contract for reconstructing
 /// arbitrary ordered ACP content — text/image interleaving, duplicates, and
@@ -616,6 +665,71 @@ pub use nano_model::image_result::ImageRef;
 pub enum InputBlock {
     Text { text: String },
     ImageRef(ImageRef),
+    DocumentRef(DocumentRef),
+}
+
+#[cfg(test)]
+mod document_ref_tests {
+    use super::*;
+
+    #[test]
+    fn document_ref_is_digest_only_closed_and_round_trips() {
+        let block = InputBlock::DocumentRef(DocumentRef {
+            digest: "ab".repeat(32),
+            mime: "application/pdf".into(),
+            bytes: 123,
+            placeholder: "[Document #1]".into(),
+        });
+        let value = serde_json::to_value(&block).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "document_ref",
+                "digest": "ab".repeat(32),
+                "mime": "application/pdf",
+                "bytes": 123,
+                "placeholder": "[Document #1]"
+            })
+        );
+        assert!(!value.to_string().contains("base64"));
+        assert_eq!(serde_json::from_value::<InputBlock>(value).unwrap(), block);
+
+        let mut unknown = serde_json::to_value(&block).unwrap();
+        unknown["data"] = serde_json::json!("JVBERi0=");
+        assert!(serde_json::from_value::<InputBlock>(unknown).is_err());
+
+        for malformed in [
+            serde_json::json!({
+                "type": "document_ref", "digest": "AB".repeat(32),
+                "mime": "application/pdf", "bytes": 1, "placeholder": "[Document #1]"
+            }),
+            serde_json::json!({
+                "type": "document_ref", "digest": "ab".repeat(32),
+                "mime": "text/plain", "bytes": 1, "placeholder": "[Document #1]"
+            }),
+        ] {
+            assert!(serde_json::from_value::<InputBlock>(malformed).is_err());
+        }
+    }
+
+    #[test]
+    fn image_ref_wire_shape_is_unchanged() {
+        let block = InputBlock::ImageRef(ImageRef {
+            digest: "cd".repeat(32),
+            mime: "image/png".into(),
+            bytes: 4,
+            width: 1,
+            height: 1,
+            normalized_from: None,
+            placeholder: "[Image #1]".into(),
+        });
+        let value = serde_json::to_value(block).unwrap();
+        assert_eq!(value["type"], "image_ref");
+        assert!(value.get("digest").is_some());
+        assert!(value.get("width").is_some());
+        assert!(value.get("height").is_some());
+        assert!(value.get("document").is_none());
+    }
 }
 
 /// `skip_serializing_if` helper for the `CompactionComplete.image_influenced`
