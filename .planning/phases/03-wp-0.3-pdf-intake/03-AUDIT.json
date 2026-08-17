@@ -1,0 +1,97 @@
+{
+  "schema": "wp03_audit_v2",
+  "audit_count": 1,
+  "baseline": {
+    "commit": "d8702f22f76aac7dc2d7fcc77b34e4482557ee12",
+    "tree": "3359c3a59a669fbfb5314548c739bed0476d1b21"
+  },
+  "audited": {
+    "commit": "f16fa3edf22fc8bae356232da9ab6aecd652ba62",
+    "tree": "744c5d471546d9cebac0a2ca926c07f1bf1331e1",
+    "paths": [
+      ".planning/ROADMAP.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-01-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-01-SUMMARY.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-02-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-02-SUMMARY.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-03-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-03-SUMMARY.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-04-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-04-SUMMARY.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-05-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-05-SUMMARY.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-06-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-07-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-09-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-09-SUMMARY.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-10-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-12-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-CONTROL.json",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-OWNERSHIP-PREFLIGHT.ps1",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-RESEARCH.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+      "UPSTREAM.md",
+      "crates/nano-agent/src/compact.rs",
+      "crates/nano-agent/src/turn_input.rs",
+      "crates/nano-cli/src/acp_mode.rs",
+      "crates/nano-cli/src/bin/gen_error_table.rs",
+      "crates/nano-model/data/providerCatalog.vendored.json",
+      "crates/nano-model/src/anthropic_messages.rs",
+      "crates/nano-model/src/flux_responses.rs",
+      "crates/nano-model/src/types.rs",
+      "crates/nano-model/tests/golden/provider_catalog.golden.rs",
+      "crates/nano-model/tests/provider_catalog.rs",
+      "crates/nano-protocol/src/acp.rs",
+      "crates/nano-protocol/src/error_codes.rs",
+      "crates/nano-session/contracts/nano-error-codes.json",
+      "crates/nano-session/src/attachment_store.rs",
+      "crates/nano-session/src/error_codes.rs",
+      "crates/nano-session/src/error_kind.rs",
+      "crates/nano-session/src/op.rs",
+      "docs/FOLLOWUPS.md"
+    ]
+  },
+  "builder": {
+    "identity": "K3 (Wayland Nano Track B) <k3-trackb@waylandnano.local>"
+  },
+  "auditor": {
+    "identity": "Codex /root/execute_wp03_audit",
+    "method": "commit-range security and correctness review with executable regression and ownership gates",
+    "method_version": "wp03-critical-high-audit/1.0",
+    "timestamp": "2026-08-17T04:04:30.827Z; UTC audit time"
+  },
+  "findings": [
+    {
+      "id": "WP03-AUDIT-HIGH-001",
+      "severity": "high",
+      "path": "crates/nano-cli/src/acp_mode.rs",
+      "line": 11252,
+      "evidence": "The committed end-to-end PDF dispatch regression creates a temporary workspace without a Git repository. During session/prompt the checkpoint availability guard returns CheckpointUnavailable before the PDF wire gate; the asserted nanoError.kind is therefore null instead of model_lacks_pdf. The affected-crate audit command reproduces the failure at the audited commit, so the mandatory test gate is not green and the zero-call/no-persistence runtime proof is not currently executable as written.",
+      "disposition": "fix",
+      "command_ref": "AUDIT-CMD-002"
+    }
+  ],
+  "audit_commands": [
+    {
+      "id": "AUDIT-CMD-001",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .planning/phases/03-wp-0.3-pdf-intake/03-OWNERSHIP-PREFLIGHT.ps1 -Mode Check",
+      "exit": 0,
+      "evidence": "WP-0.3 ownership Check PASS; protected inventory and allowed-path verification completed in 915.7 seconds."
+    },
+    {
+      "id": "AUDIT-CMD-002",
+      "command": "cargo test -p nano-protocol -p nano-agent -p nano-model -p nano-session -p nano-cli",
+      "exit": 1,
+      "evidence": "nano-cli lib test pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded failed at crates/nano-cli/src/acp_mode.rs:11252: left Null, right model_lacks_pdf; preceding diagnostic reported CheckpointUnavailable because workspace git was unavailable."
+    }
+  ],
+  "fix_round_count": 0,
+  "fix": null,
+  "independent_recheck": {
+    "status": "pending"
+  }
+}
