@@ -285,13 +285,9 @@ The test self-skips with a clear reason only when `FLUX_API_KEY_FILE` is absent.
 
 ### D8. Durable, non-self-referential canary receipt
 
-The current scanner's exact-list mode confines inputs to the worktree, while the authoritative captures live in sibling `shared/fixtures/flux/pdf/`. Keep byte-identical evidence copies under owned `crates/nano-model/fixtures-flux/pdf/`. The final harness writes exactly seven paired inputs—PDF, control request, document request, document response, usage/control summary, session transcript, and evidence manifest—then verifies every pair has the same full SHA-256 and byte count. Build the exact seven normalized in-repo paths into a unique OS-temp include-list file. Only after equality succeeds, run:
+Keep byte-identical evidence copies under owned repo and canonical shared fixture roots. `evidence-manifest.json` contains exactly six payload entries: known PDF, control request, document request, document response, usage summary, and session transcript. Each entry records `repo_path`, `shared_path`, full lowercase SHA-256, and bytes; both current files must equal those facts and each other. The manifest never contains its own path, hash, or byte count.
 
-```powershell
-node scripts/canary/scan.mjs --include-list <unique-os-temp-seven-path-list.json> --receipt D:\Development\waylandnano\shared\fixtures\flux\pdf\canary-receipt.json
-```
-
-The include list excludes `canary-receipt.json`, so the receipt never attempts to hash itself. Require `files_scanned == 7`, lowercase 64-hex fingerprint, `hits == 0`, PASS, exact result-path set equality with no duplicates/extras, and every full SHA-256/byte count against current files. Paired-hash equality extends proof to authoritative shared copies. `evidence-manifest.json` is created before the scan and included among the seven; it records both repo/shared names and hashes but never the final receipt hash. Do not use the legacy broad scan. [VERIFIED: `scan.mjs` exact-list implementation and ownership boundaries]
+Build the scanner expected set from those six normalized repo paths plus the current in-repo evidence-manifest path as the seventh. The canary receipt excludes itself and must report exactly those seven current files, `files_scanned == 7`, exact result-set equality, each current SHA-256/bytes, lowercase fingerprint, zero hits, and PASS. The receipt is the external authority for the current manifest hash/bytes, avoiding a self-hash fixed point. [VERIFIED: DEV-WP-0.3F]
 
 ### D9. Fail-closed ownership and outside-repository verification on Windows
 

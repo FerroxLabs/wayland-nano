@@ -17,7 +17,7 @@
 | RESEARCH | D5 | Canonical flux-router-anthropic catalog entry plus selector-only runtime payload | 03-03, 03-05, 03-07 | COVERED | Drift pin, generated golden, provenance, runtime path, and bare negative control. |
 | RESEARCH | D6 | Exact oracle/prompt and >=1000 same-path token delta | 03-05, 03-07 | COVERED | Raw counts and 94/1650 provenance are durable evidence. |
 | RESEARCH | D7 | Concrete ignored ACP runtime live harness and command | 03-05, 03-07 | COVERED | Explicit invocation is fail-closed. |
-| RESEARCH | D8 | Paired repo/shared evidence and exact seven-file non-self-referential receipt | 03-07, 03-08 | COVERED | Manifest absence is fatal; current paths/hashes/bytes are exhaustively verified. |
+| RESEARCH | D8 | Six manifest-described repo/shared payload pairs plus manifest-as-seventh non-self-referential receipt | 03-07, 03-08 | COVERED | Manifest absence is fatal; it has exactly six payload entries and no self entry; the receipt validates the six payloads plus current manifest as seven. |
 | RESEARCH | D9 | Executable OWNS/reparse verifier and durable external SHA manifests | 03-01..03-08 | COVERED | Initialize precedes product mutation; every task Checks; final Closure exact-compares. |
 | RESEARCH | — | Existing confinement/store/base64/hash stack; no new dependency | 03-01, 03-04 | COVERED | No package install task. |
 | RESEARCH | — | Anthropic-only live path and OpenAI-bound negative control | 03-03, 03-05, 03-07 | COVERED | Canonical entry supplies endpoint; selector payload cannot inject it. |

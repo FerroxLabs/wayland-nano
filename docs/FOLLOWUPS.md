@@ -1308,3 +1308,7 @@ Adding the provider-neutral `ContentBlock::Document` made the existing exhaustiv
 ### DEV-WP-0.3E — Document request-byte accounting exhaustiveness (RESOLVED 2026-08-17)
 
 The additive `ContentBlock::Document` also made the existing exhaustive request-size heuristic in `crates/nano-agent/src/compact.rs` fail to compile. The authoritative WP-0.3 boundary owns `crates/nano-agent/**`, but Plan 03-03 omitted this consumer. The narrow resolution adds exact document base64 byte-length accounting plus its local monotonic regression test, matching the heuristic's purpose without changing compaction policy. The integrator added only this file to Plan 03-03 and the D9 allowlist; no unrelated compact/fold behavior was authorized.
+
+### DEV-WP-0.3F — Non-self-referential evidence manifest (RESOLVED 2026-08-17)
+
+The evidence manifest cannot contain its own final hash and byte count. It now records exactly six paired payloads; the scanner and receipt treat the current manifest as the seventh file externally. The receipt excludes itself and validates all seven current hashes and byte counts. No product ownership or runtime behavior changes.
