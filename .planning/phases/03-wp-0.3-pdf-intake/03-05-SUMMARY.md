@@ -98,7 +98,7 @@ No commits were created. The parent integrator explicitly owns commits on `feat/
 - Added wrong-magic, wrong-length, and independent failure-ordinal regressions.
 
 **3. [HIGH - Live endpoint] Pinned the canonical API path**
-- Corrected the harness assertion/evidence from `/v1/messages` to `/anthropic/v1/messages`.
+- Corrected the harness assertion/evidence from `/v1/messages` to `/anthropic/v1/messages` at that review point; DEV-WP-0.3N records the later live-evidence authority reversal back to `/v1/messages`.
 
 **4. [HIGH - Worktree fixture resolution] Added validated monorepo-root discovery**
 - Fixture resolution now walks ancestors until both the canonical shared GOALS marker and `wayland-nano/AGENTS.md` exist; it no longer assumes a nested worktree depth.
