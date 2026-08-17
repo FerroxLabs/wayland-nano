@@ -59,7 +59,10 @@
     "commit": "4fd669bfb921769456f1603221bbe2326487d67c",
     "tree": "84af3ddd0d0773bc72db7684c516a622bd4453c4"
   },
-  "recheck_point": null,
+  "recheck_point": {
+    "commit": "e273722c4854dd9a929eeb05f2303110330e7405",
+    "tree": "0bcc7c25b997001c4cbcb9177b4f3ebb03f6e2ee"
+  },
   "builder": {
     "identity": "K3 (Wayland Nano Track B) <k3-trackb@waylandnano.local>"
   },
@@ -398,7 +401,37 @@
         ]
       }
     ],
-    "post_fix_commits": []
+    "post_fix_commits": [
+      {
+        "commit": "c41f6299b9488d34c71e743965783fe4459a9a3b",
+        "parent": "4fd669bfb921769456f1603221bbe2326487d67c",
+        "tree": "b41920b6da919c9ac40422d9a6e863b95445b90c",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "commit": "a8039a5785ada4106e8da47a65a4c7c0553d6d50",
+        "parent": "c41f6299b9488d34c71e743965783fe4459a9a3b",
+        "tree": "2be9e5db72c5eec51e7c3c87749a1a96bffd9f12",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "commit": "e273722c4854dd9a929eeb05f2303110330e7405",
+        "parent": "a8039a5785ada4106e8da47a65a4c7c0553d6d50",
+        "tree": "0bcc7c25b997001c4cbcb9177b4f3ebb03f6e2ee",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md"
+        ]
+      }
+    ]
   },
   "history": {
     "commits": [
@@ -600,9 +633,9 @@
     ]
   },
   "independent_recheck": {
-    "status": "pending",
-    "invalidated_by": "WP03-LIVE-HIGH-002",
-    "final_recheck_status": "pending",
+    "status": "PASS",
+    "invalidated_by": null,
+    "final_recheck_status": "PASS",
     "prior_result": {
       "status": "PASS",
       "checked_commit": "18d57a6724637f597883685749583253613a0884",
@@ -615,13 +648,77 @@
         "checked_tree": "c2dfe7aac460dd7cfe30084859d26eb2a4145403"
       }
     ],
-    "reviewer": null,
+    "reviewer": {
+      "identity": "Codex /root/verify_wp03_second_fix_final"
+    },
     "method": "independent detached-tree lifecycle, exact-test, receipt, and finding-verdict recheck",
     "method_version": "wp03-independent-recheck/2.0",
-    "timestamp": null,
-    "checked_commit": null,
-    "checked_tree": null,
-    "commands": [],
-    "verdicts": []
+    "timestamp": "2026-08-17T08:49:57.123Z",
+    "checked_commit": "4fd669bfb921769456f1603221bbe2326487d67c",
+    "checked_tree": "84af3ddd0d0773bc72db7684c516a622bd4453c4",
+    "commands": [
+      {
+        "id": "RECHECK-CATALOG-ENDPOINT",
+        "command": "cargo test -p nano-model --test provider_catalog flux_router_anthropic_endpoint_is_exact -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "4fd669bfb921769456f1603221bbe2326487d67c",
+        "execution_tree": "84af3ddd0d0773bc72db7684c516a622bd4453c4",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-CATALOG-ENDPOINT;exit=0;commit=4fd669bfb921769456f1603221bbe2326487d67c;tree=84af3ddd0d0773bc72db7684c516a622bd4453c4;test=flux_router_anthropic_endpoint_is_exact;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-PDF-REFUSAL",
+        "command": "cargo test -p nano-cli acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded --lib -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "4fd669bfb921769456f1603221bbe2326487d67c",
+        "execution_tree": "84af3ddd0d0773bc72db7684c516a622bd4453c4",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-PDF-REFUSAL;exit=0;commit=4fd669bfb921769456f1603221bbe2326487d67c;tree=84af3ddd0d0773bc72db7684c516a622bd4453c4;test=acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-WINDOWS-VERBATIM",
+        "command": "cargo test -p nano-protocol acp::tests::document_path_verbatim_prefix_accepts_file_but_rejects_junction --lib -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "4fd669bfb921769456f1603221bbe2326487d67c",
+        "execution_tree": "84af3ddd0d0773bc72db7684c516a622bd4453c4",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-WINDOWS-VERBATIM;exit=0;commit=4fd669bfb921769456f1603221bbe2326487d67c;tree=84af3ddd0d0773bc72db7684c516a622bd4453c4;test=acp::tests::document_path_verbatim_prefix_accepts_file_but_rejects_junction;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-NANO-MODEL-CLIPPY",
+        "command": "cargo clippy -p nano-model --all-targets -- -D warnings",
+        "exit": 0,
+        "execution_commit": "4fd669bfb921769456f1603221bbe2326487d67c",
+        "execution_tree": "84af3ddd0d0773bc72db7684c516a622bd4453c4",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-NANO-MODEL-CLIPPY;exit=0;commit=4fd669bfb921769456f1603221bbe2326487d67c;tree=84af3ddd0d0773bc72db7684c516a622bd4453c4;result=clean"
+      }
+    ],
+    "verdicts": [
+      {
+        "finding_id": "WP03-AUDIT-HIGH-001",
+        "verdict": "PASS",
+        "command_ref": "RECHECK-PDF-REFUSAL",
+        "evidence": "The exact fully-qualified PDF refusal regression passed once with zero failures at the canonical final fix tree."
+      },
+      {
+        "finding_id": "WP03-LIVE-HIGH-002",
+        "verdict": "PASS",
+        "command_ref": "RECHECK-WINDOWS-VERBATIM",
+        "evidence": "The exact fully-qualified Windows verbatim-path regression passed once with zero failures at the canonical final fix tree."
+      },
+      {
+        "finding_id": "WP03-GATE-HIGH-003",
+        "verdict": "PASS",
+        "command_ref": "RECHECK-NANO-MODEL-CLIPPY",
+        "evidence": "Strict nano-model all-targets clippy completed cleanly at the canonical final fix tree, closing the anthropic_messages lint finding."
+      },
+      {
+        "finding_id": "WP03-GATE-HIGH-004",
+        "verdict": "PASS",
+        "command_ref": "RECHECK-NANO-MODEL-CLIPPY",
+        "evidence": "Strict nano-model all-targets clippy completed cleanly at the canonical final fix tree, closing the flux_responses lint finding."
+      }
+    ]
   }
 }
