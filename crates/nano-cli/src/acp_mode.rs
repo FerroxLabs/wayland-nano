@@ -7500,6 +7500,35 @@ mod tests {
         TestWorkspace(dir)
     }
 
+    fn initialize_checkpoint_workspace(workspace: &std::path::Path) {
+        let run_git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(workspace)
+                .output()
+                .expect("run git for checkpoint-ready test workspace");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+
+        run_git(&["init"]);
+        std::fs::write(workspace.join("tracked.txt"), "checkpoint baseline\n")
+            .expect("write checkpoint baseline");
+        run_git(&["add", "tracked.txt"]);
+        run_git(&[
+            "-c",
+            "user.name=wayland-nano-test",
+            "-c",
+            "user.email=wayland-nano-test@example.invalid",
+            "commit",
+            "-m",
+            "checkpoint baseline",
+        ]);
+    }
+
     impl Drop for TestWorkspace {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
@@ -11088,21 +11117,28 @@ mod tests {
     fn serve_pdf_case(auto: bool, compatible: bool) -> (serde_json::Value, usize, bool) {
         static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _env = ENV.lock().unwrap();
-        let prior = std::env::var_os("FLUX_API_KEY");
-        unsafe { std::env::set_var("FLUX_API_KEY", "test-only-not-a-secret") };
+        let variable = if compatible {
+            "ANTHROPIC_API_KEY"
+        } else {
+            "OPENAI_API_KEY"
+        };
+        let prior = std::env::var_os(variable);
+        unsafe { std::env::set_var(variable, "test-only-not-a-secret") };
         let result = {
             let ws = workspace();
+            initialize_checkpoint_workspace(&ws.0);
             let sessions = ws.0.join("sessions");
             std::fs::create_dir_all(&sessions).unwrap();
             let home = ws.0.clone();
-            let payload = compatible.then_some(
-                r#"[{"provider":"flux-router-anthropic","models":["flux-auto"],"hasKey":true}]"#,
-            );
-            let router = crate::provider_router::ProviderRouter::from_payload(payload).unwrap();
+            let provider = if compatible { "anthropic" } else { "openai" };
+            let payload =
+                format!(r#"[{{"provider":"{provider}","models":["flux-auto"],"hasKey":true}}]"#);
+            let router = crate::provider_router::ProviderRouter::from_payload(Some(&payload))
+                .expect("valid provider fixture");
             let model = if compatible {
-                "flux-router-anthropic:flux-auto"
+                "anthropic:flux-auto"
             } else {
-                "flux-auto"
+                "openai:flux-auto"
             };
             let available = if compatible {
                 router.advertised_models()
@@ -11239,8 +11275,8 @@ mod tests {
             (response, calls.load(Ordering::SeqCst), blob_exists)
         };
         match prior {
-            Some(value) => unsafe { std::env::set_var("FLUX_API_KEY", value) },
-            None => unsafe { std::env::remove_var("FLUX_API_KEY") },
+            Some(value) => unsafe { std::env::set_var(variable, value) },
+            None => unsafe { std::env::remove_var(variable) },
         }
         result
     }
