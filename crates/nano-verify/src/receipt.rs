@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::VerifyError;
+use crate::registry::GateRegistry;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +66,14 @@ pub fn canonical_receipt(receipt: &Receipt) -> Result<Vec<u8>, VerifyError> {
 pub fn mint_receipt(receipt: Receipt) -> Result<Receipt, VerifyError> {
     validate_receipt(&receipt)?;
     Ok(receipt)
+}
+
+pub fn preflight_receipt(
+    _repo_root: &Path,
+    _bytes: &[u8],
+    _registry: &GateRegistry,
+) -> ReceiptPreflight {
+    ReceiptPreflight::Unverifiable
 }
 
 pub fn read_receipt(path: &Path) -> Result<Receipt, ReceiptPreflight> {
