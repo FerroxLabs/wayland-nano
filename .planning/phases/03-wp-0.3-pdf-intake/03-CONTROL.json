@@ -141,10 +141,10 @@
                                  }
                   },
     "closure":  {
-                    "input_tip":  "0cfcfeddee29631e3e78f0dd0beb209ff14a06ca",
-                    "input_tree":  "f890dff46270dc4a9371726f3cb61833380ed27f",
+                    "input_tip":  "9813509da0e6f0787fb0dd4b76b413960d49f78d",
+                    "input_tree":  "dc01591f8e5ffadc7c3f6a4c3628dd845670f6da",
                     "status":  "PASS",
-                    "timestamp":  "2026-08-17T12:18:59.6092626Z",
+                    "timestamp":  "2026-08-17T12:51:19.5195213Z",
                     "nano_equal":  true,
                     "resources_upstreams_equal":  true,
                     "shared_delta_valid":  true,
