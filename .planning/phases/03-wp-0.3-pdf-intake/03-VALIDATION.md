@@ -43,7 +43,9 @@ After deterministic implementation, the mandatory `03-AUDIT.json` schema `wp03_a
 Before product mutation, Plan 01 creates executable `03-OWNERSHIP-PREFLIGHT.ps1` and tracked `03-CONTROL.json`, with durable OS-temp sorted `{path,type,sha256,bytes}` manifests for external nano/resources/shared. Every task invokes Check; final Plan 08 invokes Closure. Status parsing is NUL-delimited and covers tracked/untracked; exact OWNS, every ancestor reparse/link check, literal resolution, external Compare-Object, allowed shared deltas, and pair hashes fail closed with propagated errors.
 
 For every `gen_error_table` generation/check, resolve the canonical sibling shared mirror absolutely and set `NANO_ERROR_TABLE_DESKTOP_DIR` to a unique absent OS-temp target; require it remains absent and restore the prior environment value. The final builder gate is complete `just gate-all`. The handoff records baseline, branch, commits, audit/fix/recheck, strict ownership/external hashes, generator isolation, live/canary evidence, and I/R/L distinctions. The builder does not merge, push, create integration state, run/claim CI, or treat an optional Desktop mirror as completion evidence.
-# DEV-WP-0.3I lifecycle validation addendum (resolved)
+# DEV-WP-0.3I lifecycle validation addendum (SUPERSEDED historical)
+
+Historical record only; DEV-WP-0.3O is the sole active authority and the statements below must not drive execution.
 
 - Product identity is exactly commit `18d57a6724637f597883685749583253613a0884`, tree `c2dfe7aac460dd7cfe30084859d26eb2a4145403`.
 - Plan 13 requires a clean pre-output worktree and captures its actual HEAD/tree as `input_tip`. Its lifecycle is the exact ordered projection of every non-product commit through that dynamic tip; `3fde7c5`, `f34da2f`, `d731426`, and `85a8b1d` remain immutable ordered anchors, while later commits are restricted to the closed planning allowlist.
@@ -53,21 +55,25 @@ For every `gen_error_table` generation/check, resolve the canonical sibling shar
 - Summaries never record their own commit/tree: P13 summary records only P13A; Plan 11 discovers P13S from HEAD; P11 summary records only P11A; Plan 07 discovers P11S from HEAD; Plan 07 summary records only pre-summary live evidence; Plan 08 discovers later summary commits directly from Git.
 - Detached command evidence is normalized to command ID, exit zero, product commit/tree, expected test name, and pass marker with `execution_mode=detached-worktree`; raw cargo timing and temporary paths are not persisted or compared.
 
-# DEV-WP-0.3J exact-test recheck addendum (resolved)
+# DEV-WP-0.3J exact-test recheck addendum (SUPERSEDED historical)
+
+Historical record only; DEV-WP-0.3O is the sole active authority and the statements below must not drive execution.
 
 - Canonical command 2 is `cargo test -p nano-cli acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded --lib -- --exact --nocapture`; its expected and normalized receipt test ID is exactly `acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded`.
 - The transient proof must contain `running 1 test` and a successful result with `1 passed; 0 failed`; `running 0 tests` is fatal even when Cargo exits zero.
 - Plan 11 discovers immutable P13S as the commit touching `03-13-SUMMARY.md` and P13A as its parent, and proves their consecutive one-file diffs. P13A/P13S are interior lifecycle anchors rather than terminal commits.
 - Only post-P13S correction commits through the actual recheck HEAD are allowed, and every path must be one of `03-11-PLAN.md`, `03-08-PLAN.md`, `03-VALIDATION.md`, `SOURCE-AUDIT.md`, or `docs/FOLLOWUPS.md`; audit, summary, and product paths are forbidden in that suffix.
 
-# DEV-WP-0.3M second final-fix recheck addendum (resolved)
+# DEV-WP-0.3M second final-fix recheck addendum (SUPERSEDED historical)
+
+Historical record only; DEV-WP-0.3O is the sole active authority and the statements below must not drive execution.
 
 - Canonical final product identity is `4fd669bfb921769456f1603221bbe2326487d67c`, tree `84af3ddd0d0773bc72db7684c516a622bd4453c4`; audit history is the exact ordered 18-commit range from audited commit through that fix and contains two product-fix projections whose finding union is all four findings.
 - Post-fix metadata is derived generically through ActualHead with actual parent/tree/diffs and a closed planning, audit, control, preflight, and summary allowlist. Product and evidence paths are forbidden; no Plan 13 terminal assumption remains.
 - Plans 11 and 08 execute and exactly compare four normalized receipts at the detached final tree: endpoint, fully-qualified PDF refusal, fully-qualified nano-protocol Windows verbatim regression, and nano-model all-target clippy with warnings denied. Tests prove one run/one pass/no zero; clippy proves a stable clean completion without persisting raw output.
 - Verdict binding is High 001 to PDF, High 002 to Windows, and High 003/004 to clippy. The audit output commit remains a non-self-referential child of the captured recheck point.
 
-# DEV-WP-0.3O canonical final-tree recheck addendum (resolved)
+# DEV-WP-0.3O canonical final-tree recheck addendum (ACTIVE AUTHORITY; planning correction resolved, live closure pending)
 
 - Canonical product identity is `f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5`, tree `5ff1ea037d604c273095b5303062a68e936d83df`. Audit history is exactly 25 commits from the audited anchor and contains exactly three product fixes: `18d57a6` for finding 001, `4fd669b` for 002-004, and `f1372da` for 005-006. Their exact path projections and union of six unique findings are mandatory.
 - The generic post-fix chain is derived from `f1372da..ActualHead`. `phase_history.post_fix` is exactly docs commit `2a55eae` followed by seven-file live-evidence commit `0eb5098`; later audit-only metadata, including `c0d6f69`, and the named plan-correction documents remain separate allowed shapes. Current evidence hashes and external receipt metadata are validated independently because evidence is not part of the f137 tree.

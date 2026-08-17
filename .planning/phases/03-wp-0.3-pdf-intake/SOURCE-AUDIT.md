@@ -26,20 +26,26 @@
 | CONTEXT | — | No CONTEXT.md decisions supplied | — | EXCLUDED | Binding decisions are in master/spec/GOALS and DEV-WP-0.3A. |
 
 No deferred capability, PDF parsing/extraction, Files API, multi-document support, routing-policy change, attachment-store redesign, `ImageRef` rename, `ToolResult` change, Desktop-owned commit, `../nano/` write, or `../resources/upstreams/` write appears in the plan set.
-# DEV-WP-0.3I source reconciliation — COVERED
+# DEV-WP-0.3I source reconciliation — SUPERSEDED historical
+
+Historical record only; DEV-WP-0.3O is the sole active authority.
 
 The lifecycle model is covered by Plans 13, 11, 07, and 08: immutable product fix, known metadata, recheck artifacts, and live evidence occupy separate exact Git intervals. The six paths changed by `d731426` are explicitly lifecycle-allowed. `03-VALIDATION.md` and `docs/FOLLOWUPS.md` carry the resolved contract. No product scope or deferred feature was introduced.
 
 Receipt closure is non-circular: summaries identify only already-committed inputs, while later phases discover summary commits from Git and verify exact one-file diffs. Both detached commands use normalized deterministic evidence instead of raw cargo output or temporary paths.
 
-# DEV-WP-0.3J source reconciliation — COVERED
+# DEV-WP-0.3J source reconciliation — SUPERSEDED historical
+
+Historical record only; DEV-WP-0.3O is the sole active authority.
 
 Plans 11 and 08 now use the fully qualified exact PDF dispatch test, require one executed/passed test, and reject Cargo's zero-test false green. The normalized receipt carries the exact fully qualified test ID. The lifecycle remains the exact ordered Git chain: immutable consecutive P13A/P13S are discovered from Git, while the post-P13S correction suffix through recheck HEAD is restricted to the five named planning/audit-document paths and excludes audit JSON, summaries, and product code. Validation and follow-up artifacts carry the same PS5.1-safe contract; no product scope was introduced.
 
-# DEV-WP-0.3M source reconciliation — COVERED
+# DEV-WP-0.3M source reconciliation — SUPERSEDED historical
+
+Historical record only; DEV-WP-0.3O is the sole active authority.
 
 Plans 11 and 08 cover the canonical second final fix, exact 18-commit audit history, two product-fix projections, all four findings, generic post-fix metadata, and the separate P11/live closure segments. Their identical four-command detached catalog binds endpoint, PDF, Windows verbatim, and clippy evidence to deterministic normalized receipts. The companion validation and follow-up records carry the same PowerShell 5.1-safe contract; no product or deferred scope was introduced.
 
-# DEV-WP-0.3O source reconciliation — COVERED
+# DEV-WP-0.3O source reconciliation — ACTIVE AUTHORITY, COVERED IN PLAN; LIVE CLOSURE PENDING
 
 Plans 11 and 08 now cover canonical `f1372da`/`5ff1ea03`, the exact 25-commit audit projection, all three product fixes and six findings, and the generic post-fix chain. They validate exact `2a55eae` documentation and `0eb5098` seven-file live-evidence commits, later audit metadata including `c0d6f69`, current evidence hashes/receipt metadata, and distinct P11/Plan 07 summary closure boundaries. Their identical five-command detached catalog adds the exact one-test harness-schema receipt and maps findings 001-006 without an obsolete fix-count cap or lifecycle-plan special case. No product or deferred scope was introduced.
