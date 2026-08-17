@@ -324,6 +324,12 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
             "This model can't process images",
             "Switch to a vision-capable model (/model)",
         ),
+        NanoErrorKind::ModelLacksPdf => response(
+            -32602,
+            false,
+            "Selected model wire cannot carry PDF documents",
+            "Select an advertised Flux Anthropic Messages leaf, then retry",
+        ),
         NanoErrorKind::ImageInvalid => response(
             -32602,
             false,
@@ -467,6 +473,7 @@ pub const ALL_KINDS: &[NanoErrorKind] = &[
     NanoErrorKind::SessionForkFailed,
     NanoErrorKind::GoalOpFailed,
     NanoErrorKind::ModelLacksVision,
+    NanoErrorKind::ModelLacksPdf,
     NanoErrorKind::ImageInvalid,
     NanoErrorKind::ImageUnsupportedFormat,
     NanoErrorKind::ImageTooLarge,
@@ -608,10 +615,25 @@ mod tests {
     /// SessionBusy (63 → 64); the S9 CUA seam added the six computer-use
     /// kinds CuaPolicyDenied + CuaFocusLost + CuaOsPermissionDenied +
     /// CuaBackendUnavailable + CuaCoordinateOutOfRange + CuaBackend
-    /// (64 → 70).
+    /// (64 → 70); WP-0.3 added ModelLacksPdf (70 → 71).
     #[test]
     fn all_kinds_count_is_pinned() {
-        assert_eq!(ALL_KINDS.len(), 70);
+        assert_eq!(ALL_KINDS.len(), 71);
+    }
+
+    #[test]
+    fn model_lacks_pdf_contract_is_pinned() {
+        let kind = NanoErrorKind::ModelLacksPdf;
+        assert_eq!(serde_json::to_string(&kind).unwrap(), "\"model_lacks_pdf\"");
+        let spec = spec(kind);
+        assert_eq!(spec.wire_code, -32602);
+        assert!(!spec.retryable);
+        assert_eq!(spec.surface, ErrorSurface::ErrorResponse);
+        assert_eq!(spec.title, "Selected model wire cannot carry PDF documents");
+        assert_eq!(
+            spec.hint,
+            "Select an advertised Flux Anthropic Messages leaf, then retry"
+        );
     }
 
     /// S9 §5: the six CUA kinds are pinned — non-retryable tool cards with

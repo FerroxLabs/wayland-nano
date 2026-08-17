@@ -1,0 +1,1561 @@
+{
+  "schema": "wp03_audit_v2",
+  "audit_count": 1,
+  "baseline": {
+    "commit": "d8702f22f76aac7dc2d7fcc77b34e4482557ee12",
+    "tree": "3359c3a59a669fbfb5314548c739bed0476d1b21"
+  },
+  "audited": {
+    "commit": "f16fa3edf22fc8bae356232da9ab6aecd652ba62",
+    "tree": "744c5d471546d9cebac0a2ca926c07f1bf1331e1",
+    "paths": [
+      ".planning/ROADMAP.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-01-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-01-SUMMARY.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-02-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-02-SUMMARY.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-03-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-03-SUMMARY.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-04-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-04-SUMMARY.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-05-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-05-SUMMARY.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-06-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-07-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-09-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-09-SUMMARY.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-10-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-12-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-CONTROL.json",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-OWNERSHIP-PREFLIGHT.ps1",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-RESEARCH.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+      ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+      "UPSTREAM.md",
+      "crates/nano-agent/src/compact.rs",
+      "crates/nano-agent/src/turn_input.rs",
+      "crates/nano-cli/src/acp_mode.rs",
+      "crates/nano-cli/src/bin/gen_error_table.rs",
+      "crates/nano-model/data/providerCatalog.vendored.json",
+      "crates/nano-model/src/anthropic_messages.rs",
+      "crates/nano-model/src/flux_responses.rs",
+      "crates/nano-model/src/types.rs",
+      "crates/nano-model/tests/golden/provider_catalog.golden.rs",
+      "crates/nano-model/tests/provider_catalog.rs",
+      "crates/nano-protocol/src/acp.rs",
+      "crates/nano-protocol/src/error_codes.rs",
+      "crates/nano-session/contracts/nano-error-codes.json",
+      "crates/nano-session/src/attachment_store.rs",
+      "crates/nano-session/src/error_codes.rs",
+      "crates/nano-session/src/error_kind.rs",
+      "crates/nano-session/src/op.rs",
+      "docs/FOLLOWUPS.md"
+    ]
+  },
+  "input_tip": {
+    "tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+    "commit": "5040293cf4de8467555f4c74b46b34a91d6939d7"
+  },
+  "recheck_point": {
+    "commit": "412d33a8bd579c15c1060a94aed2d8a247311fe6",
+    "tree": "4bdd5c4c8fddbadfaed4c4fb2a2ec39292dd4364"
+  },
+  "builder": {
+    "identity": "K3 (Wayland Nano Track B) <k3-trackb@waylandnano.local>"
+  },
+  "auditor": {
+    "identity": "Codex /root/execute_wp03_audit",
+    "method": "commit-range security and correctness review with executable regression and ownership gates",
+    "method_version": "wp03-critical-high-audit/1.0",
+    "timestamp": "2026-08-17T04:04:30.827Z; UTC audit time"
+  },
+  "findings": [
+    {
+      "id": "WP03-AUDIT-HIGH-001",
+      "severity": "high",
+      "path": "crates/nano-cli/src/acp_mode.rs",
+      "line": 11252,
+      "evidence": "The committed end-to-end PDF dispatch regression creates a temporary workspace without a Git repository. During session/prompt the checkpoint availability guard returns CheckpointUnavailable before the PDF wire gate; the asserted nanoError.kind is therefore null instead of model_lacks_pdf. The affected-crate audit command reproduces the failure at the audited commit, so the mandatory test gate is not green and the zero-call/no-persistence runtime proof is not currently executable as written.",
+      "disposition": "fix",
+      "command_ref": "AUDIT-CMD-002"
+    },
+    {
+      "id": "WP03-LIVE-HIGH-002",
+      "severity": "high",
+      "path": "crates/nano-protocol/src/acp.rs",
+      "line": 291,
+      "evidence": "On Windows, reject_link_components iterates the canonical verbatim path and calls symlink_metadata after pushing Prefix before RootDir. Inspecting the verbatim Prefix alone fails, so the complete live ACP PDF path returns nanoError.kind fs_read_denied with message 'document_path: cannot inspect path' from crates/nano-protocol/src/acp.rs:296 before the model call.",
+      "disposition": "fix",
+      "command_ref": "LIVE-CMD-001"
+    },
+    {
+      "id": "WP03-GATE-HIGH-003",
+      "severity": "high",
+      "path": "crates/nano-model/src/anthropic_messages.rs",
+      "line": 370,
+      "evidence": "Strict clippy reports items_after_test_module at line 370 and field_reassign_with_default at line 376. Both errors were introduced by commit b3f49343 and prevent the mandatory nano-model lint gate from passing.",
+      "introduced_by": "b3f49343",
+      "disposition": "fix",
+      "command_ref": "GATE-CMD-001"
+    },
+    {
+      "id": "WP03-GATE-HIGH-004",
+      "severity": "high",
+      "path": "crates/nano-model/src/flux_responses.rs",
+      "line": 306,
+      "evidence": "Strict clippy reports items_after_test_module at line 306 and field_reassign_with_default at lines 315 and 329. All three errors were introduced by commit b3f49343 and prevent the mandatory nano-model lint gate from passing.",
+      "introduced_by": "b3f49343",
+      "disposition": "fix",
+      "command_ref": "GATE-CMD-001"
+    },
+    {
+      "id": "WP03-LIVE-HIGH-005",
+      "severity": "high",
+      "path": "crates/nano-model/data/providerCatalog.vendored.json",
+      "evidence": "GOALS, the WP-0.3 specification, and the owner contract require the Flux Router Anthropic endpoint /v1/messages. The compatibility /anthropic/v1/messages route returned HTTP 200 but produced zero document-token delta and a false external oracle; the temporary path-only diagnostic changed only the endpoint to /v1/messages and produced delta 13831 with the oracle true.",
+      "disposition": "fix",
+      "command_ref": "LIVE-CMD-002"
+    },
+    {
+      "id": "WP03-LIVE-HIGH-006",
+      "severity": "high",
+      "path": "crates/nano-cli/src/acp_mode.rs",
+      "evidence": "The live harness first deadlocked on an unanswered session/request_permission request, then after that stage was bypassed wrote repository evidence under the monorepo root instead of the active worktree and failed its post-write reopen with NotFound. The final harness needs test-only tool clearing and a token cap, a deny responder for unexpected permission requests, and repository-root verification derived from the compiled crate rather than the monorepo workspace locator.",
+      "disposition": "fix",
+      "command_ref": "LIVE-CMD-003"
+    },
+    {
+      "id": "WP03-GATE-HIGH-007",
+      "severity": "high",
+      "path": "crates/nano-session/src/op.rs",
+      "line": 824,
+      "evidence": "The gate-all nano-session library test p2a_op_never_denies_unknown_fields fails because the DocumentRef helper introduced a literal serde deny_unknown_fields attribute while the Op forward-field contract scans the source. The focused command completed 118 tests successfully and failed this one test at crates/nano-session/src/op.rs:824.",
+      "disposition": "fix",
+      "command_ref": "GATE-CMD-002"
+    },
+    {
+      "id": "WP03-GATE-HIGH-008",
+      "evidence": "Value-based DocumentRef deserialization collapsed duplicate known JSON members before validation; focused review required rejection of repeated known members while preserving journal field tolerance.",
+      "line": 621,
+      "disposition": "fix",
+      "path": "crates/nano-session/src/op.rs",
+      "command_ref": "REVIEW-CMD-001",
+      "severity": "high"
+    }
+  ],
+  "audit_commands": [
+    {
+      "id": "AUDIT-CMD-001",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .planning/phases/03-wp-0.3-pdf-intake/03-OWNERSHIP-PREFLIGHT.ps1 -Mode Check",
+      "exit": 0,
+      "evidence": "WP-0.3 ownership Check PASS; protected inventory and allowed-path verification completed in 915.7 seconds."
+    },
+    {
+      "id": "AUDIT-CMD-002",
+      "command": "cargo test -p nano-protocol -p nano-agent -p nano-model -p nano-session -p nano-cli",
+      "exit": 1,
+      "evidence": "nano-cli lib test pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded failed at crates/nano-cli/src/acp_mode.rs:11252: left Null, right model_lacks_pdf; preceding diagnostic reported CheckpointUnavailable because workspace git was unavailable."
+    },
+    {
+      "id": "GATE-CMD-001",
+      "command": "cargo clippy -p nano-model --all-targets -- -D warnings",
+      "exit": 101,
+      "evidence": "Five exact errors: crates/nano-model/src/anthropic_messages.rs:370 items_after_test_module; crates/nano-model/src/anthropic_messages.rs:376 field_reassign_with_default; crates/nano-model/src/flux_responses.rs:306 items_after_test_module; crates/nano-model/src/flux_responses.rs:315 field_reassign_with_default; crates/nano-model/src/flux_responses.rs:329 field_reassign_with_default. No secret value or secret path is recorded."
+    },
+    {
+      "id": "GATE-CMD-002",
+      "command": "cargo test -p nano-session --lib",
+      "exit": 101,
+      "evidence": "118 passed and 1 failed: op::tests::p2a_op_never_denies_unknown_fields failed at crates/nano-session/src/op.rs:824 because the source scan found the literal serde deny_unknown_fields attribute introduced on the DocumentRef helper."
+    },
+    {
+      "command": "cargo test -p nano-session --lib document_ref_tests::document_ref_rejects_duplicate_known_fields_from_raw_json -- --exact --nocapture",
+      "exit": 0,
+      "evidence": "Focused reviewer regression at 5040293 passed exactly one test with zero failures and confirmed all four known members reject duplication. No secret recorded.",
+      "id": "REVIEW-CMD-001"
+    }
+  ],
+  "live_commands": [
+    {
+      "id": "LIVE-CMD-001",
+      "command": "cargo test -p nano-cli pdf_live_active_leaf_runtime_path -- --ignored --nocapture",
+      "exit": 101,
+      "evidence": "The ignored complete-ACP live test failed with nanoError.kind fs_read_denied and message 'document_path: cannot inspect path'; the rejection originates at crates/nano-protocol/src/acp.rs:296 while inspecting the Windows canonical verbatim Prefix before RootDir. The oracle was not returned and no live evidence files or evidence-manifest.json were generated. No credential value or credential path is recorded."
+    },
+    {
+      "id": "LIVE-CMD-002",
+      "command": "cargo test -p nano-cli pdf_live_active_leaf_runtime_path -- --ignored --nocapture",
+      "exit": 0,
+      "evidence": "A temporary path-only diagnostic, removed after the run, held the live harness and payload constant while contrasting the catalog /anthropic/v1/messages route with /v1/messages. The compatibility route returned HTTP 200 with document-token delta 0 and oracle false; the direct /v1/messages route returned document-token delta 13831 and oracle true. No credential value or credential path is recorded."
+    },
+    {
+      "id": "LIVE-CMD-003",
+      "command": "cargo test -p nano-cli pdf_live_active_leaf_runtime_path -- --ignored --nocapture",
+      "exit": 101,
+      "evidence": "Before the harness fix, the ignored live command structurally timed out while waiting on an unanswered session/request_permission request. After progressing past that stage, it wrote repository evidence under the monorepo root rather than the active worktree and failed the post-write reopen with NotFound. No credential value or credential path is recorded."
+    }
+  ],
+  "events": [
+    {
+      "kind": "live_failure_reopened_fix_round",
+      "finding_id": "WP03-LIVE-HIGH-002",
+      "command_ref": "LIVE-CMD-001",
+      "effect": "The prior independent recheck is invalidated for the current product state; a new final independent recheck is pending after the live-path fix."
+    },
+    {
+      "kind": "live_failure_reopened_fix_round",
+      "finding_ids": [
+        "WP03-LIVE-HIGH-005",
+        "WP03-LIVE-HIGH-006"
+      ],
+      "command_refs": [
+        "LIVE-CMD-002",
+        "LIVE-CMD-003"
+      ],
+      "effect": "The current independent recheck is invalidated by the endpoint and live-harness findings; the prior result is retained and a new final independent recheck is pending after fixes."
+    },
+    {
+      "kind": "gate_failure_reopened_fix_round",
+      "finding_id": "WP03-GATE-HIGH-007",
+      "command_ref": "GATE-CMD-002",
+      "effect": "The current independent recheck is invalidated for the dirty product state; its prior PASS evidence is retained and a new final independent recheck is pending after the nano-session gate fix."
+    },
+    {
+      "kind": "review_failure_reopened_fix_round",
+      "command_ref": "REVIEW-CMD-001",
+      "finding_id": "WP03-GATE-HIGH-008",
+      "effect": "Prior PASS and live evidence retained; final independent recheck remains pending for the journal fix."
+    }
+  ],
+  "fix_round_count": 1,
+  "fix": {
+    "final_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+    "final_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+    "commits": [
+      {
+        "group": "A",
+        "pre_commit": "3fde7c507b151411996210d159ccb4b5a3122a69",
+        "commit": "18d57a6724637f597883685749583253613a0884",
+        "tree": "c2dfe7aac460dd7cfe30084859d26eb2a4145403",
+        "paths": [
+          "crates/nano-cli/src/acp_mode.rs"
+        ],
+        "finding_ids": [
+          "WP03-AUDIT-HIGH-001"
+        ],
+        "commands": [
+          {
+            "id": "FIX-A-CMD-001",
+            "command": "cargo fmt --all -- --check",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A-CMD-002",
+            "command": "cargo test -p nano-cli pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded -- --nocapture",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A-CMD-003",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .planning/phases/03-wp-0.3-pdf-intake/03-OWNERSHIP-PREFLIGHT.ps1 -Mode Check",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A-CMD-004",
+            "command": "git diff --check 3fde7c507b151411996210d159ccb4b5a3122a69 18d57a6724637f597883685749583253613a0884 -- crates/nano-cli/src/acp_mode.rs",
+            "exit": 0
+          }
+        ]
+      },
+      {
+        "group": "A",
+        "pre_commit": "7cef2104df7ca546bc6cb5b5951f3a3d1a9c8e55",
+        "commit": "4fd669bfb921769456f1603221bbe2326487d67c",
+        "tree": "84af3ddd0d0773bc72db7684c516a622bd4453c4",
+        "paths": [
+          "crates/nano-model/src/anthropic_messages.rs",
+          "crates/nano-model/src/flux_responses.rs",
+          "crates/nano-protocol/src/acp.rs"
+        ],
+        "finding_ids": [
+          "WP03-LIVE-HIGH-002",
+          "WP03-GATE-HIGH-003",
+          "WP03-GATE-HIGH-004"
+        ],
+        "commands": [
+          {
+            "id": "FIX-A2-CMD-001",
+            "command": "cargo fmt --all -- --check",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A2-CMD-002",
+            "command": "cargo test -p nano-protocol",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A2-CMD-003",
+            "command": "cargo test --workspace",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A2-CMD-004",
+            "command": "cargo clippy -p nano-model --all-targets -- -D warnings",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A2-CMD-005",
+            "command": "cargo clippy -p nano-protocol --all-targets -- -D warnings",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A2-CMD-006",
+            "command": "cargo clippy --workspace --all-targets -- -D warnings",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A2-CMD-007",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .planning/phases/03-wp-0.3-pdf-intake/03-OWNERSHIP-PREFLIGHT.ps1 -Mode Check",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A2-CMD-008",
+            "command": "git diff --check 7cef2104df7ca546bc6cb5b5951f3a3d1a9c8e55 4fd669bfb921769456f1603221bbe2326487d67c -- crates/nano-model/src/anthropic_messages.rs crates/nano-model/src/flux_responses.rs crates/nano-protocol/src/acp.rs",
+            "exit": 0
+          }
+        ]
+      },
+      {
+        "group": "A",
+        "pre_commit": "daa72e759c925cb25901ed6a07f9a70436e3e953",
+        "commit": "f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5",
+        "tree": "5ff1ea037d604c273095b5303062a68e936d83df",
+        "paths": [
+          "UPSTREAM.md",
+          "crates/nano-cli/src/acp_mode.rs",
+          "crates/nano-model/data/providerCatalog.vendored.json",
+          "crates/nano-model/src/anthropic_messages.rs",
+          "crates/nano-model/tests/golden/provider_catalog.golden.rs",
+          "crates/nano-model/tests/provider_catalog.rs"
+        ],
+        "finding_ids": [
+          "WP03-LIVE-HIGH-005",
+          "WP03-LIVE-HIGH-006"
+        ],
+        "commands": [
+          {
+            "id": "FIX-A3-CMD-001",
+            "command": "cargo fmt --all -- --check",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A3-CMD-002",
+            "command": "cargo test -p nano-model",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A3-CMD-003",
+            "command": "cargo test -p nano-model --test provider_catalog",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A3-CMD-004",
+            "command": "cargo test -p nano-cli acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded --lib -- --exact --nocapture",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A3-CMD-005",
+            "command": "cargo test -p nano-cli acp_mode::tests::pdf_live_manifest_paths_resolve_from_crate_root --lib -- --exact --nocapture",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A3-CMD-006",
+            "command": "cargo clippy --workspace --all-targets -- -D warnings",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A3-CMD-007",
+            "command": "cargo test -p nano-cli pdf_live_active_leaf_runtime_path -- --ignored --nocapture",
+            "exit": 0,
+            "evidence": "Successful live proof: exact D6 oracle returned; control input tokens 38; PDF input tokens 13969; delta 13931; endpoint /v1/messages; canary receipt SHA-256 949a0b2de864287f63ba8a5295f12b704b30cb3aa9ec4c67862590011a04d281, 1878 bytes; evidence commit 0eb5098426f95ee8d8e33bb4c35d370d399ea6b4. No credential value or credential path recorded."
+          },
+          {
+            "id": "FIX-A3-CMD-008",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .planning/phases/03-wp-0.3-pdf-intake/03-OWNERSHIP-PREFLIGHT.ps1 -Mode Check",
+            "exit": 0
+          }
+        ]
+      },
+      {
+        "tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "group": "A",
+        "paths": [
+          "crates/nano-session/src/op.rs"
+        ],
+        "commands": [
+          {
+            "command": "cargo fmt --all -- --check",
+            "exit": 0,
+            "id": "FIX-A4-CMD-001"
+          },
+          {
+            "command": "cargo test -p nano-session --lib op::tests::p2a_op_never_denies_unknown_fields -- --exact --nocapture",
+            "exit": 0,
+            "id": "FIX-A4-CMD-002"
+          },
+          {
+            "command": "cargo test -p nano-session --lib document_ref_tests::document_ref_rejects_duplicate_known_fields_from_raw_json -- --exact --nocapture",
+            "exit": 0,
+            "id": "FIX-A4-CMD-003"
+          },
+          {
+            "command": "cargo test -p nano-session --lib",
+            "exit": 0,
+            "id": "FIX-A4-CMD-004"
+          },
+          {
+            "command": "cargo clippy -p nano-session --all-targets -- -D warnings",
+            "exit": 0,
+            "id": "FIX-A4-CMD-005"
+          },
+          {
+            "command": "git diff --check 2cbbad2d44b144150d231b9e5971ed2a2d2595e1 5040293cf4de8467555f4c74b46b34a91d6939d7 -- crates/nano-session/src/op.rs",
+            "exit": 0,
+            "id": "FIX-A4-CMD-006"
+          }
+        ],
+        "document_ref": [
+          "tests",
+          "full_session",
+          "clippy",
+          "diff"
+        ],
+        "pre_commit": "2cbbad2d44b144150d231b9e5971ed2a2d2595e1",
+        "commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "finding_ids": [
+          "WP03-GATE-HIGH-007",
+          "WP03-GATE-HIGH-008"
+        ]
+      }
+    ]
+  },
+  "lifecycle": {
+    "commits": [
+      {
+        "parent": "f16fa3edf22fc8bae356232da9ab6aecd652ba62",
+        "tree": "10443ecd5508a42dc91a4df479375bc8d891f0d7",
+        "commit": "3fde7c507b151411996210d159ccb4b5a3122a69",
+        "kind": "audit_metadata",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-06-SUMMARY.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "parent": "18d57a6724637f597883685749583253613a0884",
+        "tree": "e7996b22eb64b04e4daaa2f8cb069c2c4ea85ab3",
+        "commit": "f34da2f778b3ace900bd005bcdf6888fda6a94b4",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-10-SUMMARY.md"
+        ]
+      },
+      {
+        "parent": "f34da2f778b3ace900bd005bcdf6888fda6a94b4",
+        "tree": "74403b70a028f6a5df6102f423fe4496ca3b6d52",
+        "commit": "d73142604e74889a7f7144c62ae4ea50a41f6c28",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "parent": "d73142604e74889a7f7144c62ae4ea50a41f6c28",
+        "tree": "3224c9558ec25f671a08997bdf65ec18210d18a3",
+        "commit": "85a8b1d91379243aebd23ee74bc190221b670563",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-12-SUMMARY.md"
+        ]
+      },
+      {
+        "parent": "85a8b1d91379243aebd23ee74bc190221b670563",
+        "tree": "0043679fed24cc45525f49febfdf4e56de29d8cd",
+        "commit": "e5cc2e3170a40bd656e39ceda5488692ea8eba56",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-07-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "parent": "e5cc2e3170a40bd656e39ceda5488692ea8eba56",
+        "tree": "0a4a08f1c1e974ac45f2f838d7a2de7c8d97bb2c",
+        "commit": "1f7e1b60e2816883d1f5e522854c7f8c0043c42e",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "parent": "1f7e1b60e2816883d1f5e522854c7f8c0043c42e",
+        "tree": "d202b2ffe553414598410ab6887af91c4aca76f3",
+        "commit": "b6430e434a10911e072ace17c430bafc72f40920",
+        "kind": "audit_metadata",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "parent": "b6430e434a10911e072ace17c430bafc72f40920",
+        "tree": "8240a85684940477dc43a12464cc35c23ed37db7",
+        "commit": "0c13d7d0df5e5a83bede4f453d2b834f7b307f4c",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-13-SUMMARY.md"
+        ]
+      },
+      {
+        "parent": "0c13d7d0df5e5a83bede4f453d2b834f7b307f4c",
+        "tree": "e3ec68eab6981af7b7fd6536abfabb1922fc80ff",
+        "commit": "23cec03bd14a594959262cd3975251df4cf63d02",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "parent": "23cec03bd14a594959262cd3975251df4cf63d02",
+        "tree": "c9406f5dc9a13ee108e57d135a67cfd1b7a4b898",
+        "commit": "7b7b11a50b535f3b1e9ade655be7ae41b508788d",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md"
+        ]
+      },
+      {
+        "parent": "7b7b11a50b535f3b1e9ade655be7ae41b508788d",
+        "tree": "aa730f95858eaba4ea382febf50558b1c91330d7",
+        "commit": "a4c4c0dcc61033a1b372ac24438353dd16bf5cd5",
+        "kind": "audit_metadata",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "parent": "a4c4c0dcc61033a1b372ac24438353dd16bf5cd5",
+        "tree": "d8bfec14c228b16e22ac2a50f777413a04dd2bb0",
+        "commit": "ee7df652e1f36c4ef76e967e1292edd406771885",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-SUMMARY.md"
+        ]
+      },
+      {
+        "parent": "ee7df652e1f36c4ef76e967e1292edd406771885",
+        "tree": "b7c48bd6190f51cb66aaabd1dbc7e69159ed9680",
+        "commit": "a4014a20d7bfd548f128e9614ea43f2eeff22dc5",
+        "kind": "audit_metadata",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "parent": "a4014a20d7bfd548f128e9614ea43f2eeff22dc5",
+        "tree": "b1d3b55f39a8fcdd950c030f612bd6b134987b86",
+        "commit": "007467001c08024ae7e58e9600a7894e8b2d6027",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-CONTROL.json",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-OWNERSHIP-PREFLIGHT.ps1",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "parent": "007467001c08024ae7e58e9600a7894e8b2d6027",
+        "tree": "55e45f2fbae3e50e234866242ff6326bc68b574f",
+        "commit": "cdfb36aefa23e70522124307f8b46da312b69434",
+        "kind": "audit_metadata",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "parent": "cdfb36aefa23e70522124307f8b46da312b69434",
+        "tree": "ab1bb677403d0622c72112801adcbb4f43b57670",
+        "commit": "7cef2104df7ca546bc6cb5b5951f3a3d1a9c8e55",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-CONTROL.json",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-OWNERSHIP-PREFLIGHT.ps1",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "parent": "4fd669bfb921769456f1603221bbe2326487d67c",
+        "tree": "b41920b6da919c9ac40422d9a6e863b95445b90c",
+        "commit": "c41f6299b9488d34c71e743965783fe4459a9a3b",
+        "kind": "audit_metadata",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "parent": "c41f6299b9488d34c71e743965783fe4459a9a3b",
+        "tree": "2be9e5db72c5eec51e7c3c87749a1a96bffd9f12",
+        "commit": "a8039a5785ada4106e8da47a65a4c7c0553d6d50",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "parent": "a8039a5785ada4106e8da47a65a4c7c0553d6d50",
+        "tree": "0bcc7c25b997001c4cbcb9177b4f3ebb03f6e2ee",
+        "commit": "e273722c4854dd9a929eeb05f2303110330e7405",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md"
+        ]
+      },
+      {
+        "parent": "e273722c4854dd9a929eeb05f2303110330e7405",
+        "tree": "ace35cd2fef8c15e1c9d6cd3e3f1206d13b437b8",
+        "commit": "bb77207d55cb80c56e814179a2a70bd0aad9f18b",
+        "kind": "audit_metadata",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "parent": "bb77207d55cb80c56e814179a2a70bd0aad9f18b",
+        "tree": "d3439cc138ec7ff7773a623a44d529a5f5349c8d",
+        "commit": "ffd1609144b517f498cfa10036f320487ef07467",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-SUMMARY.md"
+        ]
+      },
+      {
+        "parent": "ffd1609144b517f498cfa10036f320487ef07467",
+        "tree": "1bc957500dc675a18bb79860257c8e406cbce5b2",
+        "commit": "daa72e759c925cb25901ed6a07f9a70436e3e953",
+        "kind": "audit_metadata",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "parent": "f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5",
+        "tree": "64d92a39a212ed08a05f104cc1ba72bd66a93c06",
+        "commit": "2a55eaee88909e3c635a6b9e88d1b8fa04034abd",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-03-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-05-SUMMARY.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-RESEARCH.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "parent": "2a55eaee88909e3c635a6b9e88d1b8fa04034abd",
+        "tree": "48e30dffa172628ee19f7adb6305688f676bb91a",
+        "commit": "0eb5098426f95ee8d8e33bb4c35d370d399ea6b4",
+        "kind": "live_evidence",
+        "paths": [
+          "crates/nano-model/fixtures-flux/pdf/control-request.json",
+          "crates/nano-model/fixtures-flux/pdf/document-request.json",
+          "crates/nano-model/fixtures-flux/pdf/document-response.json",
+          "crates/nano-model/fixtures-flux/pdf/evidence-manifest.json",
+          "crates/nano-model/fixtures-flux/pdf/known-quote.pdf",
+          "crates/nano-model/fixtures-flux/pdf/session-transcript.json",
+          "crates/nano-model/fixtures-flux/pdf/usage-summary.json"
+        ]
+      },
+      {
+        "parent": "0eb5098426f95ee8d8e33bb4c35d370d399ea6b4",
+        "tree": "b44c4c618d55f88467656b4ccb44399a3130b819",
+        "commit": "c0d6f6911b207953fbc4fd2abb5e7eeca3afcb85",
+        "kind": "audit_metadata",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "parent": "c0d6f6911b207953fbc4fd2abb5e7eeca3afcb85",
+        "tree": "099ca4dd02198a9bae0b3eea260c85f42d38360e",
+        "commit": "88064ece7d65234e376400baa5046188916a5c41",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "parent": "88064ece7d65234e376400baa5046188916a5c41",
+        "tree": "1f82532cde3c55e41a6c35cd5b2abb88beab5be0",
+        "commit": "42e3ec9361c96ecd3054131c5e5597687c2c44b3",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "parent": "42e3ec9361c96ecd3054131c5e5597687c2c44b3",
+        "tree": "b3ffac040887a70208fe4f7d1c84d8a493a38df5",
+        "commit": "95c21fa515fa186497bdf3c9dd174a988ac95c0d",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "parent": "95c21fa515fa186497bdf3c9dd174a988ac95c0d",
+        "tree": "6f79f0183b39c630cc0f2ae2ae2644c4b6abd3b1",
+        "commit": "b078b5594e0b2419fd975f3d5638a00a61990aa5",
+        "kind": "audit_metadata",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "parent": "b078b5594e0b2419fd975f3d5638a00a61990aa5",
+        "tree": "a1215460d6c3512c9ae925363cf82a64f4290250",
+        "commit": "939f77aa9ffb5f117c41ac0620b37a75e506240c",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-SUMMARY.md"
+        ]
+      },
+      {
+        "parent": "939f77aa9ffb5f117c41ac0620b37a75e506240c",
+        "tree": "c91e52e0d2a32274829acac496892ad7b9517f7c",
+        "commit": "d6fceb7631c5d220c57a4235a2188b714767a7b5",
+        "kind": "docs_lifecycle",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-07-SUMMARY.md"
+        ]
+      },
+      {
+        "parent": "d6fceb7631c5d220c57a4235a2188b714767a7b5",
+        "tree": "3c89fbdbc352c99821938725fe631890cbcb80fc",
+        "commit": "b9862f4ee74ea8b6b53d76748a72a70ed18d3cb5",
+        "kind": "closure_binding",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-CONTROL.json"
+        ]
+      },
+      {
+        "parent": "b9862f4ee74ea8b6b53d76748a72a70ed18d3cb5",
+        "tree": "4daa6d24b9ed0d395f1850b402ac63eb01761fa1",
+        "commit": "2cbbad2d44b144150d231b9e5971ed2a2d2595e1",
+        "kind": "audit_metadata",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      }
+    ],
+    "prior_post_fix_commits": [
+      {
+        "commit": "2a55eaee88909e3c635a6b9e88d1b8fa04034abd",
+        "parent": "f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5",
+        "tree": "64d92a39a212ed08a05f104cc1ba72bd66a93c06",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-03-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-05-SUMMARY.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-RESEARCH.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          "docs/FOLLOWUPS.md"
+        ],
+        "kind": "docs_lifecycle"
+      },
+      {
+        "commit": "0eb5098426f95ee8d8e33bb4c35d370d399ea6b4",
+        "parent": "2a55eaee88909e3c635a6b9e88d1b8fa04034abd",
+        "tree": "48e30dffa172628ee19f7adb6305688f676bb91a",
+        "paths": [
+          "crates/nano-model/fixtures-flux/pdf/control-request.json",
+          "crates/nano-model/fixtures-flux/pdf/document-request.json",
+          "crates/nano-model/fixtures-flux/pdf/document-response.json",
+          "crates/nano-model/fixtures-flux/pdf/evidence-manifest.json",
+          "crates/nano-model/fixtures-flux/pdf/known-quote.pdf",
+          "crates/nano-model/fixtures-flux/pdf/session-transcript.json",
+          "crates/nano-model/fixtures-flux/pdf/usage-summary.json"
+        ],
+        "kind": "live_evidence"
+      },
+      {
+        "commit": "c0d6f6911b207953fbc4fd2abb5e7eeca3afcb85",
+        "parent": "0eb5098426f95ee8d8e33bb4c35d370d399ea6b4",
+        "tree": "b44c4c618d55f88467656b4ccb44399a3130b819",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ],
+        "kind": "audit_metadata"
+      },
+      {
+        "commit": "88064ece7d65234e376400baa5046188916a5c41",
+        "parent": "c0d6f6911b207953fbc4fd2abb5e7eeca3afcb85",
+        "tree": "099ca4dd02198a9bae0b3eea260c85f42d38360e",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ],
+        "kind": "plan_correction"
+      },
+      {
+        "commit": "42e3ec9361c96ecd3054131c5e5597687c2c44b3",
+        "parent": "88064ece7d65234e376400baa5046188916a5c41",
+        "tree": "1f82532cde3c55e41a6c35cd5b2abb88beab5be0",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ],
+        "kind": "plan_correction"
+      },
+      {
+        "commit": "95c21fa515fa186497bdf3c9dd174a988ac95c0d",
+        "parent": "42e3ec9361c96ecd3054131c5e5597687c2c44b3",
+        "tree": "b3ffac040887a70208fe4f7d1c84d8a493a38df5",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          "docs/FOLLOWUPS.md"
+        ],
+        "kind": "plan_correction"
+      }
+    ],
+    "post_fix_commits": [
+      {
+        "commit": "08f90d2bc33fb1c2a9396a48f247357dd53321e7",
+        "parent": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "tree": "0f80c2c35f8d740a1670bb5fd1e766b4b1203f58",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ],
+        "kind": "audit_metadata"
+      },
+      {
+        "commit": "8fc22333921a264d1d9259991bf9c57b982d9f85",
+        "parent": "08f90d2bc33fb1c2a9396a48f247357dd53321e7",
+        "tree": "46d19701016de931a69c1fbcd176b668b5466cff",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ],
+        "kind": "plan_correction"
+      },
+      {
+        "commit": "412d33a8bd579c15c1060a94aed2d8a247311fe6",
+        "parent": "8fc22333921a264d1d9259991bf9c57b982d9f85",
+        "tree": "4bdd5c4c8fddbadfaed4c4fb2a2ec39292dd4364",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md"
+        ],
+        "kind": "plan_correction"
+      }
+    ]
+  },
+  "history": {
+    "commits": [
+      {
+        "kind": "audit_metadata",
+        "pre_commit": "f16fa3edf22fc8bae356232da9ab6aecd652ba62",
+        "commit": "3fde7c507b151411996210d159ccb4b5a3122a69",
+        "tree": "10443ecd5508a42dc91a4df479375bc8d891f0d7",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-06-SUMMARY.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "kind": "product_fix",
+        "pre_commit": "3fde7c507b151411996210d159ccb4b5a3122a69",
+        "commit": "18d57a6724637f597883685749583253613a0884",
+        "tree": "c2dfe7aac460dd7cfe30084859d26eb2a4145403",
+        "paths": [
+          "crates/nano-cli/src/acp_mode.rs"
+        ],
+        "finding_ids": [
+          "WP03-AUDIT-HIGH-001"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "18d57a6724637f597883685749583253613a0884",
+        "commit": "f34da2f778b3ace900bd005bcdf6888fda6a94b4",
+        "tree": "e7996b22eb64b04e4daaa2f8cb069c2c4ea85ab3",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-10-SUMMARY.md"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "f34da2f778b3ace900bd005bcdf6888fda6a94b4",
+        "commit": "d73142604e74889a7f7144c62ae4ea50a41f6c28",
+        "tree": "74403b70a028f6a5df6102f423fe4496ca3b6d52",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "d73142604e74889a7f7144c62ae4ea50a41f6c28",
+        "commit": "85a8b1d91379243aebd23ee74bc190221b670563",
+        "tree": "3224c9558ec25f671a08997bdf65ec18210d18a3",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-12-SUMMARY.md"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "85a8b1d91379243aebd23ee74bc190221b670563",
+        "commit": "e5cc2e3170a40bd656e39ceda5488692ea8eba56",
+        "tree": "0043679fed24cc45525f49febfdf4e56de29d8cd",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-07-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "e5cc2e3170a40bd656e39ceda5488692ea8eba56",
+        "commit": "1f7e1b60e2816883d1f5e522854c7f8c0043c42e",
+        "tree": "0a4a08f1c1e974ac45f2f838d7a2de7c8d97bb2c",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "kind": "audit_metadata",
+        "pre_commit": "1f7e1b60e2816883d1f5e522854c7f8c0043c42e",
+        "commit": "b6430e434a10911e072ace17c430bafc72f40920",
+        "tree": "d202b2ffe553414598410ab6887af91c4aca76f3",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "b6430e434a10911e072ace17c430bafc72f40920",
+        "commit": "0c13d7d0df5e5a83bede4f453d2b834f7b307f4c",
+        "tree": "8240a85684940477dc43a12464cc35c23ed37db7",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-13-SUMMARY.md"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "0c13d7d0df5e5a83bede4f453d2b834f7b307f4c",
+        "commit": "23cec03bd14a594959262cd3975251df4cf63d02",
+        "tree": "e3ec68eab6981af7b7fd6536abfabb1922fc80ff",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "23cec03bd14a594959262cd3975251df4cf63d02",
+        "commit": "7b7b11a50b535f3b1e9ade655be7ae41b508788d",
+        "tree": "c9406f5dc9a13ee108e57d135a67cfd1b7a4b898",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md"
+        ]
+      },
+      {
+        "kind": "audit_metadata",
+        "pre_commit": "7b7b11a50b535f3b1e9ade655be7ae41b508788d",
+        "commit": "a4c4c0dcc61033a1b372ac24438353dd16bf5cd5",
+        "tree": "aa730f95858eaba4ea382febf50558b1c91330d7",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "a4c4c0dcc61033a1b372ac24438353dd16bf5cd5",
+        "commit": "ee7df652e1f36c4ef76e967e1292edd406771885",
+        "tree": "d8bfec14c228b16e22ac2a50f777413a04dd2bb0",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-SUMMARY.md"
+        ]
+      },
+      {
+        "kind": "audit_metadata",
+        "pre_commit": "ee7df652e1f36c4ef76e967e1292edd406771885",
+        "commit": "a4014a20d7bfd548f128e9614ea43f2eeff22dc5",
+        "tree": "b7c48bd6190f51cb66aaabd1dbc7e69159ed9680",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "a4014a20d7bfd548f128e9614ea43f2eeff22dc5",
+        "commit": "007467001c08024ae7e58e9600a7894e8b2d6027",
+        "tree": "b1d3b55f39a8fcdd950c030f612bd6b134987b86",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-CONTROL.json",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-OWNERSHIP-PREFLIGHT.ps1",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "kind": "audit_metadata",
+        "pre_commit": "007467001c08024ae7e58e9600a7894e8b2d6027",
+        "commit": "cdfb36aefa23e70522124307f8b46da312b69434",
+        "tree": "55e45f2fbae3e50e234866242ff6326bc68b574f",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "cdfb36aefa23e70522124307f8b46da312b69434",
+        "commit": "7cef2104df7ca546bc6cb5b5951f3a3d1a9c8e55",
+        "tree": "ab1bb677403d0622c72112801adcbb4f43b57670",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-CONTROL.json",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-OWNERSHIP-PREFLIGHT.ps1",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "kind": "product_fix",
+        "pre_commit": "7cef2104df7ca546bc6cb5b5951f3a3d1a9c8e55",
+        "commit": "4fd669bfb921769456f1603221bbe2326487d67c",
+        "tree": "84af3ddd0d0773bc72db7684c516a622bd4453c4",
+        "paths": [
+          "crates/nano-model/src/anthropic_messages.rs",
+          "crates/nano-model/src/flux_responses.rs",
+          "crates/nano-protocol/src/acp.rs"
+        ],
+        "finding_ids": [
+          "WP03-LIVE-HIGH-002",
+          "WP03-GATE-HIGH-003",
+          "WP03-GATE-HIGH-004"
+        ]
+      },
+      {
+        "kind": "audit_metadata",
+        "pre_commit": "4fd669bfb921769456f1603221bbe2326487d67c",
+        "commit": "c41f6299b9488d34c71e743965783fe4459a9a3b",
+        "tree": "b41920b6da919c9ac40422d9a6e863b95445b90c",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "c41f6299b9488d34c71e743965783fe4459a9a3b",
+        "commit": "a8039a5785ada4106e8da47a65a4c7c0553d6d50",
+        "tree": "2be9e5db72c5eec51e7c3c87749a1a96bffd9f12",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "a8039a5785ada4106e8da47a65a4c7c0553d6d50",
+        "commit": "e273722c4854dd9a929eeb05f2303110330e7405",
+        "tree": "0bcc7c25b997001c4cbcb9177b4f3ebb03f6e2ee",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md"
+        ]
+      },
+      {
+        "kind": "audit_metadata",
+        "pre_commit": "e273722c4854dd9a929eeb05f2303110330e7405",
+        "commit": "bb77207d55cb80c56e814179a2a70bd0aad9f18b",
+        "tree": "ace35cd2fef8c15e1c9d6cd3e3f1206d13b437b8",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "bb77207d55cb80c56e814179a2a70bd0aad9f18b",
+        "commit": "ffd1609144b517f498cfa10036f320487ef07467",
+        "tree": "d3439cc138ec7ff7773a623a44d529a5f5349c8d",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-SUMMARY.md"
+        ]
+      },
+      {
+        "kind": "audit_metadata",
+        "pre_commit": "ffd1609144b517f498cfa10036f320487ef07467",
+        "commit": "daa72e759c925cb25901ed6a07f9a70436e3e953",
+        "tree": "1bc957500dc675a18bb79860257c8e406cbce5b2",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "kind": "product_fix",
+        "pre_commit": "daa72e759c925cb25901ed6a07f9a70436e3e953",
+        "commit": "f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5",
+        "tree": "5ff1ea037d604c273095b5303062a68e936d83df",
+        "paths": [
+          "UPSTREAM.md",
+          "crates/nano-cli/src/acp_mode.rs",
+          "crates/nano-model/data/providerCatalog.vendored.json",
+          "crates/nano-model/src/anthropic_messages.rs",
+          "crates/nano-model/tests/golden/provider_catalog.golden.rs",
+          "crates/nano-model/tests/provider_catalog.rs"
+        ],
+        "finding_ids": [
+          "WP03-LIVE-HIGH-005",
+          "WP03-LIVE-HIGH-006"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5",
+        "commit": "2a55eaee88909e3c635a6b9e88d1b8fa04034abd",
+        "tree": "64d92a39a212ed08a05f104cc1ba72bd66a93c06",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-03-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-05-SUMMARY.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-RESEARCH.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "kind": "live_evidence",
+        "pre_commit": "2a55eaee88909e3c635a6b9e88d1b8fa04034abd",
+        "commit": "0eb5098426f95ee8d8e33bb4c35d370d399ea6b4",
+        "tree": "48e30dffa172628ee19f7adb6305688f676bb91a",
+        "paths": [
+          "crates/nano-model/fixtures-flux/pdf/control-request.json",
+          "crates/nano-model/fixtures-flux/pdf/document-request.json",
+          "crates/nano-model/fixtures-flux/pdf/document-response.json",
+          "crates/nano-model/fixtures-flux/pdf/evidence-manifest.json",
+          "crates/nano-model/fixtures-flux/pdf/known-quote.pdf",
+          "crates/nano-model/fixtures-flux/pdf/session-transcript.json",
+          "crates/nano-model/fixtures-flux/pdf/usage-summary.json"
+        ]
+      },
+      {
+        "kind": "audit_metadata",
+        "pre_commit": "0eb5098426f95ee8d8e33bb4c35d370d399ea6b4",
+        "commit": "c0d6f6911b207953fbc4fd2abb5e7eeca3afcb85",
+        "tree": "b44c4c618d55f88467656b4ccb44399a3130b819",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "c0d6f6911b207953fbc4fd2abb5e7eeca3afcb85",
+        "commit": "88064ece7d65234e376400baa5046188916a5c41",
+        "tree": "099ca4dd02198a9bae0b3eea260c85f42d38360e",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "88064ece7d65234e376400baa5046188916a5c41",
+        "commit": "42e3ec9361c96ecd3054131c5e5597687c2c44b3",
+        "tree": "1f82532cde3c55e41a6c35cd5b2abb88beab5be0",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "42e3ec9361c96ecd3054131c5e5597687c2c44b3",
+        "commit": "95c21fa515fa186497bdf3c9dd174a988ac95c0d",
+        "tree": "b3ffac040887a70208fe4f7d1c84d8a493a38df5",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "kind": "audit_metadata",
+        "pre_commit": "95c21fa515fa186497bdf3c9dd174a988ac95c0d",
+        "commit": "b078b5594e0b2419fd975f3d5638a00a61990aa5",
+        "tree": "6f79f0183b39c630cc0f2ae2ae2644c4b6abd3b1",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "b078b5594e0b2419fd975f3d5638a00a61990aa5",
+        "commit": "939f77aa9ffb5f117c41ac0620b37a75e506240c",
+        "tree": "a1215460d6c3512c9ae925363cf82a64f4290250",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-SUMMARY.md"
+        ]
+      },
+      {
+        "kind": "docs_lifecycle",
+        "pre_commit": "939f77aa9ffb5f117c41ac0620b37a75e506240c",
+        "commit": "d6fceb7631c5d220c57a4235a2188b714767a7b5",
+        "tree": "c91e52e0d2a32274829acac496892ad7b9517f7c",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-07-SUMMARY.md"
+        ]
+      },
+      {
+        "kind": "closure_binding",
+        "pre_commit": "d6fceb7631c5d220c57a4235a2188b714767a7b5",
+        "commit": "b9862f4ee74ea8b6b53d76748a72a70ed18d3cb5",
+        "tree": "3c89fbdbc352c99821938725fe631890cbcb80fc",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-CONTROL.json"
+        ]
+      },
+      {
+        "kind": "audit_metadata",
+        "pre_commit": "b9862f4ee74ea8b6b53d76748a72a70ed18d3cb5",
+        "commit": "2cbbad2d44b144150d231b9e5971ed2a2d2595e1",
+        "tree": "4daa6d24b9ed0d395f1850b402ac63eb01761fa1",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "kind": "product_fix",
+        "pre_commit": "2cbbad2d44b144150d231b9e5971ed2a2d2595e1",
+        "commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "paths": [
+          "crates/nano-session/src/op.rs"
+        ],
+        "finding_ids": [
+          "WP03-GATE-HIGH-007",
+          "WP03-GATE-HIGH-008"
+        ]
+      }
+    ]
+  },
+  "prior_independent_recheck": {
+    "status": "PENDING",
+    "final_status": "PENDING",
+    "prior_status": "PASS",
+    "invalidated_by": "WP03-GATE-HIGH-008",
+    "reviewer": {
+      "identity": "Codex /root/verify_wp03_live_final_tree"
+    },
+    "method": "independent detached-tree lifecycle, exact-test, receipt, and finding-verdict recheck",
+    "method_version": "wp03-independent-recheck/3.0",
+    "timestamp": "2026-08-17T10:39:44.4022706Z",
+    "checked_commit": "f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5",
+    "checked_tree": "5ff1ea037d604c273095b5303062a68e936d83df",
+    "commands": [
+      {
+        "id": "RECHECK-CATALOG-ENDPOINT",
+        "command": "cargo test -p nano-model --test provider_catalog flux_router_anthropic_endpoint_is_exact -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5",
+        "execution_tree": "5ff1ea037d604c273095b5303062a68e936d83df",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-CATALOG-ENDPOINT;exit=0;commit=f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5;tree=5ff1ea037d604c273095b5303062a68e936d83df;test=flux_router_anthropic_endpoint_is_exact;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-PDF-REFUSAL",
+        "command": "cargo test -p nano-cli acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded --lib -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5",
+        "execution_tree": "5ff1ea037d604c273095b5303062a68e936d83df",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-PDF-REFUSAL;exit=0;commit=f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5;tree=5ff1ea037d604c273095b5303062a68e936d83df;test=acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-WINDOWS-VERBATIM",
+        "command": "cargo test -p nano-protocol --lib acp::tests::document_path_verbatim_prefix_accepts_file_but_rejects_junction -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5",
+        "execution_tree": "5ff1ea037d604c273095b5303062a68e936d83df",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-WINDOWS-VERBATIM;exit=0;commit=f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5;tree=5ff1ea037d604c273095b5303062a68e936d83df;test=acp::tests::document_path_verbatim_prefix_accepts_file_but_rejects_junction;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-NANO-MODEL-CLIPPY",
+        "command": "cargo clippy -p nano-model --all-targets -- -D warnings",
+        "exit": 0,
+        "execution_commit": "f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5",
+        "execution_tree": "5ff1ea037d604c273095b5303062a68e936d83df",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-NANO-MODEL-CLIPPY;exit=0;commit=f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5;tree=5ff1ea037d604c273095b5303062a68e936d83df;result=clean"
+      },
+      {
+        "id": "RECHECK-HARNESS-SCHEMA",
+        "command": "cargo test -p nano-cli acp_mode::tests::pdf_evidence_manifest_schema_has_exact_six_payload_pairs --lib -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5",
+        "execution_tree": "5ff1ea037d604c273095b5303062a68e936d83df",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-HARNESS-SCHEMA;exit=0;commit=f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5;tree=5ff1ea037d604c273095b5303062a68e936d83df;test=acp_mode::tests::pdf_evidence_manifest_schema_has_exact_six_payload_pairs;result=1-passed-0-failed"
+      }
+    ],
+    "verdicts": [
+      {
+        "finding_id": "WP03-AUDIT-HIGH-001",
+        "verdict": "PASS",
+        "command_ref": "RECHECK-PDF-REFUSAL",
+        "evidence": "The exact fully-qualified PDF refusal regression passed once with zero failures at the canonical final fix tree."
+      },
+      {
+        "finding_id": "WP03-LIVE-HIGH-002",
+        "verdict": "PASS",
+        "command_ref": "RECHECK-WINDOWS-VERBATIM",
+        "evidence": "The exact fully-qualified Windows verbatim-path regression passed once with zero failures at the canonical final fix tree."
+      },
+      {
+        "finding_id": "WP03-GATE-HIGH-003",
+        "verdict": "PASS",
+        "command_ref": "RECHECK-NANO-MODEL-CLIPPY",
+        "evidence": "Strict nano-model all-targets clippy completed cleanly at the canonical final fix tree, closing the anthropic_messages lint finding."
+      },
+      {
+        "finding_id": "WP03-GATE-HIGH-004",
+        "verdict": "PASS",
+        "command_ref": "RECHECK-NANO-MODEL-CLIPPY",
+        "evidence": "Strict nano-model all-targets clippy completed cleanly at the canonical final fix tree, closing the flux_responses lint finding."
+      },
+      {
+        "finding_id": "WP03-LIVE-HIGH-005",
+        "verdict": "PASS",
+        "command_ref": "RECHECK-CATALOG-ENDPOINT",
+        "evidence": "The exact provider-catalog endpoint regression passed once with zero failures at the canonical final fix tree."
+      },
+      {
+        "finding_id": "WP03-LIVE-HIGH-006",
+        "verdict": "PASS",
+        "command_ref": "RECHECK-HARNESS-SCHEMA",
+        "evidence": "The exact six-payload-pair evidence-manifest schema regression passed once with zero failures at the canonical final fix tree."
+      }
+    ]
+  },
+  "independent_recheck": {
+    "status": "PASS",
+    "final_status": "PASS",
+    "prior_status": "PENDING",
+    "reviewer": {
+      "identity": "Codex /root/verify_wp03_absolute_final"
+    },
+    "method": "independent detached-tree generic post-chain, exact-test, live-receipt, and eight-finding recheck",
+    "method_version": "wp03-independent-recheck/4.0",
+    "timestamp": "2026-08-17T11:22:58.9323327Z",
+    "checked_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+    "checked_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+    "commands": [
+      {
+        "id": "RECHECK-CATALOG-ENDPOINT",
+        "command": "cargo test -p nano-model --test provider_catalog flux_router_anthropic_endpoint_is_exact -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "execution_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-CATALOG-ENDPOINT;exit=0;commit=5040293cf4de8467555f4c74b46b34a91d6939d7;tree=be34bb63f58cacd64bdab3a073f17fa5d4088719;test=flux_router_anthropic_endpoint_is_exact;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-PDF-REFUSAL",
+        "command": "cargo test -p nano-cli acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded --lib -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "execution_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-PDF-REFUSAL;exit=0;commit=5040293cf4de8467555f4c74b46b34a91d6939d7;tree=be34bb63f58cacd64bdab3a073f17fa5d4088719;test=acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-WINDOWS-VERBATIM",
+        "command": "cargo test -p nano-protocol --lib acp::tests::document_path_verbatim_prefix_accepts_file_but_rejects_junction -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "execution_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-WINDOWS-VERBATIM;exit=0;commit=5040293cf4de8467555f4c74b46b34a91d6939d7;tree=be34bb63f58cacd64bdab3a073f17fa5d4088719;test=acp::tests::document_path_verbatim_prefix_accepts_file_but_rejects_junction;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-NANO-MODEL-CLIPPY",
+        "command": "cargo clippy -p nano-model --all-targets -- -D warnings",
+        "exit": 0,
+        "execution_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "execution_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-NANO-MODEL-CLIPPY;exit=0;commit=5040293cf4de8467555f4c74b46b34a91d6939d7;tree=be34bb63f58cacd64bdab3a073f17fa5d4088719;result=clean"
+      },
+      {
+        "id": "RECHECK-HARNESS-SCHEMA",
+        "command": "cargo test -p nano-cli acp_mode::tests::pdf_evidence_manifest_schema_has_exact_six_payload_pairs --lib -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "execution_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-HARNESS-SCHEMA;exit=0;commit=5040293cf4de8467555f4c74b46b34a91d6939d7;tree=be34bb63f58cacd64bdab3a073f17fa5d4088719;test=acp_mode::tests::pdf_evidence_manifest_schema_has_exact_six_payload_pairs;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-JOURNAL-FORWARD-FIELDS",
+        "command": "cargo test -p nano-session tests::p2a_op_never_denies_unknown_fields --lib -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "execution_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-JOURNAL-FORWARD-FIELDS;exit=0;commit=5040293cf4de8467555f4c74b46b34a91d6939d7;tree=be34bb63f58cacd64bdab3a073f17fa5d4088719;test=tests::p2a_op_never_denies_unknown_fields;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-DOCUMENTREF-CLOSED",
+        "command": "cargo test -p nano-session op::document_ref_tests::document_ref_rejects_duplicate_known_fields_from_raw_json --lib -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "execution_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-DOCUMENTREF-CLOSED;exit=0;commit=5040293cf4de8467555f4c74b46b34a91d6939d7;tree=be34bb63f58cacd64bdab3a073f17fa5d4088719;test=op::document_ref_tests::document_ref_rejects_duplicate_known_fields_from_raw_json;result=1-passed-0-failed"
+      }
+    ],
+    "verdicts": [
+      {"finding_id": "WP03-AUDIT-HIGH-001", "verdict": "PASS", "command_ref": "RECHECK-PDF-REFUSAL", "evidence": "Exact PDF refusal regression passed once at the canonical final tree."},
+      {"finding_id": "WP03-LIVE-HIGH-002", "verdict": "PASS", "command_ref": "RECHECK-WINDOWS-VERBATIM", "evidence": "Exact Windows verbatim-path regression passed once at the canonical final tree."},
+      {"finding_id": "WP03-GATE-HIGH-003", "verdict": "PASS", "command_ref": "RECHECK-NANO-MODEL-CLIPPY", "evidence": "Strict nano-model all-target clippy completed cleanly."},
+      {"finding_id": "WP03-GATE-HIGH-004", "verdict": "PASS", "command_ref": "RECHECK-NANO-MODEL-CLIPPY", "evidence": "Strict nano-model all-target clippy completed cleanly."},
+      {"finding_id": "WP03-LIVE-HIGH-005", "verdict": "PASS", "command_ref": "RECHECK-CATALOG-ENDPOINT", "evidence": "Exact catalog endpoint regression passed once and retains /v1 authority."},
+      {"finding_id": "WP03-LIVE-HIGH-006", "verdict": "PASS", "command_ref": "RECHECK-HARNESS-SCHEMA", "evidence": "Exact six-payload-pair harness regression passed once."},
+      {"finding_id": "WP03-GATE-HIGH-007", "verdict": "PASS", "command_ref": "RECHECK-JOURNAL-FORWARD-FIELDS", "evidence": "Exact journal forward-fields regression passed once."},
+      {"finding_id": "WP03-GATE-HIGH-008", "verdict": "PASS", "command_ref": "RECHECK-DOCUMENTREF-CLOSED", "evidence": "Exact duplicate-known-field rejection regression passed once."}
+    ]
+  },
+  "deviations": [
+    {
+      "rule": "fix-round validation extension",
+      "note": "Live validation extended the single declared fix round to a third product commit after endpoint and harness findings were discovered; fix_round_count remains 1. The earlier bounded planning assumption was superseded by the recorded live findings."
+    },
+    {
+      "rule": "single-round live and closure extension",
+      "note": "audit_count 1 and fix_round_count 1 explicitly cover live and closure extension through four product fixes; receipt 0eb5098 is retained and closure recheck is pending."
+    }
+  ],
+  "endpoint_binding": {
+    "provider": "flux-router-anthropic",
+    "model": "flux-auto",
+    "wire": "anthropic-messages",
+    "api_path": "/v1/messages"
+  },
+  "live_evidence": {
+    "receipt_sha256": "949a38c71320db0506ba9a2b1925d0d44bc993038c22ab15e44e7bf375635c50",
+    "receipt_bytes": 1878,
+    "evidence_commit": "0eb5098426f95ee8d8e33bb4c35d370d399ea6b4",
+    "oracle": "WAYLAND NANO PDF ORACLE 7F3A: copper owls navigate by moonlit checksum.",
+    "control_input_tokens": 38,
+    "pdf_input_tokens": 13969,
+    "delta": 13931,
+    "canary_hits": 0,
+    "d9": "PASS"
+  },
+  "phase_history": {
+    "post_fix": [
+      {
+        "commit": "2a55eaee88909e3c635a6b9e88d1b8fa04034abd",
+        "parent": "f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5",
+        "tree": "64d92a39a212ed08a05f104cc1ba72bd66a93c06",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-03-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-05-SUMMARY.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-RESEARCH.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          "docs/FOLLOWUPS.md"
+        ],
+        "kind": "docs_lifecycle"
+      },
+      {
+        "commit": "0eb5098426f95ee8d8e33bb4c35d370d399ea6b4",
+        "parent": "2a55eaee88909e3c635a6b9e88d1b8fa04034abd",
+        "tree": "48e30dffa172628ee19f7adb6305688f676bb91a",
+        "paths": [
+          "crates/nano-model/fixtures-flux/pdf/control-request.json",
+          "crates/nano-model/fixtures-flux/pdf/document-request.json",
+          "crates/nano-model/fixtures-flux/pdf/document-response.json",
+          "crates/nano-model/fixtures-flux/pdf/evidence-manifest.json",
+          "crates/nano-model/fixtures-flux/pdf/known-quote.pdf",
+          "crates/nano-model/fixtures-flux/pdf/session-transcript.json",
+          "crates/nano-model/fixtures-flux/pdf/usage-summary.json"
+        ],
+        "kind": "live_evidence"
+      }
+    ]
+  }
+}

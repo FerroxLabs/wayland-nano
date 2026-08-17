@@ -150,6 +150,19 @@ pub fn attachment_unavailable_placeholder(n: usize, digest: &str) -> String {
     )
 }
 
+/// Loud document-specific replay placeholder. This parallels the existing
+/// image fallback without changing its stable text contract.
+pub fn document_unavailable_placeholder(n: usize, digest: &str) -> String {
+    let prefix: String = if is_valid_digest(digest) {
+        digest.chars().take(12).collect()
+    } else {
+        "malformed-digest".to_string()
+    };
+    format!(
+        "[Document #{n} unavailable: attachment {prefix} missing from store — do not answer from memory]"
+    )
+}
+
 /// A SHARED lease on `.gc.lock` (§5.4 guard 1). Held by attach writers for
 /// the whole staging-write → rename → journal-append span; the sweep's
 /// exclusive acquisition fails while any lease is held.
@@ -521,9 +534,10 @@ enum AgeClass {
 
 /// §5.4 host-side reference scan (wired by F-34): every blob digest any
 /// journal in `sessions_dir` still references — `TurnBegin.input_blocks`
-/// image manifests AND `ToolResult.image_refs` (F-32 LOW-7; §3.2). Only
-/// canonical digest strings collect (a malformed entry references nothing
-/// that exists in the store). FAIL-CLOSED: any unreadable journal aborts
+/// image/document manifests AND `ToolResult.image_refs` (F-32 LOW-7; §3.2).
+/// Image references retain their established behavior. A malformed document
+/// reference aborts the scan: silently omitting it could reap a live PDF.
+/// FAIL-CLOSED: any unreadable journal aborts
 /// the scan with Err — the caller must NOT sweep on a partial set (a
 /// skipped journal's references would otherwise be reaped live).
 pub fn referenced_blob_digests(sessions_dir: &Path) -> io::Result<HashSet<String>> {
@@ -550,10 +564,24 @@ pub fn referenced_blob_digests(sessions_dir: &Path) -> io::Result<HashSet<String
             match &envelope.op {
                 Op::TurnBegin { input_blocks, .. } => {
                     for block in input_blocks {
-                        if let InputBlock::ImageRef(reference) = block {
-                            if is_valid_digest(&reference.digest) {
+                        match block {
+                            InputBlock::ImageRef(reference) => {
+                                if is_valid_digest(&reference.digest) {
+                                    referenced.insert(reference.digest.clone());
+                                }
+                            }
+                            InputBlock::DocumentRef(reference) => {
+                                if !is_valid_digest(&reference.digest)
+                                    || reference.mime != "application/pdf"
+                                {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        "malformed document reference in journal",
+                                    ));
+                                }
                                 referenced.insert(reference.digest.clone());
                             }
+                            InputBlock::Text { .. } => {}
                         }
                     }
                 }
@@ -1586,13 +1614,14 @@ mod tests {
     /// an unreadable journal.
     #[test]
     fn referenced_digests_cover_prompts_and_tool_results() {
-        use crate::op::{ImageRef, InputBlock, Op, OpEnvelope};
+        use crate::op::{DocumentRef, ImageRef, InputBlock, Op, OpEnvelope};
 
         let dir = std::env::temp_dir().join(format!("nano-gc-scan-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let digest_a = "aa".repeat(32);
         let digest_b = "bb".repeat(32);
+        let digest_c = "cc".repeat(32);
         let image = |digest: String| ImageRef {
             digest,
             mime: "image/png".into(),
@@ -1610,6 +1639,20 @@ mod tests {
                     turn_id: "t1".into(),
                     input: "look".into(),
                     input_blocks: vec![InputBlock::ImageRef(image(digest_a.clone()))],
+                },
+            ),
+            OpEnvelope::new(
+                "op-3",
+                "now",
+                Op::TurnBegin {
+                    turn_id: "t2".into(),
+                    input: "read".into(),
+                    input_blocks: vec![InputBlock::DocumentRef(DocumentRef {
+                        digest: digest_c.clone(),
+                        mime: "application/pdf".into(),
+                        bytes: 9,
+                        placeholder: "[Document #1]".into(),
+                    })],
                 },
             ),
             OpEnvelope::new(
@@ -1640,17 +1683,102 @@ mod tests {
             referenced.contains(&digest_b),
             "tool-result image_refs digest"
         );
-        assert_eq!(referenced.len(), 2);
+        assert!(referenced.contains(&digest_c), "document manifest digest");
+        assert_eq!(referenced.len(), 3);
 
         // Fail-closed: an unreadable journal aborts the scan (the caller
         // must not sweep on a partial set). The bad line must be NON-final
         // — a final bad line is the reader's tolerated crash-torn tail.
-        fs::write(dir.join("corrupt.jsonl"), "not json\n{}\n").unwrap();
+        let corrupt = dir.join("corrupt.jsonl");
+        fs::write(&corrupt, "not json\n{}\n").unwrap();
         assert!(referenced_blob_digests(&dir).is_err());
+        fs::remove_file(corrupt).unwrap();
 
         // A missing sessions dir scans empty (fresh profile).
         let missing = dir.join("nope");
         assert!(referenced_blob_digests(&missing).unwrap().is_empty());
+
+        let malformed = OpEnvelope::new(
+            "op-bad",
+            "now",
+            Op::TurnBegin {
+                turn_id: "t3".into(),
+                input: "read".into(),
+                input_blocks: vec![InputBlock::DocumentRef(DocumentRef {
+                    digest: "AA".repeat(32),
+                    mime: "application/pdf".into(),
+                    bytes: 1,
+                    placeholder: "[Document #1]".into(),
+                })],
+            },
+        );
+        fs::write(
+            dir.join("malformed.jsonl"),
+            format!("{}\n", serde_json::to_string(&malformed).unwrap()),
+        )
+        .unwrap();
+        assert!(referenced_blob_digests(&dir).is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn document_reference_retains_blob_and_orphan_is_swept() {
+        use crate::op::{DocumentRef, InputBlock, Op, OpEnvelope};
+
+        let home = test_home("gc-document");
+        let sessions = home.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let store = AttachmentStore::open(&home).unwrap();
+        let lease = store.acquire_write_lease().unwrap();
+        let retained = store.put(&lease, b"%PDF-retained").unwrap();
+        let orphan = store.put(&lease, b"%PDF-orphan").unwrap();
+        drop(lease);
+
+        let envelope = OpEnvelope::new(
+            "op-document",
+            "now",
+            Op::TurnBegin {
+                turn_id: "turn-document".into(),
+                input: "[Document #1]".into(),
+                input_blocks: vec![InputBlock::DocumentRef(DocumentRef {
+                    digest: retained.clone(),
+                    mime: "application/pdf".into(),
+                    bytes: 13,
+                    placeholder: "[Document #1]".into(),
+                })],
+            },
+        );
+        fs::write(
+            sessions.join("document.jsonl"),
+            format!("{}\n", serde_json::to_string(&envelope).unwrap()),
+        )
+        .unwrap();
+
+        let referenced = referenced_blob_digests(&sessions).unwrap();
+        let later = SystemTime::now() + Duration::from_secs(GC_GRACE_SECS + 1);
+        let lock = FileLock::try_acquire(&store.lock_path()).unwrap();
+        let report = store.sweep_at(&referenced, later).unwrap();
+        drop(lock);
+        assert_eq!(report.removed_blobs, 1);
+        assert_eq!(store.read_verified(&retained).unwrap(), b"%PDF-retained");
+        assert!(matches!(
+            store.read_verified(&orphan).unwrap_err(),
+            BlobReadError::Missing
+        ));
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn unavailable_document_uses_attachment_missing_and_loud_placeholder() {
+        let home = test_home("document-unavailable");
+        let store = AttachmentStore::open(&home).unwrap();
+        let digest = "ef".repeat(32);
+        let err = store.read_verified(&digest).unwrap_err();
+        assert_eq!(err.kind(), NanoErrorKind::AttachmentMissing);
+        let placeholder = document_unavailable_placeholder(1, &digest);
+        assert!(placeholder.contains("Document #1 unavailable"));
+        assert!(placeholder.contains(&digest[..12]));
+        assert!(placeholder.contains("do not answer from memory"));
+        let _ = fs::remove_dir_all(&home);
     }
 }

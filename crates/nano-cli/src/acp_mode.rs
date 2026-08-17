@@ -99,7 +99,8 @@ use nano_tools::shell::ShellTool;
 // AttachmentStoreError}). This module CONSUMES those APIs and defines none
 // of them.
 use nano_session::attachment_store::{
-    AttachmentStore, BlobReadError, attachment_unavailable_placeholder, is_valid_digest,
+    AttachmentStore, BlobReadError, WriteLease, attachment_unavailable_placeholder,
+    document_unavailable_placeholder, is_valid_digest,
 };
 use std::io::{BufRead, Write};
 use std::sync::atomic::Ordering;
@@ -753,6 +754,72 @@ fn unix_now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+fn resolved_leaf_accepts_documents(has_documents: bool, wire: WireKind) -> bool {
+    !has_documents || wire == WireKind::AnthropicMessages
+}
+
+fn publish_turn_attachments(
+    input: &nano_agent::turn_input::TurnInput,
+    attachment_home: &std::path::Path,
+) -> Result<WriteLease, String> {
+    let store = AttachmentStore::open(attachment_home)
+        .map_err(|err| format!("attachment store unavailable: {err}"))?;
+    let lease = store
+        .acquire_write_lease()
+        .map_err(|err| format!("attachment store lock failed: {err}"))?;
+    for block in &input.blocks {
+        let (expected, data, label) = match block {
+            nano_agent::turn_input::TurnBlock::Image { reference, data } => {
+                (&reference.digest, data, "image")
+            }
+            nano_agent::turn_input::TurnBlock::Document { reference, data } => {
+                (&reference.digest, data, "document")
+            }
+            nano_agent::turn_input::TurnBlock::Text { .. } => continue,
+        };
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|_| format!("{label} block data is not valid base64"))?;
+        let digest = store
+            .put(&lease, &bytes)
+            .map_err(|err| format!("attachment publish failed: {err}"))?;
+        if digest != *expected {
+            return Err("attachment digest mismatch at publish".into());
+        }
+    }
+    Ok(lease)
+}
+
+fn runtime_driver(
+    binding: &crate::provider_router::ProviderBinding,
+    policy: &nano_egress::policy::EgressPolicy,
+) -> ProviderDriver {
+    let egress = EgressClient::new(policy.clone());
+    match binding.wire {
+        WireKind::OpenAiCompletions => {
+            let client = FluxCompletionsClient::new(egress)
+                .with_base_url(binding.base_url.clone())
+                .with_api_path(binding.api_path.clone());
+            let client = match &binding.retry {
+                Some(retry) => client.with_retry_config(retry.clone()),
+                None => client,
+            };
+            ProviderDriver::openai(client, binding.credential.secret().to_string())
+        }
+        WireKind::AnthropicMessages => {
+            let client = AnthropicMessagesClient::new(egress)
+                .with_base_url(binding.base_url.clone())
+                .with_api_path(binding.api_path.clone());
+            let client = match &binding.retry {
+                Some(retry) => client.with_retry_config(retry.clone()),
+                None => client,
+            };
+            ProviderDriver::anthropic(client, binding.credential.secret().to_string())
+        }
+    }
+}
+
 pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     let env_reader = |name: &str| std::env::var(name).ok();
     let now = unix_now_secs();
@@ -961,33 +1028,8 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     // turn so credential/expiry changes are observed.
     let driver_policy = policy.clone();
     let make_driver = move |binding: &crate::provider_router::ProviderBinding| {
-        let egress = EgressClient::new(driver_policy.clone());
-        // P5 §4: Auto-ladder candidates carry `RetryConfig::single_attempt`
-        // on the binding so every physical attempt counts against the
-        // ladder's global budget; pins/implicit turns keep the default
-        // retry posture (`binding.retry == None`).
-        match binding.wire {
-            WireKind::OpenAiCompletions => {
-                let client = FluxCompletionsClient::new(egress)
-                    .with_base_url(binding.base_url.clone())
-                    .with_api_path(binding.api_path.clone());
-                let client = match &binding.retry {
-                    Some(retry) => client.with_retry_config(retry.clone()),
-                    None => client,
-                };
-                ProviderDriver::openai(client, binding.credential.secret().to_string())
-            }
-            WireKind::AnthropicMessages => {
-                let client = AnthropicMessagesClient::new(egress)
-                    .with_base_url(binding.base_url.clone())
-                    .with_api_path(binding.api_path.clone());
-                let client = match &binding.retry {
-                    Some(retry) => client.with_retry_config(retry.clone()),
-                    None => client,
-                };
-                ProviderDriver::anthropic(client, binding.credential.secret().to_string())
-            }
-        }
+        // P5 §4: Auto candidates carry single-attempt retry on the binding.
+        runtime_driver(binding, &driver_policy)
     };
     // P1: web_search — the key-gated ladder, resolved ONCE at host start
     // (design §2.3: mid-session re-resolution is out of scope). The
@@ -2986,92 +3028,9 @@ where
                             // not-yet-referenced blob. The lease guard rides
                             // the turn sink below and is dropped once the
                             // TurnBegin append is durable.
+                            // Publication is deliberately deferred until the
+                            // resolved leaf passes the PDF wire gate below.
                             let mut attach_lease = None;
-                            if turn_input.has_images() {
-                                let store = match AttachmentStore::open(config.attachment_home) {
-                                    Ok(store) => store,
-                                    Err(err) => {
-                                        write_out(
-                                            &out,
-                                            &JsonRpcResponse::err_typed(
-                                                id,
-                                                NanoErrorKind::AttachmentStoreError,
-                                                format!("attachment store unavailable: {err}"),
-                                                NanoErrorExtras::default(),
-                                            ),
-                                        )?;
-                                        continue;
-                                    }
-                                };
-                                let lease = match store.acquire_write_lease() {
-                                    Ok(lease) => lease,
-                                    Err(err) => {
-                                        write_out(
-                                            &out,
-                                            &JsonRpcResponse::err_typed(
-                                                id,
-                                                NanoErrorKind::AttachmentStoreError,
-                                                format!("attachment store lock failed: {err}"),
-                                                NanoErrorExtras::default(),
-                                            ),
-                                        )?;
-                                        continue;
-                                    }
-                                };
-                                let mut publish_failed = None;
-                                for block in &turn_input.blocks {
-                                    let nano_agent::turn_input::TurnBlock::Image {
-                                        reference,
-                                        data,
-                                    } = block
-                                    else {
-                                        continue;
-                                    };
-                                    use base64::Engine;
-                                    let bytes = match base64::engine::general_purpose::STANDARD
-                                        .decode(data)
-                                    {
-                                        Ok(bytes) => bytes,
-                                        Err(_) => {
-                                            publish_failed = Some(
-                                                "image block data is not valid base64".to_string(),
-                                            );
-                                            break;
-                                        }
-                                    };
-                                    // The store content-addresses the bytes;
-                                    // the returned digest MUST equal the
-                                    // loader-computed one (defense in depth).
-                                    match store.put(&lease, &bytes) {
-                                        Ok(digest) if digest == reference.digest => {}
-                                        Ok(_) => {
-                                            publish_failed = Some(
-                                                "attachment digest mismatch at publish"
-                                                    .to_string(),
-                                            );
-                                            break;
-                                        }
-                                        Err(err) => {
-                                            publish_failed =
-                                                Some(format!("attachment publish failed: {err}"));
-                                            break;
-                                        }
-                                    }
-                                }
-                                if let Some(message) = publish_failed {
-                                    write_out(
-                                        &out,
-                                        &JsonRpcResponse::err_typed(
-                                            id,
-                                            NanoErrorKind::AttachmentStoreError,
-                                            message,
-                                            NanoErrorExtras::default(),
-                                        ),
-                                    )?;
-                                    continue;
-                                }
-                                attach_lease = Some(lease);
-                            }
                             // A fresh prompt starts un-cancelled; a cancel that
                             // landed between turns must not poison this one.
                             active.cancel.store(false, Ordering::SeqCst);
@@ -3277,6 +3236,24 @@ where
                                 };
                                 if let Err(err) = binding.check_fresh(unix_now_secs()) {
                                     write_out(&out, &err.acp_response(id))?;
+                                    continue;
+                                }
+                                if !resolved_leaf_accepts_documents(
+                                    turn_input.has_documents(),
+                                    binding.wire,
+                                ) {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            NanoErrorKind::ModelLacksPdf,
+                                            format!(
+                                                "model_lacks_pdf: {} cannot process PDF documents. Switch to a PDF-capable model (/model).",
+                                                turn_model
+                                            ),
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
                                     continue;
                                 }
                                 let anthropic_wire = binding.wire == WireKind::AnthropicMessages;
@@ -3527,6 +3504,7 @@ where
                                 // (journaled), never silently substituted.
                                 let mut ladder_candidates = Vec::new();
                                 let mut journal_failed = false;
+                                let mut incompatible_document_leaf = None;
                                 for admitted_candidate in &admitted {
                                     let bound = config
                                         .router
@@ -3541,6 +3519,14 @@ where
                                         });
                                     match bound {
                                         Ok(binding) => {
+                                            if !resolved_leaf_accepts_documents(
+                                                turn_input.has_documents(),
+                                                binding.wire,
+                                            ) {
+                                                incompatible_document_leaf =
+                                                    Some(admitted_candidate.reference.clone());
+                                                break;
+                                            }
                                             let driver =
                                                 make_driver(&binding.with_single_attempt());
                                             ladder_candidates.push(
@@ -3615,6 +3601,20 @@ where
                                     )?;
                                     continue;
                                 }
+                                if let Some(reference) = incompatible_document_leaf {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            NanoErrorKind::ModelLacksPdf,
+                                            format!(
+                                                "model_lacks_pdf: {reference} cannot process PDF documents. Switch to a PDF-capable model (/model)."
+                                            ),
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
                                 if ladder_candidates.is_empty() {
                                     let err =
                                         crate::provider_router::ProviderError::no_credential(
@@ -3645,6 +3645,18 @@ where
                                     false,
                                 )
                             };
+                            if turn_input.has_images() || turn_input.has_documents() {
+                                match publish_turn_attachments(&turn_input, config.attachment_home) {
+                                    Ok(lease) => attach_lease = Some(lease),
+                                    Err(message) => {
+                                        write_out(&out, &JsonRpcResponse::err_typed(
+                                            id, NanoErrorKind::AttachmentStoreError, message,
+                                            NanoErrorExtras::default(),
+                                        ))?;
+                                        continue;
+                                    }
+                                }
+                            }
                             // The session's MCP registry: the turn executor
                             // routes mcp__ calls through it (and advertises
                             // its tools to the model) without taking ownership.
@@ -6669,6 +6681,52 @@ fn rehydrate_image_block(
     Ok(data)
 }
 
+/// Rebuild a journaled PDF only from the content-addressed store. The
+/// projection placeholder is display-only and is never treated as payload.
+fn rehydrate_document_block(
+    store: Option<&AttachmentStore>,
+    reference: &nano_session::op::DocumentRef,
+) -> Result<String, AttachmentIssue> {
+    let prefix = || {
+        if is_valid_digest(&reference.digest) {
+            reference.digest.chars().take(12).collect()
+        } else {
+            "malformed-digest".to_string()
+        }
+    };
+    if reference.mime != "application/pdf" || !is_valid_digest(&reference.digest) {
+        return Err(AttachmentIssue {
+            cause: AttachmentIssueCause::Malformed,
+            digest_prefix: prefix(),
+        });
+    }
+    let store = store.ok_or_else(|| AttachmentIssue {
+        cause: AttachmentIssueCause::Missing,
+        digest_prefix: prefix(),
+    })?;
+    let bytes = store
+        .read_verified(&reference.digest)
+        .map_err(|err| AttachmentIssue {
+            cause: match err {
+                BlobReadError::Missing | BlobReadError::Store(_) => AttachmentIssueCause::Missing,
+                BlobReadError::Tampered => AttachmentIssueCause::Tampered,
+                BlobReadError::MalformedDigest => AttachmentIssueCause::Malformed,
+            },
+            digest_prefix: prefix(),
+        })?;
+    if bytes.len() as u64 != reference.bytes
+        || bytes.len() > 20 * 1024 * 1024
+        || !bytes.starts_with(b"%PDF-")
+    {
+        return Err(AttachmentIssue {
+            cause: AttachmentIssueCause::Tampered,
+            digest_prefix: prefix(),
+        });
+    }
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
 /// F-P2B-1 (Flux media contract 2026-08-14, rule 2): remote http(s) image
 /// URLs are never passed through to the provider — server-side the failure
 /// is SILENT (HTTP 200, tokens billed, blind answer) and pinned Anthropic
@@ -6716,7 +6774,7 @@ fn envelope_has_image_manifest(envelope: &OpEnvelope) -> bool {
     match &envelope.op {
         Op::TurnBegin { input_blocks, .. } => input_blocks
             .iter()
-            .any(|b| matches!(b, InputBlock::ImageRef(_))),
+            .any(|b| matches!(b, InputBlock::ImageRef(_) | InputBlock::DocumentRef(_))),
         Op::ToolResult { image_refs, .. } => !image_refs.is_empty(),
         _ => false,
     }
@@ -6936,6 +6994,9 @@ impl ContextFold {
                 input_blocks,
                 ..
             } => {
+                self.has_image_manifests |= input_blocks.iter().any(|block| {
+                    matches!(block, InputBlock::ImageRef(_) | InputBlock::DocumentRef(_))
+                });
                 self.note_image_manifest(
                     &envelope.id,
                     input_blocks
@@ -6954,6 +7015,7 @@ impl ContextFold {
                     // all unambiguous by construction.
                     let mut blocks: Vec<ContentBlock> = Vec::new();
                     let mut image_ordinal = 0u32;
+                    let mut document_ordinal = 0usize;
                     for block in input_blocks {
                         match block {
                             InputBlock::Text { text } => {
@@ -6983,6 +7045,33 @@ impl ContextFold {
                                         blocks.push(ContentBlock::Text {
                                             text: attachment_unavailable_placeholder(
                                                 image_ordinal as usize,
+                                                &reference.digest,
+                                            ),
+                                        });
+                                    }
+                                }
+                            }
+                            InputBlock::DocumentRef(reference) => {
+                                document_ordinal += 1;
+                                match rehydrate_document_block(attachments, reference) {
+                                    Ok(data) => blocks.push(ContentBlock::Document {
+                                        media_type: reference.mime.clone(),
+                                        data,
+                                    }),
+                                    Err(issue) => {
+                                        let word = match issue.cause {
+                                            AttachmentIssueCause::Missing => "MISSING",
+                                            AttachmentIssueCause::Tampered => "TAMPERED",
+                                            AttachmentIssueCause::Malformed => "MALFORMED",
+                                        };
+                                        eprintln!(
+                                            "wayland-nano: attachment {word}: {}",
+                                            issue.digest_prefix
+                                        );
+                                        self.notices.push(issue);
+                                        blocks.push(ContentBlock::Text {
+                                            text: document_unavailable_placeholder(
+                                                document_ordinal,
                                                 &reference.digest,
                                             ),
                                         });
@@ -7196,7 +7285,7 @@ pub fn image_influenced_from_envelopes(envelopes: &[OpEnvelope]) -> bool {
 /// Whether any journaled manifest references an attachment — the store is
 /// opened (with its §5.5 fail-closed audit) only when one does.
 fn journal_has_image_manifests(envelopes: &[OpEnvelope]) -> bool {
-    ContextFold::prime(envelopes, None).0.has_image_manifests
+    envelopes.iter().any(envelope_has_image_manifest)
 }
 
 /// Rebuilds model-consumable conversation context from journaled ops. Tool
@@ -7337,6 +7426,66 @@ mod tests {
     use super::*;
     use nano_core::permissions::PermissionProfile;
 
+    struct LiveChannelReader {
+        rx: std::sync::mpsc::Receiver<String>,
+        buf: Vec<u8>,
+        pos: usize,
+    }
+
+    impl std::io::Read for LiveChannelReader {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            let n = {
+                let available = self.fill_buf()?;
+                let n = available.len().min(out.len());
+                out[..n].copy_from_slice(&available[..n]);
+                n
+            };
+            self.consume(n);
+            Ok(n)
+        }
+    }
+
+    impl BufRead for LiveChannelReader {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            while self.pos >= self.buf.len() {
+                match self.rx.recv() {
+                    Ok(line) => {
+                        self.buf = line.into_bytes();
+                        self.pos = 0;
+                    }
+                    Err(_) => return Ok(&[]),
+                }
+            }
+            Ok(&self.buf[self.pos..])
+        }
+
+        fn consume(&mut self, amount: usize) {
+            self.pos += amount;
+        }
+    }
+
+    struct LiveChannelWriter {
+        tx: std::sync::mpsc::Sender<String>,
+        buf: Vec<u8>,
+    }
+
+    impl Write for LiveChannelWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.buf.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            while let Some(end) = self.buf.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = self.buf.drain(..=end).collect();
+                self.tx
+                    .send(String::from_utf8_lossy(&line).into_owned())
+                    .map_err(std::io::Error::other)?;
+            }
+            Ok(())
+        }
+    }
+
     /// A temp workspace that cleans itself up.
     struct TestWorkspace(std::path::PathBuf);
 
@@ -7349,6 +7498,35 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("workspace");
         TestWorkspace(dir)
+    }
+
+    fn initialize_checkpoint_workspace(workspace: &std::path::Path) {
+        let run_git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(workspace)
+                .output()
+                .expect("run git for checkpoint-ready test workspace");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+
+        run_git(&["init"]);
+        std::fs::write(workspace.join("tracked.txt"), "checkpoint baseline\n")
+            .expect("write checkpoint baseline");
+        run_git(&["add", "tracked.txt"]);
+        run_git(&[
+            "-c",
+            "user.name=wayland-nano-test",
+            "-c",
+            "user.email=wayland-nano-test@example.invalid",
+            "commit",
+            "-m",
+            "checkpoint baseline",
+        ]);
     }
 
     impl Drop for TestWorkspace {
@@ -10737,5 +10915,887 @@ mod tests {
     #[test]
     fn mem_stats_windows_private_working_set_is_nonzero() {
         assert!(process_private_working_set().unwrap() > 0);
+    }
+
+    #[test]
+    fn document_manifest_kill_resume_rehydrates_verified_bytes_in_mixed_order() {
+        use nano_session::op::DocumentRef;
+        let (_home, store) = p2b_store("document-resume");
+        let lease = store.acquire_write_lease().expect("lease");
+        let pdf = b"%PDF-1.7\nresume-proof";
+        let digest = store.put(&lease, pdf).expect("publish");
+        drop(lease);
+        let reference = DocumentRef {
+            digest: digest.clone(),
+            mime: "application/pdf".into(),
+            bytes: pdf.len() as u64,
+            placeholder: "[Document #1: attached PDF]".into(),
+        };
+        let envelopes = vec![OpEnvelope::new(
+            "turn-document",
+            "now",
+            Op::TurnBegin {
+                turn_id: "turn-document".into(),
+                input: "before\n[Document #1: attached PDF]\nafter".into(),
+                input_blocks: vec![
+                    InputBlock::Text {
+                        text: "before".into(),
+                    },
+                    InputBlock::DocumentRef(reference),
+                    InputBlock::Text {
+                        text: "after".into(),
+                    },
+                ],
+            },
+        )];
+        let journal = serde_json::to_string(&envelopes).expect("journal serialization");
+        assert!(
+            !journal.contains("JVBER"),
+            "journal never carries live base64"
+        );
+        let (messages, notices) = messages_from_envelopes_rehydrating(&envelopes, Some(&store));
+        assert!(notices.is_empty());
+        let blocks = &messages[0].content;
+        assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "before"));
+        use base64::Engine;
+        let expected = base64::engine::general_purpose::STANDARD.encode(pdf);
+        assert!(
+            matches!(&blocks[1], ContentBlock::Document { media_type, data } if media_type == "application/pdf" && data == &expected)
+        );
+        assert!(matches!(&blocks[2], ContentBlock::Text { text } if text == "after"));
+        assert!(journal_has_image_manifests(&envelopes));
+    }
+
+    #[test]
+    fn document_resume_missing_and_corrupt_degrade_without_placeholder_reconstruction() {
+        use nano_session::op::DocumentRef;
+        let (_home, store) = p2b_store("document-degrade");
+        let make = |digest: String| {
+            vec![OpEnvelope::new(
+                "turn-document",
+                "now",
+                Op::TurnBegin {
+                    turn_id: "turn-document".into(),
+                    input: "FORGED PLACEHOLDER PAYLOAD".into(),
+                    input_blocks: vec![InputBlock::DocumentRef(DocumentRef {
+                        digest,
+                        mime: "application/pdf".into(),
+                        bytes: 7,
+                        placeholder: "FORGED PLACEHOLDER PAYLOAD".into(),
+                    })],
+                },
+            )]
+        };
+        let missing = "ef".repeat(32);
+        let (messages, notices) = messages_from_envelopes_rehydrating(&make(missing), Some(&store));
+        assert_eq!(notices[0].cause, AttachmentIssueCause::Missing);
+        assert!(
+            matches!(&messages[0].content[0], ContentBlock::Text { text } if text.contains("Document #1 unavailable") && !text.contains("FORGED"))
+        );
+
+        let lease = store.acquire_write_lease().expect("lease");
+        let digest = store.put(&lease, b"%PDF-x").expect("put");
+        drop(lease);
+        let blob = store.root().join("blobs").join(&digest[..2]).join(&digest);
+        let mut bytes = std::fs::read(&blob).expect("read blob");
+        bytes[0] ^= 0xff;
+        std::fs::write(blob, bytes).expect("corrupt blob");
+        let (messages, notices) = messages_from_envelopes_rehydrating(&make(digest), Some(&store));
+        assert_eq!(notices[0].cause, AttachmentIssueCause::Tampered);
+        assert!(
+            matches!(&messages[0].content[0], ContentBlock::Text { text } if text.contains("do not answer from memory") && !text.contains("FORGED"))
+        );
+    }
+
+    #[test]
+    fn document_replay_rejects_metadata_magic_and_numbers_failures_independently() {
+        use nano_session::op::DocumentRef;
+        let (_home, store) = p2b_store("document-contract");
+        let lease = store.acquire_write_lease().unwrap();
+        let wrong_magic = b"NOT-A-PDF";
+        let digest = store.put(&lease, wrong_magic).unwrap();
+        drop(lease);
+        let refs = vec![
+            DocumentRef {
+                digest: digest.clone(),
+                mime: "application/pdf".into(),
+                bytes: wrong_magic.len() as u64,
+                placeholder: "forged one".into(),
+            },
+            DocumentRef {
+                digest: "ef".repeat(32),
+                mime: "application/pdf".into(),
+                bytes: 1,
+                placeholder: "forged two".into(),
+            },
+        ];
+        let envelopes = vec![OpEnvelope::new(
+            "docs",
+            "now",
+            Op::TurnBegin {
+                turn_id: "docs".into(),
+                input: "forged".into(),
+                input_blocks: refs.into_iter().map(InputBlock::DocumentRef).collect(),
+            },
+        )];
+        let (messages, notices) = messages_from_envelopes_rehydrating(&envelopes, Some(&store));
+        assert_eq!(notices.len(), 2);
+        assert!(
+            matches!(&messages[0].content[0], ContentBlock::Text { text } if text.contains("Document #1 unavailable") && !text.contains("forged"))
+        );
+        assert!(
+            matches!(&messages[0].content[1], ContentBlock::Text { text } if text.contains("Document #2 unavailable") && !text.contains("forged"))
+        );
+
+        let lease = store.acquire_write_lease().unwrap();
+        let valid = b"%PDF-valid";
+        let valid_digest = store.put(&lease, valid).unwrap();
+        drop(lease);
+        let wrong_len = nano_session::op::DocumentRef {
+            digest: valid_digest,
+            mime: "application/pdf".into(),
+            bytes: valid.len() as u64 + 1,
+            placeholder: "forged".into(),
+        };
+        assert_eq!(
+            rehydrate_document_block(Some(&store), &wrong_len)
+                .unwrap_err()
+                .cause,
+            AttachmentIssueCause::Tampered
+        );
+    }
+
+    #[test]
+    fn pdf_resolved_leaf_gate_refuses_completions_with_exactly_zero_calls() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let dispatch = |wire| {
+            if resolved_leaf_accepts_documents(true, wire) {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            } else {
+                Err(NanoErrorKind::ModelLacksPdf)
+            }
+        };
+        assert_eq!(
+            dispatch(WireKind::OpenAiCompletions),
+            Err(NanoErrorKind::ModelLacksPdf)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "explicit leaf: zero calls");
+        assert_eq!(
+            dispatch(WireKind::OpenAiCompletions),
+            Err(NanoErrorKind::ModelLacksPdf)
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "auto first leaf: no reroute"
+        );
+        assert_eq!(dispatch(WireKind::AnthropicMessages), Ok(()));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "compatible leaf sends once"
+        );
+    }
+
+    #[derive(Debug, Clone)]
+    struct PdfRecordingDriver {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl ModelDriver for PdfRecordingDriver {
+        async fn complete(
+            &self,
+            _request: &nano_model::types::ModelRequest,
+        ) -> Result<nano_model::types::ModelResponse, nano_model::types::ModelError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(fold_text_response("compatible"))
+        }
+    }
+
+    fn serve_pdf_case(auto: bool, compatible: bool) -> (serde_json::Value, usize, bool) {
+        static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _env = ENV.lock().unwrap();
+        let variable = if compatible {
+            "ANTHROPIC_API_KEY"
+        } else {
+            "OPENAI_API_KEY"
+        };
+        let prior = std::env::var_os(variable);
+        unsafe { std::env::set_var(variable, "test-only-not-a-secret") };
+        let result = {
+            let ws = workspace();
+            initialize_checkpoint_workspace(&ws.0);
+            let sessions = ws.0.join("sessions");
+            std::fs::create_dir_all(&sessions).unwrap();
+            let home = ws.0.clone();
+            let provider = if compatible { "anthropic" } else { "openai" };
+            let payload =
+                format!(r#"[{{"provider":"{provider}","models":["flux-auto"],"hasKey":true}}]"#);
+            let router = crate::provider_router::ProviderRouter::from_payload(Some(&payload))
+                .expect("valid provider fixture");
+            let model = if compatible {
+                "anthropic:flux-auto"
+            } else {
+                "openai:flux-auto"
+            };
+            let available = if compatible {
+                router.advertised_models()
+            } else {
+                vec![AvailableModel {
+                    id: model.into(),
+                    name: model.into(),
+                }]
+            };
+            let routing = crate::auto_routing::RoutingConfig {
+                auto_opt_in: auto,
+                configured_default: None,
+                tools_probe: false,
+            };
+            let memory = MemoryHostConfig {
+                dir: home.join("memory"),
+                write_enabled: false,
+                block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
+            };
+            let vision = nano_model::vision_catalog::VisionCatalog::vendored().unwrap();
+            let hooks = nano_hooks::HookEngine::empty();
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let driver = PdfRecordingDriver {
+                calls: calls.clone(),
+            };
+            let host_home = home.clone();
+            let (input_tx, input_rx) = std::sync::mpsc::channel();
+            let (output_tx, output_rx) = std::sync::mpsc::channel();
+            let host = std::thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        let probe = || true;
+                        let config = ServeConfig {
+                            sessions_dir: &sessions,
+                            default_model: model,
+                            available_models: &available,
+                            env_mcp_specs: &[],
+                            catalog: &[],
+                            window_override: None,
+                            limit_override: None,
+                            reasoning_effort: None,
+                            verbosity: None,
+                            sandbox_probe: &probe,
+                            router: &router,
+                            journal_append_failer: None,
+                            memory: &memory,
+                            cron_home: None,
+                            search: None,
+                            search_meter: None,
+                            pricing: None,
+                            budget_cap: None,
+                            vision_catalog: &vision,
+                            attachment_home: &host_home,
+                            hooks: &hooks,
+                            routing: &routing,
+                        };
+                        serve(
+                            LiveChannelReader {
+                                rx: input_rx,
+                                buf: vec![],
+                                pos: 0,
+                            },
+                            LiveChannelWriter {
+                                tx: output_tx,
+                                buf: vec![],
+                            },
+                            &config,
+                            move |_| driver.clone(),
+                            move |_, _, _, _, _, _| {
+                                (
+                                    NoopExecutor,
+                                    PermissionProfile::workspace_write()
+                                        .file_system_sandbox_policy(),
+                                )
+                            },
+                        )
+                        .await
+                    })
+            });
+            let mut id = 1u64;
+            let request = |method: &str, params: serde_json::Value, id: &mut u64| {
+                let current = *id;
+                *id += 1;
+                input_tx.send(format!("{}\n", serde_json::json!({"jsonrpc":"2.0","id":current,"method":method,"params":params}))).unwrap();
+                loop {
+                    let line = output_rx
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .unwrap();
+                    let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    if frame.get("id").and_then(|v| v.as_u64()) == Some(current) {
+                        break frame;
+                    }
+                }
+            };
+            request(
+                "initialize",
+                serde_json::json!({"protocolVersion":1,"clientCapabilities":{}}),
+                &mut id,
+            );
+            let created = request(
+                "session/new",
+                serde_json::json!({"cwd":ws.0,"mcpServers":[]}),
+                &mut id,
+            );
+            let session = created["result"]["sessionId"].as_str().unwrap();
+            if !auto {
+                request(
+                    "session/set_model",
+                    serde_json::json!({"sessionId":session,"modelId":model}),
+                    &mut id,
+                );
+            }
+            use base64::Engine;
+            let pdf = base64::engine::general_purpose::STANDARD.encode(b"%PDF-x");
+            let response = request(
+                "session/prompt",
+                serde_json::json!({"sessionId":session,"prompt":[{"type":"document","mimeType":"application/pdf","data":pdf}]}),
+                &mut id,
+            );
+            drop(input_tx);
+            assert_eq!(host.join().unwrap().unwrap(), 0);
+            fn contains_file(path: &std::path::Path) -> bool {
+                std::fs::read_dir(path).ok().is_some_and(|entries| {
+                    entries.flatten().any(|entry| {
+                        let path = entry.path();
+                        path.is_file() || (path.is_dir() && contains_file(&path))
+                    })
+                })
+            }
+            let blob_exists = contains_file(&home.join("attachments/blobs"));
+            (response, calls.load(Ordering::SeqCst), blob_exists)
+        };
+        match prior {
+            Some(value) => unsafe { std::env::set_var(variable, value) },
+            None => unsafe { std::env::remove_var(variable) },
+        }
+        result
+    }
+
+    #[test]
+    fn pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded() {
+        for auto in [false, true] {
+            let (response, calls, blob_exists) = serve_pdf_case(auto, false);
+            assert_eq!(
+                response["error"]["data"]["nanoError"]["kind"],
+                "model_lacks_pdf"
+            );
+            assert_eq!(calls, 0, "incompatible leaf makes zero driver calls");
+            assert!(!blob_exists, "pre-wire refusal publishes no blob");
+        }
+        let (response, calls, blob_exists) = serve_pdf_case(false, true);
+        assert_eq!(response["result"]["stopReason"], "end_turn");
+        assert_eq!(calls, 1);
+        assert!(blob_exists);
+    }
+
+    fn authoritative_monorepo_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .find(|root| {
+                root.join("shared/reviews/research-0.2/GOALS.md").is_file()
+                    && root.join("wayland-nano/AGENTS.md").is_file()
+            })
+            .expect("validated waylandnano monorepo root")
+            .to_path_buf()
+    }
+
+    fn pdf_evidence_manifest(
+        monorepo: &std::path::Path,
+        payloads: &[(&str, Vec<u8>)],
+        oracle: &str,
+        control_input_tokens: u64,
+        pdf_input_tokens: u64,
+    ) -> serde_json::Value {
+        use sha2::{Digest, Sha256};
+        let shared_root = monorepo
+            .join("shared/fixtures/flux/pdf")
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        let inputs: Vec<_> = payloads
+            .iter()
+            .map(|(name, bytes)| {
+                serde_json::json!({
+                    "repo_path": format!("crates/nano-model/fixtures-flux/pdf/{name}"),
+                    "shared_path": format!("{shared_root}/{name}"),
+                    "sha256": format!("{:x}", Sha256::digest(bytes)),
+                    "bytes": bytes.len()
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "oracle": oracle,
+            "control_input_tokens": control_input_tokens,
+            "pdf_input_tokens": pdf_input_tokens,
+            "inputs": inputs
+        })
+    }
+
+    #[test]
+    fn pdf_evidence_manifest_schema_has_exact_six_payload_pairs() {
+        let root = std::path::Path::new("D:/Development/waylandnano");
+        let names = [
+            "known-quote.pdf",
+            "control-request.json",
+            "document-request.json",
+            "document-response.json",
+            "usage-summary.json",
+            "session-transcript.json",
+        ];
+        let payloads: Vec<_> = names
+            .iter()
+            .map(|name| (*name, name.as_bytes().to_vec()))
+            .collect();
+        let manifest = pdf_evidence_manifest(root, &payloads, "oracle", 1, 1001);
+        let inputs = manifest["inputs"].as_array().unwrap();
+        assert_eq!(inputs.len(), 6, "manifest excludes itself by DEV-WP-0.3F");
+        let repo_paths: std::collections::BTreeSet<_> = inputs
+            .iter()
+            .map(|entry| entry["repo_path"].as_str().unwrap())
+            .collect();
+        assert_eq!(repo_paths.len(), 6);
+        for (entry, name) in inputs.iter().zip(names) {
+            assert_eq!(
+                entry["repo_path"],
+                format!("crates/nano-model/fixtures-flux/pdf/{name}")
+            );
+            assert_eq!(
+                entry["shared_path"],
+                format!("D:/Development/waylandnano/shared/fixtures/flux/pdf/{name}")
+            );
+            assert_eq!(entry["sha256"].as_str().unwrap().len(), 64);
+            assert!(entry["bytes"].as_u64().unwrap() > 0);
+        }
+    }
+
+    #[derive(Debug)]
+    struct PdfLiveEvidenceDriver(ProviderDriver);
+
+    #[async_trait::async_trait]
+    impl ModelDriver for PdfLiveEvidenceDriver {
+        async fn complete(
+            &self,
+            request: &nano_model::types::ModelRequest,
+        ) -> Result<nano_model::types::ModelResponse, nano_model::types::ModelError> {
+            let mut request = request.clone();
+            request.tools.clear();
+            request.max_tokens = Some(request.max_tokens.unwrap_or(64).min(64));
+            self.0.complete(&request).await
+        }
+
+        async fn complete_observed(
+            &self,
+            request: &nano_model::types::ModelRequest,
+            hooks: &nano_model::types::CallHooks<'_>,
+        ) -> Result<nano_model::types::ModelResponse, nano_model::types::ModelError> {
+            let mut request = request.clone();
+            request.tools.clear();
+            request.max_tokens = Some(request.max_tokens.unwrap_or(64).min(64));
+            self.0.complete_observed(&request, hooks).await
+        }
+    }
+
+    /// D7 active-leaf proof through the normal ACP host/router/driver path.
+    /// The credential is resolved by production code from its path; this
+    /// harness never opens, prints, or serializes it.
+    #[tokio::test]
+    #[ignore = "requires FLUX_API_KEY_FILE and the recorded PDF live fixture"]
+    async fn pdf_live_active_leaf_runtime_path() {
+        let Some(key_path) = std::env::var_os("FLUX_API_KEY_FILE") else {
+            eprintln!("pdf live proof skipped: FLUX_API_KEY_FILE is absent");
+            return;
+        };
+        assert!(
+            !key_path.is_empty(),
+            "FLUX_API_KEY_FILE must name the credential file"
+        );
+        let monorepo = authoritative_monorepo_root();
+        let fixture_dir = monorepo.join("shared/fixtures/flux/pdf");
+        let mut pdfs: Vec<_> = std::fs::read_dir(&fixture_dir)
+            .expect("recorded PDF fixture directory is required")
+            .map(|entry| entry.expect("fixture directory entry").path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+            })
+            .collect();
+        pdfs.sort();
+        assert_eq!(
+            pdfs.len(),
+            1,
+            "exactly one recorded PDF fixture is required"
+        );
+        let pdf = std::fs::canonicalize(&pdfs[0]).expect("PDF fixture must resolve");
+        let workspace = pdf.parent().expect("PDF fixture parent").to_path_buf();
+
+        let payload =
+            r#"[{"provider":"flux-router-anthropic","models":["flux-auto"],"hasKey":true}]"#;
+        let router = crate::provider_router::ProviderRouter::from_payload(Some(payload))
+            .expect("canonical selector-only provider payload");
+        let env_reader = |name: &str| std::env::var(name).ok();
+        let binding = router
+            .resolve_binding(
+                "flux-router-anthropic:flux-auto",
+                &env_reader,
+                unix_now_secs(),
+            )
+            .expect("credential path and canonical active leaf must resolve");
+        assert_eq!(binding.wire, WireKind::AnthropicMessages);
+        assert_eq!(binding.model, "flux-auto");
+        assert_eq!(binding.api_path, "/v1/messages");
+
+        let home = std::env::temp_dir().join(format!(
+            "wayland-nano-pdf-live-{}-{}",
+            std::process::id(),
+            unix_now_secs()
+        ));
+        let sessions = home.join("sessions");
+        std::fs::create_dir_all(&sessions).expect("live evidence session directory");
+        let memory = MemoryHostConfig {
+            dir: home.join("memory"),
+            write_enabled: false,
+            block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
+        };
+        let vision =
+            nano_model::vision_catalog::VisionCatalog::vendored().expect("vendored vision catalog");
+        let hooks = nano_hooks::HookEngine::empty();
+        let routing = crate::auto_routing::RoutingConfig {
+            auto_opt_in: false,
+            configured_default: None,
+            tools_probe: false,
+        };
+        let available = router.advertised_models();
+        assert!(
+            available
+                .iter()
+                .any(|model| model.id == "flux-router-anthropic:flux-auto")
+        );
+        let policy = nano_egress::policy::EgressPolicy::flux_only().allow_url(&binding.base_url);
+        let driver_policy = policy.clone();
+        let (input_tx, input_rx) = std::sync::mpsc::channel::<String>();
+        let (output_tx, output_rx) = std::sync::mpsc::channel::<String>();
+        let sessions_for_host = sessions.clone();
+        let home_for_host = home.clone();
+        let host = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("live host runtime")
+                .block_on(async move {
+                    let sandbox_probe = || true;
+                    let config = ServeConfig {
+                        sessions_dir: &sessions_for_host,
+                        default_model: "flux-router-anthropic:flux-auto",
+                        available_models: &available,
+                        env_mcp_specs: &[],
+                        catalog: &[],
+                        window_override: None,
+                        limit_override: None,
+                        reasoning_effort: None,
+                        verbosity: None,
+                        sandbox_probe: &sandbox_probe,
+                        router: &router,
+                        journal_append_failer: None,
+                        memory: &memory,
+                        cron_home: None,
+                        search: None,
+                        search_meter: None,
+                        pricing: None,
+                        budget_cap: None,
+                        vision_catalog: &vision,
+                        attachment_home: &home_for_host,
+                        hooks: &hooks,
+                        routing: &routing,
+                    };
+                    serve(
+                        LiveChannelReader {
+                            rx: input_rx,
+                            buf: Vec::new(),
+                            pos: 0,
+                        },
+                        LiveChannelWriter {
+                            tx: output_tx,
+                            buf: Vec::new(),
+                        },
+                        &config,
+                        move |resolved| {
+                            PdfLiveEvidenceDriver(runtime_driver(resolved, &driver_policy))
+                        },
+                        move |_, _, _, _, _, _| {
+                            (
+                                NoopExecutor,
+                                PermissionProfile::workspace_write().file_system_sandbox_policy(),
+                            )
+                        },
+                    )
+                    .await
+                })
+        });
+
+        fn request(
+            input: &std::sync::mpsc::Sender<String>,
+            output: &std::sync::mpsc::Receiver<String>,
+            next_id: &mut u64,
+            method: &str,
+            params: serde_json::Value,
+        ) -> (serde_json::Value, Vec<serde_json::Value>) {
+            let id = *next_id;
+            *next_id += 1;
+            input
+                .send(format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "jsonrpc": "2.0", "id": id, "method": method, "params": params
+                    })
+                ))
+                .expect("send ACP request");
+            let mut frames = Vec::new();
+            loop {
+                let line = output
+                    .recv_timeout(std::time::Duration::from_secs(180))
+                    .expect("ACP response before timeout");
+                let frame: serde_json::Value = serde_json::from_str(&line).expect("ACP frame");
+                if frame.get("method").and_then(|value| value.as_str())
+                    == Some("session/request_permission")
+                {
+                    let permission_id = frame.get("id").cloned().expect("permission request id");
+                    input
+                        .send(format!(
+                            "{}\n",
+                            serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": permission_id,
+                                "result": {
+                                    "outcome": {
+                                        "outcome": "selected",
+                                        "optionId": "deny"
+                                    }
+                                }
+                            })
+                        ))
+                        .expect("deny unexpected live-proof tool permission");
+                    frames.push(frame);
+                    continue;
+                }
+                let done = frame.get("id").and_then(|value| value.as_u64()) == Some(id);
+                frames.push(frame.clone());
+                if done {
+                    return (frame, frames);
+                }
+            }
+        }
+
+        fn latest_input_tokens(journal: &std::path::Path) -> u64 {
+            let report = read_journal(journal).expect("live journal readable");
+            report
+                .envelopes
+                .iter()
+                .rev()
+                .find_map(|envelope| match &envelope.op {
+                    Op::TurnEnd {
+                        usage: Some(usage), ..
+                    } => Some(usage.input_tokens),
+                    _ => None,
+                })
+                .expect("turn usage must be journaled")
+        }
+
+        let mut next_id = 1;
+        let (initialize, _) = request(
+            &input_tx,
+            &output_rx,
+            &mut next_id,
+            "initialize",
+            serde_json::json!({
+                "protocolVersion": 1,
+                "clientCapabilities": {"fs":{"readTextFile":true,"writeTextFile":true}}
+            }),
+        );
+        assert_eq!(initialize["result"]["protocolVersion"], 1);
+        let (created, _) = request(
+            &input_tx,
+            &output_rx,
+            &mut next_id,
+            "session/new",
+            serde_json::json!({"cwd":workspace,"mcpServers":[]}),
+        );
+        let session_id = created["result"]["sessionId"]
+            .as_str()
+            .expect("session id")
+            .to_string();
+        let (selected, _) = request(
+            &input_tx,
+            &output_rx,
+            &mut next_id,
+            "session/set_model",
+            serde_json::json!({
+                "sessionId":session_id,"modelId":"flux-router-anthropic:flux-auto"
+            }),
+        );
+        assert!(
+            selected.get("error").is_none(),
+            "explicit model select: {selected}"
+        );
+        let prompt = "Return the complete oracle sentence from the attached PDF, preserving capitalization and punctuation.";
+        let (control, control_frames) = request(
+            &input_tx,
+            &output_rx,
+            &mut next_id,
+            "session/prompt",
+            serde_json::json!({
+                "sessionId":session_id,"prompt":[{"type":"text","text":prompt}]
+            }),
+        );
+        assert_eq!(
+            control["result"]["stopReason"], "end_turn",
+            "control turn: {control}"
+        );
+        let journal = sessions.join(format!("{session_id}.jsonl"));
+        let control_input_tokens = latest_input_tokens(&journal);
+        let (pdf_response, pdf_frames) = request(
+            &input_tx,
+            &output_rx,
+            &mut next_id,
+            "session/prompt",
+            serde_json::json!({
+                "sessionId":session_id,
+                "prompt":[
+                    {"type":"text","text":prompt},
+                    {"type":"document_path","path":pdf}
+                ]
+            }),
+        );
+        assert_eq!(
+            pdf_response["result"]["stopReason"], "end_turn",
+            "PDF turn: {pdf_response}"
+        );
+        let pdf_input_tokens = latest_input_tokens(&journal);
+        assert!(
+            pdf_input_tokens > control_input_tokens,
+            "PDF input tokens {pdf_input_tokens} must exceed control {control_input_tokens}"
+        );
+        let delta = pdf_input_tokens - control_input_tokens;
+        assert!(control_input_tokens > 0, "control usage must be positive");
+        assert!(
+            pdf_input_tokens > control_input_tokens,
+            "PDF usage must be larger"
+        );
+        assert!(delta >= 1000, "PDF token delta {delta} is below 1000");
+        let oracle = "WAYLAND NANO PDF ORACLE 7F3A: copper owls navigate by moonlit checksum.";
+        let pdf_wire = serde_json::to_string(&pdf_frames).expect("serialize PDF frames");
+        assert!(
+            pdf_wire.contains(oracle),
+            "PDF response must contain the exact oracle sentence"
+        );
+
+        let evidence = serde_json::json!({
+            "provider":"flux-router-anthropic",
+            "model":"flux-auto",
+            "wire":"anthropic_messages",
+            "api_path":"/v1/messages",
+            "control_input_tokens":control_input_tokens,
+            "pdf_input_tokens":pdf_input_tokens,
+            "delta":delta,
+            "oracle_match":true,
+            "control_completed":control["result"]["stopReason"] == "end_turn",
+            "pdf_completed":pdf_response["result"]["stopReason"] == "end_turn",
+            "control_frame_count":control_frames.len(),
+            "pdf_frame_count":pdf_frames.len()
+        });
+        let control_request = serde_json::json!({"prompt":prompt,"document":false});
+        let document_request = serde_json::json!({
+            "prompt":prompt,"document_path":pdf.file_name().expect("PDF file name")
+        });
+        let document_response = serde_json::json!({"oracle":oracle,"frames":pdf_frames});
+        let usage_summary = serde_json::json!({
+            "control_input_tokens":control_input_tokens,"pdf_input_tokens":pdf_input_tokens,
+            "delta":delta
+        });
+        let transcript = std::fs::read(&journal).expect("session transcript");
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("repository root");
+        let paired_roots = [
+            repo_root.join("crates/nano-model/fixtures-flux/pdf"),
+            monorepo.join("shared/fixtures/flux/pdf"),
+        ];
+        let paired = vec![
+            (
+                "known-quote.pdf",
+                std::fs::read(&pdf).expect("PDF fixture bytes"),
+            ),
+            (
+                "control-request.json",
+                serde_json::to_vec_pretty(&control_request).unwrap(),
+            ),
+            (
+                "document-request.json",
+                serde_json::to_vec_pretty(&document_request).unwrap(),
+            ),
+            (
+                "document-response.json",
+                serde_json::to_vec_pretty(&document_response).unwrap(),
+            ),
+            (
+                "usage-summary.json",
+                serde_json::to_vec_pretty(&usage_summary).unwrap(),
+            ),
+            ("session-transcript.json", transcript),
+        ];
+        let manifest = pdf_evidence_manifest(
+            &monorepo,
+            &paired,
+            oracle,
+            control_input_tokens,
+            pdf_input_tokens,
+        );
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        assert_eq!(manifest["inputs"].as_array().unwrap().len(), 6);
+        for root in &paired_roots {
+            std::fs::create_dir_all(root).expect("paired evidence root");
+            for (name, bytes) in &paired {
+                std::fs::write(root.join(name), bytes).expect("paired sanitized evidence write");
+            }
+            std::fs::write(root.join("evidence-manifest.json"), &manifest_bytes)
+                .expect("paired manifest write");
+        }
+        use sha2::{Digest, Sha256};
+        for entry in manifest["inputs"].as_array().unwrap() {
+            let repo = repo_root.join(entry["repo_path"].as_str().unwrap());
+            let shared = std::path::PathBuf::from(entry["shared_path"].as_str().unwrap());
+            let repo_bytes = std::fs::read(repo).expect("reopen repo evidence");
+            let shared_bytes = std::fs::read(shared).expect("reopen shared evidence");
+            assert_eq!(repo_bytes, shared_bytes, "paired evidence bytes differ");
+            assert_eq!(
+                format!("{:x}", Sha256::digest(&repo_bytes)),
+                entry["sha256"]
+            );
+            assert_eq!(repo_bytes.len() as u64, entry["bytes"].as_u64().unwrap());
+        }
+        assert_eq!(
+            std::fs::read(paired_roots[0].join("evidence-manifest.json")).unwrap(),
+            std::fs::read(paired_roots[1].join("evidence-manifest.json")).unwrap(),
+            "paired manifests differ"
+        );
+        let evidence_path = home.join("pdf-live-active-leaf-evidence.json");
+        std::fs::write(
+            &evidence_path,
+            serde_json::to_vec_pretty(&evidence).expect("serialize sanitized evidence"),
+        )
+        .expect("persist sanitized evidence");
+        eprintln!("pdf live evidence: {}", evidence_path.display());
+        drop(input_tx);
+        assert_eq!(host.join().expect("host thread").expect("serve result"), 0);
     }
 }

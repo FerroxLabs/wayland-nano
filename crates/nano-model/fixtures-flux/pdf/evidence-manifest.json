@@ -1,0 +1,43 @@
+{
+  "control_input_tokens": 38,
+  "inputs": [
+    {
+      "bytes": 87132,
+      "repo_path": "crates/nano-model/fixtures-flux/pdf/known-quote.pdf",
+      "sha256": "d15785e2ebdaa5658aadc490e78ccc8858b7ca90b88086a6af90178c78176a39",
+      "shared_path": "D:/Development/waylandnano/shared/fixtures/flux/pdf/known-quote.pdf"
+    },
+    {
+      "bytes": 140,
+      "repo_path": "crates/nano-model/fixtures-flux/pdf/control-request.json",
+      "sha256": "243b6844449d2c8006d0841eb00f69c39e21526f9aaa7716344ff23dfbe883e2",
+      "shared_path": "D:/Development/waylandnano/shared/fixtures/flux/pdf/control-request.json"
+    },
+    {
+      "bytes": 330,
+      "repo_path": "crates/nano-model/fixtures-flux/pdf/document-request.json",
+      "sha256": "eea3b00f69e28fb0258be2a87b25ea5ebae537d779ab66beb49da2a7892022a0",
+      "shared_path": "D:/Development/waylandnano/shared/fixtures/flux/pdf/document-request.json"
+    },
+    {
+      "bytes": 619,
+      "repo_path": "crates/nano-model/fixtures-flux/pdf/document-response.json",
+      "sha256": "b7f569cbd9b2631c383869bb190fe08cbdf127a0f60afbe9e3cc69943ab98e45",
+      "shared_path": "D:/Development/waylandnano/shared/fixtures/flux/pdf/document-response.json"
+    },
+    {
+      "bytes": 79,
+      "repo_path": "crates/nano-model/fixtures-flux/pdf/usage-summary.json",
+      "sha256": "951dd8f8f3547651979564fe42ebdce7c4f5e3fa48f3ded943eef40d9f14e54f",
+      "shared_path": "D:/Development/waylandnano/shared/fixtures/flux/pdf/usage-summary.json"
+    },
+    {
+      "bytes": 3736,
+      "repo_path": "crates/nano-model/fixtures-flux/pdf/session-transcript.json",
+      "sha256": "38eeb81609db59c7686257a515905d1fa644857e0c37090bcfadf1bd402eca82",
+      "shared_path": "D:/Development/waylandnano/shared/fixtures/flux/pdf/session-transcript.json"
+    }
+  ],
+  "oracle": "WAYLAND NANO PDF ORACLE 7F3A: copper owls navigate by moonlit checksum.",
+  "pdf_input_tokens": 13969
+}

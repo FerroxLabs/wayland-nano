@@ -1,0 +1,58 @@
+{
+  "receipts": {
+    "PDF-01": {
+      "requirement": "PDF-01",
+      "test": "cargo test -p nano-protocol acp::tests::document",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "a21d544ca6903e6051f9469ee6d5edc9a309b26c93874ffadc189eb0e4a18322"
+      },
+      "commit": "b62685154eb217660bcac4f91df5094fe2650503"
+    },
+    "PDF-02": {
+      "requirement": "PDF-02",
+      "test": "cargo test -p nano-session document_ref",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "3248f3194db0a8f953d6becfa4e67c51ce81aa4159c5e4cdca263fec5abbf1b0"
+      },
+      "commit": "b62685154eb217660bcac4f91df5094fe2650503"
+    },
+    "PDF-03": {
+      "requirement": "PDF-03",
+      "test": "cargo test -p nano-model document_source_shape_is_exact",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "cc24f79f9892b58c863d018b659c25056c4cefa8213f95713d355cc0e9cdca1b"
+      },
+      "commit": "b62685154eb217660bcac4f91df5094fe2650503"
+    },
+    "PDF-04": {
+      "requirement": "PDF-04",
+      "test": "cargo test -p nano-cli pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "41c9fd8067dc3c3faa747de3ec09b1e01e3b1f8ed8c8052f616a482dcffb94c4"
+      },
+      "commit": "b62685154eb217660bcac4f91df5094fe2650503"
+    },
+    "PDF-05": {
+      "requirement": "PDF-05",
+      "test": "cargo test -p nano-cli pdf_live_active_leaf_runtime_path -- --ignored",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "a28c599cf4033840db8537233ba0afb76093ab1a31a502056d765c991eea44fb"
+      },
+      "commit": "b62685154eb217660bcac4f91df5094fe2650503"
+    },
+    "PDF-06": {
+      "requirement": "PDF-06",
+      "test": "cargo test -p nano-session model_lacks_pdf_contract_is_pinned",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "0a1f3d5f11234749d7eb6315e8b00791473dd88d796165897f1a67790af5e290"
+      },
+      "commit": "b62685154eb217660bcac4f91df5094fe2650503"
+    }
+  }
+}

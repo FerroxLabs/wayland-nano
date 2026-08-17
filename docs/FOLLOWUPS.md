@@ -797,7 +797,7 @@ promotes/closes entries; builders append only.
 
 ## S2 vision-wire build (lane S2, branch feat/s2-vision-wire, 2026-08-14) — F-P2B-1 fix + deferred items
 - **F-P2B-1 status: FIX LANDED on this branch, owner closes.** The vision_backed conjunct is refit (acp_mode.rs): Flux-provider leaves/aliases admit images on EITHER wire per the probe capture (shared/fixtures/flux/vision/flux-openai-wire/20260814_probe_capture.json) and the owner contract; the four flux aliases are blessed in the vendored vision catalog (proven → flux-openai-wire/20260814_manifest.json); the completions wire now carries image-bearing tool results as a trailing user message of base64 data-URI image_url parts (the RC2 `tool_result_images` refusal on flux-completions is removed; flux-responses keeps it — that wire is unreachable in production ACP). Contract constraints enforced at intake: one image per message (typed `image_too_many`), remote http(s) URLs typed-refused (never passed through), loader size caps unchanged.
-- **F-P2B-4 (PDF) — OPEN, deferred by design (v1 = images only).** PDFs require the Anthropic document block on POST /v1/messages (owner contract: the OpenAI `file` block is dropped against routing aliases — 94 tokens/blind answer vs 1,650/correct on a pinned id). Every flux binding currently rides openai-completions (provider_router.rs resolve_binding → flux_router()), so PDF support needs either an anthropic-messages flux binding path or pinned-id addressing of the file block, plus live probes per the contract (multi-page/large PDFs and non-PNG formats are unprobed). Close means: PDF intake block → document-block wire emission + a recorded fixture under shared/fixtures/flux/.
+- **FIXED F-P2B-4 (PDF) — implementation, live proof, audit and full local closure verified; integration promotion pending.** The integrator validated the canonical product tree, exact audit/fix/finding model, detached receipts, seven current evidence files, the external zero-hit receipt (`949a38c71320db0506ba9a2b1925d0d44bc993038c22ab15e44e7bf375635c50`, 1878 bytes), D9 closure, and a durable final `just gate-all` exit-0 receipt at branch head `e5dd301c296317f6070f1f7381454d5b1ebd75fe`. Merge, push and CI are still separate promotion steps and are not claimed here. PDFs use the authoritative Anthropic document block on POST `/v1/messages`; the older compatibility path returned 200 while dropping the document.
 - **F-P2B-5 (metering) — OPEN.** The 2026-08-14 probe showed usage.prompt_tokens does NOT include image tokens on the openai wire (image turn: 33 prompt tokens vs the 172-token text-only baseline — the image bytes are unmetered in usage). Attachment cost therefore CANNOT be recovered from usage metering; sessions re-send attachment bytes every turn (no Files API — full prompt tokens each time, per the owner contract). Close means: a client-side attachment cost model (bytes → estimated tokens) or Flux-side usage accounting of image tokens; until then cost reporting under-counts image-bearing turns.
 - **F-P2B-6 (remote image URL fetch+inline) — OPEN, blocked on nano-egress.** The contract's preferred handling for remote URLs is fetch-in-harness-and-inline, but `EgressClient::fetch_bounded` content-type-gates to text/* + a few application types (client.rs ~353: image/* is ContentTypeDenied), and nano-egress is a fail-closed security invariant outside this lane's boundary. Shipped behavior: remote http(s) image URLs are typed-refused at ACP intake (never passed through). Close means: an egress image-fetch variant (image/* allowlist, bounded, private-range deny) + intake wiring + probes — or delete this entry if FluxRouter's planned edge normalisation (contract "What is changing" #3) lands first.
 - **F-P2B-7 (multi-image messages) — OPEN, upstream-settled.** Contract rule 4 (one image per message) is enforced as a typed intake refusal because a Flux two-image probe miscounted ("1"). Revisit when FluxRouter settles multi-image support; lifting it = delete the count check in acp_mode.rs and re-probe.
@@ -1273,3 +1273,101 @@ Per the adjudicated register in `shared/reviews/stable-wave/SEVERITY-SIGNOFF-202
   synthetic resolver/inventory tests and focused suites pass. `just gate-all`
   (including `gate-gen-check`) and opt-in reporter/release gates pass. Final
   status remains measured-neither, F-45 OPEN, no 3,600-second receipt.
+
+## DEV-WP-0.3A: PDF journal/store authority boundary — RESOLVED
+
+- **Boundary deviation/resolution (2026-08-17):** the one-round WP-0.3 audit found
+  that the required additive `DocumentRef` journal serde/digest contract and the
+  attachment-store reachability/retention/orphan/malformed-reference battery crossed
+  the original OWNS list (`SPEC-WP0-hardening.md` WP-0.3 type-plumbing requirement and
+  `03-RESEARCH.md` journal/store test evidence). Owner authority is now narrowed to
+  `op.rs` for only the additive `DocumentRef`/`InputBlock::DocumentRef` contract
+  comments/tests and `attachment_store.rs` for only production `DocumentRef` journal
+  reachability plus retention/orphan/malformed-reference handling and their comments/tests;
+  store redesign, `ImageRef` rename, `ToolResult` changes, and broader session work
+  remain excluded. The audit also resolved generator authority: the tracked in-repo
+  nano-session contracts JSON and shared/contracts mirror remain mandatory, while any
+  sibling desktop mirrors are optional generator-only owner/integrator refreshes and
+  cannot satisfy standalone CI/DoD or be committed by the WP branch.
+
+## DEV-WP-0.3B: canonical Flux Anthropic catalog/provenance authority — RESOLVED
+
+- **Boundary deviation/resolution (2026-08-17):** the mandatory active
+  `flux-router-anthropic` runtime leaf cannot obtain endpoint/wire authority from
+  `WAYLAND_NANO_PROVIDERS`; that payload selects only a canonical provider/model/key
+  state. WP-0.3 narrowly owns the vendored catalog JSON, the provider-catalog
+  `RECORDED_SHA256` and exact endpoint/scope assertions, the build.rs-generated golden,
+  and one exact `UPSTREAM.md` ledger/endpoint-review row. No other catalog, test,
+  golden, build-script, routing, or provenance edit is authorized.
+### DEV-WP-0.3C — D9 generator allowlist omission (RESOLVED 2026-08-17)
+
+Plan 03-02 referenced and executed `crates/nano-cli/src/bin/gen_error_table.rs`, and the authoritative WP-0.3 GOALS/spec explicitly own that generator, but its `files_modified` entry was accidentally omitted when the D9 exact allowlist was frozen. A bounded review fix correctly made the mandatory canonical shared mirror fail closed, then D9 stopped on the omission before commit. The integrator recorded this deviation and repaired only the Plan 03-02 declaration plus the matching exact `wp03_control_v1.repo_allowlist` entry; no broader ownership was granted, and the full D9 check must pass before the product change is committed.
+### DEV-WP-0.3D — Responses codec exhaustiveness guard (RESOLVED 2026-08-17)
+
+Adding the provider-neutral `ContentBlock::Document` made the existing exhaustive Flux Responses encoder fail to compile. The authoritative WP-0.3 boundary owns `crates/nano-model/**`, but Plan 03-03 had omitted `crates/nano-model/src/flux_responses.rs`. A focused decision audit rejected silent filtering because it would recreate the proven blind-answer failure. The narrow resolution adds only an explicit unreachable pre-dispatch invariant guard plus its local regression test; the canonical typed `ModelLacksPdf` zero-call refusal remains owned by Plan 03-05. The integrator added exactly this file to Plan 03-03 and the D9 allowlist; no codec redesign or broader routing authority was granted.
+### DEV-WP-0.3E — Document request-byte accounting exhaustiveness (RESOLVED 2026-08-17)
+
+The additive `ContentBlock::Document` also made the existing exhaustive request-size heuristic in `crates/nano-agent/src/compact.rs` fail to compile. The authoritative WP-0.3 boundary owns `crates/nano-agent/**`, but Plan 03-03 omitted this consumer. The narrow resolution adds exact document base64 byte-length accounting plus its local monotonic regression test, matching the heuristic's purpose without changing compaction policy. The integrator added only this file to Plan 03-03 and the D9 allowlist; no unrelated compact/fold behavior was authorized.
+
+### DEV-WP-0.3F — Non-self-referential evidence manifest (RESOLVED 2026-08-17)
+
+The evidence manifest cannot contain its own final hash and byte count. It now records exactly six paired payloads; the scanner and receipt treat the current manifest as the seventh file externally. The receipt excludes itself and validates all seven current hashes and byte counts. No product ownership or runtime behavior changes.
+
+### DEV-WP-0.3H — Product-fix versus lifecycle metadata history (RESOLVED 2026-08-17)
+
+Immutable history places the audit artifact and plan summaries between audited product bytes and product-fix commits. The v2 audit now records product fixes separately from an exact ordered lifecycle-metadata chain: only enumerated audit/summary paths may intervene, while `fix.final_commit/final_tree` always identify final product bytes. This is a documentation/schema correction only and grants no broader commit or path allowance.
+
+The independent recheck additionally records a distinct committed `recheck_point`; its lifecycle chain must be complete from the final product commit to that point. Recheck command receipts are created only by the detached execution loop at the final product commit/tree, every Critical/High verdict reference resolves to exactly one of those receipts, and the recorded command array must match the executed receipts exactly. Closure independently recomputes the full history, product-byte identity, and finding verdicts, and binds the canonical `flux-router-anthropic:flux-auto` Anthropic Messages endpoint facts to its exact successful detached provider-catalog test receipt.
+
+The proof is executable rather than self-reported: Plan 11 derives the exact Git revision interval to its captured pre-output recheck point and runs focused commands in a disposable detached worktree; Plan 08 independently derives the complete audited-to-closure history and reruns required commands against the detached final product commit.
+
+### DEV-WP-0.3G — D9 bounded hashing parallelism (RESOLVED 2026-08-17)
+
+D9 now bounds manifest hashing workers at the smallest of 16, half the logical processor count, and the file count. The unchanged exact `-Mode Check` baseline comparison passed in 850.655 seconds on a 32-processor host, about 109 seconds (11.4%) below the prior typical 960 seconds; enumeration, hashes, sorting, schema, and failure semantics remain unchanged.
+
+### DEV-WP-0.3I — Lifecycle phase-boundary reconciliation (SUPERSEDED historical; resolved 2026-08-17)
+
+Historical record only; DEV-WP-0.3O is the sole active authority.
+
+The planning contract now separates immutable audit history, post-fix lifecycle metadata, independent-recheck artifact receipts, and later live-evidence phase history. Plan 13 captures the actual clean pre-output HEAD/tree as its input tip and projects every non-product commit through that tip, preserving `85a8b1d91379243aebd23ee74bc190221b670563` as an ordered anchor rather than a terminal hash; its JSON may describe only history known at the captured tip, and its summary records only P13A. Plan 11 derives the complete post-fix chain through actual P13S from Git, creates audit-only P11A, and its summary records only P11A. Plan 07 discovers actual P11S from Git and its summary records only pre-summary live evidence. Plan 08 discovers both summary commits directly from Git and validates their one-file diffs. No summary records its own commit/tree. Detached receipts normalize command ID, exit zero, product commit/tree, test name, pass marker, and `detached-worktree` mode; raw timing/output and temporary paths are not persisted or compared. No product files are changed by this resolution.
+
+### DEV-WP-0.3J — Exact PDF recheck selection (SUPERSEDED historical; resolved 2026-08-17)
+
+Historical record only; DEV-WP-0.3O is the sole active authority.
+
+The prior short filter could exit successfully after selecting zero tests. Canonical receipt command 2 now names `acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded` fully and passes `--exact --nocapture`; both recheck and closure require transient proof of exactly one executed test and one pass, and reject zero-test output. Its normalized receipt uses the same exact test ID.
+
+P13S remains immutable at `0c13d7d` with P13A as its parent. Plan 11 discovers both from Git, proves their consecutive one-file diffs, and treats later documentation correction commits through the actual recheck HEAD as an exact ordered suffix. That suffix is limited to `03-11-PLAN.md`, `03-08-PLAN.md`, `03-VALIDATION.md`, `SOURCE-AUDIT.md`, and `docs/FOLLOWUPS.md`; audit JSON, summaries, and product paths remain forbidden. This is a PS5.1-safe planning correction only.
+### DEV-WP-0.3K — Canonical shared evidence path mapping (RESOLVED 2026-08-17)
+
+The D9 initializer originally copied the repository spelling `crates/nano-model/fixtures-flux/pdf/**` into the external shared allowlist, but the authoritative paired mirror is `shared/fixtures/flux/pdf/**`. The live fixture therefore could not be admitted by the exact shared-delta gate. The initializer and frozen control now map only that seven-file prefix to `fixtures/flux/pdf/**`; the receipt already used the canonical path. No additional shared path or product ownership was granted.
+### DEV-WP-0.3L — Shared evidence directory manifest nodes (RESOLVED 2026-08-17)
+
+### DEV-WP-0.3M — Second final-fix independent recheck (SUPERSEDED historical; resolved 2026-08-17)
+
+Historical record only; DEV-WP-0.3O is the sole active authority.
+
+The canonical final fix is `4fd669bfb921769456f1603221bbe2326487d67c` (tree `84af3ddd0d0773bc72db7684c516a622bd4453c4`). Plans 11 and 08 validate the exact 18-commit audit history, both product-fix projections and all four findings, then keep post-fix metadata, the non-self P11 output boundary, and later live evidence as separate exact Git segments. The final detached catalog has four deterministic receipts: endpoint, fully-qualified PDF refusal, fully-qualified nano-protocol Windows verbatim regression, and nano-model clippy. Test receipts require one passed/no zero tests; clippy requires a stable clean completion. High 001 binds to PDF, High 002 to Windows, and High 003/004 to clippy. No product or evidence path is admitted into metadata, no raw command output is persisted, and no Plan 13 terminal assumption remains.
+
+## DEV-WP-0.3O: Canonical final-tree recheck and live-evidence segmentation — SUPERSEDED HISTORICAL
+
+Canonical product identity is now `f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5`, tree `5ff1ea037d604c273095b5303062a68e936d83df`. Plans 11 and 08 validate the exact 25-commit audit projection, the exact product-fix commits `18d57a6`, `4fd669b`, and `f1372da` with their paths, and the union of all six findings. Findings bind 001 to PDF refusal, 002 to Windows verbatim, 003/004 to strict nano-model clippy, 005 to the `/v1` endpoint test, and 006 to the exact `pdf_evidence_manifest_schema_has_exact_six_payload_pairs` one-test receipt.
+
+The post-fix chain is derived generically. `phase_history.post_fix` is exactly `2a55eae` documentation followed by `0eb5098` with seven live-evidence files; `c0d6f69` is later audit-only metadata. Current evidence hashes and external receipt metadata are validated independently from the f137 product tree. Post-recheck Plan 11 output/summary and Plan 07 summary closure remain separate Git segments. The final detached catalog has five actual-execution receipts, and no obsolete fix-count limit or lifecycle-plan terminal special case remains.
+
+## DEV-WP-0.3P: Final journal-tree recheck — ACTIVE AUTHORITY; planning contract RESOLVED, integrator promotion PENDING
+
+Canonical product identity is `5040293cf4de8467555f4c74b46b34a91d6939d7`, tree `be34bb63f58cacd64bdab3a073f17fa5d4088719`. Plans 11 and 08 validate the exact 37-commit audit projection, the four product fixes `18d57a6`, `4fd669b`, `f1372da`, and `5040293`, their exact paths, and the union of all eight findings. Post-fix history is derived generically from the final journal tree; the seven live-evidence files and external zero-hit receipt remain independently verified and unchanged.
+
+Plan 08 builder closure is complete against persisted input `9813509da0e6f0787fb0dd4b76b413960d49f78d` / tree `dc01591f8e5ffadc7c3f6a4c3628dd845670f6da`. The integrator reran the complete gate and D9 closure, independently reran the full Task 2 model, and persisted a final exit-0 gate receipt at `e5dd301c296317f6070f1f7381454d5b1ebd75fe`. F-P2B-4 is FIXED locally with live proof; merge, push, CI and promotion remain pending and are not claimed here.
+
+### DEV-WP-0.3Q — Detached Cargo worktree D-volume hardening (RESOLVED 2026-08-17)
+
+Plans 11 and 08 derive unique `.tmp-wt-wp03-{recheck|closure}-GUID` scratch paths from the current Git top-level and place them at the `D:/Development/waylandnano` monorepo root. Before registration they require an absolute same-volume D: path, absence, exclusion from protected `nano`, `resources`, and `shared`, and at least 10 GiB free space. Cargo worktrees never use the process temporary directory. Cleanup is exclusively `git worktree remove` followed by `git worktree prune`, with both filesystem absence and registration absence verified. Plan 08 additionally reconstructs every canonical normalized receipt and requires its exact property set and recorded exit to equal the actual zero exit.
+
+The final detached catalog contains seven actual-execution receipts. Finding 007 binds to `RECHECK-JOURNAL-FORWARD-FIELDS` running exact `tests::p2a_op_never_denies_unknown_fields`; finding 008 binds to `RECHECK-DOCUMENTREF-CLOSED` running exact `op::document_ref_tests::document_ref_rejects_duplicate_known_fields_from_raw_json`. Both commands require `running 1 test`, one pass, no zero-test output, and the same normalized receipt fields as the prior five commands. All earlier three-fix, six-finding, and five-receipt current claims are superseded.
+
+The canonical `shared/fixtures/flux/pdf` leaf did not exist when the D9 baseline was frozen, while its `fixtures` and `fixtures/flux` ancestors already existed. Creating the first owned fixture therefore adds exactly the `fixtures/flux/pdf` directory record to the full `{path,type,sha256,bytes}` manifest. D9 admits only that new directory node in addition to the already enumerated files; no sibling directory or additional file is allowed.
+### DEV-WP-0.3N — Authoritative Flux PDF endpoint (RESOLVED 2026-08-17)
+
+The GOALS/spec and owner-recorded 2026-08-14 media contract require `POST /v1/messages`, but research D5 accidentally pinned the older `/anthropic/v1/messages` compatibility path. Live path-only probes showed the compatibility path returned 200 with a zero document-token delta and no oracle, while `/v1/messages` produced a 13,831-token delta and the exact oracle on the same PDF block. Catalog authority, adapter default, generated golden, SHA pin, tests, provenance and closure checks now use `/v1/messages`; historical compatibility fixtures remain historical evidence rather than production authority.

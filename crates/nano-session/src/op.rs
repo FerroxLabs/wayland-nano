@@ -606,6 +606,106 @@ pub const MAX_GOAL_SUMMARY_LEN: usize = 2000;
 /// before ANY path use on journal read (§5.3).
 pub use nano_model::image_result::ImageRef;
 
+/// The durable half of an attached PDF: metadata plus the content digest,
+/// never the document bytes or their base64 encoding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DocumentRef {
+    pub digest: String,
+    pub mime: String,
+    pub bytes: u64,
+    pub placeholder: String,
+}
+
+impl<'de> Deserialize<'de> for DocumentRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        const FIELDS: [&str; 4] = ["digest", "mime", "bytes", "placeholder"];
+
+        struct DocumentRefVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for DocumentRefVisitor {
+            type Value = DocumentRef;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a document reference object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut digest = None;
+                let mut mime = None;
+                let mut bytes = None;
+                let mut placeholder = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "digest" => {
+                            if digest.is_some() {
+                                return Err(serde::de::Error::duplicate_field("digest"));
+                            }
+                            digest = Some(map.next_value()?);
+                        }
+                        "mime" => {
+                            if mime.is_some() {
+                                return Err(serde::de::Error::duplicate_field("mime"));
+                            }
+                            mime = Some(map.next_value()?);
+                        }
+                        "bytes" => {
+                            if bytes.is_some() {
+                                return Err(serde::de::Error::duplicate_field("bytes"));
+                            }
+                            bytes = Some(map.next_value()?);
+                        }
+                        "placeholder" => {
+                            if placeholder.is_some() {
+                                return Err(serde::de::Error::duplicate_field("placeholder"));
+                            }
+                            placeholder = Some(map.next_value()?);
+                        }
+                        _ => return Err(serde::de::Error::unknown_field(&key, &FIELDS)),
+                    }
+                }
+
+                let digest: String =
+                    digest.ok_or_else(|| serde::de::Error::missing_field("digest"))?;
+                let mime: String = mime.ok_or_else(|| serde::de::Error::missing_field("mime"))?;
+                let bytes = bytes.ok_or_else(|| serde::de::Error::missing_field("bytes"))?;
+                let placeholder =
+                    placeholder.ok_or_else(|| serde::de::Error::missing_field("placeholder"))?;
+
+                if digest.len() != 64
+                    || !digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(serde::de::Error::custom(
+                        "document digest must be 64 lowercase hexadecimal characters",
+                    ));
+                }
+                if mime != "application/pdf" {
+                    return Err(serde::de::Error::custom(
+                        "document mime must be application/pdf",
+                    ));
+                }
+
+                Ok(DocumentRef {
+                    digest,
+                    mime,
+                    bytes,
+                    placeholder,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(DocumentRefVisitor)
+    }
+}
+
 /// One entry of the ordered input-block manifest journaled on
 /// `Op::TurnBegin` (P2a §5.2): the machine contract for reconstructing
 /// arbitrary ordered ACP content — text/image interleaving, duplicates, and
@@ -616,6 +716,119 @@ pub use nano_model::image_result::ImageRef;
 pub enum InputBlock {
     Text { text: String },
     ImageRef(ImageRef),
+    DocumentRef(DocumentRef),
+}
+
+#[cfg(test)]
+mod document_ref_tests {
+    use super::*;
+
+    fn raw_document_ref(fields: &str) -> String {
+        format!(r#"{{"type":"document_ref",{fields}}}"#)
+    }
+
+    #[test]
+    fn document_ref_is_digest_only_closed_and_round_trips() {
+        let block = InputBlock::DocumentRef(DocumentRef {
+            digest: "ab".repeat(32),
+            mime: "application/pdf".into(),
+            bytes: 123,
+            placeholder: "[Document #1]".into(),
+        });
+        let value = serde_json::to_value(&block).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "document_ref",
+                "digest": "ab".repeat(32),
+                "mime": "application/pdf",
+                "bytes": 123,
+                "placeholder": "[Document #1]"
+            })
+        );
+        assert!(!value.to_string().contains("base64"));
+        assert_eq!(serde_json::from_value::<InputBlock>(value).unwrap(), block);
+
+        let mut unknown = serde_json::to_value(&block).unwrap();
+        unknown["data"] = serde_json::json!("JVBERi0=");
+        assert!(serde_json::from_value::<InputBlock>(unknown).is_err());
+
+        for malformed in [
+            serde_json::json!({
+                "type": "document_ref", "digest": "AB".repeat(32),
+                "mime": "application/pdf", "bytes": 1, "placeholder": "[Document #1]"
+            }),
+            serde_json::json!({
+                "type": "document_ref", "digest": "ab".repeat(32),
+                "mime": "text/plain", "bytes": 1, "placeholder": "[Document #1]"
+            }),
+        ] {
+            assert!(serde_json::from_value::<InputBlock>(malformed).is_err());
+        }
+    }
+
+    #[test]
+    fn document_ref_rejects_duplicate_known_fields_from_raw_json() {
+        let digest = "ab".repeat(32);
+        let cases = [
+            format!(
+                r#""digest":"{digest}","digest":"{digest}","mime":"application/pdf","bytes":1,"placeholder":"[Document #1]""#
+            ),
+            format!(
+                r#""digest":"{digest}","mime":"application/pdf","mime":"application/pdf","bytes":1,"placeholder":"[Document #1]""#
+            ),
+            format!(
+                r#""digest":"{digest}","mime":"application/pdf","bytes":1,"bytes":2,"placeholder":"[Document #1]""#
+            ),
+            format!(
+                r#""digest":"{digest}","mime":"application/pdf","bytes":1,"placeholder":"[Document #1]","placeholder":"[Document #2]""#
+            ),
+        ];
+
+        for fields in cases {
+            let error = serde_json::from_str::<InputBlock>(&raw_document_ref(&fields))
+                .expect_err("duplicate document field must fail");
+            assert!(error.to_string().contains("duplicate field"));
+        }
+    }
+
+    #[test]
+    fn document_ref_rejects_missing_required_fields_from_raw_json() {
+        let digest = "ab".repeat(32);
+        let cases = [
+            r#""mime":"application/pdf","bytes":1,"placeholder":"[Document #1]""#.to_owned(),
+            format!(r#""digest":"{digest}","bytes":1,"placeholder":"[Document #1]""#),
+            format!(
+                r#""digest":"{digest}","mime":"application/pdf","placeholder":"[Document #1]""#
+            ),
+            format!(r#""digest":"{digest}","mime":"application/pdf","bytes":1"#),
+        ];
+
+        for fields in cases {
+            let error = serde_json::from_str::<InputBlock>(&raw_document_ref(&fields))
+                .expect_err("missing document field must fail");
+            assert!(error.to_string().contains("missing field"), "{error}");
+        }
+    }
+
+    #[test]
+    fn image_ref_wire_shape_is_unchanged() {
+        let block = InputBlock::ImageRef(ImageRef {
+            digest: "cd".repeat(32),
+            mime: "image/png".into(),
+            bytes: 4,
+            width: 1,
+            height: 1,
+            normalized_from: None,
+            placeholder: "[Image #1]".into(),
+        });
+        let value = serde_json::to_value(block).unwrap();
+        assert_eq!(value["type"], "image_ref");
+        assert!(value.get("digest").is_some());
+        assert!(value.get("width").is_some());
+        assert!(value.get("height").is_some());
+        assert!(value.get("document").is_none());
+    }
 }
 
 /// `skip_serializing_if` helper for the `CompactionComplete.image_influenced`

@@ -12,7 +12,7 @@ use nano_model::provider_catalog::{PROVIDERS, WireKind};
 /// sha256 of data/providerCatalog.vendored.json. Any byte change to the
 /// vendored file fails this test — endpoint changes are deliberate,
 /// reviewed, and recorded here.
-const RECORDED_SHA256: &str = "9fc5271004ac70bc093f02c395cf043d73b31e64543ff6bf5161a73b27c0fc91";
+const RECORDED_SHA256: &str = "5d972fca66a7da9e452b57839936f4e6120f59f5da50192840aa18fd604a5458";
 
 const VENDORED: &[u8] = include_bytes!("../data/providerCatalog.vendored.json");
 
@@ -82,6 +82,7 @@ fn v1_provider_scope_is_exact() {
         ids,
         [
             "flux-router",
+            "flux-router-anthropic",
             "anthropic",
             "openai",
             "openrouter",
@@ -100,6 +101,19 @@ fn v1_provider_scope_is_exact() {
             "google-gemini",
         ]
     );
+}
+
+#[test]
+fn flux_router_anthropic_endpoint_is_exact() {
+    let provider = PROVIDERS
+        .iter()
+        .find(|provider| provider.id == "flux-router-anthropic")
+        .expect("canonical Flux Anthropic provider");
+    assert_eq!(provider.base_url, "https://api.fluxrouter.ai");
+    assert_eq!(provider.wire, WireKind::AnthropicMessages);
+    assert_eq!(provider.api_path, "/v1/messages");
+    assert_eq!(provider.env_var, "FLUX_API_KEY");
+    assert!(provider.proven);
 }
 
 #[test]

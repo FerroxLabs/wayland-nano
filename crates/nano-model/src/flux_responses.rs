@@ -221,6 +221,13 @@ fn message_to_items(message: &Message) -> Vec<serde_json::Value> {
         Role::Assistant => ("assistant", "output_text"),
         _ => ("user", "input_text"),
     };
+    if message
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Document { .. }))
+    {
+        unreachable!("PDF-bearing requests must be rejected before the Flux Responses codec");
+    }
     // P2a §2.2: an image-bearing message emits ONE input item whose content
     // is the ordered part array — input_text parts for text, the
     // Responses-API input_image part (data: URL) for each image — so block
@@ -287,6 +294,9 @@ fn message_to_items(message: &Message) -> Vec<serde_json::Value> {
             // Image-bearing messages returned above; an Image can never
             // reach this loop (P2a: images only in user messages).
             ContentBlock::Image { .. } => {}
+            ContentBlock::Document { .. } => unreachable!(
+                "PDF-bearing requests must be rejected before the Flux Responses codec"
+            ),
         }
     }
     items
@@ -573,4 +583,47 @@ pub fn parse_sse_responses_stream_observed(
         stop_reason,
         model,
     })
+}
+
+#[cfg(test)]
+mod document_tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(
+        expected = "PDF-bearing requests must be rejected before the Flux Responses codec"
+    )]
+    fn document_reaching_responses_codec_fails_loudly() {
+        let request = ModelRequest {
+            model: "flux-auto".into(),
+            messages: vec![Message::user_blocks(vec![ContentBlock::Document {
+                media_type: "application/pdf".into(),
+                data: "JVBERi0".into(),
+            }])],
+            ..Default::default()
+        };
+        let _ = build_request_body(&request);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "PDF-bearing requests must be rejected before the Flux Responses codec"
+    )]
+    fn mixed_image_and_document_cannot_bypass_the_guard() {
+        let request = ModelRequest {
+            model: "flux-auto".into(),
+            messages: vec![Message::user_blocks(vec![
+                ContentBlock::Image {
+                    mime: "image/png".into(),
+                    data: "iVBORw0".into(),
+                },
+                ContentBlock::Document {
+                    media_type: "application/pdf".into(),
+                    data: "JVBERi0".into(),
+                },
+            ])],
+            ..Default::default()
+        };
+        let _ = build_request_body(&request);
+    }
 }

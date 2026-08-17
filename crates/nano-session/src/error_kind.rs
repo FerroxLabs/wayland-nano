@@ -126,6 +126,9 @@ pub enum NanoErrorKind {
     /// not vision-proven in the static catalog (§6.2 rungs 1+3). Zero egress
     /// precedes this rejection.
     ModelLacksVision,
+    /// A PDF-bearing turn resolved to a model leaf whose binding is not
+    /// Anthropic Messages. Zero egress precedes this rejection.
+    ModelLacksPdf,
     /// Sniff failure, claim-vs-sniff mismatch, corrupt/truncated decode,
     /// structural-parse failure, or a contained decoder panic (§4.3).
     ImageInvalid,
