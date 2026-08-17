@@ -2,13 +2,13 @@
 phase: 03-wp-0.3-pdf-intake
 plan: 11
 subsystem: testing
-tags: [audit, independent-recheck, detached-worktree, pdf, provenance]
+tags: [audit, independent-recheck, detached-worktree, pdf, windows, clippy, provenance]
 requires:
   - phase: 03-wp-0.3-pdf-intake
-    provides: immutable PDF product fix and finalized Plan 13 audit metadata
+    provides: canonical second final fix and committed final independent recheck audit
 provides:
-  - independent verdict for every WP03 audit finding against the exact final product tree
-  - normalized detached-worktree receipts for the endpoint and PDF refusal tests
+  - independent PASS verdict for all four WP03 High findings against the exact canonical final fix tree
+  - normalized detached-worktree receipts for endpoint, PDF refusal, Windows verbatim-path, and strict clippy checks
 affects: [03-07-live-evidence, 03-08-closure]
 tech-stack:
   added: []
@@ -17,14 +17,14 @@ key-files:
   created: [.planning/phases/03-wp-0.3-pdf-intake/03-11-SUMMARY.md]
   modified: [.planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json]
 key-decisions:
-  - "Bind every independent receipt to the immutable product commit and tree, never the mutable recheck worktree."
-  - "Record only the already-committed P11A identity; leave the future summary commit for Git discovery."
+  - "Bind every independent receipt to canonical fix 4fd669b/tree 84af, not the mutable lifecycle tip."
+  - "Record only the already-committed P11A identity; never claim or predict the summary commit."
 patterns-established:
-  - "Independent recheck summaries carry normalized evidence but never predict their own output commit or tree."
+  - "Final recheck summaries explicitly supersede stale prior-result narration after a reopened fix round."
 requirements-completed: [PDF-01, PDF-02, PDF-03, PDF-04, PDF-06]
 coverage:
   - id: D1
-    description: "Every audit finding has exactly one independent verdict backed by a successful detached receipt against the immutable final product tree."
+    description: "Every WP03 High finding has exactly one independent PASS verdict backed by a successful canonical receipt against the immutable final fix tree."
     requirement: PDF-04
     verification:
       - kind: other
@@ -36,95 +36,79 @@ completed: 2026-08-17
 status: complete
 ---
 
-# Phase 03 Plan 11: Independent Fix-Tree Recheck Summary
+# Phase 03 Plan 11: Final Independent Fix-Tree Recheck Summary
 
-**The sole High audit finding is independently closed by normalized exact-test receipts executed against the immutable detached final product tree**
+**All four WP03 High findings are independently closed against canonical final fix `4fd669b` / tree `84af3ddd` by four normalized detached-worktree receipts.**
 
-## Performance
-
-- **Duration:** 5 min
-- **Completed:** 2026-08-17
-- **Tasks:** 1
-- **Files modified:** 1 audit artifact
-- **Files created:** 1 summary
+This final summary supersedes the prior Plan 11 summary facts about fix `18d57a`, recheck point `7b7b11a`, the nine-commit lifecycle, two receipts, one finding, and audit commit `a4c4c0d`. Those facts describe the invalidated first recheck and are not the final result.
 
 ## Accomplishments
 
-- Captured clean recheck point `7b7b11a50b535f3b1e9ade655be7ae41b508788d`, tree `c9406f5dc9a13ee108e57d135a67cfd1b7a4b898`, before changing the audit output.
-- Recomputed the complete nine-commit post-fix lifecycle through that point, including consecutive one-file P13A/P13S anchors and the exact two-commit allowlisted correction suffix.
-- Executed the two canonical exact commands in a disposable detached worktree at product fix `18d57a6724637f597883685749583253613a0884`, tree `c2dfe7aac460dd7cfe30084859d26eb2a4145403`.
-- Recorded one PASS verdict for `WP03-AUDIT-HIGH-001`, backed uniquely by the exact PDF refusal receipt.
-- Committed the audit-only output as `a4c4c0dcc61033a1b372ac24438353dd16bf5cd5`, tree `aa730f95858eaba4ea382febf50558b1c91330d7`, changing only `03-AUDIT.json`.
+- Captured the clean final recheck point `e273722c4854dd9a929eeb05f2303110330e7405`, tree `0bcc7c25b997001c4cbcb9177b4f3ebb03f6e2ee`, before changing the audit output.
+- Validated the exact ordered 18-commit history from the audited commit through canonical final fix `4fd669bfb921769456f1603221bbe2326487d67c`, tree `84af3ddd0d0773bc72db7684c516a622bd4453c4`.
+- Derived and validated the generic three-commit metadata-only post-fix lifecycle from the final fix through the recheck point, without treating a plan number or lifecycle count as terminal.
+- Executed the four canonical commands in an absent GUID-named detached worktree at the final fix and removed both its directory and Git registration.
+- Recorded exactly one independent PASS verdict for each of the four High findings.
+- Committed the audit-only P11A output as `bb77207d55cb80c56e814179a2a70bd0aad9f18b`, tree `ace35cd2fef8c15e1c9d6cd3e3f1206d13b437b8`, with sole path `.planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json`.
 
 ## Immutable Recheck Facts
 
 | Fact | Value |
 |---|---|
-| Recheck point commit | `7b7b11a50b535f3b1e9ade655be7ae41b508788d` |
-| Recheck point tree | `c9406f5dc9a13ee108e57d135a67cfd1b7a4b898` |
-| Audit-only P11A commit | `a4c4c0dcc61033a1b372ac24438353dd16bf5cd5` |
-| Audit-only P11A tree | `aa730f95858eaba4ea382febf50558b1c91330d7` |
-| Product fix commit | `18d57a6724637f597883685749583253613a0884` |
-| Product fix tree | `c2dfe7aac460dd7cfe30084859d26eb2a4145403` |
+| Recheck point commit | `e273722c4854dd9a929eeb05f2303110330e7405` |
+| Recheck point tree | `0bcc7c25b997001c4cbcb9177b4f3ebb03f6e2ee` |
+| Audit-only P11A commit | `bb77207d55cb80c56e814179a2a70bd0aad9f18b` |
+| Audit-only P11A tree | `ace35cd2fef8c15e1c9d6cd3e3f1206d13b437b8` |
+| Canonical final fix commit | `4fd669bfb921769456f1603221bbe2326487d67c` |
+| Canonical final fix tree | `84af3ddd0d0773bc72db7684c516a622bd4453c4` |
+| Ordered audited-to-fix history | 18 commits |
+| Generic post-fix lifecycle | 3 metadata-only commits |
 | Independent status | `PASS` |
-| Finding verdicts | 1 PASS for 1 finding |
+| Finding verdicts | 4 PASS for 4 findings |
 
 ## Normalized Detached Receipts
 
-### RECHECK-CATALOG-ENDPOINT
+| Receipt | Command | Normalized evidence |
+|---|---|---|
+| `RECHECK-CATALOG-ENDPOINT` | `cargo test -p nano-model --test provider_catalog flux_router_anthropic_endpoint_is_exact -- --exact --nocapture` | `id=RECHECK-CATALOG-ENDPOINT;exit=0;commit=4fd669bfb921769456f1603221bbe2326487d67c;tree=84af3ddd0d0773bc72db7684c516a622bd4453c4;test=flux_router_anthropic_endpoint_is_exact;result=1-passed-0-failed` |
+| `RECHECK-PDF-REFUSAL` | `cargo test -p nano-cli acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded --lib -- --exact --nocapture` | `id=RECHECK-PDF-REFUSAL;exit=0;commit=4fd669bfb921769456f1603221bbe2326487d67c;tree=84af3ddd0d0773bc72db7684c516a622bd4453c4;test=acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded;result=1-passed-0-failed` |
+| `RECHECK-WINDOWS-VERBATIM` | `cargo test -p nano-protocol acp::tests::document_path_verbatim_prefix_accepts_file_but_rejects_junction --lib -- --exact --nocapture` | `id=RECHECK-WINDOWS-VERBATIM;exit=0;commit=4fd669bfb921769456f1603221bbe2326487d67c;tree=84af3ddd0d0773bc72db7684c516a622bd4453c4;test=acp::tests::document_path_verbatim_prefix_accepts_file_but_rejects_junction;result=1-passed-0-failed` |
+| `RECHECK-NANO-MODEL-CLIPPY` | `cargo clippy -p nano-model --all-targets -- -D warnings` | `id=RECHECK-NANO-MODEL-CLIPPY;exit=0;commit=4fd669bfb921769456f1603221bbe2326487d67c;tree=84af3ddd0d0773bc72db7684c516a622bd4453c4;result=clean` |
 
-- Command: `cargo test -p nano-model --test provider_catalog flux_router_anthropic_endpoint_is_exact -- --exact --nocapture`
-- Normalized evidence: `id=RECHECK-CATALOG-ENDPOINT;exit=0;commit=18d57a6724637f597883685749583253613a0884;tree=c2dfe7aac460dd7cfe30084859d26eb2a4145403;test=flux_router_anthropic_endpoint_is_exact;result=ok`
-- Result: PASS in `detached-worktree` mode.
+Each exact test transiently proved `running 1 test`, `1 passed; 0 failed`, its expected exact test name, and no `running 0 tests`. Strict clippy exited zero with a clean-success marker. Only normalized deterministic evidence is persisted.
 
-### RECHECK-PDF-REFUSAL
+## Finding Verdicts
 
-- Command: `cargo test -p nano-cli acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded --lib -- --exact --nocapture`
-- Normalized evidence: `id=RECHECK-PDF-REFUSAL;exit=0;commit=18d57a6724637f597883685749583253613a0884;tree=c2dfe7aac460dd7cfe30084859d26eb2a4145403;test=acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded;result=ok`
-- Result: PASS in `detached-worktree` mode with exactly `1 passed; 0 failed` and no zero-test output.
+| Finding | Severity | Verdict | Receipt |
+|---|---|---|---|
+| `WP03-AUDIT-HIGH-001` | High | PASS | `RECHECK-PDF-REFUSAL` |
+| `WP03-LIVE-HIGH-002` | High | PASS | `RECHECK-WINDOWS-VERBATIM` |
+| `WP03-GATE-HIGH-003` | High | PASS | `RECHECK-NANO-MODEL-CLIPPY` |
+| `WP03-GATE-HIGH-004` | High | PASS | `RECHECK-NANO-MODEL-CLIPPY` |
 
-## Finding Verdict
-
-| Finding | Severity | Verdict | Receipt | Evidence |
-|---|---|---|---|---|
-| `WP03-AUDIT-HIGH-001` | High | PASS | `RECHECK-PDF-REFUSAL` | The exact PDF ACP dispatch regression ran once and passed against the immutable final product commit/tree, proving the checkpoint initialization fix closes the audited failure path. |
+The endpoint receipt independently confirms the canonical provider endpoint while the four finding IDs occur exactly once across the verdict set.
 
 ## Lifecycle Verification
 
-- P13A `b6430e434a10911e072ace17c430bafc72f40920` changes only `03-AUDIT.json`.
-- P13S `0c13d7d0df5e5a83bede4f453d2b834f7b307f4c` immediately follows P13A and changes only `03-13-SUMMARY.md`.
-- The correction suffix after P13S is exactly `23cec03bd14a594959262cd3975251df4cf63d02` then `7b7b11a50b535f3b1e9ade655be7ae41b508788d`.
-- Every suffix path belongs to the closed planning correction allowlist; no audit, summary, or product path occurs there.
-
-## Verification
-
-- Both canonical commands exited zero in the detached final-product worktree.
-- The PDF receipt proved the fully qualified exact test ran exactly once and passed.
-- Recorded commands match the executed normalized receipts field for field.
-- The Plan 11 automated verifier completed with `PLAN11_AUTOMATED_VERIFIER_PASS`.
-- Temporary worktree directory and Git registration were removed.
-- P11A resolves to its recorded tree and has the sole changed path `.planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json`.
+- `c41f6299b9488d34c71e743965783fe4459a9a3b` follows the final fix and changes only `03-AUDIT.json`.
+- `a8039a5785ada4106e8da47a65a4c7c0553d6d50` changes only the closed metadata allowlist.
+- `e273722c4854dd9a929eeb05f2303110330e7405` changes only Plans 08 and 11.
+- All three actual parents, trees, and ordered path lists match the recorded generic projection; no product or evidence path appears.
 
 ## Task Commit
 
-1. **Task 1: Independently recheck every finding against committed bytes** — `a4c4c0dcc61033a1b372ac24438353dd16bf5cd5` (`audit`, audit-only)
+1. **Task 1: Independently recheck every finding against committed bytes** — `bb77207d55cb80c56e814179a2a70bd0aad9f18b` (`audit`, sole `03-AUDIT.json` path)
 
-This summary records only the already-committed P11A audit output. It does not own, predict, or record the future P11S commit or tree.
+This summary records only the already-committed P11A audit output. It does not own, predict, or record its own future summary commit or tree.
 
 ## Files Created/Modified
 
-- `.planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json` — committed P11A independent recheck, lifecycle, receipts, and finding verdict.
-- `.planning/phases/03-wp-0.3-pdf-intake/03-11-SUMMARY.md` — records only committed inputs and P11A evidence.
-
-## Decisions Made
-
-- Used deterministic normalized receipts; transient timings, build output, and temporary paths are excluded.
-- Bound the High finding to exactly one successful PDF command receipt.
-- Kept the summary non-self-referential so later plans discover its commit directly from Git.
+- `.planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json` — committed P11A final independent recheck, lifecycle, normalized receipts, and four finding verdicts.
+- `.planning/phases/03-wp-0.3-pdf-intake/03-11-SUMMARY.md` — supersedes the invalidated first-recheck narration with final committed facts.
 
 ## Deviations from Plan
 
-None — the plan executed exactly as written.
+None. The final recheck used the exact canonical commands and immutable final fix required by the current Plan 11.
 
 ## Known Stubs
 
@@ -132,15 +116,11 @@ None.
 
 ## Threat Flags
 
-None. The independent reviewer identity and method differ from both builder and auditor, and the recheck used immutable detached bytes.
+None. Reviewer identity and method are distinct from builder and auditor, all execution was bound to immutable detached bytes, and cleanup left no worktree residue.
 
 ## Self-Check: PASSED
 
-P11A exists with the recorded tree and sole audit path; the recheck and product identities resolve to their recorded trees; both normalized receipts and the sole finding verdict match `03-AUDIT.json`; this summary records no future P11S identity.
-
-## Next Phase Readiness
-
-Plan 07 can discover the eventual summary-only P11S commit from Git and collect pre-summary live evidence. Plan 08 can later validate both summary commits and close the lifecycle without trusting summary narration.
+P11A resolves to the recorded tree and sole audit path; the final fix and recheck-point identities resolve to their recorded trees; the 18-history/three-postfix projections match Git; all four normalized receipts and all four exact verdict mappings match `03-AUDIT.json`; this summary records no future summary identity.
 
 ---
 *Phase: 03-wp-0.3-pdf-intake*
