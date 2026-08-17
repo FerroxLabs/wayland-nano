@@ -81,6 +81,15 @@
       "evidence": "The committed end-to-end PDF dispatch regression creates a temporary workspace without a Git repository. During session/prompt the checkpoint availability guard returns CheckpointUnavailable before the PDF wire gate; the asserted nanoError.kind is therefore null instead of model_lacks_pdf. The affected-crate audit command reproduces the failure at the audited commit, so the mandatory test gate is not green and the zero-call/no-persistence runtime proof is not currently executable as written.",
       "disposition": "fix",
       "command_ref": "AUDIT-CMD-002"
+    },
+    {
+      "id": "WP03-LIVE-HIGH-002",
+      "severity": "high",
+      "path": "crates/nano-protocol/src/acp.rs",
+      "line": 291,
+      "evidence": "On Windows, reject_link_components iterates the canonical verbatim path and calls symlink_metadata after pushing Prefix before RootDir. Inspecting the verbatim Prefix alone fails, so the complete live ACP PDF path returns nanoError.kind fs_read_denied with message 'document_path: cannot inspect path' from crates/nano-protocol/src/acp.rs:296 before the model call.",
+      "disposition": "fix",
+      "command_ref": "LIVE-CMD-001"
     }
   ],
   "audit_commands": [
@@ -95,6 +104,22 @@
       "command": "cargo test -p nano-protocol -p nano-agent -p nano-model -p nano-session -p nano-cli",
       "exit": 1,
       "evidence": "nano-cli lib test pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded failed at crates/nano-cli/src/acp_mode.rs:11252: left Null, right model_lacks_pdf; preceding diagnostic reported CheckpointUnavailable because workspace git was unavailable."
+    }
+  ],
+  "live_commands": [
+    {
+      "id": "LIVE-CMD-001",
+      "command": "cargo test -p nano-cli pdf_live_active_leaf_runtime_path -- --ignored --nocapture",
+      "exit": 101,
+      "evidence": "The ignored complete-ACP live test failed with nanoError.kind fs_read_denied and message 'document_path: cannot inspect path'; the rejection originates at crates/nano-protocol/src/acp.rs:296 while inspecting the Windows canonical verbatim Prefix before RootDir. The oracle was not returned and no live evidence files or evidence-manifest.json were generated. No credential value or credential path is recorded."
+    }
+  ],
+  "events": [
+    {
+      "kind": "live_failure_reopened_fix_round",
+      "finding_id": "WP03-LIVE-HIGH-002",
+      "command_ref": "LIVE-CMD-001",
+      "effect": "The prior independent recheck is invalidated for the current product state; a new final independent recheck is pending after the live-path fix."
     }
   ],
   "fix_round_count": 1,
@@ -273,7 +298,14 @@
     ]
   },
   "independent_recheck": {
-    "status": "PASS",
+    "status": "invalidated",
+    "invalidated_by": "WP03-LIVE-HIGH-002",
+    "final_recheck_status": "pending",
+    "prior_result": {
+      "status": "PASS",
+      "checked_commit": "18d57a6724637f597883685749583253613a0884",
+      "checked_tree": "c2dfe7aac460dd7cfe30084859d26eb2a4145403"
+    },
     "reviewer": {
       "identity": "Codex /root/verify_wp03_fix_tree_retry"
     },
