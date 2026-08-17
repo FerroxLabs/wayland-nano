@@ -46,6 +46,10 @@ Historical record only; DEV-WP-0.3O is the sole active authority.
 
 Plans 11 and 08 cover the canonical second final fix, exact 18-commit audit history, two product-fix projections, all four findings, generic post-fix metadata, and the separate P11/live closure segments. Their identical four-command detached catalog binds endpoint, PDF, Windows verbatim, and clippy evidence to deterministic normalized receipts. The companion validation and follow-up records carry the same PowerShell 5.1-safe contract; no product or deferred scope was introduced.
 
-# DEV-WP-0.3O source reconciliation — ACTIVE AUTHORITY, COVERED IN PLAN; LIVE CLOSURE PENDING
+# DEV-WP-0.3O source reconciliation — SUPERSEDED HISTORICAL
 
 Plans 11 and 08 now cover canonical `f1372da`/`5ff1ea03`, the exact 25-commit audit projection, all three product fixes and six findings, and the generic post-fix chain. They validate exact `2a55eae` documentation and `0eb5098` seven-file live-evidence commits, later audit metadata including `c0d6f69`, current evidence hashes/receipt metadata, and distinct P11/Plan 07 summary closure boundaries. Their identical five-command detached catalog adds the exact one-test harness-schema receipt and maps findings 001-006 without an obsolete fix-count cap or lifecycle-plan special case. No product or deferred scope was introduced.
+
+# DEV-WP-0.3P source reconciliation — ACTIVE AUTHORITY, COVERED IN PLAN; LIVE CLOSURE PENDING
+
+Plans 11 and 08 cover canonical `5040293`/`be34bb63`, the exact 37-commit audit projection, four product fixes, and the union of all eight findings. The post-fix suffix is derived generically, while the seven live-evidence files and external zero-hit receipt remain independently verified and unchanged. Their identical seven-command detached catalog adds exact one-test forward-field and duplicate-known-field receipts; finding 007 maps to `RECHECK-JOURNAL-FORWARD-FIELDS` and finding 008 maps to `RECHECK-DOCUMENTREF-CLOSED`. Earlier three-fix, six-finding, and five-receipt statements are superseded historical records, not current execution authority.
