@@ -90,6 +90,26 @@
       "evidence": "On Windows, reject_link_components iterates the canonical verbatim path and calls symlink_metadata after pushing Prefix before RootDir. Inspecting the verbatim Prefix alone fails, so the complete live ACP PDF path returns nanoError.kind fs_read_denied with message 'document_path: cannot inspect path' from crates/nano-protocol/src/acp.rs:296 before the model call.",
       "disposition": "fix",
       "command_ref": "LIVE-CMD-001"
+    },
+    {
+      "id": "WP03-GATE-HIGH-003",
+      "severity": "high",
+      "path": "crates/nano-model/src/anthropic_messages.rs",
+      "line": 370,
+      "evidence": "Strict clippy reports items_after_test_module at line 370 and field_reassign_with_default at line 376. Both errors were introduced by commit b3f49343 and prevent the mandatory nano-model lint gate from passing.",
+      "introduced_by": "b3f49343",
+      "disposition": "fix",
+      "command_ref": "GATE-CMD-001"
+    },
+    {
+      "id": "WP03-GATE-HIGH-004",
+      "severity": "high",
+      "path": "crates/nano-model/src/flux_responses.rs",
+      "line": 306,
+      "evidence": "Strict clippy reports items_after_test_module at line 306 and field_reassign_with_default at lines 315 and 329. All three errors were introduced by commit b3f49343 and prevent the mandatory nano-model lint gate from passing.",
+      "introduced_by": "b3f49343",
+      "disposition": "fix",
+      "command_ref": "GATE-CMD-001"
     }
   ],
   "audit_commands": [
@@ -104,6 +124,12 @@
       "command": "cargo test -p nano-protocol -p nano-agent -p nano-model -p nano-session -p nano-cli",
       "exit": 1,
       "evidence": "nano-cli lib test pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded failed at crates/nano-cli/src/acp_mode.rs:11252: left Null, right model_lacks_pdf; preceding diagnostic reported CheckpointUnavailable because workspace git was unavailable."
+    },
+    {
+      "id": "GATE-CMD-001",
+      "command": "cargo clippy -p nano-model --all-targets -- -D warnings",
+      "exit": 101,
+      "evidence": "Five exact errors: crates/nano-model/src/anthropic_messages.rs:370 items_after_test_module; crates/nano-model/src/anthropic_messages.rs:376 field_reassign_with_default; crates/nano-model/src/flux_responses.rs:306 items_after_test_module; crates/nano-model/src/flux_responses.rs:315 field_reassign_with_default; crates/nano-model/src/flux_responses.rs:329 field_reassign_with_default. No secret value or secret path is recorded."
     }
   ],
   "live_commands": [
