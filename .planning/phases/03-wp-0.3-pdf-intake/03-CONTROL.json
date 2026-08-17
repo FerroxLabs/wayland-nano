@@ -138,10 +138,16 @@
                       "shared":  {
                                      "path":  "C:\\Users\\seand\\AppData\\Local\\Temp\\wayland-nano-wp03-50c0f2494979435bbcdb253fd3ede629\\shared-manifest.json",
                                      "sha256":  "da47b93beb4c8db0969f6d385ed5d2db5d4a18468a9d0711983d7e3ab0979279"
-                      }
+                                 }
                   },
     "closure":  {
-                    "input_tip":  "b8d0496397c1387c317317555603c159aee1b1a8",
-                    "input_tree":  "c6151a115cb5cc73545287a69ad1d6c4bb879438"
+                    "input_tip":  "0cfcfeddee29631e3e78f0dd0beb209ff14a06ca",
+                    "input_tree":  "f890dff46270dc4a9371726f3cb61833380ed27f",
+                    "status":  "PASS",
+                    "timestamp":  "2026-08-17T12:18:59.6092626Z",
+                    "nano_equal":  true,
+                    "resources_upstreams_equal":  true,
+                    "shared_delta_valid":  true,
+                    "pairs_valid":  true
                 }
 }
