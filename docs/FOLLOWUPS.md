@@ -1313,6 +1313,14 @@ The additive `ContentBlock::Document` also made the existing exhaustive request-
 
 The evidence manifest cannot contain its own final hash and byte count. It now records exactly six paired payloads; the scanner and receipt treat the current manifest as the seventh file externally. The receipt excludes itself and validates all seven current hashes and byte counts. No product ownership or runtime behavior changes.
 
+### DEV-WP-0.3H — Product-fix versus lifecycle metadata history (RESOLVED 2026-08-17)
+
+Immutable history places the audit artifact and plan summaries between audited product bytes and product-fix commits. The v2 audit now records product fixes separately from an exact ordered lifecycle-metadata chain: only enumerated audit/summary paths may intervene, while `fix.final_commit/final_tree` always identify final product bytes. This is a documentation/schema correction only and grants no broader commit or path allowance.
+
+The independent recheck additionally records a distinct committed `recheck_point`; its lifecycle chain must be complete from the final product commit to that point. Recheck command receipts are created only by the detached execution loop at the final product commit/tree, every Critical/High verdict reference resolves to exactly one of those receipts, and the recorded command array must match the executed receipts exactly. Closure independently recomputes the full history, product-byte identity, and finding verdicts, and binds the canonical `flux-router-anthropic:flux-auto` Anthropic Messages endpoint facts to its exact successful detached provider-catalog test receipt.
+
+The proof is executable rather than self-reported: Plan 11 derives the exact Git revision interval to its captured pre-output recheck point and runs focused commands in a disposable detached worktree; Plan 08 independently derives the complete audited-to-closure history and reruns required commands against the detached final product commit.
+
 ### DEV-WP-0.3G — D9 bounded hashing parallelism (RESOLVED 2026-08-17)
 
 D9 now bounds manifest hashing workers at the smallest of 16, half the logical processor count, and the file count. The unchanged exact `-Mode Check` baseline comparison passed in 850.655 seconds on a 32-processor host, about 109 seconds (11.4%) below the prior typical 960 seconds; enumeration, hashes, sorting, schema, and failure semantics remain unchanged.

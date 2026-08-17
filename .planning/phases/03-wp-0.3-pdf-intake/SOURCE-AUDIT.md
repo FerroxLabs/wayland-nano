@@ -14,7 +14,7 @@
 | RESEARCH | D2 | Exact ModelLacksPdf vocabulary/presentation/count | 03-02 | COVERED | Full source mapping and generator parity. |
 | RESEARCH | D3 | Exact DocumentRef fields and projection/replay strings | 03-01, 03-03, 03-05 | COVERED | No unresolved schema/placeholder assumption. |
 | RESEARCH | D4 | Existing-kind validation policy and bounded messages | 03-04 | COVERED | Only incompatible wire adds a new kind. |
-| RESEARCH | D5 | Canonical flux-router-anthropic catalog entry plus selector-only runtime payload | 03-03, 03-05, 03-07 | COVERED | Drift pin, generated golden, provenance, runtime path, and bare negative control. |
+| RESEARCH | D5 | Canonical flux-router-anthropic catalog entry plus selector-only runtime payload | 03-03, 03-05, 03-07, 03-11, 03-08 | COVERED | Drift pin, generated golden, provenance, runtime path, bare negative control, and an exact detached provider-catalog endpoint receipt bound into final closure. |
 | RESEARCH | D6 | Exact oracle/prompt and >=1000 same-path token delta | 03-05, 03-07 | COVERED | Raw counts and 94/1650 provenance are durable evidence. |
 | RESEARCH | D7 | Concrete ignored ACP runtime live harness and command | 03-05, 03-07 | COVERED | Explicit invocation is fail-closed. |
 | RESEARCH | D8 | Six manifest-described repo/shared payload pairs plus manifest-as-seventh non-self-referential receipt | 03-07, 03-08 | COVERED | Manifest absence is fatal; it has exactly six payload entries and no self entry; the receipt validates the six payloads plus current manifest as seven. |
@@ -22,7 +22,7 @@
 | RESEARCH | — | Existing confinement/store/base64/hash stack; no new dependency | 03-01, 03-04 | COVERED | No package install task. |
 | RESEARCH | — | Anthropic-only live path and OpenAI-bound negative control | 03-03, 03-05, 03-07 | COVERED | Canonical entry supplies endpoint; selector payload cannot inject it. |
 | RESEARCH | D9 | Ownership preflight is the sole first predecessor before every product mutation | 03-01; all product plans depend on it | COVERED | Script/control initialization only in Wave 1. |
-| RESEARCH | — | One Critical/High audit, one continuous bounded fix round with zero-to-two grouped commits and canonical fix.commits[] and final commit/tree metadata finalization, independent committed-byte recheck, full gate, builder-only handoff | 03-06, 03-10, 03-12, 03-13, 03-11, 03-08 | COVERED | Durable schema-closed audit JSON and no merge/push/CI authority. |
+| RESEARCH | — | One Critical/High audit, one continuous bounded fix round with zero-to-two grouped commits and canonical fix.commits[] and final commit/tree metadata finalization, independent committed-byte recheck, full gate, builder-only handoff | 03-06, 03-10, 03-12, 03-13, 03-11, 03-08 | COVERED | Durable schema-closed audit JSON; every Critical/High command reference is bound to an exact command receipt created by the detached execution loop; no merge/push/CI authority. |
 | CONTEXT | — | No CONTEXT.md decisions supplied | — | EXCLUDED | Binding decisions are in master/spec/GOALS and DEV-WP-0.3A. |
 
 No deferred capability, PDF parsing/extraction, Files API, multi-document support, routing-policy change, attachment-store redesign, `ImageRef` rename, `ToolResult` change, Desktop-owned commit, `../nano/` write, or `../resources/upstreams/` write appears in the plan set.
