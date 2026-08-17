@@ -140,7 +140,7 @@ Plans:
   4. Merge through detached `.tmp-wt-integ` with `--no-ff` and rerun the complete `just gate-all` on the integration commit.
   5. Push integration `HEAD:master`; require CI green before Phase 5 and record the full one-line promotion result.
 
-**Plans**: 4/9 plans executed
+**Plans**: 6/9 plans executed
 
 Plans:
 **Wave 1**
@@ -155,8 +155,8 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 04-04-PLAN.md — Implement bounded argv-only subprocess execution and complete process-tree teardown.
-- [ ] 04-06-PLAN.md — Implement read-only Git-backed receipt preflight and its materialized fixture battery.
+- [x] 04-04-PLAN.md — Implement bounded argv-only subprocess execution and complete process-tree teardown.
+- [x] 04-06-PLAN.md — Implement read-only Git-backed receipt preflight and its materialized fixture battery.
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -272,7 +272,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 1. WP-0.4 Frozen Contracts and Program Controls | 3/3 | Complete | 2026-08-16 |
 | 2. WP-0.2 Memory Hardening | 6/6 | Complete | 2026-08-17 |
 | 3. WP-0.3 PDF Intake | 13/13 | Complete | 2026-08-17 |
-| 4. WP-1 Gate and Receipt Foundation | 4/9 | In Progress | - |
+| 4. WP-1 Gate and Receipt Foundation | 6/9 | In Progress | - |
 | 5. WP-2 Gated Climb | 0/TBD | Not started | - |
 | 6. WP-3 Verify CLI and CI Surface | 0/TBD | Not started | - |
 | 7. WP-4 Gate Cards and Dogfood | 0/TBD | Not started | - |
