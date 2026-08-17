@@ -1,15 +1,16 @@
 //! Standalone red-green receipt storage and read-only preflight primitives.
 
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::VerifyError;
-use crate::registry::GateRegistry;
+use crate::registry::{GateRegistry, closure_digest};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -69,11 +70,151 @@ pub fn mint_receipt(receipt: Receipt) -> Result<Receipt, VerifyError> {
 }
 
 pub fn preflight_receipt(
-    _repo_root: &Path,
-    _bytes: &[u8],
-    _registry: &GateRegistry,
+    repo_root: &Path,
+    bytes: &[u8],
+    registry: &GateRegistry,
 ) -> ReceiptPreflight {
-    ReceiptPreflight::Unverifiable
+    let Ok(receipt) = serde_json::from_slice::<Receipt>(bytes) else {
+        return ReceiptPreflight::Unverifiable;
+    };
+    if receipt.schema != 1 {
+        return ReceiptPreflight::Unverifiable;
+    }
+    if receipt.failing_run.exit_code == 0
+        || !is_lower_hex(&receipt.failing_run.log_digest, 64)
+        || !is_lower_hex(&receipt.failing_run.observed_at_commit, 40)
+    {
+        return ReceiptPreflight::NeverRed;
+    }
+    if !is_lower_hex(&receipt.fix_commit, 40) {
+        return ReceiptPreflight::FabricatedCommit;
+    }
+    match git_probe(repo_root, &["rev-parse", "--is-inside-work-tree"]) {
+        Probe::Present(output) if String::from_utf8_lossy(&output).trim() == "true" => {}
+        _ => return ReceiptPreflight::Unverifiable,
+    }
+    for commit in [&receipt.failing_run.observed_at_commit, &receipt.fix_commit] {
+        let object = format!("{commit}^{{commit}}");
+        match git_existence_probe(repo_root, &["cat-file", "-e", &object]) {
+            Probe::Present(_) => {}
+            Probe::Absent => return ReceiptPreflight::FabricatedCommit,
+            Probe::Unknown => return ReceiptPreflight::Unverifiable,
+        }
+    }
+    match git_probe(
+        repo_root,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &receipt.failing_run.observed_at_commit,
+            &receipt.fix_commit,
+        ],
+    ) {
+        Probe::Present(_) => {}
+        Probe::Absent => return ReceiptPreflight::AncestryUnproven,
+        Probe::Unknown => return ReceiptPreflight::Unverifiable,
+    }
+    if !valid_git_path(&receipt.test) {
+        return ReceiptPreflight::AncestryUnproven;
+    }
+    let test_object = format!(
+        "{}:{}",
+        receipt.failing_run.observed_at_commit, receipt.test
+    );
+    match git_existence_probe(repo_root, &["cat-file", "-e", &test_object]) {
+        Probe::Present(_) => {}
+        Probe::Absent => return ReceiptPreflight::AncestryUnproven,
+        Probe::Unknown => return ReceiptPreflight::Unverifiable,
+    }
+    let Some(mapped_gate) = registry.requirements.get(&receipt.requirement) else {
+        return ReceiptPreflight::GateMismatch;
+    };
+    if mapped_gate != &receipt.gate_id {
+        return ReceiptPreflight::GateMismatch;
+    }
+    let Some(entry) = registry.gates.get(&receipt.gate_id) else {
+        return ReceiptPreflight::GateMismatch;
+    };
+    let Ok(actual_digest) = closure_digest(&entry.closure) else {
+        return ReceiptPreflight::GateMismatch;
+    };
+    if actual_digest != entry.closure_digest || receipt.gate_closure_digest != entry.closure_digest
+    {
+        return ReceiptPreflight::GateMismatch;
+    }
+    ReceiptPreflight::Ready
+}
+
+enum Probe {
+    Present(Vec<u8>),
+    Absent,
+    Unknown,
+}
+
+fn git_probe(repo_root: &Path, args: &[&str]) -> Probe {
+    git_probe_with_absence(repo_root, args, false)
+}
+
+fn git_existence_probe(repo_root: &Path, args: &[&str]) -> Probe {
+    git_probe_with_absence(repo_root, args, true)
+}
+
+fn git_probe_with_absence(repo_root: &Path, args: &[&str], any_nonzero_absent: bool) -> Probe {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(repo_root)
+        .args(args)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_SSH_COMMAND")
+        .env_remove("GIT_ASKPASS")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let Ok(mut child) = command.spawn() else {
+        return Probe::Unknown;
+    };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut output = Vec::new();
+                if child
+                    .stdout
+                    .take()
+                    .is_none_or(|mut stdout| stdout.read_to_end(&mut output).is_err())
+                {
+                    return Probe::Unknown;
+                }
+                return match status.code() {
+                    Some(0) => Probe::Present(output),
+                    Some(1) => Probe::Absent,
+                    Some(_) if any_nonzero_absent => Probe::Absent,
+                    _ => Probe::Unknown,
+                };
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Probe::Unknown;
+            }
+            Err(_) => return Probe::Unknown,
+        }
+    }
+}
+
+fn valid_git_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.contains([':', '\\'])
+        && !Path::new(path).is_absolute()
+        && Path::new(path)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
 pub fn read_receipt(path: &Path) -> Result<Receipt, ReceiptPreflight> {
