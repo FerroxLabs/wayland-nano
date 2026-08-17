@@ -55,6 +55,10 @@
       "docs/FOLLOWUPS.md"
     ]
   },
+  "input_tip": {
+    "commit": "1f7e1b60e2816883d1f5e522854c7f8c0043c42e",
+    "tree": "0a4a08f1c1e974ac45f2f838d7a2de7c8d97bb2c"
+  },
   "builder": {
     "identity": "K3 (Wayland Nano Track B) <k3-trackb@waylandnano.local>"
   },
@@ -89,8 +93,157 @@
       "evidence": "nano-cli lib test pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded failed at crates/nano-cli/src/acp_mode.rs:11252: left Null, right model_lacks_pdf; preceding diagnostic reported CheckpointUnavailable because workspace git was unavailable."
     }
   ],
-  "fix_round_count": 0,
-  "fix": null,
+  "fix_round_count": 1,
+  "fix": {
+    "final_commit": "18d57a6724637f597883685749583253613a0884",
+    "final_tree": "c2dfe7aac460dd7cfe30084859d26eb2a4145403",
+    "commits": [
+      {
+        "group": "A",
+        "pre_commit": "3fde7c507b151411996210d159ccb4b5a3122a69",
+        "commit": "18d57a6724637f597883685749583253613a0884",
+        "tree": "c2dfe7aac460dd7cfe30084859d26eb2a4145403",
+        "paths": [
+          "crates/nano-cli/src/acp_mode.rs"
+        ],
+        "finding_ids": [
+          "WP03-AUDIT-HIGH-001"
+        ],
+        "commands": [
+          {
+            "id": "FIX-A-CMD-001",
+            "command": "cargo fmt --all -- --check",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A-CMD-002",
+            "command": "cargo test -p nano-cli pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded -- --nocapture",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A-CMD-003",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .planning/phases/03-wp-0.3-pdf-intake/03-OWNERSHIP-PREFLIGHT.ps1 -Mode Check",
+            "exit": 0
+          },
+          {
+            "id": "FIX-A-CMD-004",
+            "command": "git diff --check 3fde7c507b151411996210d159ccb4b5a3122a69 18d57a6724637f597883685749583253613a0884 -- crates/nano-cli/src/acp_mode.rs",
+            "exit": 0
+          }
+        ]
+      }
+    ]
+  },
+  "lifecycle": {
+    "commits": [
+      {
+        "commit": "3fde7c507b151411996210d159ccb4b5a3122a69",
+        "parent": "f16fa3edf22fc8bae356232da9ab6aecd652ba62",
+        "tree": "10443ecd5508a42dc91a4df479375bc8d891f0d7",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-06-SUMMARY.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ]
+      },
+      {
+        "commit": "f34da2f778b3ace900bd005bcdf6888fda6a94b4",
+        "parent": "18d57a6724637f597883685749583253613a0884",
+        "tree": "e7996b22eb64b04e4daaa2f8cb069c2c4ea85ab3",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-10-SUMMARY.md"
+        ]
+      },
+      {
+        "commit": "d73142604e74889a7f7144c62ae4ea50a41f6c28",
+        "parent": "f34da2f778b3ace900bd005bcdf6888fda6a94b4",
+        "tree": "74403b70a028f6a5df6102f423fe4496ca3b6d52",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "commit": "85a8b1d91379243aebd23ee74bc190221b670563",
+        "parent": "d73142604e74889a7f7144c62ae4ea50a41f6c28",
+        "tree": "3224c9558ec25f671a08997bdf65ec18210d18a3",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-12-SUMMARY.md"
+        ]
+      },
+      {
+        "commit": "e5cc2e3170a40bd656e39ceda5488692ea8eba56",
+        "parent": "85a8b1d91379243aebd23ee74bc190221b670563",
+        "tree": "0043679fed24cc45525f49febfdf4e56de29d8cd",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-07-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      },
+      {
+        "commit": "1f7e1b60e2816883d1f5e522854c7f8c0043c42e",
+        "parent": "e5cc2e3170a40bd656e39ceda5488692ea8eba56",
+        "tree": "0a4a08f1c1e974ac45f2f838d7a2de7c8d97bb2c",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          "docs/FOLLOWUPS.md"
+        ]
+      }
+    ],
+    "post_fix_commits": [
+      {
+        "commit": "f34da2f778b3ace900bd005bcdf6888fda6a94b4",
+        "parent": "18d57a6724637f597883685749583253613a0884",
+        "tree": "e7996b22eb64b04e4daaa2f8cb069c2c4ea85ab3",
+        "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-10-SUMMARY.md"]
+      },
+      {
+        "commit": "d73142604e74889a7f7144c62ae4ea50a41f6c28",
+        "parent": "f34da2f778b3ace900bd005bcdf6888fda6a94b4",
+        "tree": "74403b70a028f6a5df6102f423fe4496ca3b6d52",
+        "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md", ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md", "docs/FOLLOWUPS.md"]
+      },
+      {
+        "commit": "85a8b1d91379243aebd23ee74bc190221b670563",
+        "parent": "d73142604e74889a7f7144c62ae4ea50a41f6c28",
+        "tree": "3224c9558ec25f671a08997bdf65ec18210d18a3",
+        "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-12-SUMMARY.md"]
+      },
+      {
+        "commit": "e5cc2e3170a40bd656e39ceda5488692ea8eba56",
+        "parent": "85a8b1d91379243aebd23ee74bc190221b670563",
+        "tree": "0043679fed24cc45525f49febfdf4e56de29d8cd",
+        "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-07-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md", ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md", "docs/FOLLOWUPS.md"]
+      },
+      {
+        "commit": "1f7e1b60e2816883d1f5e522854c7f8c0043c42e",
+        "parent": "e5cc2e3170a40bd656e39ceda5488692ea8eba56",
+        "tree": "0a4a08f1c1e974ac45f2f838d7a2de7c8d97bb2c",
+        "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md", "docs/FOLLOWUPS.md"]
+      }
+    ]
+  },
+  "history": {
+    "commits": [
+      {"kind": "lifecycle", "pre_commit": "f16fa3edf22fc8bae356232da9ab6aecd652ba62", "commit": "3fde7c507b151411996210d159ccb4b5a3122a69", "tree": "10443ecd5508a42dc91a4df479375bc8d891f0d7", "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-06-SUMMARY.md", ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"]},
+      {"kind": "product_fix", "pre_commit": "3fde7c507b151411996210d159ccb4b5a3122a69", "commit": "18d57a6724637f597883685749583253613a0884", "tree": "c2dfe7aac460dd7cfe30084859d26eb2a4145403", "paths": ["crates/nano-cli/src/acp_mode.rs"], "finding_ids": ["WP03-AUDIT-HIGH-001"]},
+      {"kind": "lifecycle", "pre_commit": "18d57a6724637f597883685749583253613a0884", "commit": "f34da2f778b3ace900bd005bcdf6888fda6a94b4", "tree": "e7996b22eb64b04e4daaa2f8cb069c2c4ea85ab3", "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-10-SUMMARY.md"]},
+      {"kind": "lifecycle", "pre_commit": "f34da2f778b3ace900bd005bcdf6888fda6a94b4", "commit": "d73142604e74889a7f7144c62ae4ea50a41f6c28", "tree": "74403b70a028f6a5df6102f423fe4496ca3b6d52", "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md", ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md", "docs/FOLLOWUPS.md"]},
+      {"kind": "lifecycle", "pre_commit": "d73142604e74889a7f7144c62ae4ea50a41f6c28", "commit": "85a8b1d91379243aebd23ee74bc190221b670563", "tree": "3224c9558ec25f671a08997bdf65ec18210d18a3", "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-12-SUMMARY.md"]},
+      {"kind": "lifecycle", "pre_commit": "85a8b1d91379243aebd23ee74bc190221b670563", "commit": "e5cc2e3170a40bd656e39ceda5488692ea8eba56", "tree": "0043679fed24cc45525f49febfdf4e56de29d8cd", "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-07-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md", ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md", "docs/FOLLOWUPS.md"]},
+      {"kind": "lifecycle", "pre_commit": "e5cc2e3170a40bd656e39ceda5488692ea8eba56", "commit": "1f7e1b60e2816883d1f5e522854c7f8c0043c42e", "tree": "0a4a08f1c1e974ac45f2f838d7a2de7c8d97bb2c", "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md", "docs/FOLLOWUPS.md"]}
+    ]
+  },
   "independent_recheck": {
     "status": "pending"
   }
