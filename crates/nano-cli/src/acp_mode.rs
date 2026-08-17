@@ -11378,6 +11378,33 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct PdfLiveEvidenceDriver(ProviderDriver);
+
+    #[async_trait::async_trait]
+    impl ModelDriver for PdfLiveEvidenceDriver {
+        async fn complete(
+            &self,
+            request: &nano_model::types::ModelRequest,
+        ) -> Result<nano_model::types::ModelResponse, nano_model::types::ModelError> {
+            let mut request = request.clone();
+            request.tools.clear();
+            request.max_tokens = Some(request.max_tokens.unwrap_or(64).min(64));
+            self.0.complete(&request).await
+        }
+
+        async fn complete_observed(
+            &self,
+            request: &nano_model::types::ModelRequest,
+            hooks: &nano_model::types::CallHooks<'_>,
+        ) -> Result<nano_model::types::ModelResponse, nano_model::types::ModelError> {
+            let mut request = request.clone();
+            request.tools.clear();
+            request.max_tokens = Some(request.max_tokens.unwrap_or(64).min(64));
+            self.0.complete_observed(&request, hooks).await
+        }
+    }
+
     /// D7 active-leaf proof through the normal ACP host/router/driver path.
     /// The credential is resolved by production code from its path; this
     /// harness never opens, prints, or serializes it.
@@ -11425,7 +11452,7 @@ mod tests {
             .expect("credential path and canonical active leaf must resolve");
         assert_eq!(binding.wire, WireKind::AnthropicMessages);
         assert_eq!(binding.model, "flux-auto");
-        assert_eq!(binding.api_path, "/anthropic/v1/messages");
+        assert_eq!(binding.api_path, "/v1/messages");
 
         let home = std::env::temp_dir().join(format!(
             "wayland-nano-pdf-live-{}-{}",
@@ -11501,7 +11528,9 @@ mod tests {
                             buf: Vec::new(),
                         },
                         &config,
-                        move |resolved| runtime_driver(resolved, &driver_policy),
+                        move |resolved| {
+                            PdfLiveEvidenceDriver(runtime_driver(resolved, &driver_policy))
+                        },
                         move |_, _, _, _, _, _| {
                             (
                                 NoopExecutor,
@@ -11536,6 +11565,28 @@ mod tests {
                     .recv_timeout(std::time::Duration::from_secs(180))
                     .expect("ACP response before timeout");
                 let frame: serde_json::Value = serde_json::from_str(&line).expect("ACP frame");
+                if frame.get("method").and_then(|value| value.as_str())
+                    == Some("session/request_permission")
+                {
+                    let permission_id = frame.get("id").cloned().expect("permission request id");
+                    input
+                        .send(format!(
+                            "{}\n",
+                            serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": permission_id,
+                                "result": {
+                                    "outcome": {
+                                        "outcome": "selected",
+                                        "optionId": "deny"
+                                    }
+                                }
+                            })
+                        ))
+                        .expect("deny unexpected live-proof tool permission");
+                    frames.push(frame);
+                    continue;
+                }
                 let done = frame.get("id").and_then(|value| value.as_u64()) == Some(id);
                 frames.push(frame.clone());
                 if done {
@@ -11629,9 +11680,11 @@ mod tests {
             "PDF turn: {pdf_response}"
         );
         let pdf_input_tokens = latest_input_tokens(&journal);
-        let delta = pdf_input_tokens
-            .checked_sub(control_input_tokens)
-            .expect("PDF input tokens must exceed control");
+        assert!(
+            pdf_input_tokens > control_input_tokens,
+            "PDF input tokens {pdf_input_tokens} must exceed control {control_input_tokens}"
+        );
+        let delta = pdf_input_tokens - control_input_tokens;
         assert!(control_input_tokens > 0, "control usage must be positive");
         assert!(
             pdf_input_tokens > control_input_tokens,
@@ -11649,7 +11702,7 @@ mod tests {
             "provider":"flux-router-anthropic",
             "model":"flux-auto",
             "wire":"anthropic_messages",
-            "api_path":"/anthropic/v1/messages",
+            "api_path":"/v1/messages",
             "control_input_tokens":control_input_tokens,
             "pdf_input_tokens":pdf_input_tokens,
             "delta":delta,
@@ -11669,8 +11722,12 @@ mod tests {
             "delta":delta
         });
         let transcript = std::fs::read(&journal).expect("session transcript");
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("repository root");
         let paired_roots = [
-            monorepo.join("crates/nano-model/fixtures-flux/pdf"),
+            repo_root.join("crates/nano-model/fixtures-flux/pdf"),
             monorepo.join("shared/fixtures/flux/pdf"),
         ];
         let paired = vec![
@@ -11715,7 +11772,7 @@ mod tests {
         }
         use sha2::{Digest, Sha256};
         for entry in manifest["inputs"].as_array().unwrap() {
-            let repo = monorepo.join(entry["repo_path"].as_str().unwrap());
+            let repo = repo_root.join(entry["repo_path"].as_str().unwrap());
             let shared = std::path::PathBuf::from(entry["shared_path"].as_str().unwrap());
             let repo_bytes = std::fs::read(repo).expect("reopen repo evidence");
             let shared_bytes = std::fs::read(shared).expect("reopen shared evidence");

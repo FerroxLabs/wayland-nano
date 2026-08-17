@@ -16,7 +16,7 @@ pub static PROVIDERS: &[ProviderSpec] = &[
         display_name: "Flux Router (Anthropic)",
         base_url: "https://api.fluxrouter.ai",
         wire: WireKind::AnthropicMessages,
-        api_path: "/anthropic/v1/messages",
+        api_path: "/v1/messages",
         env_var: "FLUX_API_KEY",
         bearer_env: "WAYLAND_NANO_OAUTH_BEARER_FLUX_ROUTER_ANTHROPIC",
         bearer_expires_env: "WAYLAND_NANO_OAUTH_BEARER_FLUX_ROUTER_ANTHROPIC_EXPIRES_AT_UNIX_SECS",

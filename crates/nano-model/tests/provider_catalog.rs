@@ -12,7 +12,7 @@ use nano_model::provider_catalog::{PROVIDERS, WireKind};
 /// sha256 of data/providerCatalog.vendored.json. Any byte change to the
 /// vendored file fails this test — endpoint changes are deliberate,
 /// reviewed, and recorded here.
-const RECORDED_SHA256: &str = "17fd7d54b7c1f433f912627ee5e3fac0c3505cb5064f0da471c80276e802eaee";
+const RECORDED_SHA256: &str = "5d972fca66a7da9e452b57839936f4e6120f59f5da50192840aa18fd604a5458";
 
 const VENDORED: &[u8] = include_bytes!("../data/providerCatalog.vendored.json");
 
@@ -111,7 +111,7 @@ fn flux_router_anthropic_endpoint_is_exact() {
         .expect("canonical Flux Anthropic provider");
     assert_eq!(provider.base_url, "https://api.fluxrouter.ai");
     assert_eq!(provider.wire, WireKind::AnthropicMessages);
-    assert_eq!(provider.api_path, "/anthropic/v1/messages");
+    assert_eq!(provider.api_path, "/v1/messages");
     assert_eq!(provider.env_var, "FLUX_API_KEY");
     assert!(provider.proven);
 }

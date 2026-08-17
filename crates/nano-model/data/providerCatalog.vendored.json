@@ -17,7 +17,7 @@
       "display_name": "Flux Router (Anthropic)",
       "base_url": "https://api.fluxrouter.ai",
       "wire": "anthropic-messages",
-      "api_path": "/anthropic/v1/messages",
+      "api_path": "/v1/messages",
       "env_var": "FLUX_API_KEY",
       "proven": true
     },

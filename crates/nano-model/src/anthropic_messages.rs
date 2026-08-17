@@ -1,6 +1,6 @@
 //! Flux Anthropic Messages adapter — COMPAT only, not the production wire.
 //!
-//! Endpoint: POST {base}/anthropic/v1/messages (+ /count_tokens). Evidence:
+//! Endpoint: POST {base}/v1/messages (+ /count_tokens). Evidence:
 //! fixtures-flux/anthropic-messages/, tool-calls/, thinking/, cache/,
 //! streaming/*_am_sse.txt, anthropic-count-tokens/.
 //!
@@ -46,8 +46,8 @@ use crate::types::{
 };
 use nano_egress::client::EgressClient;
 
-pub const MESSAGES_PATH: &str = "/anthropic/v1/messages";
-pub const COUNT_TOKENS_PATH: &str = "/anthropic/v1/messages/count_tokens";
+pub const MESSAGES_PATH: &str = "/v1/messages";
+pub const COUNT_TOKENS_PATH: &str = "/v1/messages/count_tokens";
 
 /// Fallback budget when the neutral request leaves `max_tokens` unset:
 /// required on this surface (real Anthropic rejects its absence; the
@@ -86,7 +86,7 @@ impl AnthropicMessagesClient {
 
     /// Override the messages path (C8: the vendored catalog's `api_path`;
     /// e.g. `/v1/messages` for api.anthropic.com — the Flux-compat default
-    /// is `/anthropic/v1/messages`). count_tokens rides the same prefix.
+    /// is `/v1/messages`). count_tokens rides the same prefix.
     pub fn with_api_path(mut self, api_path: impl Into<String>) -> Self {
         self.messages_path = api_path.into();
         self
