@@ -13,6 +13,15 @@ pub struct GateInvocation {
     pub gate_id: String,              // registry key this invocation was built from
 }
 
+/// Execute one gate subprocess. The production implementation is materialized by
+/// Plan 04-04 after its real-process contract has been observed failing.
+pub async fn run_gate(
+    _inv: &GateInvocation,
+    _artifact_path: &std::path::Path,
+) -> GateOutcome {
+    GateOutcome::FailClosed(FailClosedReason::NoGateOutput)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FailCategory {
