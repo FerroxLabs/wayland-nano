@@ -52,3 +52,10 @@ For every `gen_error_table` generation/check, resolve the canonical sibling shar
 - Plan 08 captures `closure_input_tip` before mutation and does not equate audited-to-closure HEAD with audit history.
 - Summaries never record their own commit/tree: P13 summary records only P13A; Plan 11 discovers P13S from HEAD; P11 summary records only P11A; Plan 07 discovers P11S from HEAD; Plan 07 summary records only pre-summary live evidence; Plan 08 discovers later summary commits directly from Git.
 - Detached command evidence is normalized to command ID, exit zero, product commit/tree, expected test name, and pass marker with `execution_mode=detached-worktree`; raw cargo timing and temporary paths are not persisted or compared.
+
+# DEV-WP-0.3J exact-test recheck addendum (resolved)
+
+- Canonical command 2 is `cargo test -p nano-cli acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded --lib -- --exact --nocapture`; its expected and normalized receipt test ID is exactly `acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded`.
+- The transient proof must contain `running 1 test` and a successful result with `1 passed; 0 failed`; `running 0 tests` is fatal even when Cargo exits zero.
+- Plan 11 discovers immutable P13S as the commit touching `03-13-SUMMARY.md` and P13A as its parent, and proves their consecutive one-file diffs. P13A/P13S are interior lifecycle anchors rather than terminal commits.
+- Only post-P13S correction commits through the actual recheck HEAD are allowed, and every path must be one of `03-11-PLAN.md`, `03-08-PLAN.md`, `03-VALIDATION.md`, `SOURCE-AUDIT.md`, or `docs/FOLLOWUPS.md`; audit, summary, and product paths are forbidden in that suffix.

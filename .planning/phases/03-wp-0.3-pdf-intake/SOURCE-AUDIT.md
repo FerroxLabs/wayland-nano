@@ -31,3 +31,7 @@ No deferred capability, PDF parsing/extraction, Files API, multi-document suppor
 The lifecycle model is covered by Plans 13, 11, 07, and 08: immutable product fix, known metadata, recheck artifacts, and live evidence occupy separate exact Git intervals. The six paths changed by `d731426` are explicitly lifecycle-allowed. `03-VALIDATION.md` and `docs/FOLLOWUPS.md` carry the resolved contract. No product scope or deferred feature was introduced.
 
 Receipt closure is non-circular: summaries identify only already-committed inputs, while later phases discover summary commits from Git and verify exact one-file diffs. Both detached commands use normalized deterministic evidence instead of raw cargo output or temporary paths.
+
+# DEV-WP-0.3J source reconciliation — COVERED
+
+Plans 11 and 08 now use the fully qualified exact PDF dispatch test, require one executed/passed test, and reject Cargo's zero-test false green. The normalized receipt carries the exact fully qualified test ID. The lifecycle remains the exact ordered Git chain: immutable consecutive P13A/P13S are discovered from Git, while the post-P13S correction suffix through recheck HEAD is restricted to the five named planning/audit-document paths and excludes audit JSON, summaries, and product code. Validation and follow-up artifacts carry the same PS5.1-safe contract; no product scope was introduced.
