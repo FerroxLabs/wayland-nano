@@ -59,3 +59,10 @@ For every `gen_error_table` generation/check, resolve the canonical sibling shar
 - The transient proof must contain `running 1 test` and a successful result with `1 passed; 0 failed`; `running 0 tests` is fatal even when Cargo exits zero.
 - Plan 11 discovers immutable P13S as the commit touching `03-13-SUMMARY.md` and P13A as its parent, and proves their consecutive one-file diffs. P13A/P13S are interior lifecycle anchors rather than terminal commits.
 - Only post-P13S correction commits through the actual recheck HEAD are allowed, and every path must be one of `03-11-PLAN.md`, `03-08-PLAN.md`, `03-VALIDATION.md`, `SOURCE-AUDIT.md`, or `docs/FOLLOWUPS.md`; audit, summary, and product paths are forbidden in that suffix.
+
+# DEV-WP-0.3M second final-fix recheck addendum (resolved)
+
+- Canonical final product identity is `4fd669bfb921769456f1603221bbe2326487d67c`, tree `84af3ddd0d0773bc72db7684c516a622bd4453c4`; audit history is the exact ordered 18-commit range from audited commit through that fix and contains two product-fix projections whose finding union is all four findings.
+- Post-fix metadata is derived generically through ActualHead with actual parent/tree/diffs and a closed planning, audit, control, preflight, and summary allowlist. Product and evidence paths are forbidden; no Plan 13 terminal assumption remains.
+- Plans 11 and 08 execute and exactly compare four normalized receipts at the detached final tree: endpoint, fully-qualified PDF refusal, fully-qualified nano-protocol Windows verbatim regression, and nano-model all-target clippy with warnings denied. Tests prove one run/one pass/no zero; clippy proves a stable clean completion without persisting raw output.
+- Verdict binding is High 001 to PDF, High 002 to Windows, and High 003/004 to clippy. The audit output commit remains a non-self-referential child of the captured recheck point.

@@ -35,3 +35,7 @@ Receipt closure is non-circular: summaries identify only already-committed input
 # DEV-WP-0.3J source reconciliation — COVERED
 
 Plans 11 and 08 now use the fully qualified exact PDF dispatch test, require one executed/passed test, and reject Cargo's zero-test false green. The normalized receipt carries the exact fully qualified test ID. The lifecycle remains the exact ordered Git chain: immutable consecutive P13A/P13S are discovered from Git, while the post-P13S correction suffix through recheck HEAD is restricted to the five named planning/audit-document paths and excludes audit JSON, summaries, and product code. Validation and follow-up artifacts carry the same PS5.1-safe contract; no product scope was introduced.
+
+# DEV-WP-0.3M source reconciliation — COVERED
+
+Plans 11 and 08 cover the canonical second final fix, exact 18-commit audit history, two product-fix projections, all four findings, generic post-fix metadata, and the separate P11/live closure segments. Their identical four-command detached catalog binds endpoint, PDF, Windows verbatim, and clippy evidence to deterministic normalized receipts. The companion validation and follow-up records carry the same PowerShell 5.1-safe contract; no product or deferred scope was introduced.
