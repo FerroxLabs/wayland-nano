@@ -59,7 +59,10 @@
     "tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
     "commit": "5040293cf4de8467555f4c74b46b34a91d6939d7"
   },
-  "recheck_point": null,
+  "recheck_point": {
+    "commit": "412d33a8bd579c15c1060a94aed2d8a247311fe6",
+    "tree": "4bdd5c4c8fddbadfaed4c4fb2a2ec39292dd4364"
+  },
   "builder": {
     "identity": "K3 (Wayland Nano Track B) <k3-trackb@waylandnano.local>"
   },
@@ -787,7 +790,7 @@
         ]
       }
     ],
-    "post_fix_commits": [
+    "prior_post_fix_commits": [
       {
         "commit": "2a55eaee88909e3c635a6b9e88d1b8fa04034abd",
         "parent": "f1372da6336f7bacad95b2c460c7f9ff1d4fcaf5",
@@ -860,6 +863,40 @@
           ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
           ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
           "docs/FOLLOWUPS.md"
+        ],
+        "kind": "plan_correction"
+      }
+    ],
+    "post_fix_commits": [
+      {
+        "commit": "08f90d2bc33fb1c2a9396a48f247357dd53321e7",
+        "parent": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "tree": "0f80c2c35f8d740a1670bb5fd1e766b4b1203f58",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"
+        ],
+        "kind": "audit_metadata"
+      },
+      {
+        "commit": "8fc22333921a264d1d9259991bf9c57b982d9f85",
+        "parent": "08f90d2bc33fb1c2a9396a48f247357dd53321e7",
+        "tree": "46d19701016de931a69c1fbcd176b668b5466cff",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md",
+          "docs/FOLLOWUPS.md"
+        ],
+        "kind": "plan_correction"
+      },
+      {
+        "commit": "412d33a8bd579c15c1060a94aed2d8a247311fe6",
+        "parent": "8fc22333921a264d1d9259991bf9c57b982d9f85",
+        "tree": "4bdd5c4c8fddbadfaed4c4fb2a2ec39292dd4364",
+        "paths": [
+          ".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md",
+          ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md"
         ],
         "kind": "plan_correction"
       }
@@ -1274,7 +1311,7 @@
       }
     ]
   },
-  "independent_recheck": {
+  "prior_independent_recheck": {
     "status": "PENDING",
     "final_status": "PENDING",
     "prior_status": "PASS",
@@ -1371,6 +1408,94 @@
         "command_ref": "RECHECK-HARNESS-SCHEMA",
         "evidence": "The exact six-payload-pair evidence-manifest schema regression passed once with zero failures at the canonical final fix tree."
       }
+    ]
+  },
+  "independent_recheck": {
+    "status": "PASS",
+    "final_status": "PASS",
+    "prior_status": "PENDING",
+    "reviewer": {
+      "identity": "Codex /root/verify_wp03_absolute_final"
+    },
+    "method": "independent detached-tree generic post-chain, exact-test, live-receipt, and eight-finding recheck",
+    "method_version": "wp03-independent-recheck/4.0",
+    "timestamp": "2026-08-17T11:22:58.9323327Z",
+    "checked_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+    "checked_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+    "commands": [
+      {
+        "id": "RECHECK-CATALOG-ENDPOINT",
+        "command": "cargo test -p nano-model --test provider_catalog flux_router_anthropic_endpoint_is_exact -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "execution_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-CATALOG-ENDPOINT;exit=0;commit=5040293cf4de8467555f4c74b46b34a91d6939d7;tree=be34bb63f58cacd64bdab3a073f17fa5d4088719;test=flux_router_anthropic_endpoint_is_exact;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-PDF-REFUSAL",
+        "command": "cargo test -p nano-cli acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded --lib -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "execution_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-PDF-REFUSAL;exit=0;commit=5040293cf4de8467555f4c74b46b34a91d6939d7;tree=be34bb63f58cacd64bdab3a073f17fa5d4088719;test=acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-WINDOWS-VERBATIM",
+        "command": "cargo test -p nano-protocol --lib acp::tests::document_path_verbatim_prefix_accepts_file_but_rejects_junction -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "execution_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-WINDOWS-VERBATIM;exit=0;commit=5040293cf4de8467555f4c74b46b34a91d6939d7;tree=be34bb63f58cacd64bdab3a073f17fa5d4088719;test=acp::tests::document_path_verbatim_prefix_accepts_file_but_rejects_junction;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-NANO-MODEL-CLIPPY",
+        "command": "cargo clippy -p nano-model --all-targets -- -D warnings",
+        "exit": 0,
+        "execution_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "execution_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-NANO-MODEL-CLIPPY;exit=0;commit=5040293cf4de8467555f4c74b46b34a91d6939d7;tree=be34bb63f58cacd64bdab3a073f17fa5d4088719;result=clean"
+      },
+      {
+        "id": "RECHECK-HARNESS-SCHEMA",
+        "command": "cargo test -p nano-cli acp_mode::tests::pdf_evidence_manifest_schema_has_exact_six_payload_pairs --lib -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "execution_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-HARNESS-SCHEMA;exit=0;commit=5040293cf4de8467555f4c74b46b34a91d6939d7;tree=be34bb63f58cacd64bdab3a073f17fa5d4088719;test=acp_mode::tests::pdf_evidence_manifest_schema_has_exact_six_payload_pairs;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-JOURNAL-FORWARD-FIELDS",
+        "command": "cargo test -p nano-session tests::p2a_op_never_denies_unknown_fields --lib -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "execution_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-JOURNAL-FORWARD-FIELDS;exit=0;commit=5040293cf4de8467555f4c74b46b34a91d6939d7;tree=be34bb63f58cacd64bdab3a073f17fa5d4088719;test=tests::p2a_op_never_denies_unknown_fields;result=1-passed-0-failed"
+      },
+      {
+        "id": "RECHECK-DOCUMENTREF-CLOSED",
+        "command": "cargo test -p nano-session op::document_ref_tests::document_ref_rejects_duplicate_known_fields_from_raw_json --lib -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "5040293cf4de8467555f4c74b46b34a91d6939d7",
+        "execution_tree": "be34bb63f58cacd64bdab3a073f17fa5d4088719",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-DOCUMENTREF-CLOSED;exit=0;commit=5040293cf4de8467555f4c74b46b34a91d6939d7;tree=be34bb63f58cacd64bdab3a073f17fa5d4088719;test=op::document_ref_tests::document_ref_rejects_duplicate_known_fields_from_raw_json;result=1-passed-0-failed"
+      }
+    ],
+    "verdicts": [
+      {"finding_id": "WP03-AUDIT-HIGH-001", "verdict": "PASS", "command_ref": "RECHECK-PDF-REFUSAL", "evidence": "Exact PDF refusal regression passed once at the canonical final tree."},
+      {"finding_id": "WP03-LIVE-HIGH-002", "verdict": "PASS", "command_ref": "RECHECK-WINDOWS-VERBATIM", "evidence": "Exact Windows verbatim-path regression passed once at the canonical final tree."},
+      {"finding_id": "WP03-GATE-HIGH-003", "verdict": "PASS", "command_ref": "RECHECK-NANO-MODEL-CLIPPY", "evidence": "Strict nano-model all-target clippy completed cleanly."},
+      {"finding_id": "WP03-GATE-HIGH-004", "verdict": "PASS", "command_ref": "RECHECK-NANO-MODEL-CLIPPY", "evidence": "Strict nano-model all-target clippy completed cleanly."},
+      {"finding_id": "WP03-LIVE-HIGH-005", "verdict": "PASS", "command_ref": "RECHECK-CATALOG-ENDPOINT", "evidence": "Exact catalog endpoint regression passed once and retains /v1 authority."},
+      {"finding_id": "WP03-LIVE-HIGH-006", "verdict": "PASS", "command_ref": "RECHECK-HARNESS-SCHEMA", "evidence": "Exact six-payload-pair harness regression passed once."},
+      {"finding_id": "WP03-GATE-HIGH-007", "verdict": "PASS", "command_ref": "RECHECK-JOURNAL-FORWARD-FIELDS", "evidence": "Exact journal forward-fields regression passed once."},
+      {"finding_id": "WP03-GATE-HIGH-008", "verdict": "PASS", "command_ref": "RECHECK-DOCUMENTREF-CLOSED", "evidence": "Exact duplicate-known-field rejection regression passed once."}
     ]
   },
   "deviations": [
