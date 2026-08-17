@@ -46,7 +46,7 @@ For every `gen_error_table` generation/check, resolve the canonical sibling shar
 # DEV-WP-0.3I lifecycle validation addendum (resolved)
 
 - Product identity is exactly commit `18d57a6724637f597883685749583253613a0884`, tree `c2dfe7aac460dd7cfe30084859d26eb2a4145403`.
-- Plan 13 input is exactly `85a8b1d91379243aebd23ee74bc190221b670563`; known lifecycle is exactly `3fde7c5`, `f34da2f`, `d731426`, `85a8b1d` with actual parents, trees, and diffs.
+- Plan 13 requires a clean pre-output worktree and captures its actual HEAD/tree as `input_tip`. Its lifecycle is the exact ordered projection of every non-product commit through that dynamic tip; `3fde7c5`, `f34da2f`, `d731426`, and `85a8b1d` remain immutable ordered anchors, while later commits are restricted to the closed planning allowlist.
 - P13A and P11A are audit-only commits; P13S and P11S are summary-only commits. JSON artifacts never predict or self-hash their output commits.
 - Audit history ends at `recheck_point` (actual P13S). P11 receipts and Plan 07 live evidence are independently checked phase-history segments.
 - Plan 08 captures `closure_input_tip` before mutation and does not equate audited-to-closure HEAD with audit history.
