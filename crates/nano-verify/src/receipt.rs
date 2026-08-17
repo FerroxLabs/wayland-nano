@@ -1,7 +1,9 @@
 //! Standalone red-green receipt storage and read-only preflight primitives.
 
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
@@ -80,20 +82,143 @@ pub fn read_receipt(path: &Path) -> Result<Receipt, ReceiptPreflight> {
     Err(ReceiptPreflight::Unverifiable)
 }
 
-pub fn write_receipt(_directory: &Path, _receipt: &Receipt) -> Result<PathBuf, VerifyError> {
-    Err(VerifyError::Registry(
-        "receipt storage not implemented".into(),
-    ))
+pub fn write_receipt(directory: &Path, receipt: &Receipt) -> Result<PathBuf, VerifyError> {
+    write_receipt_with_policy(
+        directory,
+        receipt,
+        Duration::from_millis(50),
+        Duration::from_secs(10),
+        Duration::from_secs(60),
+    )
 }
 
 fn write_receipt_with_policy(
     directory: &Path,
     receipt: &Receipt,
-    _retry: Duration,
-    _deadline: Duration,
-    _stale_after: Duration,
+    retry: Duration,
+    deadline: Duration,
+    stale_after: Duration,
 ) -> Result<PathBuf, VerifyError> {
-    write_receipt(directory, receipt)
+    validate_slug(&receipt.requirement)?;
+    let target = directory.join(format!("{}.receipt.json", receipt.requirement));
+    let lock_path = target.with_extension("lock");
+    let _lock = acquire_lock(&lock_path, retry, deadline, stale_after)?;
+    let bytes = canonical_receipt(receipt)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(directory).map_err(VerifyError::StoreIo)?;
+    temporary.write_all(&bytes).map_err(VerifyError::StoreIo)?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(VerifyError::StoreIo)?;
+    platform_replace(temporary.path(), &target)?;
+    sync_directory(directory)?;
+    Ok(target)
+}
+
+struct ReceiptLock {
+    path: PathBuf,
+    _file: File,
+}
+
+impl Drop for ReceiptLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_lock(
+    path: &Path,
+    retry: Duration,
+    deadline: Duration,
+    stale_after: Duration,
+) -> Result<ReceiptLock, VerifyError> {
+    let started = Instant::now();
+    loop {
+        match OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(file) => {
+                return Ok(ReceiptLock {
+                    path: path.to_owned(),
+                    _file: file,
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if lock_is_stale(path, stale_after) {
+                    match std::fs::remove_file(path) {
+                        Ok(()) => continue,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(VerifyError::StoreIo(error)),
+                    }
+                }
+                if started.elapsed() >= deadline {
+                    return Err(VerifyError::LockHeld(path.display().to_string()));
+                }
+                std::thread::sleep(retry.min(deadline.saturating_sub(started.elapsed())));
+            }
+            Err(error) => return Err(VerifyError::StoreIo(error)),
+        }
+    }
+}
+
+fn lock_is_stale(path: &Path, stale_after: Duration) -> bool {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|age| age > stale_after)
+}
+
+fn validate_slug(requirement: &str) -> Result<(), VerifyError> {
+    if requirement.is_empty()
+        || !requirement
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        || requirement == "."
+        || requirement == ".."
+    {
+        return Err(invalid_receipt(
+            "requirement is not a confined filename slug",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn platform_replace(source: &Path, target: &Path) -> Result<(), VerifyError> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MoveFileExW};
+
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: both pointers reference NUL-terminated UTF-16 paths for this call.
+    if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_REPLACE_EXISTING) } == 0 {
+        return Err(VerifyError::StoreIo(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn platform_replace(source: &Path, target: &Path) -> Result<(), VerifyError> {
+    std::fs::rename(source, target).map_err(VerifyError::StoreIo)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn platform_replace(_source: &Path, _target: &Path) -> Result<(), VerifyError> {
+    Err(VerifyError::StoreIo(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "no authoritative atomic replacement primitive",
+    )))
+}
+
+#[cfg(unix)]
+fn sync_directory(directory: &Path) -> Result<(), VerifyError> {
+    File::open(directory)
+        .and_then(|file| file.sync_all())
+        .map_err(VerifyError::StoreIo)
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_directory: &Path) -> Result<(), VerifyError> {
+    Ok(())
 }
 
 fn validate_receipt(receipt: &Receipt) -> Result<(), VerifyError> {
@@ -135,14 +260,33 @@ fn is_rfc3339_utc(value: &str) -> bool {
     }
     let main = &value[..value.len() - 1];
     let (seconds, fraction) = main[17..].split_once('.').unwrap_or((&main[17..], ""));
+    let number = |part: &str| part.parse::<u32>().ok();
+    let year = number(&value[..4]);
+    let month = number(&value[5..7]);
+    let day = number(&value[8..10]);
+    let hour = number(&value[11..13]);
+    let minute = number(&value[14..16]);
+    let second = number(seconds);
+    let leap = year.is_some_and(|year| year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+    let max_day = match month {
+        Some(2) if leap => 29,
+        Some(2) => 28,
+        Some(4 | 6 | 9 | 11) => 30,
+        Some(1 | 3 | 5 | 7 | 8 | 10 | 12) => 31,
+        _ => return false,
+    };
     value[..4].bytes().all(|b| b.is_ascii_digit())
         && value[5..7].bytes().all(|b| b.is_ascii_digit())
         && value[8..10].bytes().all(|b| b.is_ascii_digit())
         && value[11..13].bytes().all(|b| b.is_ascii_digit())
         && value[14..16].bytes().all(|b| b.is_ascii_digit())
+        && day.is_some_and(|day| (1..=max_day).contains(&day))
+        && hour.is_some_and(|hour| hour <= 23)
+        && minute.is_some_and(|minute| minute <= 59)
+        && second.is_some_and(|second| second <= 59)
         && seconds.len() == 2
-        && seconds.bytes().all(|b| b.is_ascii_digit())
-        && (fraction.is_empty() || fraction.bytes().all(|b| b.is_ascii_digit()))
+        && (!main[17..].contains('.')
+            || (!fraction.is_empty() && fraction.bytes().all(|b| b.is_ascii_digit())))
 }
 
 fn normalize_value(value: serde_json::Value) -> Result<serde_json::Value, VerifyError> {
@@ -237,6 +381,18 @@ mod tests {
         assert!(matches!(result, Err(VerifyError::LockHeld(_))));
         assert!(started.elapsed() >= Duration::from_millis(60));
         assert!(started.elapsed() < Duration::from_secs(1));
+
+        std::thread::sleep(Duration::from_millis(2));
+        assert!(
+            write_receipt_with_policy(
+                dir.path(),
+                &receipt("RCPT-01"),
+                Duration::from_millis(1),
+                Duration::from_millis(50),
+                Duration::ZERO,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -248,7 +404,11 @@ mod tests {
 
         let mut new = old.clone();
         new.fix_commit = "e".repeat(40);
+        let old_bytes = canonical_receipt(&old).unwrap();
+        let new_bytes = canonical_receipt(&new).unwrap();
         assert_eq!(write_receipt(dir.path(), &new).unwrap(), target);
+        let observed = std::fs::read(&target).unwrap();
+        assert!(observed == old_bytes || observed == new_bytes);
         assert_eq!(read_receipt(&target).unwrap(), new);
     }
 }
