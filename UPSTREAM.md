@@ -183,6 +183,12 @@ metadata is not copied; the immutable donor snapshot lives at
 
 ## Crates.io dependency additions (not vendored — registry deps pinned in Cargo.lock)
 
+| Destination | Donor | Transformation |
+|---|---|---|
+| `crates/nano-verify/src/registry.rs` | none — `SPEC-WP-INTERFACES.md` §1-§2 | Contract-defined, no donor: `GateClosure`/`GateRegistryEntry`/schema-1 `GateRegistry` imported verbatim; canonical-JSON `closure_digest` uses SHA-256; full-envelope loading validates requirement mappings and extracts the authoritative Gate Card check inventory. |
+| `crates/nano-verify/src/gate.rs` | `ferrox-factory/src/gate-runner.cts` | TypeScript-to-Rust adaptation: regex summary parsing replaced by a hand-rolled scanner (no regex dependency); donor `{score,fails}` dictionary replaced by contract `GateOutcome` carrying the full reconstructed `CheckVerdict` inventory; legacy FAIL pass-through dropped (unknown ids become `UnknownCheckId`); argv, timeout, and exit-code-not-verdict semantics retained; `InconsistentSummary` requires totals to agree with inventory and FAIL lines; environment is `env_clear` plus the `SPEC-WP-INTERFACES.md` §3 baseline allowlist. |
+| `crates/nano-verify/src/receipt.rs` | `ferrox-factory/src/strength-receipt.cts` | TypeScript-to-Rust adaptation: keyed store envelope replaced by standalone versioned receipt documents (`SPEC-WP-INTERFACES.md` §6, including required `observed_at_commit`); donor skip-on-unknown behavior rejected; WP-1 performs git/ancestry/test-path/registry preflight but never produces final `Valid` (WP-3 owns detached-worktree rerun and final verdict); donor exclusive lock plus bare write replaced by the interface §9 lockfile, same-directory tempfile, and platform-authoritative atomic replacement; git probes follow the scrubbed system-Git discipline from `crates/nano-checkpoints/src/lib.rs`, which is a precedent rather than a donor. |
+
 ## S9 focused-window computer use (Wayland Core 0.12.26 @ 98ad1c28)
 
 | Destination | Donor | Transformation |

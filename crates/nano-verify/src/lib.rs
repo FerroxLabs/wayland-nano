@@ -10,3 +10,15 @@ pub mod receipt;
 pub mod registry;
 
 pub use error::VerifyError;
+pub use gate::{
+    CheckVerdict, FailCategory, FailClosedReason, GateInvocation, GateOutcome, parse_gate_output,
+    run_gate,
+};
+pub use receipt::{
+    FailingRun, Receipt, ReceiptPreflight, VerifyVerdict, canonical_receipt, mint_receipt,
+    preflight_receipt, read_receipt, write_receipt,
+};
+pub use registry::{
+    CwdPolicy, GateClosure, GateRegistry, GateRegistryEntry, ToolPin, check_closure_pin,
+    check_inventory, closure_digest, gate_for_requirement, load_registry,
+};
