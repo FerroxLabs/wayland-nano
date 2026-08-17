@@ -1,0 +1,4 @@
+{
+  "document": false,
+  "prompt": "Return the complete oracle sentence from the attached PDF, preserving capitalization and punctuation."
+}

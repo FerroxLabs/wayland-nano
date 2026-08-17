@@ -1,0 +1,26 @@
+{
+  "frames": [
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "wayland-nano-session-1786959854243615300-1",
+        "update": {
+          "content": {
+            "text": "WAYLAND NANO PDF ORACLE 7F3A: copper owls navigate by moonlit checksum.",
+            "type": "text"
+          },
+          "sessionUpdate": "agent_message_chunk"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "result": {
+        "stopReason": "end_turn"
+      }
+    }
+  ],
+  "oracle": "WAYLAND NANO PDF ORACLE 7F3A: copper owls navigate by moonlit checksum."
+}

@@ -1,0 +1,22 @@
+{
+  "document_path": {
+    "Windows": [
+      107,
+      110,
+      111,
+      119,
+      110,
+      45,
+      113,
+      117,
+      111,
+      116,
+      101,
+      46,
+      112,
+      100,
+      102
+    ]
+  },
+  "prompt": "Return the complete oracle sentence from the attached PDF, preserving capitalization and punctuation."
+}
