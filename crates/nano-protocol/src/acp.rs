@@ -278,7 +278,10 @@ fn reject_oversized_pdf_base64(data: &str) -> Result<(), BlockRejection> {
     Ok(())
 }
 
-fn reject_link_components(raw_path: &std::path::Path) -> Result<(), BlockRejection> {
+fn reject_link_components(
+    raw_path: &std::path::Path,
+    allowed_roots: &[std::path::PathBuf],
+) -> Result<(), BlockRejection> {
     let absolute = if raw_path.is_absolute() {
         raw_path.to_path_buf()
     } else {
@@ -286,6 +289,11 @@ fn reject_link_components(raw_path: &std::path::Path) -> Result<(), BlockRejecti
             .map_err(|_| BlockRejection::fs_read_denied("document_path: cannot inspect path"))?
             .join(raw_path)
     };
+    // Walk every raw prefix so an outside alias pointing inward cannot evade
+    // the link check. Unix temporary roots commonly have a platform-owned
+    // alias such as `/var -> /private/var`; exempt a link only when it is a
+    // strict lexical ancestor of an allowed root. The root itself and every
+    // caller-controlled component below it remain fail-closed.
     let mut prefix = std::path::PathBuf::new();
     for component in absolute.components() {
         prefix.push(component.as_os_str());
@@ -312,7 +320,11 @@ fn reject_link_components(raw_path: &std::path::Path) -> Result<(), BlockRejecti
         };
         #[cfg(not(any(unix, windows)))]
         let is_link = metadata.file_type().is_symlink();
-        if is_link {
+        let trusted_ancestor = is_link
+            && allowed_roots
+                .iter()
+                .any(|root| root != &prefix && root.starts_with(&prefix));
+        if is_link && !trusted_ancestor {
             return Err(BlockRejection::fs_read_denied(
                 "document_path: link or reparse component is not allowed",
             ));
@@ -540,7 +552,18 @@ fn confined_document_read(
             "document_path: extension must be .pdf",
         ));
     }
-    reject_link_components(std::path::Path::new(raw_path))?;
+    let lexical_workspace = if workspace.is_absolute() {
+        workspace.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| BlockRejection::fs_read_denied("document_path: cannot inspect path"))?
+            .join(workspace)
+    };
+    let mut lexical_roots = vec![lexical_workspace];
+    if let Some(pictures) = dirs_next::picture_dir() {
+        lexical_roots.push(pictures);
+    }
+    reject_link_components(std::path::Path::new(raw_path), &lexical_roots)?;
     let canonical = std::fs::canonicalize(raw_path)
         .map_err(|_| BlockRejection::fs_read_denied("document_path: cannot resolve the path"))?;
     if !canonical
@@ -2003,10 +2026,7 @@ mod tests {
         let err = result.expect_err("swapped document path must fail closed");
         assert_eq!(err.kind, NanoErrorKind::FsReadDenied);
         assert!(err.message.starts_with("document_path:"));
-        #[cfg(windows)]
-        std::fs::remove_dir(&sub).unwrap();
-        #[cfg(unix)]
-        std::fs::remove_file(&sub).unwrap();
+        std::fs::remove_dir_all(&sub).unwrap();
         std::fs::rename(&saved, &sub).unwrap();
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2047,10 +2067,51 @@ mod tests {
             err.message,
             "document_path: link or reparse component is not allowed"
         );
-        #[cfg(windows)]
-        std::fs::remove_dir(&linked).unwrap();
-        #[cfg(unix)]
-        std::fs::remove_file(&linked).unwrap();
+        std::fs::remove_dir_all(&linked).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_path_allows_trusted_alias_ancestor_but_rejects_linked_workspace_root() {
+        let root = h2_temp_dir("document-trusted-ancestor");
+        let real_parent = root.join("real-parent");
+        let real_workspace = real_parent.join("ws");
+        std::fs::create_dir_all(&real_workspace).unwrap();
+        let document = real_workspace.join("valid.pdf");
+        std::fs::write(&document, b"%PDF-workspace").unwrap();
+
+        let parent_alias = root.join("parent-alias");
+        std::os::unix::fs::symlink(&real_parent, &parent_alias).unwrap();
+        let aliased_workspace = parent_alias.join("ws");
+        let aliased_document = aliased_workspace.join("valid.pdf");
+        let (bytes, _) =
+            confined_document_read(aliased_document.to_str().unwrap(), &aliased_workspace)
+                .expect("a trusted alias above the workspace must not reject legitimate input");
+        assert_eq!(bytes, b"%PDF-workspace");
+
+        let linked_workspace = root.join("linked-workspace");
+        std::os::unix::fs::symlink(&real_workspace, &linked_workspace).unwrap();
+        let err = confined_document_read(
+            linked_workspace.join("valid.pdf").to_str().unwrap(),
+            &linked_workspace,
+        )
+        .expect_err("the allowed root itself must not be a link");
+        assert_eq!(err.kind, NanoErrorKind::FsReadDenied);
+        assert_eq!(
+            err.message,
+            "document_path: link or reparse component is not allowed"
+        );
+
+        let inward_alias = root.join("inward-alias.pdf");
+        std::os::unix::fs::symlink(&document, &inward_alias).unwrap();
+        let err = confined_document_read(inward_alias.to_str().unwrap(), &real_workspace)
+            .expect_err("an external raw alias pointing inward must remain rejected");
+        assert_eq!(err.kind, NanoErrorKind::FsReadDenied);
+        assert_eq!(
+            err.message,
+            "document_path: link or reparse component is not allowed"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
