@@ -19,7 +19,7 @@ key-files:
   modified:
     - docs/FOLLOWUPS.md
 key-decisions:
-  - "Resolve DEV-WP-0.3P only in the planning-contract sense and leave F-P2B-4 pending integrator promotion."
+  - "Mark F-P2B-4 FIXED after integrator-verified local closure while keeping merge, push and CI promotion explicitly pending."
   - "Record no summary commit or tree and claim no merge, push, CI, or promotion."
 requirements-completed: [PDF-05]
 completed: 2026-08-17
@@ -28,7 +28,7 @@ status: complete
 
 # Phase 03 Plan 08: PDF Closure Handoff Summary
 
-**Builder closure passed against the persisted input, canonical product tree, exact audit model, detached receipts, and independently current zero-hit live evidence; integrator promotion remains pending.**
+**Builder closure passed against the persisted input, canonical product tree, exact audit model, detached receipts, independently current zero-hit live evidence and a durable final full-gate receipt; F-P2B-4 is FIXED locally while merge, push and CI promotion remain pending.**
 
 ## Machine-Readable Closure Ledger
 
@@ -63,7 +63,7 @@ full_gate_desktop_sink_absent: true
 
 ## Handoff Boundary
 
-DEV-WP-0.3P is RESOLVED only in the planning-contract sense. F-P2B-4 remains pending live closure solely for integrator/owner promotion under the active contract. This builder handoff makes no claim that the branch was merged, pushed, promoted, exercised by CI, or marked `FIXED`.
+DEV-WP-0.3P is RESOLVED and F-P2B-4 is FIXED by local implementation, live proof, independent recheck, D9 closure and the durable full-gate receipt. This builder handoff still makes no claim that the branch was merged, pushed, promoted, or exercised by CI; those are the next integrator steps.
 
 This summary intentionally records no identity for its own future commit or tree.
 
