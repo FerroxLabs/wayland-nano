@@ -621,37 +621,88 @@ impl<'de> Deserialize<'de> for DocumentRef {
     where
         D: serde::Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Wire {
-            digest: String,
-            mime: String,
-            bytes: u64,
-            placeholder: String,
+        const FIELDS: [&str; 4] = ["digest", "mime", "bytes", "placeholder"];
+
+        struct DocumentRefVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for DocumentRefVisitor {
+            type Value = DocumentRef;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a document reference object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut digest = None;
+                let mut mime = None;
+                let mut bytes = None;
+                let mut placeholder = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "digest" => {
+                            if digest.is_some() {
+                                return Err(serde::de::Error::duplicate_field("digest"));
+                            }
+                            digest = Some(map.next_value()?);
+                        }
+                        "mime" => {
+                            if mime.is_some() {
+                                return Err(serde::de::Error::duplicate_field("mime"));
+                            }
+                            mime = Some(map.next_value()?);
+                        }
+                        "bytes" => {
+                            if bytes.is_some() {
+                                return Err(serde::de::Error::duplicate_field("bytes"));
+                            }
+                            bytes = Some(map.next_value()?);
+                        }
+                        "placeholder" => {
+                            if placeholder.is_some() {
+                                return Err(serde::de::Error::duplicate_field("placeholder"));
+                            }
+                            placeholder = Some(map.next_value()?);
+                        }
+                        _ => return Err(serde::de::Error::unknown_field(&key, &FIELDS)),
+                    }
+                }
+
+                let digest: String =
+                    digest.ok_or_else(|| serde::de::Error::missing_field("digest"))?;
+                let mime: String = mime.ok_or_else(|| serde::de::Error::missing_field("mime"))?;
+                let bytes = bytes.ok_or_else(|| serde::de::Error::missing_field("bytes"))?;
+                let placeholder =
+                    placeholder.ok_or_else(|| serde::de::Error::missing_field("placeholder"))?;
+
+                if digest.len() != 64
+                    || !digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(serde::de::Error::custom(
+                        "document digest must be 64 lowercase hexadecimal characters",
+                    ));
+                }
+                if mime != "application/pdf" {
+                    return Err(serde::de::Error::custom(
+                        "document mime must be application/pdf",
+                    ));
+                }
+
+                Ok(DocumentRef {
+                    digest,
+                    mime,
+                    bytes,
+                    placeholder,
+                })
+            }
         }
 
-        let wire = Wire::deserialize(deserializer)?;
-        if wire.digest.len() != 64
-            || !wire
-                .digest
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            return Err(serde::de::Error::custom(
-                "document digest must be 64 lowercase hexadecimal characters",
-            ));
-        }
-        if wire.mime != "application/pdf" {
-            return Err(serde::de::Error::custom(
-                "document mime must be application/pdf",
-            ));
-        }
-        Ok(Self {
-            digest: wire.digest,
-            mime: wire.mime,
-            bytes: wire.bytes,
-            placeholder: wire.placeholder,
-        })
+        deserializer.deserialize_map(DocumentRefVisitor)
     }
 }
 
@@ -671,6 +722,10 @@ pub enum InputBlock {
 #[cfg(test)]
 mod document_ref_tests {
     use super::*;
+
+    fn raw_document_ref(fields: &str) -> String {
+        format!(r#"{{"type":"document_ref",{fields}}}"#)
+    }
 
     #[test]
     fn document_ref_is_digest_only_closed_and_round_trips() {
@@ -709,6 +764,50 @@ mod document_ref_tests {
             }),
         ] {
             assert!(serde_json::from_value::<InputBlock>(malformed).is_err());
+        }
+    }
+
+    #[test]
+    fn document_ref_rejects_duplicate_known_fields_from_raw_json() {
+        let digest = "ab".repeat(32);
+        let cases = [
+            format!(
+                r#""digest":"{digest}","digest":"{digest}","mime":"application/pdf","bytes":1,"placeholder":"[Document #1]""#
+            ),
+            format!(
+                r#""digest":"{digest}","mime":"application/pdf","mime":"application/pdf","bytes":1,"placeholder":"[Document #1]""#
+            ),
+            format!(
+                r#""digest":"{digest}","mime":"application/pdf","bytes":1,"bytes":2,"placeholder":"[Document #1]""#
+            ),
+            format!(
+                r#""digest":"{digest}","mime":"application/pdf","bytes":1,"placeholder":"[Document #1]","placeholder":"[Document #2]""#
+            ),
+        ];
+
+        for fields in cases {
+            let error = serde_json::from_str::<InputBlock>(&raw_document_ref(&fields))
+                .expect_err("duplicate document field must fail");
+            assert!(error.to_string().contains("duplicate field"));
+        }
+    }
+
+    #[test]
+    fn document_ref_rejects_missing_required_fields_from_raw_json() {
+        let digest = "ab".repeat(32);
+        let cases = [
+            r#""mime":"application/pdf","bytes":1,"placeholder":"[Document #1]""#.to_owned(),
+            format!(r#""digest":"{digest}","bytes":1,"placeholder":"[Document #1]""#),
+            format!(
+                r#""digest":"{digest}","mime":"application/pdf","placeholder":"[Document #1]""#
+            ),
+            format!(r#""digest":"{digest}","mime":"application/pdf","bytes":1"#),
+        ];
+
+        for fields in cases {
+            let error = serde_json::from_str::<InputBlock>(&raw_document_ref(&fields))
+                .expect_err("missing document field must fail");
+            assert!(error.to_string().contains("missing field"), "{error}");
         }
     }
 
