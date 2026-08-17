@@ -45,10 +45,16 @@ canary_verdict: PASS
 implemented_status: PASS
 reachable_status: PASS
 live_proven_status: PASS
+full_gate_command: just gate-all
+full_gate_exit: 0
+full_gate_head: e5dd301c296317f6070f1f7381454d5b1ebd75fe
+full_gate_tree: 4c4303f8cd9b39a4bb5d8d3dad33642a4439202d
+full_gate_duration_ms: 124165
+full_gate_desktop_sink_absent: true
 
 ## Closure Evidence
 
-- Task 1 full gate and D9 closure passed. The latest full `just gate-all` pass completed in `1160.175s`; the preceding gate-plus-closure pass also completed successfully and supplied the committed `03-CONTROL.json` closure binding.
+- Task 1 full gate and D9 closure passed. The durable final gate receipt in `03-CONTROL.json` records `just gate-all`, exit `0`, head `e5dd301c296317f6070f1f7381454d5b1ebd75fe`, tree `4c4303f8cd9b39a4bb5d8d3dad33642a4439202d`, duration `124165ms`, and an absent Desktop generator sink.
 - Task 1 bound closure to the persisted input `9813509da0e6f0787fb0dd4b76b413960d49f78d` / tree `dc01591f8e5ffadc7c3f6a4c3628dd845670f6da`, not to the later documentation HEAD.
 - Task 2 independently reran the complete executable Git/product/post-fix/evidence/receipt/command/finding model and exited `0`.
 - Audit authority contains exactly `37` projected history commits, `4` product fixes, `8` findings, and `7` normalized detached-worktree command receipts.

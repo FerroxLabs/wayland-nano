@@ -148,6 +148,15 @@
                     "nano_equal":  true,
                     "resources_upstreams_equal":  true,
                     "shared_delta_valid":  true,
-                    "pairs_valid":  true
+                    "pairs_valid":  true,
+                    "full_gate":  {
+                                      "command":  "just gate-all",
+                                      "exit":  0,
+                                      "head":  "e5dd301c296317f6070f1f7381454d5b1ebd75fe",
+                                      "tree":  "4c4303f8cd9b39a4bb5d8d3dad33642a4439202d",
+                                      "duration_ms":  124165,
+                                      "timestamp":  "2026-08-17T13:14:26.5384816Z",
+                                      "desktop_sink_absent":  true
+                                  }
                 }
 }
