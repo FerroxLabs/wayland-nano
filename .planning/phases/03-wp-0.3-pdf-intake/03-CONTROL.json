@@ -138,6 +138,10 @@
                       "shared":  {
                                      "path":  "C:\\Users\\seand\\AppData\\Local\\Temp\\wayland-nano-wp03-50c0f2494979435bbcdb253fd3ede629\\shared-manifest.json",
                                      "sha256":  "da47b93beb4c8db0969f6d385ed5d2db5d4a18468a9d0711983d7e3ab0979279"
-                                 }
-                  }
+                      }
+                  },
+    "closure":  {
+                    "input_tip":  "d6fceb7631c5d220c57a4235a2188b714767a7b5",
+                    "input_tree":  "c91e52e0d2a32274829acac496892ad7b9517f7c"
+                }
 }
