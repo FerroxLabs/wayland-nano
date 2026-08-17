@@ -1,6 +1,6 @@
 ---
 phase: 03-wp-0.3-pdf-intake
-verified: 2026-08-17T20:30:00+07:00
+verified: 2026-08-17T20:22:22+07:00
 status: passed
 score: 6/6 requirements verified
 behavior_unverified: 0
@@ -20,7 +20,7 @@ re_verification:
 **Phase Goal:** Users can submit a valid PDF, preserve it across resume, and receive model-grounded handling only on a compatible Anthropic Messages leaf; close F-P2B-4 with live Flux, canary, audit, D9, and full-gate evidence.
 
 **Status:** passed
-**Re-verification:** Yes — after gap closure commit `7befc8ebe9be9ee971916950ccc2b9d4d7f697d0`
+**Re-verification:** Yes — refreshed at `876d435f3dcb2b35e7cd5d529b5407bde5e8ad4b` after gap closure commit `7befc8ebe9be9ee971916950ccc2b9d4d7f697d0`
 
 ## Goal Achievement
 
@@ -65,7 +65,8 @@ re_verification:
 - New durable full-gate receipt records `just gate-all`, exit `0`, duration `124165ms`, timestamp `2026-08-17T13:14:26.5384816Z`, and `desktop_sink_absent: true`.
 - Receipt head `e5dd301c296317f6070f1f7381454d5b1ebd75fe` exists, is an ancestor of current HEAD, and independently resolves to the recorded tree `4c4303f8cd9b39a4bb5d8d3dad33642a4439202d`.
 - Gap-closure commit `7befc8ebe9be9ee971916950ccc2b9d4d7f697d0` changes only `03-CONTROL.json`, `03-08-SUMMARY.md`, and `docs/FOLLOWUPS.md`.
-- Worktree was clean except for this untracked verification report; `git diff --check` passed. No paid live call was repeated and no key file was read.
+- Current HEAD `876d435f3dcb2b35e7cd5d529b5407bde5e8ad4b` descends from both the gate receipt head and gap-closure commit. Changes since closure are limited to verification/summary cleanup and `.planning/strength/coverage-baseline.json`; no product or evidence file changed.
+- Worktree was clean before this freshness update; `git diff --check` passed. No paid live call was repeated and no key file was read.
 
 ## Behavioral Spot-Checks
 
@@ -79,9 +80,7 @@ re_verification:
 
 ## Anti-Patterns and Notes
 
-No phase-owned product TODO/FIXME/XXX debt marker or user-visible stub was found. No secret value appears in retained evidence according to the current exact-list receipt.
-
-Non-blocking documentation note: `03-08-SUMMARY.md` now echoes the durable gate receipt, but two older narrative lines still say F-P2B-4 is pending live closure. The authoritative `docs/FOLLOWUPS.md` entry and current control receipt supersede those stale summary statements; summaries are not verification authority.
+No phase-owned product TODO/FIXME/XXX debt marker or user-visible stub was found. No secret value appears in retained evidence according to the current exact-list receipt. The earlier stale closure wording in `03-08-SUMMARY.md` has been reconciled with the authoritative FIXED disposition while preserving the explicit merge/push/CI boundary.
 
 ## Gaps Summary
 
@@ -89,5 +88,5 @@ No remaining phase-goal gaps. Merge, push, CI, and final branch promotion remain
 
 ---
 
-_Verified: 2026-08-17T20:30:00+07:00_
+_Verified: 2026-08-17T20:22:22+07:00_
 _Verifier: ferrox-verifier_
