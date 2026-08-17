@@ -110,6 +110,22 @@
       "introduced_by": "b3f49343",
       "disposition": "fix",
       "command_ref": "GATE-CMD-001"
+    },
+    {
+      "id": "WP03-LIVE-HIGH-005",
+      "severity": "high",
+      "path": "crates/nano-model/data/providerCatalog.vendored.json",
+      "evidence": "GOALS, the WP-0.3 specification, and the owner contract require the Flux Router Anthropic endpoint /v1/messages. The compatibility /anthropic/v1/messages route returned HTTP 200 but produced zero document-token delta and a false external oracle; the temporary path-only diagnostic changed only the endpoint to /v1/messages and produced delta 13831 with the oracle true.",
+      "disposition": "fix",
+      "command_ref": "LIVE-CMD-002"
+    },
+    {
+      "id": "WP03-LIVE-HIGH-006",
+      "severity": "high",
+      "path": "crates/nano-cli/src/acp_mode.rs",
+      "evidence": "The live harness first deadlocked on an unanswered session/request_permission request, then after that stage was bypassed wrote repository evidence under the monorepo root instead of the active worktree and failed its post-write reopen with NotFound. The final harness needs test-only tool clearing and a token cap, a deny responder for unexpected permission requests, and repository-root verification derived from the compiled crate rather than the monorepo workspace locator.",
+      "disposition": "fix",
+      "command_ref": "LIVE-CMD-003"
     }
   ],
   "audit_commands": [
@@ -138,6 +154,18 @@
       "command": "cargo test -p nano-cli pdf_live_active_leaf_runtime_path -- --ignored --nocapture",
       "exit": 101,
       "evidence": "The ignored complete-ACP live test failed with nanoError.kind fs_read_denied and message 'document_path: cannot inspect path'; the rejection originates at crates/nano-protocol/src/acp.rs:296 while inspecting the Windows canonical verbatim Prefix before RootDir. The oracle was not returned and no live evidence files or evidence-manifest.json were generated. No credential value or credential path is recorded."
+    },
+    {
+      "id": "LIVE-CMD-002",
+      "command": "cargo test -p nano-cli pdf_live_active_leaf_runtime_path -- --ignored --nocapture",
+      "exit": 0,
+      "evidence": "A temporary path-only diagnostic, removed after the run, held the live harness and payload constant while contrasting the catalog /anthropic/v1/messages route with /v1/messages. The compatibility route returned HTTP 200 with document-token delta 0 and oracle false; the direct /v1/messages route returned document-token delta 13831 and oracle true. No credential value or credential path is recorded."
+    },
+    {
+      "id": "LIVE-CMD-003",
+      "command": "cargo test -p nano-cli pdf_live_active_leaf_runtime_path -- --ignored --nocapture",
+      "exit": 101,
+      "evidence": "Before the harness fix, the ignored live command structurally timed out while waiting on an unanswered session/request_permission request. After progressing past that stage, it wrote repository evidence under the monorepo root rather than the active worktree and failed the post-write reopen with NotFound. No credential value or credential path is recorded."
     }
   ],
   "events": [
@@ -146,6 +174,18 @@
       "finding_id": "WP03-LIVE-HIGH-002",
       "command_ref": "LIVE-CMD-001",
       "effect": "The prior independent recheck is invalidated for the current product state; a new final independent recheck is pending after the live-path fix."
+    },
+    {
+      "kind": "live_failure_reopened_fix_round",
+      "finding_ids": [
+        "WP03-LIVE-HIGH-005",
+        "WP03-LIVE-HIGH-006"
+      ],
+      "command_refs": [
+        "LIVE-CMD-002",
+        "LIVE-CMD-003"
+      ],
+      "effect": "The current independent recheck is invalidated by the endpoint and live-harness findings; the prior result is retained and a new final independent recheck is pending after fixes."
     }
   ],
   "fix_round_count": 1,
@@ -633,9 +673,12 @@
     ]
   },
   "independent_recheck": {
-    "status": "PASS",
-    "invalidated_by": null,
-    "final_recheck_status": "PASS",
+    "status": "INVALIDATED",
+    "invalidated_by": [
+      "WP03-LIVE-HIGH-005",
+      "WP03-LIVE-HIGH-006"
+    ],
+    "final_recheck_status": "PENDING",
     "prior_result": {
       "status": "PASS",
       "checked_commit": "18d57a6724637f597883685749583253613a0884",
