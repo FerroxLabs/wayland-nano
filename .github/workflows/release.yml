@@ -18,6 +18,17 @@ permissions:
   id-token: write # npm provenance (Sigstore OIDC) + build-provenance attestation
   attestations: write # SLSA provenance for the release archives (Desktop's bundling gate)
 
+# TEMPORARY BYPASS - REMOVE ONCE AZURE CREDENTIALS ARE PROVISIONED.
+# The Windows Authenticode gate below is armed but currently bypassed: no
+# AZURE_* secrets exist in this repo yet, so a fail-closed gate would block the
+# next Nano release outright. While this flag is "1" a tag build still publishes
+# an UNSIGNED wayland-nano.exe and prints a loud warning in the run summary.
+# Delete this whole env block (flag and comment) the moment the credentials and
+# the AZURE_SIGNING_* repository variables exist - the gate then fails closed on
+# its own with no further edit.
+env:
+  WNANO_ALLOW_UNSIGNED_WINDOWS: "1"
+
 jobs:
   build:
     strategy:
@@ -79,6 +90,110 @@ jobs:
       - name: Release build (unix PTY guard)
         if: runner.os != 'Windows'
         run: cargo build --release -p nano-tools --bin wayland-nano-pty-guard --target ${{ matrix.target }}
+
+      # --- Windows Authenticode -------------------------------------------
+      # Authenticode is what Windows itself checks at load time (SmartScreen,
+      # Smart App Control, Defender); it never consults the SLSA attestation
+      # this workflow already produces. The two controls are complementary and
+      # neither replaces the other.
+      #
+      # ORDERING IS LOAD-BEARING: signing REWRITES the PE, so it must happen
+      # after the release build and BEFORE "Stage binary" below. pack.ps1 hashes
+      # the staged file into binaries-manifest.json (Get-FileHash, pack.ps1
+      # ~L123), and every downstream control derives from those exact bytes:
+      # the npm integrity check (bin/install.js), the uploaded artifact, the
+      # publish leg's zip + shasums manifest, the SLSA attestation, and the
+      # GitHub release asset Desktop pins by digest. Signing anywhere later
+      # would leave every one of those digests describing bytes that no longer
+      # ship.
+      #
+      # This workflow only ever runs on a v* tag, so "on a release tag" is
+      # every run - there is no non-release path to exempt.
+      - name: Windows signing preflight
+        id: winsign
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_CERT_PROFILE: ${{ vars.AZURE_SIGNING_CERT_PROFILE }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "$AZURE_TENANT_ID" ] || missing="$missing AZURE_TENANT_ID(secret)"
+          [ -n "$AZURE_CLIENT_ID" ] || missing="$missing AZURE_CLIENT_ID(secret)"
+          [ -n "$AZURE_SIGNING_ENDPOINT" ] || missing="$missing AZURE_SIGNING_ENDPOINT(var)"
+          [ -n "$AZURE_SIGNING_ACCOUNT" ] || missing="$missing AZURE_SIGNING_ACCOUNT(var)"
+          [ -n "$AZURE_SIGNING_CERT_PROFILE" ] || missing="$missing AZURE_SIGNING_CERT_PROFILE(var)"
+          if [ -z "$missing" ]; then
+            # AZURE_CLIENT_SECRET present => client-secret auth. Absent => the
+            # OIDC path, where azure/login mints a short-lived federated token
+            # and no long-lived secret is ever stored.
+            if [ -n "$AZURE_CLIENT_SECRET" ]; then mode=client-secret; else mode=oidc; fi
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+            echo "mode=$mode" >> "$GITHUB_OUTPUT"
+            echo "Authenticode signing enabled (auth mode: $mode)."
+            exit 0
+          fi
+          echo "sign=false" >> "$GITHUB_OUTPUT"
+          echo "mode=none" >> "$GITHUB_OUTPUT"
+          if [ "${WNANO_ALLOW_UNSIGNED_WINDOWS:-}" = "1" ]; then
+            echo "::warning title=Windows binary is UNSIGNED::Authenticode signing is bypassed by WNANO_ALLOW_UNSIGNED_WINDOWS=1. Missing:$missing. This release ships an unsigned wayland-nano.exe."
+            exit 0
+          fi
+          echo "::error title=Windows signing not configured::Refusing to publish an unsigned wayland-nano.exe. Missing:$missing. Provision them, or set WNANO_ALLOW_UNSIGNED_WINDOWS=1 in this workflow to ship unsigned deliberately."
+          exit 1
+
+      # OIDC federation: no long-lived secret in the repo. Requires a federated
+      # credential on the App Registration scoped to this repo, and the
+      # workflow-level id-token: write permission already granted above. The
+      # signing action's DefaultAzureCredential picks up the CLI session this
+      # establishes (AZURE_CLIENT_SECRET is empty in this mode, so the
+      # EnvironmentCredential ahead of it is skipped).
+      - name: Azure login (OIDC federation)
+        if: steps.winsign.outputs.mode == 'oidc'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign wayland-nano.exe (Azure Trusted Signing)
+        if: steps.winsign.outputs.sign == 'true'
+        uses: azure/trusted-signing-action@v2.0.0
+        with:
+          # Client-secret mode consumes all three; OIDC mode leaves the secret
+          # empty and authenticates through the azure/login session above.
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_CERT_PROFILE }}
+          files: ${{ github.workspace }}\target\${{ matrix.target }}\release\wayland-nano.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Wayland Nano
+          description-url: https://github.com/FerroxLabs/wayland-nano
+
+      # The signing action can succeed without producing a trusted signature
+      # (wrong profile, silent no-op). Prove the shipped PE actually validates
+      # before its bytes are hashed into the manifest.
+      - name: Verify Authenticode signature
+        if: steps.winsign.outputs.sign == 'true'
+        shell: pwsh
+        run: |
+          $exe = "target/${{ matrix.target }}/release/wayland-nano.exe"
+          $sig = Get-AuthenticodeSignature -FilePath $exe
+          if ($sig.Status -ne 'Valid') {
+            throw "Authenticode verification failed for $exe (status: $($sig.Status) - $($sig.StatusMessage))"
+          }
+          Write-Host "Authenticode OK: $($sig.SignerCertificate.Subject)"
+      # --- end Windows Authenticode ---------------------------------------
 
       - name: Stage binary
         shell: pwsh
