@@ -1,6 +1,7 @@
 # Wayland Nano (Track B) — native gate workflow, 6-target hosted-runner matrix.
 # Proves macOS / Linux / Windows parity (x64 + ARM64) on the same gate the
-# Windows leg has always run: gate-fmt, gate-lint, gate-test, gate-deny
+# Windows leg has always run: gate-fmt, gate-lint, gate-test, gate-gen-check,
+# gate-deny
 # (hard gate — licenses/advisories/bans fail the build). A CycloneDX SBOM is
 # generated on the windows-latest leg (output is platform-independent, so one
 # leg suffices) and lands in that leg's evidence artifacts. Live tests never
@@ -99,6 +100,9 @@ jobs:
       - name: gate-test
         run: just gate-test
 
+      - name: gate-gen-check
+        run: just gate-gen-check
+
       # C2.4 oracle is "CI measurement": run the agent-path profiler in
       # release mode and emit a machine-readable report, merged into this
       # leg's evidence manifest below. Advisory — perf never fails the gate.
@@ -145,7 +149,7 @@ jobs:
             arch = "${{ matrix.arch }}"
             rust = "1.95.0"
             at = (Get-Date).ToUniversalTime().ToString("o")
-            steps = @("gate-fmt", "gate-lint", "gate-test", "gate-deny")
+            steps = @("gate-fmt", "gate-lint", "gate-test", "gate-gen-check", "gate-deny")
           }
           $perfPath = "artifacts/evidence/ci/perf-${{ matrix.os }}.json"
           if (Test-Path $perfPath) {
@@ -172,7 +176,7 @@ jobs:
             "arch": "${{ matrix.arch }}",
             "rust": "1.95.0",
             "at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "steps": ["gate-fmt", "gate-lint", "gate-test", "build-bins", "gate-deny"]
+            "steps": ["gate-fmt", "gate-lint", "gate-test", "gate-gen-check", "build-bins", "gate-deny"]
           }
           JSON
 

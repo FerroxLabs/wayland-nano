@@ -2378,7 +2378,6 @@ mod nano_tests {
     use crate::token::LocalSid;
     use crate::token::create_workspace_write_token_with_caps_from;
     use crate::token::get_current_token_for_restriction;
-    use crate::winutil::resolve_sid;
     use rand::RngCore;
     use rand::SeedableRng;
     use rand::rngs::SmallRng;
@@ -2560,11 +2559,10 @@ mod nano_tests {
         let dir = std::env::temp_dir().join(format!("wayland-nano-acl-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
 
-        // Baseline: the harness user can write, and the allow-scan reports it.
-        let username = std::env::var("USERNAME").expect("USERNAME env");
-        let user = resolve_sid(&username).expect("resolve current-user SID");
-        let psid = user.as_ptr() as *mut c_void;
-        assert!(path_mask_allows(&dir, &[psid], FILE_GENERIC_WRITE, true).unwrap());
+        // Baseline: the harness user can write. Do not require a direct ACE for
+        // its user SID: valid temp roots may grant access through a group such
+        // as Authenticated Users, while `path_mask_allows` intentionally scans
+        // only the SIDs supplied by its caller.
         fs::write(dir.join("harness-baseline.txt"), b"x").expect("harness baseline write");
 
         // Probe identity: a fresh capability-style SID. A fresh temp dir's

@@ -67,21 +67,28 @@ fn targets_for(repo_root: &Path, monorepo: Option<&Path>) -> Vec<Target> {
     targets
 }
 
+fn find_monorepo_root(repo_root: &Path) -> Option<&Path> {
+    if !repo_root.join("AGENTS.md").is_file() {
+        return None;
+    }
+    repo_root.ancestors().find(|candidate| {
+        candidate
+            .join("shared/reviews/research-0.2/NANO-BUILD-PLAN-V3.md")
+            .is_file()
+            && candidate
+                .join("shared/reviews/research-0.2/SPEC-WP-INTERFACES.md")
+                .is_file()
+    })
+}
+
 fn targets() -> Vec<Target> {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let crates = manifest.parent().expect("crates dir");
     let repo_root = crates.parent().expect("repo root");
 
-    // The monorepo root is the nearest ancestor carrying shared/reviews.
-    let mut dir: Option<&Path> = Some(repo_root);
-    let mut monorepo = None;
-    while let Some(candidate) = dir {
-        if candidate.join("shared/reviews").is_dir() {
-            monorepo = Some(candidate);
-            break;
-        }
-        dir = candidate.parent();
-    }
+    // Require the authoritative compound program signature. A coincidental
+    // ancestor named `shared/reviews` must never redirect generated outputs.
+    let monorepo = find_monorepo_root(repo_root);
     targets_for(repo_root, monorepo)
 }
 
@@ -157,5 +164,24 @@ mod tests {
         assert!(shared.required, "canonical shared target must fail closed");
         assert!(!check_targets(&[shared]));
         assert!(!missing.exists(), "check mode must not create the mirror");
+    }
+
+    #[test]
+    fn monorepo_discovery_is_rename_safe_and_rejects_ambient_shared_reviews() {
+        let temp = tempfile::tempdir().expect("create discovery fixture");
+        let repo_root = temp.path().join("renamed-checkout");
+        std::fs::create_dir_all(repo_root.join("crates")).unwrap();
+        std::fs::write(repo_root.join("AGENTS.md"), "fixture").unwrap();
+        std::fs::create_dir_all(temp.path().join("shared/reviews")).unwrap();
+        assert!(
+            find_monorepo_root(&repo_root).is_none(),
+            "a generic shared/reviews ancestor is not authoritative"
+        );
+
+        let reviews = temp.path().join("shared/reviews/research-0.2");
+        std::fs::create_dir_all(&reviews).unwrap();
+        std::fs::write(reviews.join("NANO-BUILD-PLAN-V3.md"), "fixture").unwrap();
+        std::fs::write(reviews.join("SPEC-WP-INTERFACES.md"), "fixture").unwrap();
+        assert_eq!(find_monorepo_root(&repo_root), Some(temp.path()));
     }
 }

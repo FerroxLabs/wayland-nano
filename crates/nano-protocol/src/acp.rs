@@ -2005,28 +2005,28 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("file.pdf"), b"%PDF-outside-secret").unwrap();
         let saved = workspace.join("sub-saved");
-        let linked = std::rc::Rc::new(std::cell::Cell::new(true));
-        let linked_hook = linked.clone();
         let sub_hook = sub.clone();
         let saved_hook = saved.clone();
         let outside_hook = outside.clone();
         PRE_OPEN_HOOK.with(|hook| {
             *hook.borrow_mut() = Some(Box::new(move || {
                 std::fs::rename(&sub_hook, &saved_hook).unwrap();
-                if !make_dir_link(&sub_hook, &outside_hook) {
-                    linked_hook.set(false);
-                }
+                assert!(
+                    make_dir_link(&sub_hook, &outside_hook),
+                    "host must support the required directory-link swap regression"
+                );
             }));
         });
         let result = confined_document_read(document.to_str().unwrap(), &workspace);
-        if !linked.get() {
-            eprintln!("LOUD SKIP: host refused link creation for document swap test");
-            return;
-        }
         let err = result.expect_err("swapped document path must fail closed");
         assert_eq!(err.kind, NanoErrorKind::FsReadDenied);
         assert!(err.message.starts_with("document_path:"));
         std::fs::remove_dir_all(&sub).unwrap();
+        assert_eq!(
+            std::fs::read(outside.join("file.pdf")).unwrap(),
+            b"%PDF-outside-secret",
+            "directory-link cleanup must not follow into the outside target"
+        );
         std::fs::rename(&saved, &sub).unwrap();
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2055,10 +2055,10 @@ mod tests {
         }
         std::fs::write(outside.join("secret.pdf"), b"%PDF-secret").unwrap();
         let linked = workspace.join("linked");
-        if !make_dir_link(&linked, &outside) {
-            eprintln!("LOUD SKIP: host refused direct link/reparse creation");
-            return;
-        }
+        assert!(
+            make_dir_link(&linked, &outside),
+            "host must support the required directory-link regression"
+        );
         let aliased = linked.join("secret.pdf");
         let err = confined_document_read(aliased.to_str().unwrap(), &workspace)
             .expect_err("pre-existing link/reparse must reject before canonical resolution");
@@ -2135,11 +2135,10 @@ mod tests {
 
         std::fs::write(outside.join("secret.pdf"), b"%PDF-secret").unwrap();
         let linked = workspace.join("linked");
-        if !make_dir_link(&linked, &outside) {
-            eprintln!("LOUD SKIP: host refused direct link/reparse creation");
-            let _ = std::fs::remove_dir_all(root);
-            return;
-        }
+        assert!(
+            make_dir_link(&linked, &outside),
+            "Windows host must support the required junction regression"
+        );
         let err = confined_document_read(linked.join("secret.pdf").to_str().unwrap(), &workspace)
             .expect_err("junction component must remain rejected");
         assert_eq!(err.kind, NanoErrorKind::FsReadDenied);
@@ -2242,34 +2241,28 @@ mod tests {
         // The hook fires BETWEEN authorization and open: the authorized
         // subdir is swapped for a junction/symlink to the outside dir.
         let saved = workspace.join("sub-saved");
-        let linked = std::rc::Rc::new(std::cell::Cell::new(true));
-        let linked_hook = linked.clone();
         let sub_hook = sub.clone();
         let saved_hook = saved.clone();
         let outside_hook = outside.clone();
         PRE_OPEN_HOOK.with(|hook| {
             *hook.borrow_mut() = Some(Box::new(move || {
                 std::fs::rename(&sub_hook, &saved_hook).unwrap();
-                if !make_dir_link(&sub_hook, &outside_hook) {
-                    linked_hook.set(false);
-                }
+                assert!(
+                    make_dir_link(&sub_hook, &outside_hook),
+                    "host must support the required directory-link swap regression"
+                );
             }));
         });
         let result = confined_image_read(image.to_str().unwrap(), &workspace);
-        if !linked.get() {
-            eprintln!(
-                "LOUD SKIP: host refused link creation (no developer mode/admin) — \
-                 swap-between-authorize-and-open scenario cannot run here"
-            );
-            return;
-        }
         let err = result.expect_err("a swapped-in link must fail closed");
         assert_eq!(err.kind, NanoErrorKind::FsReadDenied, "{err:?}");
         // Restore the layout: the legitimate path still works.
-        #[cfg(windows)]
-        std::fs::remove_dir(&sub).unwrap(); // junctions are removed as directories
-        #[cfg(unix)]
-        std::fs::remove_file(&sub).unwrap(); // a symlink is removed as a file
+        std::fs::remove_dir_all(&sub).unwrap();
+        assert_eq!(
+            std::fs::read(outside.join("pic.png")).unwrap(),
+            b"outside-secret-bytes",
+            "directory-link cleanup must not follow into the outside target"
+        );
         std::fs::rename(&saved, &sub).unwrap();
         let (bytes, _) = confined_image_read(image.to_str().unwrap(), &workspace).unwrap();
         assert_eq!(bytes, b"workspace-image-bytes");

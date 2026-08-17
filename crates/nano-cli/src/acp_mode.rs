@@ -11298,15 +11298,27 @@ mod tests {
         assert!(blob_exists);
     }
 
-    fn authoritative_monorepo_root() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    fn find_authoritative_monorepo_root(repo_root: &std::path::Path) -> Option<std::path::PathBuf> {
+        if !repo_root.join("AGENTS.md").is_file() {
+            return None;
+        }
+        repo_root
             .ancestors()
             .find(|root| {
                 root.join("shared/reviews/research-0.2/GOALS.md").is_file()
-                    && root.join("wayland-nano/AGENTS.md").is_file()
+                    && root
+                        .join("shared/reviews/research-0.2/SPEC-WP-INTERFACES.md")
+                        .is_file()
             })
-            .expect("validated waylandnano monorepo root")
-            .to_path_buf()
+            .map(std::path::Path::to_path_buf)
+    }
+
+    fn authoritative_monorepo_root() -> std::path::PathBuf {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("repository root");
+        find_authoritative_monorepo_root(repo_root).expect("validated waylandnano monorepo root")
     }
 
     fn pdf_evidence_manifest(
@@ -11343,7 +11355,7 @@ mod tests {
 
     #[test]
     fn pdf_evidence_manifest_schema_has_exact_six_payload_pairs() {
-        let root = std::path::Path::new("D:/Development/waylandnano");
+        let root = std::env::temp_dir().join("waylandnano-manifest-schema");
         let names = [
             "known-quote.pdf",
             "control-request.json",
@@ -11356,7 +11368,7 @@ mod tests {
             .iter()
             .map(|name| (*name, name.as_bytes().to_vec()))
             .collect();
-        let manifest = pdf_evidence_manifest(root, &payloads, "oracle", 1, 1001);
+        let manifest = pdf_evidence_manifest(&root, &payloads, "oracle", 1, 1001);
         let inputs = manifest["inputs"].as_array().unwrap();
         assert_eq!(inputs.len(), 6, "manifest excludes itself by DEV-WP-0.3F");
         let repo_paths: std::collections::BTreeSet<_> = inputs
@@ -11369,13 +11381,34 @@ mod tests {
                 entry["repo_path"],
                 format!("crates/nano-model/fixtures-flux/pdf/{name}")
             );
-            assert_eq!(
-                entry["shared_path"],
-                format!("D:/Development/waylandnano/shared/fixtures/flux/pdf/{name}")
-            );
+            let expected_shared = root
+                .join("shared/fixtures/flux/pdf")
+                .join(name)
+                .display()
+                .to_string()
+                .replace('\\', "/");
+            assert_eq!(entry["shared_path"], expected_shared);
             assert_eq!(entry["sha256"].as_str().unwrap().len(), 64);
             assert!(entry["bytes"].as_u64().unwrap() > 0);
         }
+    }
+
+    #[test]
+    fn pdf_live_monorepo_discovery_is_rename_safe_and_fail_closed() {
+        let fixture = tempfile::tempdir().expect("discovery fixture");
+        let repo = fixture.path().join("renamed-worktree");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("AGENTS.md"), "fixture").unwrap();
+        assert!(find_authoritative_monorepo_root(&repo).is_none());
+
+        let reviews = fixture.path().join("shared/reviews/research-0.2");
+        std::fs::create_dir_all(&reviews).unwrap();
+        std::fs::write(reviews.join("GOALS.md"), "fixture").unwrap();
+        std::fs::write(reviews.join("SPEC-WP-INTERFACES.md"), "fixture").unwrap();
+        assert_eq!(
+            find_authoritative_monorepo_root(&repo).as_deref(),
+            Some(fixture.path())
+        );
     }
 
     #[derive(Debug)]
@@ -11411,10 +11444,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires FLUX_API_KEY_FILE and the recorded PDF live fixture"]
     async fn pdf_live_active_leaf_runtime_path() {
-        let Some(key_path) = std::env::var_os("FLUX_API_KEY_FILE") else {
-            eprintln!("pdf live proof skipped: FLUX_API_KEY_FILE is absent");
-            return;
-        };
+        let key_path = std::env::var_os("FLUX_API_KEY_FILE")
+            .expect("explicit PDF live proof requires FLUX_API_KEY_FILE");
         assert!(
             !key_path.is_empty(),
             "FLUX_API_KEY_FILE must name the credential file"
@@ -11454,11 +11485,11 @@ mod tests {
         assert_eq!(binding.model, "flux-auto");
         assert_eq!(binding.api_path, "/v1/messages");
 
-        let home = std::env::temp_dir().join(format!(
-            "wayland-nano-pdf-live-{}-{}",
-            std::process::id(),
-            unix_now_secs()
-        ));
+        let home_guard = tempfile::Builder::new()
+            .prefix("wayland-nano-pdf-live-")
+            .tempdir()
+            .expect("unique live-proof home");
+        let home = home_guard.path().to_path_buf();
         let sessions = home.join("sessions");
         std::fs::create_dir_all(&sessions).expect("live evidence session directory");
         let memory = MemoryHostConfig {
