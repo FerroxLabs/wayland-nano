@@ -169,7 +169,7 @@ function Get-TreeManifest {
         }
     }
 
-    $workerCount = [Math]::Min(8, [Math]::Max(1, $files.Count))
+    $workerCount = [Math]::Min(16, [Math]::Min([Math]::Max(1, [int]([Environment]::ProcessorCount / 2)), [Math]::Max(1, $files.Count)))
     $chunks = @(); for ($i = 0; $i -lt $workerCount; $i++) { $chunks += ,(New-Object System.Collections.ArrayList) }
     for ($i = 0; $i -lt $files.Count; $i++) { [void]$chunks[$i % $workerCount].Add($files[$i]) }
     $pool = [RunspaceFactory]::CreateRunspacePool(1, $workerCount)

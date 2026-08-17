@@ -1312,3 +1312,7 @@ The additive `ContentBlock::Document` also made the existing exhaustive request-
 ### DEV-WP-0.3F — Non-self-referential evidence manifest (RESOLVED 2026-08-17)
 
 The evidence manifest cannot contain its own final hash and byte count. It now records exactly six paired payloads; the scanner and receipt treat the current manifest as the seventh file externally. The receipt excludes itself and validates all seven current hashes and byte counts. No product ownership or runtime behavior changes.
+
+### DEV-WP-0.3G — D9 bounded hashing parallelism (RESOLVED 2026-08-17)
+
+D9 now bounds manifest hashing workers at the smallest of 16, half the logical processor count, and the file count. The unchanged exact `-Mode Check` baseline comparison passed in 850.655 seconds on a 32-processor host, about 109 seconds (11.4%) below the prior typical 960 seconds; enumeration, hashes, sorting, schema, and failure semantics remain unchanged.
