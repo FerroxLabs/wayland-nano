@@ -22,7 +22,7 @@
 | RESEARCH | — | Existing confinement/store/base64/hash stack; no new dependency | 03-01, 03-04 | COVERED | No package install task. |
 | RESEARCH | — | Anthropic-only live path and OpenAI-bound negative control | 03-03, 03-05, 03-07 | COVERED | Canonical entry supplies endpoint; selector payload cannot inject it. |
 | RESEARCH | D9 | Ownership preflight is the sole first predecessor before every product mutation | 03-01; all product plans depend on it | COVERED | Script/control initialization only in Wave 1. |
-| RESEARCH | — | One Critical/High audit, one continuous bounded fix round with zero-to-two grouped commits and canonical fix.commits[] and final commit/tree metadata finalization, independent committed-byte recheck, full gate, builder-only handoff | 03-06, 03-10, 03-12, 03-13, 03-11, 03-08 | COVERED | Durable schema-closed audit JSON; every Critical/High command reference is bound to an exact command receipt created by the detached execution loop; no merge/push/CI authority. |
+| RESEARCH | — | One Critical/High audit, exact three-product-fix history through canonical f137, independent six-finding committed-byte recheck, full gate, and builder-only handoff | 03-06, 03-10, 03-12, 03-11, 03-08 | COVERED | Durable schema-closed audit JSON; every finding is bound to one of five exact detached receipts; no merge/push/CI authority. |
 | CONTEXT | — | No CONTEXT.md decisions supplied | — | EXCLUDED | Binding decisions are in master/spec/GOALS and DEV-WP-0.3A. |
 
 No deferred capability, PDF parsing/extraction, Files API, multi-document support, routing-policy change, attachment-store redesign, `ImageRef` rename, `ToolResult` change, Desktop-owned commit, `../nano/` write, or `../resources/upstreams/` write appears in the plan set.
@@ -39,3 +39,7 @@ Plans 11 and 08 now use the fully qualified exact PDF dispatch test, require one
 # DEV-WP-0.3M source reconciliation — COVERED
 
 Plans 11 and 08 cover the canonical second final fix, exact 18-commit audit history, two product-fix projections, all four findings, generic post-fix metadata, and the separate P11/live closure segments. Their identical four-command detached catalog binds endpoint, PDF, Windows verbatim, and clippy evidence to deterministic normalized receipts. The companion validation and follow-up records carry the same PowerShell 5.1-safe contract; no product or deferred scope was introduced.
+
+# DEV-WP-0.3O source reconciliation — COVERED
+
+Plans 11 and 08 now cover canonical `f1372da`/`5ff1ea03`, the exact 25-commit audit projection, all three product fixes and six findings, and the generic post-fix chain. They validate exact `2a55eae` documentation and `0eb5098` seven-file live-evidence commits, later audit metadata including `c0d6f69`, current evidence hashes/receipt metadata, and distinct P11/Plan 07 summary closure boundaries. Their identical five-command detached catalog adds the exact one-test harness-schema receipt and maps findings 001-006 without an obsolete fix-count cap or lifecycle-plan special case. No product or deferred scope was introduced.
