@@ -59,6 +59,10 @@
     "commit": "1f7e1b60e2816883d1f5e522854c7f8c0043c42e",
     "tree": "0a4a08f1c1e974ac45f2f838d7a2de7c8d97bb2c"
   },
+  "recheck_point": {
+    "commit": "7b7b11a50b535f3b1e9ade655be7ae41b508788d",
+    "tree": "c9406f5dc9a13ee108e57d135a67cfd1b7a4b898"
+  },
   "builder": {
     "identity": "K3 (Wayland Nano Track B) <k3-trackb@waylandnano.local>"
   },
@@ -230,6 +234,30 @@
         "parent": "e5cc2e3170a40bd656e39ceda5488692ea8eba56",
         "tree": "0a4a08f1c1e974ac45f2f838d7a2de7c8d97bb2c",
         "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-13-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md", "docs/FOLLOWUPS.md"]
+      },
+      {
+        "commit": "b6430e434a10911e072ace17c430bafc72f40920",
+        "parent": "1f7e1b60e2816883d1f5e522854c7f8c0043c42e",
+        "tree": "d202b2ffe553414598410ab6887af91c4aca76f3",
+        "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-AUDIT.json"]
+      },
+      {
+        "commit": "0c13d7d0df5e5a83bede4f453d2b834f7b307f4c",
+        "parent": "b6430e434a10911e072ace17c430bafc72f40920",
+        "tree": "8240a85684940477dc43a12464cc35c23ed37db7",
+        "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-13-SUMMARY.md"]
+      },
+      {
+        "commit": "23cec03bd14a594959262cd3975251df4cf63d02",
+        "parent": "0c13d7d0df5e5a83bede4f453d2b834f7b307f4c",
+        "tree": "e3ec68eab6981af7b7fd6536abfabb1922fc80ff",
+        "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-08-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md", ".planning/phases/03-wp-0.3-pdf-intake/03-VALIDATION.md", ".planning/phases/03-wp-0.3-pdf-intake/SOURCE-AUDIT.md", "docs/FOLLOWUPS.md"]
+      },
+      {
+        "commit": "7b7b11a50b535f3b1e9ade655be7ae41b508788d",
+        "parent": "23cec03bd14a594959262cd3975251df4cf63d02",
+        "tree": "c9406f5dc9a13ee108e57d135a67cfd1b7a4b898",
+        "paths": [".planning/phases/03-wp-0.3-pdf-intake/03-11-PLAN.md"]
       }
     ]
   },
@@ -245,6 +273,42 @@
     ]
   },
   "independent_recheck": {
-    "status": "pending"
+    "status": "PASS",
+    "reviewer": {
+      "identity": "Codex /root/verify_wp03_fix_tree_retry"
+    },
+    "method": "independent detached-tree lifecycle, exact-test, receipt, and finding-verdict recheck",
+    "method_version": "wp03-independent-recheck/2.0",
+    "timestamp": "2026-08-17T06:56:31.7649731Z; UTC independent recheck time",
+    "checked_commit": "18d57a6724637f597883685749583253613a0884",
+    "checked_tree": "c2dfe7aac460dd7cfe30084859d26eb2a4145403",
+    "commands": [
+      {
+        "id": "RECHECK-CATALOG-ENDPOINT",
+        "command": "cargo test -p nano-model --test provider_catalog flux_router_anthropic_endpoint_is_exact -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "18d57a6724637f597883685749583253613a0884",
+        "execution_tree": "c2dfe7aac460dd7cfe30084859d26eb2a4145403",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-CATALOG-ENDPOINT;exit=0;commit=18d57a6724637f597883685749583253613a0884;tree=c2dfe7aac460dd7cfe30084859d26eb2a4145403;test=flux_router_anthropic_endpoint_is_exact;result=ok"
+      },
+      {
+        "id": "RECHECK-PDF-REFUSAL",
+        "command": "cargo test -p nano-cli acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded --lib -- --exact --nocapture",
+        "exit": 0,
+        "execution_commit": "18d57a6724637f597883685749583253613a0884",
+        "execution_tree": "c2dfe7aac460dd7cfe30084859d26eb2a4145403",
+        "execution_mode": "detached-worktree",
+        "normalized_evidence": "id=RECHECK-PDF-REFUSAL;exit=0;commit=18d57a6724637f597883685749583253613a0884;tree=c2dfe7aac460dd7cfe30084859d26eb2a4145403;test=acp_mode::tests::pdf_actual_serve_pinned_auto_and_compatible_dispatch_are_recorded;result=ok"
+      }
+    ],
+    "verdicts": [
+      {
+        "finding_id": "WP03-AUDIT-HIGH-001",
+        "verdict": "PASS",
+        "evidence": "The exact PDF ACP dispatch regression ran once and passed against the immutable detached final product commit/tree, proving the checkpoint initialization fix closes the audited failure path.",
+        "command_ref": "RECHECK-PDF-REFUSAL"
+      }
+    ]
   }
 }
