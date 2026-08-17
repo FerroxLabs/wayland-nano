@@ -26,3 +26,8 @@
 | CONTEXT | — | No CONTEXT.md decisions supplied | — | EXCLUDED | Binding decisions are in master/spec/GOALS and DEV-WP-0.3A. |
 
 No deferred capability, PDF parsing/extraction, Files API, multi-document support, routing-policy change, attachment-store redesign, `ImageRef` rename, `ToolResult` change, Desktop-owned commit, `../nano/` write, or `../resources/upstreams/` write appears in the plan set.
+# DEV-WP-0.3I source reconciliation — COVERED
+
+The lifecycle model is covered by Plans 13, 11, 07, and 08: immutable product fix, known metadata, recheck artifacts, and live evidence occupy separate exact Git intervals. The six paths changed by `d731426` are explicitly lifecycle-allowed. `03-VALIDATION.md` and `docs/FOLLOWUPS.md` carry the resolved contract. No product scope or deferred feature was introduced.
+
+Receipt closure is non-circular: summaries identify only already-committed inputs, while later phases discover summary commits from Git and verify exact one-file diffs. Both detached commands use normalized deterministic evidence instead of raw cargo output or temporary paths.

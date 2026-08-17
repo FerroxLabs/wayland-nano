@@ -1324,3 +1324,7 @@ The proof is executable rather than self-reported: Plan 11 derives the exact Git
 ### DEV-WP-0.3G — D9 bounded hashing parallelism (RESOLVED 2026-08-17)
 
 D9 now bounds manifest hashing workers at the smallest of 16, half the logical processor count, and the file count. The unchanged exact `-Mode Check` baseline comparison passed in 850.655 seconds on a 32-processor host, about 109 seconds (11.4%) below the prior typical 960 seconds; enumeration, hashes, sorting, schema, and failure semantics remain unchanged.
+
+### DEV-WP-0.3I — Lifecycle phase-boundary reconciliation (RESOLVED 2026-08-17)
+
+The planning contract now separates immutable audit history, post-fix lifecycle metadata, independent-recheck artifact receipts, and later live-evidence phase history. Plan 13 is anchored to input tip `85a8b1d91379243aebd23ee74bc190221b670563`; its JSON may describe only history known at that tip, and its summary records only P13A. Plan 11 discovers actual P13S from Git, creates audit-only P11A, and its summary records only P11A. Plan 07 discovers actual P11S from Git and its summary records only pre-summary live evidence. Plan 08 discovers both summary commits directly from Git and validates their one-file diffs. No summary records its own commit/tree. Detached receipts normalize command ID, exit zero, product commit/tree, test name, pass marker, and `detached-worktree` mode; raw timing/output and temporary paths are not persisted or compared. No product files are changed by this resolution.

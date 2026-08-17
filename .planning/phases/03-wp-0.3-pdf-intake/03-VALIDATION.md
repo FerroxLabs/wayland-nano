@@ -43,3 +43,12 @@ After deterministic implementation, serialized Plans 03-06, 03-10, 03-12, 03-13,
 Before product mutation, Plan 01 creates executable `03-OWNERSHIP-PREFLIGHT.ps1` and tracked `03-CONTROL.json`, with durable OS-temp sorted `{path,type,sha256,bytes}` manifests for external nano/resources/shared. Every task invokes Check; final Plan 08 invokes Closure. Status parsing is NUL-delimited and covers tracked/untracked; exact OWNS, every ancestor reparse/link check, literal resolution, external Compare-Object, allowed shared deltas, and pair hashes fail closed with propagated errors.
 
 For every `gen_error_table` generation/check, resolve the canonical sibling shared mirror absolutely and set `NANO_ERROR_TABLE_DESKTOP_DIR` to a unique absent OS-temp target; require it remains absent and restore the prior environment value. The final builder gate is complete `just gate-all`. The handoff records baseline, branch, commits, audit/fix/recheck, strict ownership/external hashes, generator isolation, live/canary evidence, and I/R/L distinctions. The builder does not merge, push, create integration state, run/claim CI, or treat an optional Desktop mirror as completion evidence.
+# DEV-WP-0.3I lifecycle validation addendum (resolved)
+
+- Product identity is exactly commit `18d57a6724637f597883685749583253613a0884`, tree `c2dfe7aac460dd7cfe30084859d26eb2a4145403`.
+- Plan 13 input is exactly `85a8b1d91379243aebd23ee74bc190221b670563`; known lifecycle is exactly `3fde7c5`, `f34da2f`, `d731426`, `85a8b1d` with actual parents, trees, and diffs.
+- P13A and P11A are audit-only commits; P13S and P11S are summary-only commits. JSON artifacts never predict or self-hash their output commits.
+- Audit history ends at `recheck_point` (actual P13S). P11 receipts and Plan 07 live evidence are independently checked phase-history segments.
+- Plan 08 captures `closure_input_tip` before mutation and does not equate audited-to-closure HEAD with audit history.
+- Summaries never record their own commit/tree: P13 summary records only P13A; Plan 11 discovers P13S from HEAD; P11 summary records only P11A; Plan 07 discovers P11S from HEAD; Plan 07 summary records only pre-summary live evidence; Plan 08 discovers later summary commits directly from Git.
+- Detached command evidence is normalized to command ID, exit zero, product commit/tree, expected test name, and pass marker with `execution_mode=detached-worktree`; raw cargo timing and temporary paths are not persisted or compared.
