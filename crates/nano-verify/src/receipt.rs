@@ -1,8 +1,10 @@
 //! Standalone red-green receipt storage and read-only preflight primitives.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::VerifyError;
 
@@ -51,25 +53,112 @@ pub enum ReceiptPreflight {
     Unverifiable,
 }
 
-pub fn canonical_receipt(_receipt: &Receipt) -> Result<Vec<u8>, VerifyError> {
-    Err(VerifyError::Registry(
-        "canonical receipt not implemented".into(),
-    ))
+pub fn canonical_receipt(receipt: &Receipt) -> Result<Vec<u8>, VerifyError> {
+    validate_receipt(receipt)?;
+    let value = serde_json::to_value(receipt).map_err(invalid_receipt)?;
+    let normalized = normalize_value(value)?;
+    serde_json::to_vec(&normalized).map_err(invalid_receipt)
 }
 
-pub fn mint_receipt(_receipt: Receipt) -> Result<Receipt, VerifyError> {
-    Err(VerifyError::Registry(
-        "receipt validation not implemented".into(),
-    ))
+pub fn mint_receipt(receipt: Receipt) -> Result<Receipt, VerifyError> {
+    validate_receipt(&receipt)?;
+    Ok(receipt)
 }
 
-pub fn read_receipt(_path: &Path) -> Result<Receipt, ReceiptPreflight> {
+pub fn read_receipt(path: &Path) -> Result<Receipt, ReceiptPreflight> {
+    for attempt in 0..2 {
+        if let Ok(bytes) = std::fs::read(path)
+            && let Ok(receipt) = serde_json::from_slice::<Receipt>(&bytes)
+            && validate_receipt(&receipt).is_ok()
+        {
+            return Ok(receipt);
+        }
+        if attempt == 0 {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
     Err(ReceiptPreflight::Unverifiable)
 }
 
 pub fn write_receipt(_directory: &Path, _receipt: &Receipt) -> Result<PathBuf, VerifyError> {
     Err(VerifyError::Registry(
         "receipt storage not implemented".into(),
+    ))
+}
+
+fn validate_receipt(receipt: &Receipt) -> Result<(), VerifyError> {
+    if receipt.schema != 1
+        || receipt.failing_run.exit_code == 0
+        || !is_lower_hex(&receipt.failing_run.log_digest, 64)
+        || !is_lower_hex(&receipt.gate_closure_digest, 64)
+        || !is_lower_hex(&receipt.failing_run.observed_at_commit, 40)
+        || !is_lower_hex(&receipt.fix_commit, 40)
+        || receipt.requirement.is_empty()
+        || receipt.test.is_empty()
+        || receipt.gate_id.is_empty()
+        || receipt.minted_by.is_empty()
+        || !is_rfc3339_utc(&receipt.minted_at)
+    {
+        return Err(invalid_receipt("invalid schema-1 red receipt"));
+    }
+    Ok(())
+}
+
+fn is_lower_hex(value: &str, len: usize) -> bool {
+    value.len() == len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_rfc3339_utc(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < 20
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || *bytes.last().unwrap_or(&0) != b'Z'
+    {
+        return false;
+    }
+    let main = &value[..value.len() - 1];
+    let (seconds, fraction) = main[17..].split_once('.').unwrap_or((&main[17..], ""));
+    value[..4].bytes().all(|b| b.is_ascii_digit())
+        && value[5..7].bytes().all(|b| b.is_ascii_digit())
+        && value[8..10].bytes().all(|b| b.is_ascii_digit())
+        && value[11..13].bytes().all(|b| b.is_ascii_digit())
+        && value[14..16].bytes().all(|b| b.is_ascii_digit())
+        && seconds.len() == 2
+        && seconds.bytes().all(|b| b.is_ascii_digit())
+        && (fraction.is_empty() || fraction.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn normalize_value(value: serde_json::Value) -> Result<serde_json::Value, VerifyError> {
+    match value {
+        serde_json::Value::String(value) => Ok(serde_json::Value::String(value.nfc().collect())),
+        serde_json::Value::Array(values) => values
+            .into_iter()
+            .map(normalize_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map(serde_json::Value::Array),
+        serde_json::Value::Object(values) => values
+            .into_iter()
+            .map(|(key, value)| Ok((key.nfc().collect(), normalize_value(value)?)))
+            .collect::<Result<serde_json::Map<_, _>, _>>()
+            .map(serde_json::Value::Object),
+        serde_json::Value::Number(ref number) if !number.is_i64() && !number.is_u64() => {
+            Err(invalid_receipt("canonical JSON permits integers only"))
+        }
+        other => Ok(other),
+    }
+}
+
+fn invalid_receipt(error: impl std::fmt::Display) -> VerifyError {
+    VerifyError::StoreIo(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        error.to_string(),
     ))
 }
 
