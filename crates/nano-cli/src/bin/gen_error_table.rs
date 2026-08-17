@@ -27,10 +27,7 @@ struct Target {
     required: bool,
 }
 
-fn targets() -> Vec<Target> {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let crates = manifest.parent().expect("crates dir");
-    let repo_root = crates.parent().expect("repo root");
+fn targets_for(repo_root: &Path, monorepo: Option<&Path>) -> Vec<Target> {
     let json = nano_protocol::error_codes::render_json();
     let ts = nano_protocol::error_codes::render_ts();
 
@@ -40,16 +37,6 @@ fn targets() -> Vec<Target> {
         required: true,
     }];
 
-    // The monorepo root is the nearest ancestor carrying shared/reviews.
-    let mut dir: Option<&Path> = Some(repo_root);
-    let mut monorepo = None;
-    while let Some(candidate) = dir {
-        if candidate.join("shared/reviews").is_dir() {
-            monorepo = Some(candidate.to_path_buf());
-            break;
-        }
-        dir = candidate.parent();
-    }
     if let Some(root) = monorepo {
         targets.push(Target {
             path: root.join("shared/contracts/nano-error-codes.json"),
@@ -78,6 +65,24 @@ fn targets() -> Vec<Target> {
         }
     }
     targets
+}
+
+fn targets() -> Vec<Target> {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let crates = manifest.parent().expect("crates dir");
+    let repo_root = crates.parent().expect("repo root");
+
+    // The monorepo root is the nearest ancestor carrying shared/reviews.
+    let mut dir: Option<&Path> = Some(repo_root);
+    let mut monorepo = None;
+    while let Some(candidate) = dir {
+        if candidate.join("shared/reviews").is_dir() {
+            monorepo = Some(candidate);
+            break;
+        }
+        dir = candidate.parent();
+    }
+    targets_for(repo_root, monorepo)
 }
 
 fn check_targets(targets: &[Target]) -> bool {
@@ -136,25 +141,21 @@ mod tests {
 
     #[test]
     fn canonical_shared_target_is_required_and_missing_fails_check() {
-        let configured = targets();
+        let temp = tempfile::tempdir().expect("create isolated monorepo");
+        let repo_root = temp.path().join("wayland-nano");
+        let configured = targets_for(&repo_root, Some(temp.path()));
         let shared = configured
-            .iter()
+            .into_iter()
             .find(|target| {
                 target
                     .path
                     .ends_with("shared/contracts/nano-error-codes.json")
             })
-            .expect("monorepo checkout has canonical shared target");
-        assert!(shared.required);
-
-        let temp = tempfile::tempdir().expect("create isolated monorepo");
+            .expect("detected monorepo configures canonical shared target");
         let missing = temp.path().join("shared/contracts/nano-error-codes.json");
-        let isolated = Target {
-            path: missing.clone(),
-            bytes: shared.bytes.clone(),
-            required: true,
-        };
-        assert!(!check_targets(&[isolated]));
+        assert_eq!(shared.path, missing);
+        assert!(shared.required, "canonical shared target must fail closed");
+        assert!(!check_targets(&[shared]));
         assert!(!missing.exists(), "check mode must not create the mirror");
     }
 }
