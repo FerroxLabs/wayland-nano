@@ -230,7 +230,7 @@ function Compare-ManifestExact {
 
 function Assert-SharedDelta {
     param([object[]]$Before, [object[]]$After, [string]$RepoRoot)
-    $allowed = @('contracts/nano-error-codes.json') + @($RequiredEvidence | ForEach-Object { ($_.Substring('crates/nano-model/'.Length)) -replace '^fixtures-flux/', 'fixtures/flux/' }) + @('fixtures/flux/pdf/canary-receipt.json')
+    $allowed = @('contracts/nano-error-codes.json', 'fixtures/flux/pdf') + @($RequiredEvidence | ForEach-Object { ($_.Substring('crates/nano-model/'.Length)) -replace '^fixtures-flux/', 'fixtures/flux/' }) + @('fixtures/flux/pdf/canary-receipt.json')
     $old = @{}; foreach ($row in $Before) { $old[$row.path] = "$($row.type)|$($row.sha256)|$($row.bytes)" }
     $new = @{}; foreach ($row in $After) { $new[$row.path] = "$($row.type)|$($row.sha256)|$($row.bytes)" }
     $all = @($old.Keys + $new.Keys | Sort-Object -Unique)
@@ -281,7 +281,7 @@ if ($Mode -eq 'Initialize') {
         schema = 'wp03_control_v1'; baseline = $Baseline; branch = $Branch; worktree = $RepoRoot
         initialized_at = [DateTime]::UtcNow.ToString('o'); plan_ids = $metadata.PlanIds
         phase_artifacts = $metadata.PhaseArtifacts; repo_allowlist = $metadata.RepoPaths
-        shared_allowlist = @('contracts/nano-error-codes.json') + @($RequiredEvidence | ForEach-Object { ($_.Substring('crates/nano-model/'.Length)) -replace '^fixtures-flux/', 'fixtures/flux/' }) + @('fixtures/flux/pdf/canary-receipt.json')
+        shared_allowlist = @('contracts/nano-error-codes.json', 'fixtures/flux/pdf') + @($RequiredEvidence | ForEach-Object { ($_.Substring('crates/nano-model/'.Length)) -replace '^fixtures-flux/', 'fixtures/flux/' }) + @('fixtures/flux/pdf/canary-receipt.json')
         manifests = $manifestEntries
     }
     Write-JsonUtf8 $ControlPath $control

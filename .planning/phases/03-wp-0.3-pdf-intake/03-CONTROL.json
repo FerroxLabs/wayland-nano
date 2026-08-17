@@ -116,6 +116,7 @@
                        ],
     "shared_allowlist":  [
                              "contracts/nano-error-codes.json",
+                             "fixtures/flux/pdf",
                              "fixtures/flux/pdf/control-request.json",
                              "fixtures/flux/pdf/document-request.json",
                              "fixtures/flux/pdf/document-response.json",

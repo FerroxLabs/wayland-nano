@@ -1337,3 +1337,6 @@ P13S remains immutable at `0c13d7d` with P13A as its parent. Plan 11 discovers b
 ### DEV-WP-0.3K — Canonical shared evidence path mapping (RESOLVED 2026-08-17)
 
 The D9 initializer originally copied the repository spelling `crates/nano-model/fixtures-flux/pdf/**` into the external shared allowlist, but the authoritative paired mirror is `shared/fixtures/flux/pdf/**`. The live fixture therefore could not be admitted by the exact shared-delta gate. The initializer and frozen control now map only that seven-file prefix to `fixtures/flux/pdf/**`; the receipt already used the canonical path. No additional shared path or product ownership was granted.
+### DEV-WP-0.3L — Shared evidence directory manifest nodes (RESOLVED 2026-08-17)
+
+The canonical `shared/fixtures/flux/pdf` leaf did not exist when the D9 baseline was frozen, while its `fixtures` and `fixtures/flux` ancestors already existed. Creating the first owned fixture therefore adds exactly the `fixtures/flux/pdf` directory record to the full `{path,type,sha256,bytes}` manifest. D9 admits only that new directory node in addition to the already enumerated files; no sibling directory or additional file is allowed.
