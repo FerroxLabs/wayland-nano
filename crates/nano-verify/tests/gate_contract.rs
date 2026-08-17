@@ -27,10 +27,16 @@ fn fixture_entry() -> bool {
         "env" => {
             let allowed = baseline_names()
                 .into_iter()
-                .chain([MODE_ENV, "NANO_VERIFY_EXPECTED_ARTIFACT", "NANO_VERIFY_DECLARED"])
+                .chain([
+                    MODE_ENV,
+                    "NANO_VERIFY_EXPECTED_ARTIFACT",
+                    "NANO_VERIFY_DECLARED",
+                ])
                 .collect::<std::collections::BTreeSet<_>>();
-            let exact = std::env::vars_os().all(|(key, _)| allowed.contains(key.to_string_lossy().as_ref()));
-            let declared = std::env::var_os("NANO_VERIFY_DECLARED").as_deref() == Some(OsStr::new("override"));
+            let exact = std::env::vars_os()
+                .all(|(key, _)| allowed.contains(key.to_string_lossy().as_ref()));
+            let declared =
+                std::env::var_os("NANO_VERIFY_DECLARED").as_deref() == Some(OsStr::new("override"));
             if exact && declared && std::env::var_os(LEAK_ENV).is_none() {
                 println!("gate: 1/1");
                 std::process::exit(0);
@@ -46,16 +52,24 @@ fn fixture_entry() -> bool {
                 .env("NANO_VERIFY_DESCENDANT_MARKER", marker)
                 .spawn()
                 .unwrap();
-            std::fs::write(std::env::var_os("NANO_VERIFY_PID_FILE").unwrap(), child.id().to_string()).unwrap();
+            std::fs::write(
+                std::env::var_os("NANO_VERIFY_PID_FILE").unwrap(),
+                child.id().to_string(),
+            )
+            .unwrap();
             let _ = child.wait();
             std::process::exit(26);
         }
-        "descendant" => loop { std::thread::sleep(Duration::from_secs(1)); },
+        "descendant" => loop {
+            std::thread::sleep(Duration::from_secs(1));
+        },
         "bounded" => {
             use std::io::Write;
             let chunk = [b'x'; 8192];
             let mut stdout = std::io::stdout().lock();
-            for _ in 0..=2048 { stdout.write_all(&chunk).unwrap(); }
+            for _ in 0..=2048 {
+                stdout.write_all(&chunk).unwrap();
+            }
             writeln!(stdout, "gate: 1/1").unwrap();
             std::process::exit(0);
         }
@@ -64,11 +78,15 @@ fn fixture_entry() -> bool {
 }
 
 #[test]
-fn fixture_process() { if fixture_entry() { return; } }
+fn fixture_process() {
+    let _ = fixture_entry();
+}
 
 fn baseline_names() -> Vec<&'static str> {
     let mut names = vec!["PATH", "HOME", "TMPDIR", "TEMP", "TMP"];
-    if cfg!(windows) { names.extend(["SYSTEMROOT", "PATHEXT", "USERPROFILE", "COMSPEC"]); }
+    if cfg!(windows) {
+        names.extend(["SYSTEMROOT", "PATHEXT", "USERPROFILE", "COMSPEC"]);
+    }
     names
 }
 
@@ -77,8 +95,16 @@ fn invocation(mode: &str, timeout: Duration, extra: &[(&str, OsString)]) -> Gate
     let mut env = vec![(MODE_ENV.into(), mode.into())];
     env.extend(extra.iter().map(|(k, v)| (OsString::from(k), v.clone())));
     GateInvocation {
-        argv: vec![exe.into_os_string(), "--exact".into(), "fixture_process".into(), "--nocapture".into()],
-        cwd: std::env::current_dir().unwrap(), env, timeout, gate_id: "fixture".into(),
+        argv: vec![
+            exe.into_os_string(),
+            "--exact".into(),
+            "fixture_process".into(),
+            "--nocapture".into(),
+        ],
+        cwd: std::env::current_dir().unwrap(),
+        env,
+        timeout,
+        gate_id: "fixture".into(),
     }
 }
 
@@ -88,30 +114,57 @@ async fn run(mode: &str, artifact: &Path, extra: &[(&str, OsString)]) -> GateOut
 
 #[tokio::test]
 async fn run_gate_parses_stdout_despite_nonzero_exit() {
-    assert!(matches!(run("nonzero", Path::new("artifact"), &[]).await, GateOutcome::FailClosed(FailClosedReason::InconsistentSummary { passed: 1, total: 1 })));
+    assert!(matches!(
+        run("nonzero", Path::new("artifact"), &[]).await,
+        GateOutcome::FailClosed(FailClosedReason::InconsistentSummary {
+            passed: 1,
+            total: 1
+        })
+    ));
 }
 
 #[tokio::test]
 async fn run_gate_spawn_error_fails_closed() {
     let mut inv = invocation("nonzero", Duration::from_secs(1), &[]);
     inv.argv[0] = OsString::from("wayland-nano-definitely-absent-gate-program");
-    assert!(matches!(run_gate(&inv, Path::new("artifact")).await, GateOutcome::FailClosed(FailClosedReason::SpawnError(message)) if message.len() <= 96));
+    assert!(
+        matches!(run_gate(&inv, Path::new("artifact")).await, GateOutcome::FailClosed(FailClosedReason::SpawnError(message)) if message.len() <= 96)
+    );
 }
 
 #[tokio::test]
 async fn run_gate_artifact_path_is_final_argv() {
     let artifact = PathBuf::from("synthetic artifact ; no shell expansion");
-    let extra = [("NANO_VERIFY_EXPECTED_ARTIFACT", artifact.clone().into_os_string())];
-    assert!(matches!(run("argv", &artifact, &extra).await, GateOutcome::FailClosed(FailClosedReason::InconsistentSummary { passed: 1, total: 1 })));
+    let extra = [(
+        "NANO_VERIFY_EXPECTED_ARTIFACT",
+        artifact.clone().into_os_string(),
+    )];
+    assert!(matches!(
+        run("argv", &artifact, &extra).await,
+        GateOutcome::FailClosed(FailClosedReason::InconsistentSummary {
+            passed: 1,
+            total: 1
+        })
+    ));
 }
 
 #[tokio::test]
 async fn run_gate_env_baseline_allowlist() {
-    unsafe { std::env::set_var(LEAK_ENV, "synthetic-secret-marker"); }
+    unsafe {
+        std::env::set_var(LEAK_ENV, "synthetic-secret-marker");
+    }
     let extra = [("NANO_VERIFY_DECLARED", OsString::from("override"))];
     let outcome = run("env", Path::new("artifact"), &extra).await;
-    unsafe { std::env::remove_var(LEAK_ENV); }
-    assert!(matches!(outcome, GateOutcome::FailClosed(FailClosedReason::InconsistentSummary { passed: 1, total: 1 })));
+    unsafe {
+        std::env::remove_var(LEAK_ENV);
+    }
+    assert!(matches!(
+        outcome,
+        GateOutcome::FailClosed(FailClosedReason::InconsistentSummary {
+            passed: 1,
+            total: 1
+        })
+    ));
 }
 
 #[tokio::test]
@@ -123,26 +176,44 @@ async fn run_gate_timeout_fails_closed() {
         ("NANO_VERIFY_PID_FILE", pid_file.clone().into_os_string()),
         ("NANO_VERIFY_DESCENDANT_MARKER", OsString::from(marker)),
     ];
-    let outcome = run_gate(&invocation("timeout", Duration::from_millis(500), &extra), Path::new("artifact")).await;
+    let outcome = run_gate(
+        &invocation("timeout", Duration::from_millis(500), &extra),
+        Path::new("artifact"),
+    )
+    .await;
     assert_eq!(outcome, GateOutcome::FailClosed(FailClosedReason::Timeout));
     let pid: u32 = std::fs::read_to_string(pid_file).unwrap().parse().unwrap();
-    assert!(!process_alive(pid), "descendant {pid} survived whole-tree timeout");
+    assert!(
+        !process_alive(pid),
+        "descendant {pid} survived whole-tree timeout"
+    );
 
     let bounded = run("bounded", Path::new("artifact"), &[]).await;
-    assert_eq!(bounded, GateOutcome::FailClosed(FailClosedReason::NoGateOutput));
+    assert_eq!(
+        bounded,
+        GateOutcome::FailClosed(FailClosedReason::NoGateOutput)
+    );
 }
 
 #[cfg(windows)]
 fn process_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if handle == 0 { return false; }
+    if handle == 0 {
+        return false;
+    }
     let mut code = 0;
     let ok = unsafe { GetExitCodeProcess(handle, &mut code) } != 0;
-    unsafe { CloseHandle(handle); }
+    unsafe {
+        CloseHandle(handle);
+    }
     ok && code == 259
 }
 
 #[cfg(unix)]
-fn process_alive(pid: u32) -> bool { unsafe { libc::kill(pid as i32, 0) == 0 } }
+fn process_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}

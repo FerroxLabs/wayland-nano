@@ -15,11 +15,231 @@ pub struct GateInvocation {
 
 /// Execute one gate subprocess. The production implementation is materialized by
 /// Plan 04-04 after its real-process contract has been observed failing.
-pub async fn run_gate(
-    _inv: &GateInvocation,
-    _artifact_path: &std::path::Path,
-) -> GateOutcome {
-    GateOutcome::FailClosed(FailClosedReason::NoGateOutput)
+pub async fn run_gate(inv: &GateInvocation, artifact_path: &std::path::Path) -> GateOutcome {
+    use tokio::io::AsyncReadExt;
+    use tokio::process::Command;
+
+    const STDOUT_CAP: usize = 16 * 1024 * 1024;
+    let Some((program, args)) = inv.argv.split_first() else {
+        return spawn_failure("empty invocation");
+    };
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .arg(artifact_path)
+        .current_dir(&inv.cwd)
+        .env_clear()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    for name in baseline_environment() {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command.envs(inv.env.iter().cloned());
+
+    #[cfg(windows)]
+    let job = match WindowsJob::create() {
+        Ok(job) => {
+            job.prepare(&mut command);
+            job
+        }
+        Err(_) => return spawn_failure("containment unavailable"),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.as_std_mut().process_group(0);
+    }
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(_) => return spawn_failure("process spawn failed"),
+    };
+    #[cfg(windows)]
+    if job.assign_and_resume(&child).is_err() {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        return spawn_failure("containment assignment failed");
+    }
+    #[cfg(unix)]
+    let process_group = child.id().map(|id| id as i32);
+
+    let Some(mut stdout) = child.stdout.take() else {
+        terminate_tree(
+            &mut child,
+            #[cfg(windows)]
+            &job,
+            #[cfg(unix)]
+            process_group,
+        )
+        .await;
+        return spawn_failure("stdout unavailable");
+    };
+    let collect = async {
+        let mut captured = Vec::with_capacity(8192);
+        let mut chunk = [0_u8; 8192];
+        loop {
+            let read = stdout.read(&mut chunk).await?;
+            if read == 0 {
+                break;
+            }
+            let remaining = STDOUT_CAP.saturating_sub(captured.len());
+            captured.extend_from_slice(&chunk[..read.min(remaining)]);
+        }
+        Ok::<_, std::io::Error>(captured)
+    };
+    let execution = async {
+        let (captured, waited) = tokio::join!(collect, child.wait());
+        waited?;
+        captured
+    };
+    let captured = match tokio::time::timeout(inv.timeout, execution).await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(_)) => {
+            terminate_tree(
+                &mut child,
+                #[cfg(windows)]
+                &job,
+                #[cfg(unix)]
+                process_group,
+            )
+            .await;
+            return spawn_failure("process wait failed");
+        }
+        Err(_) => {
+            terminate_tree(
+                &mut child,
+                #[cfg(windows)]
+                &job,
+                #[cfg(unix)]
+                process_group,
+            )
+            .await;
+            return GateOutcome::FailClosed(FailClosedReason::Timeout);
+        }
+    };
+    parse_gate_output(&String::from_utf8_lossy(&captured), &[])
+}
+
+fn baseline_environment() -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        &[
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+            "SYSTEMROOT",
+            "PATHEXT",
+            "USERPROFILE",
+            "COMSPEC",
+        ]
+    }
+    #[cfg(not(windows))]
+    {
+        &["PATH", "HOME", "TMPDIR", "TEMP", "TMP"]
+    }
+}
+
+fn spawn_failure(message: &'static str) -> GateOutcome {
+    GateOutcome::FailClosed(FailClosedReason::SpawnError(message.to_owned()))
+}
+
+#[cfg(unix)]
+async fn terminate_tree(child: &mut tokio::process::Child, process_group: Option<i32>) {
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    const SIGKILL: i32 = 9;
+    if let Some(group) = process_group {
+        unsafe {
+            kill(-group, SIGKILL);
+        }
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+#[cfg(windows)]
+async fn terminate_tree(child: &mut tokio::process::Child, job: &WindowsJob) {
+    let _ = job.terminate();
+    let _ = child.wait().await;
+}
+
+#[cfg(windows)]
+struct WindowsJob(std::os::windows::io::OwnedHandle);
+
+#[cfg(windows)]
+impl WindowsJob {
+    fn create() -> std::io::Result<Self> {
+        use std::os::windows::io::FromRawHandle as _;
+        use windows_sys::Win32::System::JobObjects::*;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn CreateJobObjectW(attributes: *const std::ffi::c_void, name: *const u16) -> isize;
+        }
+        let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if raw == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let job = Self(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw as _) });
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = unsafe {
+            SetInformationJobObject(
+                raw,
+                JobObjectExtendedLimitInformation,
+                std::ptr::addr_of_mut!(limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(job)
+    }
+
+    fn prepare(&self, command: &mut tokio::process::Command) {
+        use std::os::windows::process::CommandExt as _;
+        use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+        command.as_std_mut().creation_flags(CREATE_SUSPENDED);
+    }
+
+    fn assign_and_resume(&self, child: &tokio::process::Child) -> std::io::Result<()> {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+        let process = child
+            .raw_handle()
+            .ok_or_else(|| std::io::Error::other("missing process handle"))?
+            as HANDLE;
+        if unsafe { AssignProcessToJobObject(self.0.as_raw_handle() as HANDLE, process) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        #[link(name = "ntdll")]
+        unsafe extern "system" {
+            fn NtResumeProcess(process: HANDLE) -> i32;
+        }
+        if unsafe { NtResumeProcess(process) } < 0 {
+            return Err(std::io::Error::other("resume failed"));
+        }
+        Ok(())
+    }
+
+    fn terminate(&self) -> std::io::Result<()> {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+        if unsafe { TerminateJobObject(self.0.as_raw_handle() as HANDLE, 1) } == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
