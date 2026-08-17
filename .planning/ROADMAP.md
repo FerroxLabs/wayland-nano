@@ -140,7 +140,35 @@ Plans:
   4. Merge through detached `.tmp-wt-integ` with `--no-ff` and rerun the complete `just gate-all` on the integration commit.
   5. Push integration `HEAD:master`; require CI green before Phase 5 and record the full one-line promotion result.
 
-**Plans**: TBD
+**Plans**: 9 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 04-01-PLAN.md — Establish the compiling nano-verify crate, dependency floor, error taxonomy, and owned module seams.
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 04-02-PLAN.md — Implement NFC-canonical registry loading, validation, mappings, and closure pins through retained RED evidence.
+- [ ] 04-03-PLAN.md — Build the pure fail-closed gate-output parser and complete inventory reconstruction.
+- [ ] 04-05-PLAN.md — Implement standalone canonical receipts and platform-authoritative atomic storage.
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 04-04-PLAN.md — Implement bounded argv-only subprocess execution and complete process-tree teardown.
+- [ ] 04-06-PLAN.md — Implement read-only Git-backed receipt preflight and its materialized fixture battery.
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 04-07-PLAN.md — Seal the WP-1 public surface, dependency lock review, and provenance ledger.
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 04-08-PLAN.md — Run the binding Critical/High audit, at most one fix round, and independent recheck.
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [ ] 04-09-PLAN.md — Run the exact WP-1/full repository promotion battery and produce the scoped canary-clean builder handoff.
 
 ### Phase 5: WP-2 Gated Climb
 
