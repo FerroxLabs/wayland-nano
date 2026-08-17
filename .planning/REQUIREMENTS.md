@@ -31,12 +31,12 @@
 
 ### WP-0.3 PDF Intake
 
-- [ ] **PDF-01**: Inline and confined-path PDF intake validates `%PDF-` magic, MIME/extension agreement, one-document-per-message, and the 20 MiB cap with typed refusals.
-- [ ] **PDF-02**: PDF content uses additive `DocumentRef` and document block types while leaving the existing image/attachment journal contract intact.
-- [ ] **PDF-03**: Anthropic Messages emits the exact base64 `document` source block, while an OpenAI-completions-bound leaf is refused before network I/O and is never silently dropped or rerouted.
-- [ ] **PDF-04**: A PDF-bearing session kill/resume rehydrates the digest-verified document through the existing attachment store.
-- [ ] **PDF-05**: A live Flux probe demonstrates correct quoted content plus the prompt-token jump, archives a canary-clean fixture, and records the page/token metering limitation.
-- [ ] **PDF-06**: The new typed error is added through the canonical error table and all generated mirrors are regenerated only after the WP-0.3 ownership card explicitly grants the exact source and generated-artifact surfaces.
+- [x] **PDF-01**: Inline and confined-path PDF intake validates `%PDF-` magic, MIME/extension agreement, one-document-per-message, and the 20 MiB cap with typed refusals.
+- [x] **PDF-02**: PDF content uses additive `DocumentRef` and document block types while leaving the existing image/attachment journal contract intact.
+- [x] **PDF-03**: Anthropic Messages emits the exact base64 `document` source block, while an OpenAI-completions-bound leaf is refused before network I/O and is never silently dropped or rerouted.
+- [x] **PDF-04**: A PDF-bearing session kill/resume rehydrates the digest-verified document through the existing attachment store.
+- [x] **PDF-05**: A live Flux probe demonstrates correct quoted content plus the prompt-token jump, archives a canary-clean fixture, and records the page/token metering limitation.
+- [x] **PDF-06**: The new typed error is added through the canonical error table and all generated mirrors are regenerated only after the WP-0.3 ownership card explicitly grants the exact source and generated-artifact surfaces.
 
 ### WP-0.4 Frozen Contracts
 

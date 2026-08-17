@@ -18,7 +18,7 @@ This milestone promotes the approved Wayland Nano 0.2 verified-change program th
 
 - [x] **Phase 1: WP-0.4 Frozen Contracts and Program Controls** - Freeze the four machine-checkable contracts and establish the evidence-backed serial promotion discipline. (completed 2026-08-16)
 - [x] **Phase 2: WP-0.2 Memory Hardening** - Measure retained growth, apply only the profile-selected correction, and prove the locked memory budget. (completed 2026-08-17)
-- [ ] **Phase 3: WP-0.3 PDF Intake** - Deliver validated, resumable PDF intake over the Anthropic document wire with fail-closed routing.
+- [x] **Phase 3: WP-0.3 PDF Intake** - Deliver validated, resumable PDF intake over the Anthropic document wire with fail-closed routing. (completed 2026-08-17)
 - [ ] **Phase 4: WP-1 Gate and Receipt Foundation** - Deliver canonical gate execution and independently checkable red-green receipt primitives.
 - [ ] **Phase 5: WP-2 Gated Climb** - Deliver the budgeted, opaque-feedback, ratcheted climb engine.
 - [ ] **Phase 6: WP-3 Verify CLI and CI Surface** - Expose verified change through the CLI, offline receipt checking, and a pinned CI consumer.
@@ -104,19 +104,20 @@ Plans:
 **Plans**: 13 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — Initialize the fail-closed ownership preflight and durable phase control.
-- [ ] 03-02-PLAN.md — Add the typed incompatible-wire refusal and regenerate mandatory mirrors.
-- [ ] 03-03-PLAN.md — Add universal/turn document types and exact Anthropic encoding.
-- [ ] 03-04-PLAN.md — Seal inline and confined-path ACP PDF validation.
-- [ ] 03-05-PLAN.md — Wire attachment persistence, resume, and Anthropic-only leaf dispatch.
-- [ ] 03-06-PLAN.md — Run the single identity-bound Critical/High audit.
-- [ ] 03-07-PLAN.md — Run the dynamic-leaf live proof and exact seven-file canary validation.
-- [ ] 03-08-PLAN.md — Run D9 closure/full gates and write the builder-only handoff.
-- [ ] 03-09-PLAN.md — Add the durable DocumentRef journal and GC reachability contract.
-- [ ] 03-10-PLAN.md — Apply zero or one bounded Critical/High fix commit.
-- [ ] 03-11-PLAN.md — Independently recheck the exact committed audit/fix bytes.
-- [ ] 03-12-PLAN.md — Complete generated-golden and provenance fixes in the same bounded round.
-- [ ] 03-13-PLAN.md — Finalize the exact bounded-round audit metadata.
+
+- [x] 03-01-PLAN.md — Initialize the fail-closed ownership preflight and durable phase control.
+- [x] 03-02-PLAN.md — Add the typed incompatible-wire refusal and regenerate mandatory mirrors.
+- [x] 03-03-PLAN.md — Add universal/turn document types and exact Anthropic encoding.
+- [x] 03-04-PLAN.md — Seal inline and confined-path ACP PDF validation.
+- [x] 03-05-PLAN.md — Wire attachment persistence, resume, and Anthropic-only leaf dispatch.
+- [x] 03-06-PLAN.md — Run the single identity-bound Critical/High audit.
+- [x] 03-07-PLAN.md — Run the dynamic-leaf live proof and exact seven-file canary validation.
+- [x] 03-08-PLAN.md — Run D9 closure/full gates and write the builder-only handoff.
+- [x] 03-09-PLAN.md — Add the durable DocumentRef journal and GC reachability contract.
+- [x] 03-10-PLAN.md — Apply zero or one bounded Critical/High fix commit.
+- [x] 03-11-PLAN.md — Independently recheck the exact committed audit/fix bytes.
+- [x] 03-12-PLAN.md — Complete generated-golden and provenance fixes in the same bounded round.
+- [x] 03-13-PLAN.md — Finalize the exact bounded-round audit metadata.
 
 ### Phase 4: WP-1 Gate and Receipt Foundation
 
@@ -242,7 +243,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 |-------|----------------|--------|-----------|
 | 1. WP-0.4 Frozen Contracts and Program Controls | 3/3 | Complete | 2026-08-16 |
 | 2. WP-0.2 Memory Hardening | 6/6 | Complete | 2026-08-17 |
-| 3. WP-0.3 PDF Intake | 0/TBD | Not started | - |
+| 3. WP-0.3 PDF Intake | 13/13 | Complete | 2026-08-17 |
 | 4. WP-1 Gate and Receipt Foundation | 0/TBD | Not started | - |
 | 5. WP-2 Gated Climb | 0/TBD | Not started | - |
 | 6. WP-3 Verify CLI and CI Surface | 0/TBD | Not started | - |
