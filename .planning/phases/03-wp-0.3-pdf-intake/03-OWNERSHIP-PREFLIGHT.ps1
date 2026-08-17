@@ -230,7 +230,7 @@ function Compare-ManifestExact {
 
 function Assert-SharedDelta {
     param([object[]]$Before, [object[]]$After, [string]$RepoRoot)
-    $allowed = @('contracts/nano-error-codes.json') + @($RequiredEvidence | ForEach-Object { $_.Substring('crates/nano-model/'.Length) }) + @('fixtures/flux/pdf/canary-receipt.json')
+    $allowed = @('contracts/nano-error-codes.json') + @($RequiredEvidence | ForEach-Object { ($_.Substring('crates/nano-model/'.Length)) -replace '^fixtures-flux/', 'fixtures/flux/' }) + @('fixtures/flux/pdf/canary-receipt.json')
     $old = @{}; foreach ($row in $Before) { $old[$row.path] = "$($row.type)|$($row.sha256)|$($row.bytes)" }
     $new = @{}; foreach ($row in $After) { $new[$row.path] = "$($row.type)|$($row.sha256)|$($row.bytes)" }
     $all = @($old.Keys + $new.Keys | Sort-Object -Unique)
@@ -238,7 +238,7 @@ function Assert-SharedDelta {
         if ($old[$path] -ne $new[$path] -and $path -notin $allowed) { throw "undeclared shared delta: $path" }
     }
     $pairs = @(@{ shared = 'contracts/nano-error-codes.json'; repo = 'crates/nano-session/contracts/nano-error-codes.json' })
-    foreach ($evidence in $RequiredEvidence) { $pairs += @{ shared = $evidence.Substring('crates/nano-model/'.Length); repo = $evidence } }
+    foreach ($evidence in $RequiredEvidence) { $pairs += @{ shared = (($evidence.Substring('crates/nano-model/'.Length)) -replace '^fixtures-flux/', 'fixtures/flux/'); repo = $evidence } }
     foreach ($pair in $pairs) {
         $sharedPath = Join-Path $SharedRoot $pair.shared.Replace('/', '\')
         $repoPath = Join-Path $RepoRoot $pair.repo.Replace('/', '\')
@@ -281,7 +281,7 @@ if ($Mode -eq 'Initialize') {
         schema = 'wp03_control_v1'; baseline = $Baseline; branch = $Branch; worktree = $RepoRoot
         initialized_at = [DateTime]::UtcNow.ToString('o'); plan_ids = $metadata.PlanIds
         phase_artifacts = $metadata.PhaseArtifacts; repo_allowlist = $metadata.RepoPaths
-        shared_allowlist = @('contracts/nano-error-codes.json') + @($RequiredEvidence | ForEach-Object { $_.Substring('crates/nano-model/'.Length) }) + @('fixtures/flux/pdf/canary-receipt.json')
+        shared_allowlist = @('contracts/nano-error-codes.json') + @($RequiredEvidence | ForEach-Object { ($_.Substring('crates/nano-model/'.Length)) -replace '^fixtures-flux/', 'fixtures/flux/' }) + @('fixtures/flux/pdf/canary-receipt.json')
         manifests = $manifestEntries
     }
     Write-JsonUtf8 $ControlPath $control

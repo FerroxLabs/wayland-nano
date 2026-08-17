@@ -116,13 +116,13 @@
                        ],
     "shared_allowlist":  [
                              "contracts/nano-error-codes.json",
-                             "fixtures-flux/pdf/control-request.json",
-                             "fixtures-flux/pdf/document-request.json",
-                             "fixtures-flux/pdf/document-response.json",
-                             "fixtures-flux/pdf/evidence-manifest.json",
-                             "fixtures-flux/pdf/known-quote.pdf",
-                             "fixtures-flux/pdf/session-transcript.json",
-                             "fixtures-flux/pdf/usage-summary.json",
+                             "fixtures/flux/pdf/control-request.json",
+                             "fixtures/flux/pdf/document-request.json",
+                             "fixtures/flux/pdf/document-response.json",
+                             "fixtures/flux/pdf/evidence-manifest.json",
+                             "fixtures/flux/pdf/known-quote.pdf",
+                             "fixtures/flux/pdf/session-transcript.json",
+                             "fixtures/flux/pdf/usage-summary.json",
                              "fixtures/flux/pdf/canary-receipt.json"
                          ],
     "manifests":  {
