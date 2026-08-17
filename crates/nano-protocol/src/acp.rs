@@ -289,6 +289,9 @@ fn reject_link_components(raw_path: &std::path::Path) -> Result<(), BlockRejecti
     let mut prefix = std::path::PathBuf::new();
     for component in absolute.components() {
         prefix.push(component.as_os_str());
+        if matches!(component, std::path::Component::Prefix(_)) {
+            continue;
+        }
         let metadata = match std::fs::symlink_metadata(&prefix) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -2052,6 +2055,40 @@ mod tests {
     }
 
     // ── P2a audit H-2: the confined image_path open ──────────────────────
+
+    #[cfg(windows)]
+    #[test]
+    fn document_path_verbatim_prefix_accepts_file_but_rejects_junction() {
+        let root = h2_temp_dir("document-verbatim-prefix");
+        let workspace = root.join("ws");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let document = workspace.join("valid.pdf");
+        std::fs::write(&document, b"%PDF-workspace").unwrap();
+        let canonical = std::fs::canonicalize(&document).unwrap();
+        let (bytes, _) = confined_document_read(canonical.to_str().unwrap(), &workspace)
+            .expect("canonical verbatim path must be accepted");
+        assert_eq!(bytes, b"%PDF-workspace");
+
+        std::fs::write(outside.join("secret.pdf"), b"%PDF-secret").unwrap();
+        let linked = workspace.join("linked");
+        if !make_dir_link(&linked, &outside) {
+            eprintln!("LOUD SKIP: host refused direct link/reparse creation");
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+        let err = confined_document_read(linked.join("secret.pdf").to_str().unwrap(), &workspace)
+            .expect_err("junction component must remain rejected");
+        assert_eq!(err.kind, NanoErrorKind::FsReadDenied);
+        assert_eq!(
+            err.message,
+            "document_path: link or reparse component is not allowed"
+        );
+        std::fs::remove_dir(&linked).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     fn h2_temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(

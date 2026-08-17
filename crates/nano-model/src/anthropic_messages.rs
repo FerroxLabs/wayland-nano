@@ -366,32 +366,6 @@ fn message_to_wire(message: &Message) -> serde_json::Value {
     })
 }
 
-#[cfg(test)]
-mod document_tests {
-    use super::*;
-
-    #[test]
-    fn document_source_shape_is_exact() {
-        let mut request = ModelRequest::default();
-        request.model = "flux-auto".into();
-        request.messages = vec![Message::user_blocks(vec![ContentBlock::Document {
-            media_type: "application/pdf".into(),
-            data: "JVBERi0".into(),
-        }])];
-        assert_eq!(
-            build_request_body(&request)["messages"][0]["content"][0],
-            serde_json::json!({
-                "type": "document",
-                "source": {
-                    "type": "base64",
-                    "media_type": "application/pdf",
-                    "data": "JVBERi0"
-                }
-            })
-        );
-    }
-}
-
 fn tool_to_wire(tool: &ToolDefinition) -> serde_json::Value {
     // Anthropic-native shape — no `type:"function"` wrapper.
     serde_json::json!({
@@ -669,4 +643,32 @@ pub fn parse_sse_message_stream(text: &str) -> Result<ModelResponse, ModelError>
         stop_reason,
         model,
     })
+}
+
+#[cfg(test)]
+mod document_tests {
+    use super::*;
+
+    #[test]
+    fn document_source_shape_is_exact() {
+        let request = ModelRequest {
+            model: "flux-auto".into(),
+            messages: vec![Message::user_blocks(vec![ContentBlock::Document {
+                media_type: "application/pdf".into(),
+                data: "JVBERi0".into(),
+            }])],
+            ..Default::default()
+        };
+        assert_eq!(
+            build_request_body(&request)["messages"][0]["content"][0],
+            serde_json::json!({
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": "JVBERi0"
+                }
+            })
+        );
+    }
 }

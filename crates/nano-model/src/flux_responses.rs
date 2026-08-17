@@ -302,45 +302,6 @@ fn message_to_items(message: &Message) -> Vec<serde_json::Value> {
     items
 }
 
-#[cfg(test)]
-mod document_tests {
-    use super::*;
-
-    #[test]
-    #[should_panic(
-        expected = "PDF-bearing requests must be rejected before the Flux Responses codec"
-    )]
-    fn document_reaching_responses_codec_fails_loudly() {
-        let mut request = ModelRequest::default();
-        request.model = "flux-auto".into();
-        request.messages = vec![Message::user_blocks(vec![ContentBlock::Document {
-            media_type: "application/pdf".into(),
-            data: "JVBERi0".into(),
-        }])];
-        let _ = build_request_body(&request);
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "PDF-bearing requests must be rejected before the Flux Responses codec"
-    )]
-    fn mixed_image_and_document_cannot_bypass_the_guard() {
-        let mut request = ModelRequest::default();
-        request.model = "flux-auto".into();
-        request.messages = vec![Message::user_blocks(vec![
-            ContentBlock::Image {
-                mime: "image/png".into(),
-                data: "iVBORw0".into(),
-            },
-            ContentBlock::Document {
-                media_type: "application/pdf".into(),
-                data: "JVBERi0".into(),
-            },
-        ])];
-        let _ = build_request_body(&request);
-    }
-}
-
 fn tool_to_wire(tool: &ToolDefinition) -> serde_json::Value {
     // Flattened Responses shape — no nested `function` object.
     serde_json::json!({
@@ -622,4 +583,47 @@ pub fn parse_sse_responses_stream_observed(
         stop_reason,
         model,
     })
+}
+
+#[cfg(test)]
+mod document_tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(
+        expected = "PDF-bearing requests must be rejected before the Flux Responses codec"
+    )]
+    fn document_reaching_responses_codec_fails_loudly() {
+        let request = ModelRequest {
+            model: "flux-auto".into(),
+            messages: vec![Message::user_blocks(vec![ContentBlock::Document {
+                media_type: "application/pdf".into(),
+                data: "JVBERi0".into(),
+            }])],
+            ..Default::default()
+        };
+        let _ = build_request_body(&request);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "PDF-bearing requests must be rejected before the Flux Responses codec"
+    )]
+    fn mixed_image_and_document_cannot_bypass_the_guard() {
+        let request = ModelRequest {
+            model: "flux-auto".into(),
+            messages: vec![Message::user_blocks(vec![
+                ContentBlock::Image {
+                    mime: "image/png".into(),
+                    data: "iVBORw0".into(),
+                },
+                ContentBlock::Document {
+                    media_type: "application/pdf".into(),
+                    data: "JVBERi0".into(),
+                },
+            ])],
+            ..Default::default()
+        };
+        let _ = build_request_body(&request);
+    }
 }
