@@ -346,6 +346,10 @@ fn message_to_wire(message: &Message) -> serde_json::Value {
                 "type": "image",
                 "source": {"type": "base64", "media_type": mime, "data": data},
             }),
+            ContentBlock::Document { media_type, data } => serde_json::json!({
+                "type": "document",
+                "source": {"type": "base64", "media_type": media_type, "data": data},
+            }),
         })
         .collect();
     // The recorded requests use the plain-string content form for a lone
@@ -360,6 +364,32 @@ fn message_to_wire(message: &Message) -> serde_json::Value {
         "role": role,
         "content": blocks,
     })
+}
+
+#[cfg(test)]
+mod document_tests {
+    use super::*;
+
+    #[test]
+    fn document_source_shape_is_exact() {
+        let mut request = ModelRequest::default();
+        request.model = "flux-auto".into();
+        request.messages = vec![Message::user_blocks(vec![ContentBlock::Document {
+            media_type: "application/pdf".into(),
+            data: "JVBERi0".into(),
+        }])];
+        assert_eq!(
+            build_request_body(&request)["messages"][0]["content"][0],
+            serde_json::json!({
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": "JVBERi0"
+                }
+            })
+        );
+    }
 }
 
 fn tool_to_wire(tool: &ToolDefinition) -> serde_json::Value {

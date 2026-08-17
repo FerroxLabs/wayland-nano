@@ -42,6 +42,12 @@ pub enum ContentBlock {
         /// Base64 WITHOUT a data-URI prefix; codecs add their native wrapping.
         data: String,
     },
+    /// WP-0.3 PDF transport block. Bytes are opaque base64 without a
+    /// data-URI prefix; provider codecs supply their native wrapper.
+    Document {
+        media_type: String,
+        data: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -478,5 +484,19 @@ mod tests {
         assert_eq!(message.content.len(), 4);
         assert!(matches!(message.content[1], ContentBlock::Image { .. }));
         assert!(matches!(message.content[2], ContentBlock::Image { .. }));
+    }
+
+    #[test]
+    fn document_block_serde_round_trip() {
+        let block = ContentBlock::Document {
+            media_type: "application/pdf".into(),
+            data: "JVBERi0".into(),
+        };
+        let json = serde_json::to_value(&block).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({"type": "document", "media_type": "application/pdf", "data": "JVBERi0"})
+        );
+        assert_eq!(serde_json::from_value::<ContentBlock>(json).unwrap(), block);
     }
 }

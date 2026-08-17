@@ -141,6 +141,7 @@ fn message_bytes(message: &Message) -> usize {
                 ..
             } => tool_use_id.len() + content.len() + images.len() * IMAGE_BLOCK_BYTES,
             ContentBlock::Image { .. } => IMAGE_BLOCK_BYTES,
+            ContentBlock::Document { data, .. } => data.len(),
         })
         .sum()
 }
@@ -767,3 +768,23 @@ pub fn normalize_history(messages: Vec<Message>) -> Vec<Message> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod document_accounting_tests {
+    use super::*;
+
+    #[test]
+    fn document_payload_contributes_monotonically_to_message_bytes() {
+        let short = Message::user_blocks(vec![ContentBlock::Document {
+            media_type: "application/pdf".into(),
+            data: "1234".into(),
+        }]);
+        let long = Message::user_blocks(vec![ContentBlock::Document {
+            media_type: "application/pdf".into(),
+            data: "123456789".into(),
+        }]);
+        assert_eq!(message_bytes(&short), 4);
+        assert_eq!(message_bytes(&long), 9);
+        assert!(message_bytes(&long) > message_bytes(&short));
+    }
+}

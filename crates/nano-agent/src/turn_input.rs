@@ -11,6 +11,7 @@
 //! this equality before dispatch).
 
 use nano_model::types::ContentBlock;
+use nano_session::op::DocumentRef;
 use nano_session::op::ImageRef;
 use nano_session::op::InputBlock;
 
@@ -39,6 +40,13 @@ pub enum TurnBlock {
         /// digest-verified (§5.3).
         data: String,
     },
+    Document {
+        /// Durable digest-only metadata. The placeholder is assigned by
+        /// intake with a one-based document-only ordinal.
+        reference: DocumentRef,
+        /// Live base64 payload, never projected into the journal manifest.
+        data: String,
+    },
 }
 
 impl TurnInput {
@@ -63,6 +71,7 @@ impl TurnInput {
             .map(|block| match block {
                 TurnBlock::Text { text } => text.as_str(),
                 TurnBlock::Image { reference, .. } => reference.placeholder.as_str(),
+                TurnBlock::Document { reference, .. } => reference.placeholder.as_str(),
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -76,6 +85,7 @@ impl TurnInput {
             .map(|block| match block {
                 TurnBlock::Text { text } => InputBlock::Text { text: text.clone() },
                 TurnBlock::Image { reference, .. } => InputBlock::ImageRef(reference.clone()),
+                TurnBlock::Document { reference, .. } => InputBlock::DocumentRef(reference.clone()),
             })
             .collect()
     }
@@ -93,6 +103,10 @@ impl TurnInput {
                     mime: reference.mime.clone(),
                     data: data.clone(),
                 },
+                TurnBlock::Document { reference, data } => ContentBlock::Document {
+                    media_type: reference.mime.clone(),
+                    data: data.clone(),
+                },
             })
             .collect()
     }
@@ -103,6 +117,12 @@ impl TurnInput {
         self.blocks
             .iter()
             .any(|block| matches!(block, TurnBlock::Image { .. }))
+    }
+
+    pub fn has_documents(&self) -> bool {
+        self.blocks
+            .iter()
+            .any(|block| matches!(block, TurnBlock::Document { .. }))
     }
 }
 
@@ -125,6 +145,18 @@ mod tests {
         }
     }
 
+    fn document_block(digest: &str, placeholder: &str) -> TurnBlock {
+        TurnBlock::Document {
+            reference: DocumentRef {
+                digest: digest.into(),
+                mime: "application/pdf".into(),
+                bytes: 321,
+                placeholder: placeholder.into(),
+            },
+            data: "JVBERi0".into(),
+        }
+    }
+
     /// §12 producer plumbing: `TurnInput::text` is behavior-identical to the
     /// legacy &str entries — projection round-trips the input byte-exactly.
     #[test]
@@ -144,6 +176,7 @@ mod tests {
             }]
         );
         assert!(!input.has_images());
+        assert!(!input.has_documents());
     }
 
     /// §5.2.1: three views of ONE source — projection carries the
@@ -192,5 +225,40 @@ mod tests {
             }]
         );
         assert!(!input.has_images());
+    }
+
+    #[test]
+    fn mixed_duplicate_documents_preserve_all_three_views() {
+        let input = TurnInput {
+            blocks: vec![
+                TurnBlock::Text {
+                    text: "before".into(),
+                },
+                document_block(&"cc".repeat(32), "[Document #1: attached PDF]"),
+                image_block(&"aa".repeat(32), "[Image #1: /tmp/a.png]"),
+                document_block(&"cc".repeat(32), "[Document #2: /docs/a.pdf]"),
+                TurnBlock::Text {
+                    text: "after".into(),
+                },
+            ],
+        };
+        assert_eq!(
+            input.projection(),
+            "before\n[Document #1: attached PDF]\n[Image #1: /tmp/a.png]\n[Document #2: /docs/a.pdf]\nafter"
+        );
+        let manifest = input.manifest();
+        assert!(matches!(manifest[1], InputBlock::DocumentRef(_)));
+        assert!(matches!(manifest[3], InputBlock::DocumentRef(_)));
+        let manifest_json = serde_json::to_string(&manifest).unwrap();
+        assert!(!manifest_json.contains("JVBERi0"));
+        let live = input.content_blocks();
+        assert!(
+            matches!(&live[1], ContentBlock::Document { media_type, data } if media_type == "application/pdf" && data == "JVBERi0")
+        );
+        assert!(
+            matches!(&live[3], ContentBlock::Document { media_type, data } if media_type == "application/pdf" && data == "JVBERi0")
+        );
+        assert!(input.has_images());
+        assert!(input.has_documents());
     }
 }
