@@ -126,6 +126,15 @@
       "evidence": "The live harness first deadlocked on an unanswered session/request_permission request, then after that stage was bypassed wrote repository evidence under the monorepo root instead of the active worktree and failed its post-write reopen with NotFound. The final harness needs test-only tool clearing and a token cap, a deny responder for unexpected permission requests, and repository-root verification derived from the compiled crate rather than the monorepo workspace locator.",
       "disposition": "fix",
       "command_ref": "LIVE-CMD-003"
+    },
+    {
+      "id": "WP03-GATE-HIGH-007",
+      "severity": "high",
+      "path": "crates/nano-session/src/op.rs",
+      "line": 824,
+      "evidence": "The gate-all nano-session library test p2a_op_never_denies_unknown_fields fails because the DocumentRef helper introduced a literal serde deny_unknown_fields attribute while the Op forward-field contract scans the source. The focused command completed 118 tests successfully and failed this one test at crates/nano-session/src/op.rs:824.",
+      "disposition": "fix",
+      "command_ref": "GATE-CMD-002"
     }
   ],
   "audit_commands": [
@@ -146,6 +155,12 @@
       "command": "cargo clippy -p nano-model --all-targets -- -D warnings",
       "exit": 101,
       "evidence": "Five exact errors: crates/nano-model/src/anthropic_messages.rs:370 items_after_test_module; crates/nano-model/src/anthropic_messages.rs:376 field_reassign_with_default; crates/nano-model/src/flux_responses.rs:306 items_after_test_module; crates/nano-model/src/flux_responses.rs:315 field_reassign_with_default; crates/nano-model/src/flux_responses.rs:329 field_reassign_with_default. No secret value or secret path is recorded."
+    },
+    {
+      "id": "GATE-CMD-002",
+      "command": "cargo test -p nano-session --lib",
+      "exit": 101,
+      "evidence": "118 passed and 1 failed: op::tests::p2a_op_never_denies_unknown_fields failed at crates/nano-session/src/op.rs:824 because the source scan found the literal serde deny_unknown_fields attribute introduced on the DocumentRef helper."
     }
   ],
   "live_commands": [
@@ -186,6 +201,12 @@
         "LIVE-CMD-003"
       ],
       "effect": "The current independent recheck is invalidated by the endpoint and live-harness findings; the prior result is retained and a new final independent recheck is pending after fixes."
+    },
+    {
+      "kind": "gate_failure_reopened_fix_round",
+      "finding_id": "WP03-GATE-HIGH-007",
+      "command_ref": "GATE-CMD-002",
+      "effect": "The current independent recheck is invalidated for the dirty product state; its prior PASS evidence is retained and a new final independent recheck is pending after the nano-session gate fix."
     }
   ],
   "fix_round_count": 1,
@@ -910,7 +931,10 @@
     ]
   },
   "independent_recheck": {
-    "status": "PASS",
+    "status": "PENDING",
+    "final_status": "PENDING",
+    "prior_status": "PASS",
+    "invalidated_by": "WP03-GATE-HIGH-007",
     "reviewer": {
       "identity": "Codex /root/verify_wp03_live_final_tree"
     },
