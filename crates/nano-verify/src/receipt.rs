@@ -86,6 +86,16 @@ pub fn write_receipt(_directory: &Path, _receipt: &Receipt) -> Result<PathBuf, V
     ))
 }
 
+fn write_receipt_with_policy(
+    directory: &Path,
+    receipt: &Receipt,
+    _retry: Duration,
+    _deadline: Duration,
+    _stale_after: Duration,
+) -> Result<PathBuf, VerifyError> {
+    write_receipt(directory, receipt)
+}
+
 fn validate_receipt(receipt: &Receipt) -> Result<(), VerifyError> {
     if receipt.schema != 1
         || receipt.failing_run.exit_code == 0
@@ -209,5 +219,36 @@ mod tests {
             started.elapsed() >= Duration::from_millis(100),
             "reader returned before the required retry delay"
         );
+    }
+
+    #[test]
+    fn store_lock_contention_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("RCPT-01.receipt.json");
+        std::fs::write(target.with_extension("lock"), b"held").unwrap();
+        let started = Instant::now();
+        let result = write_receipt_with_policy(
+            dir.path(),
+            &receipt("RCPT-01"),
+            Duration::from_millis(10),
+            Duration::from_millis(60),
+            Duration::from_secs(60),
+        );
+        assert!(matches!(result, Err(VerifyError::LockHeld(_))));
+        assert!(started.elapsed() >= Duration::from_millis(60));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn store_replace_overwrites_existing_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = receipt("RCPT-01");
+        let target = dir.path().join("RCPT-01.receipt.json");
+        std::fs::write(&target, canonical_receipt(&old).unwrap()).unwrap();
+
+        let mut new = old.clone();
+        new.fix_commit = "e".repeat(40);
+        assert_eq!(write_receipt(dir.path(), &new).unwrap(), target);
+        assert_eq!(read_receipt(&target).unwrap(), new);
     }
 }
