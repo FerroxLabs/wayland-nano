@@ -243,7 +243,154 @@ pub fn agent_capabilities(
 // boundary) NEVER touches filesystem policy, so the §3.3 path threat model
 // is enforced HERE, host-side.
 use nano_agent::turn_input::{TurnBlock, TurnInput};
-use nano_session::op::ImageRef;
+use nano_session::op::{DocumentRef, ImageRef};
+
+const MAX_PDF_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_PDF_BASE64_BYTES: usize = (MAX_PDF_BYTES as usize).div_ceil(3) * 4;
+
+fn document_invalid(message: impl Into<String>) -> BlockRejection {
+    BlockRejection::invalid_params(message)
+}
+
+fn validate_pdf(bytes: &[u8]) -> Result<(), BlockRejection> {
+    if bytes.is_empty() || !bytes.starts_with(b"%PDF-") {
+        return Err(document_invalid(
+            "document must start with %PDF- at byte zero",
+        ));
+    }
+    if bytes.len() as u64 > MAX_PDF_BYTES {
+        return Err(document_invalid(
+            "document exceeds the 20 MiB intake ceiling",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_oversized_pdf_base64(data: &str) -> Result<(), BlockRejection> {
+    // STANDARD's padded spelling is the longest accepted representation;
+    // accepting an unpadded spelling cannot exceed this bound. The decoded
+    // byte check remains authoritative for the shared final quartet.
+    if data.len() > MAX_PDF_BASE64_BYTES {
+        return Err(document_invalid(
+            "document exceeds the 20 MiB intake ceiling",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_link_components(raw_path: &std::path::Path) -> Result<(), BlockRejection> {
+    let absolute = if raw_path.is_absolute() {
+        raw_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| BlockRejection::fs_read_denied("document_path: cannot inspect path"))?
+            .join(raw_path)
+    };
+    let mut prefix = std::path::PathBuf::new();
+    for component in absolute.components() {
+        prefix.push(component.as_os_str());
+        let metadata = match std::fs::symlink_metadata(&prefix) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                return Err(BlockRejection::fs_read_denied(
+                    "document_path: cannot inspect path",
+                ));
+            }
+        };
+        #[cfg(unix)]
+        let is_link = metadata.file_type().is_symlink();
+        #[cfg(windows)]
+        let is_link = {
+            use std::os::windows::fs::MetadataExt as _;
+            metadata.file_attributes()
+                & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+                != 0
+        };
+        #[cfg(not(any(unix, windows)))]
+        let is_link = metadata.file_type().is_symlink();
+        if is_link {
+            return Err(BlockRejection::fs_read_denied(
+                "document_path: link or reparse component is not allowed",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    // Kept local because this converter's D9 ownership grant excludes
+    // manifest/dependency changes. This is the FIPS 180-4 compression
+    // function used only to mint the durable DocumentRef content address.
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+    let mut h = [
+        0x6a09e667u32,
+        0xbb67ae85,
+        0x3c6ef372,
+        0xa54ff53a,
+        0x510e527f,
+        0x9b05688c,
+        0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let bit_len = (bytes.len() as u64).wrapping_mul(8);
+    let mut padded = bytes.to_vec();
+    padded.push(0x80);
+    while padded.len() % 64 != 56 {
+        padded.push(0);
+    }
+    padded.extend_from_slice(&bit_len.to_be_bytes());
+    for chunk in padded.chunks_exact(64) {
+        let mut w = [0u32; 64];
+        for (i, word) in w[..16].iter_mut().enumerate() {
+            *word = u32::from_be_bytes(chunk[i * 4..i * 4 + 4].try_into().expect("four bytes"));
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = h;
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let t1 = hh
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(t1);
+            d = c;
+            c = b;
+            b = a;
+            a = t1.wrapping_add(t2);
+        }
+        for (state, value) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
+            *state = state.wrapping_add(value);
+        }
+    }
+    h.iter().map(|word| format!("{word:08x}")).collect()
+}
 
 /// A typed prompt-block rejection (P2a §2.3/§7): unknown block types ride
 /// `InvalidParams` naming the type TAG only (closed vocabulary, no content
@@ -374,6 +521,81 @@ fn confined_image_read(
             message: "image file exceeds the 50 MiB intake ceiling".into(),
         });
     }
+    Ok((bytes, canonical.display().to_string()))
+}
+
+fn confined_document_read(
+    raw_path: &str,
+    workspace: &std::path::Path,
+) -> Result<(Vec<u8>, String), BlockRejection> {
+    let extension_ok = std::path::Path::new(raw_path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
+    if !extension_ok {
+        return Err(BlockRejection::fs_read_denied(
+            "document_path: extension must be .pdf",
+        ));
+    }
+    reject_link_components(std::path::Path::new(raw_path))?;
+    let canonical = std::fs::canonicalize(raw_path)
+        .map_err(|_| BlockRejection::fs_read_denied("document_path: cannot resolve the path"))?;
+    if !canonical
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+    {
+        return Err(BlockRejection::fs_read_denied(
+            "document_path: canonical file extension must be .pdf",
+        ));
+    }
+    let authorized_meta = std::fs::metadata(&canonical)
+        .map_err(|_| BlockRejection::fs_read_denied("document_path: cannot resolve the path"))?;
+    if !authorized_meta.is_file() {
+        return Err(BlockRejection::fs_read_denied(
+            "document_path: not a regular file",
+        ));
+    }
+    let mut roots = Vec::new();
+    if let Ok(root) = std::fs::canonicalize(workspace) {
+        roots.push(root);
+    }
+    if let Some(pictures) = dirs_next::picture_dir()
+        && let Ok(root) = std::fs::canonicalize(pictures)
+    {
+        roots.push(root);
+    }
+    let Some(root) = roots.iter().find(|root| canonical.starts_with(root)) else {
+        return Err(BlockRejection::fs_read_denied(
+            "document_path: outside the allowed roots (workspace, OS pictures dir)",
+        ));
+    };
+    let relative = canonical.strip_prefix(root).unwrap_or(canonical.as_path());
+    if relative.components().any(|component| {
+        matches!(component, std::path::Component::Normal(name)
+            if name.to_string_lossy().starts_with('.'))
+    }) {
+        return Err(BlockRejection {
+            kind: NanoErrorKind::FsSensitiveDenied,
+            message: "document_path: sensitive subtree (dot-path under an allowed root)".into(),
+        });
+    }
+    #[cfg(test)]
+    PRE_OPEN_HOOK.with(|hook| {
+        if let Some(fire) = hook.borrow_mut().take() {
+            fire();
+        }
+    });
+    use std::io::Read as _;
+    let file = open_confined(&canonical, &authorized_meta).map_err(|mut error| {
+        error.message = error.message.replacen("image_path", "document_path", 1);
+        error
+    })?;
+    let mut bytes = Vec::new();
+    file.take(MAX_PDF_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| BlockRejection::fs_read_denied("document_path: read failed"))?;
+    validate_pdf(&bytes)?;
     Ok((bytes, canonical.display().to_string()))
 }
 
@@ -589,6 +811,8 @@ pub async fn acp_blocks_to_content_blocks(
     let mut blocks: Vec<TurnBlock> = Vec::new();
     let mut image_count: usize = 0;
     let mut aggregate_bytes: u64 = 0;
+    let mut document_count: usize = 0;
+    let mut document_bytes: u64 = 0;
     for part in prompt {
         let tag = part.get("type").and_then(|t| t.as_str());
         match tag {
@@ -667,6 +891,64 @@ pub async fn acp_blocks_to_content_blocks(
                 eprintln!("wayland-nano: intake {}", loaded.receipt_line());
                 blocks.push(loaded_to_turn_block(loaded));
             }
+            Some("document") => {
+                document_count = document_count.saturating_add(1);
+                if document_count > 1 {
+                    return Err(document_invalid("one PDF document per message"));
+                }
+                let mime = part
+                    .get("mimeType")
+                    .and_then(|mime| mime.as_str())
+                    .ok_or_else(|| document_invalid("document block requires mimeType"))?;
+                if mime != "application/pdf" {
+                    return Err(document_invalid(
+                        "document mimeType must be application/pdf",
+                    ));
+                }
+                let data = part
+                    .get("data")
+                    .and_then(|data| data.as_str())
+                    .ok_or_else(|| document_invalid("document block requires data"))?;
+                reject_oversized_pdf_base64(data)?;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .map_err(|_| document_invalid("document block data is not valid base64"))?;
+                document_bytes = document_bytes.saturating_add(bytes.len() as u64);
+                if document_bytes > MAX_PDF_BYTES {
+                    return Err(document_invalid(
+                        "document exceeds the 20 MiB intake ceiling",
+                    ));
+                }
+                validate_pdf(&bytes)?;
+                blocks.push(document_turn_block(
+                    bytes,
+                    data.to_string(),
+                    "[Document #1: attached PDF]".into(),
+                ));
+            }
+            Some("document_path") => {
+                document_count = document_count.saturating_add(1);
+                if document_count > 1 {
+                    return Err(document_invalid("one PDF document per message"));
+                }
+                let path = part
+                    .get("path")
+                    .and_then(|path| path.as_str())
+                    .ok_or_else(|| document_invalid("document_path block requires path"))?;
+                let (bytes, display) = confined_document_read(path, workspace)?;
+                document_bytes = document_bytes.saturating_add(bytes.len() as u64);
+                if document_bytes > MAX_PDF_BYTES {
+                    return Err(document_invalid(
+                        "document exceeds the 20 MiB intake ceiling",
+                    ));
+                }
+                let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                blocks.push(document_turn_block(
+                    bytes,
+                    data,
+                    format!("[Document #1: {display}]"),
+                ));
+            }
             // Typed rejection naming the type TAG only (bounded: the tag is
             // truncated, never the content) — the C7 closed-fields rule.
             other => {
@@ -699,6 +981,18 @@ fn loaded_to_turn_block(loaded: nano_tools::image::LoadedImage) -> TurnBlock {
             height: loaded.height,
             normalized_from: loaded.normalized_from,
             placeholder: loaded.placeholder.unwrap_or_default(),
+        },
+        data,
+    }
+}
+
+fn document_turn_block(bytes: Vec<u8>, data: String, placeholder: String) -> TurnBlock {
+    TurnBlock::Document {
+        reference: DocumentRef {
+            digest: sha256_hex(&bytes),
+            mime: "application/pdf".into(),
+            bytes: bytes.len() as u64,
+            placeholder,
         },
         data,
     }
@@ -1505,6 +1799,258 @@ mod tests {
         assert_eq!(err.kind, NanoErrorKind::InvalidParams);
     }
 
+    fn inline_document(bytes: &[u8]) -> serde_json::Value {
+        use base64::Engine as _;
+        serde_json::json!({
+            "type": "document",
+            "mimeType": "application/pdf",
+            "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+        })
+    }
+
+    #[tokio::test]
+    async fn document_inline_accepts_valid_pdf_and_exact_ceiling() {
+        for bytes in [b"%PDF-valid".to_vec(), {
+            let mut bytes = vec![0; MAX_PDF_BYTES as usize];
+            bytes[..5].copy_from_slice(b"%PDF-");
+            bytes
+        }] {
+            let prompt = vec![inline_document(&bytes)];
+            let input = acp_blocks_to_content_blocks(&prompt, std::path::Path::new("."))
+                .await
+                .expect("valid PDF");
+            assert_eq!(input.blocks.len(), 1);
+            let TurnBlock::Document { reference, data } = &input.blocks[0] else {
+                panic!("expected document block")
+            };
+            assert_eq!(reference.mime, "application/pdf");
+            assert_eq!(reference.bytes, bytes.len() as u64);
+            assert_eq!(reference.digest, sha256_hex(&bytes));
+            assert_eq!(reference.placeholder, "[Document #1: attached PDF]");
+            assert!(!data.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn document_inline_invalid_table_is_typed_and_bounded() {
+        let mut over = vec![0; MAX_PDF_BYTES as usize + 1];
+        over[..5].copy_from_slice(b"%PDF-");
+        let cases = [
+            (
+                serde_json::json!({"type":"document","mimeType":"application/pdf","data":"%%%"}),
+                "not valid base64",
+            ),
+            (
+                serde_json::json!({"type":"document","data":"JVBERi0="}),
+                "requires mimeType",
+            ),
+            (
+                serde_json::json!({"type":"document","mimeType":"Application/PDF","data":"JVBERi0="}),
+                "must be application/pdf",
+            ),
+            (inline_document(b""), "start with %PDF-"),
+            (inline_document(b"xxxxx%PDF-"), "start with %PDF-"),
+            (
+                inline_document(&over),
+                "document exceeds the 20 MiB intake ceiling",
+            ),
+        ];
+        for (part, expected) in cases {
+            let err = acp_blocks_to_content_blocks(&[part], std::path::Path::new("."))
+                .await
+                .expect_err(expected);
+            assert_eq!(err.kind, NanoErrorKind::InvalidParams);
+            assert!(err.message.contains(expected), "{err:?}");
+            assert!(err.message.len() < 128);
+        }
+        let prompt = vec![inline_document(b"%PDF-one"), inline_document(b"%PDF-two")];
+        let err = acp_blocks_to_content_blocks(&prompt, std::path::Path::new("."))
+            .await
+            .expect_err("second document must reject");
+        assert_eq!(err.kind, NanoErrorKind::InvalidParams);
+        assert_eq!(err.message, "one PDF document per message");
+    }
+
+    #[tokio::test]
+    async fn document_inline_huge_encoded_input_rejects_before_decode() {
+        let payload = "A".repeat(MAX_PDF_BASE64_BYTES + 1);
+        let prompt = serde_json::json!([{
+            "type": "document",
+            "mimeType": "application/pdf",
+            "data": payload,
+        }]);
+        let err =
+            acp_blocks_to_content_blocks(prompt.as_array().unwrap(), std::path::Path::new("."))
+                .await
+                .expect_err("encoded input over the safe bound must reject");
+        assert_eq!(err.kind, NanoErrorKind::InvalidParams);
+        assert_eq!(err.message, "document exceeds the 20 MiB intake ceiling");
+    }
+
+    #[tokio::test]
+    async fn document_path_accepts_confined_pdf_and_rejects_extension_magic_and_sensitive() {
+        let root = h2_temp_dir("document-path");
+        let workspace = root.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let valid = workspace.join("valid.pdf");
+        std::fs::write(&valid, b"%PDF-valid").unwrap();
+        let prompt = serde_json::json!([{"type":"document_path","path":valid}]);
+        let input = acp_blocks_to_content_blocks(prompt.as_array().unwrap(), &workspace)
+            .await
+            .expect("confined PDF");
+        assert!(input.has_documents());
+        assert!(input.projection().contains("valid.pdf"));
+
+        let wrong_extension = workspace.join("valid.txt");
+        std::fs::write(&wrong_extension, b"%PDF-valid").unwrap();
+        let bad_magic = workspace.join("bad.pdf");
+        std::fs::write(&bad_magic, b"not-a-pdf").unwrap();
+        let sensitive_dir = workspace.join(".private");
+        std::fs::create_dir_all(&sensitive_dir).unwrap();
+        let sensitive = sensitive_dir.join("secret.pdf");
+        std::fs::write(&sensitive, b"%PDF-secret").unwrap();
+        for (path, kind) in [
+            (wrong_extension, NanoErrorKind::FsReadDenied),
+            (bad_magic, NanoErrorKind::InvalidParams),
+            (sensitive, NanoErrorKind::FsSensitiveDenied),
+        ] {
+            let prompt = serde_json::json!([{"type":"document_path","path":path}]);
+            let err = acp_blocks_to_content_blocks(prompt.as_array().unwrap(), &workspace)
+                .await
+                .expect_err("invalid document path");
+            assert_eq!(err.kind, kind, "{err:?}");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn document_sha256_matches_known_vector() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[tokio::test]
+    async fn document_path_enforces_exact_ceiling_and_allowed_root() {
+        let root = h2_temp_dir("document-cap");
+        let workspace = root.join("ws");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let exact = workspace.join("exact.pdf");
+        let mut bytes = vec![0; MAX_PDF_BYTES as usize];
+        bytes[..5].copy_from_slice(b"%PDF-");
+        std::fs::write(&exact, &bytes).unwrap();
+        let prompt = serde_json::json!([{"type":"document_path","path":exact}]);
+        acp_blocks_to_content_blocks(prompt.as_array().unwrap(), &workspace)
+            .await
+            .expect("exact ceiling accepted");
+
+        bytes.push(0);
+        let over = workspace.join("over.pdf");
+        std::fs::write(&over, &bytes).unwrap();
+        let prompt = serde_json::json!([{"type":"document_path","path":over}]);
+        let err = acp_blocks_to_content_blocks(prompt.as_array().unwrap(), &workspace)
+            .await
+            .expect_err("one byte over rejected");
+        assert_eq!(err.kind, NanoErrorKind::InvalidParams);
+        assert_eq!(err.message, "document exceeds the 20 MiB intake ceiling");
+
+        let escaped = outside.join("escaped.pdf");
+        std::fs::write(&escaped, b"%PDF-outside").unwrap();
+        let prompt = serde_json::json!([{"type":"document_path","path":escaped}]);
+        let err = acp_blocks_to_content_blocks(prompt.as_array().unwrap(), &workspace)
+            .await
+            .expect_err("outside root rejected");
+        assert_eq!(err.kind, NanoErrorKind::FsReadDenied);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn document_path_swap_between_authorize_and_open_fails_closed() {
+        let root = h2_temp_dir("document-toctou");
+        let workspace = root.join("ws");
+        let sub = workspace.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let document = sub.join("file.pdf");
+        std::fs::write(&document, b"%PDF-workspace").unwrap();
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("file.pdf"), b"%PDF-outside-secret").unwrap();
+        let saved = workspace.join("sub-saved");
+        let linked = std::rc::Rc::new(std::cell::Cell::new(true));
+        let linked_hook = linked.clone();
+        let sub_hook = sub.clone();
+        let saved_hook = saved.clone();
+        let outside_hook = outside.clone();
+        PRE_OPEN_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                std::fs::rename(&sub_hook, &saved_hook).unwrap();
+                if !make_dir_link(&sub_hook, &outside_hook) {
+                    linked_hook.set(false);
+                }
+            }));
+        });
+        let result = confined_document_read(document.to_str().unwrap(), &workspace);
+        if !linked.get() {
+            eprintln!("LOUD SKIP: host refused link creation for document swap test");
+            return;
+        }
+        let err = result.expect_err("swapped document path must fail closed");
+        assert_eq!(err.kind, NanoErrorKind::FsReadDenied);
+        assert!(err.message.starts_with("document_path:"));
+        #[cfg(windows)]
+        std::fs::remove_dir(&sub).unwrap();
+        #[cfg(unix)]
+        std::fs::remove_file(&sub).unwrap();
+        std::fs::rename(&saved, &sub).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn document_path_preexisting_link_or_reparse_component_fails_closed() {
+        let root = h2_temp_dir("document-existing-link");
+        let workspace = root.join("ws");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let outside_file = outside.join("secret.txt");
+        std::fs::write(&outside_file, b"%PDF-secret").unwrap();
+        let file_alias = workspace.join("alias.pdf");
+        if make_file_link(&file_alias, &outside_file) {
+            let err = confined_document_read(file_alias.to_str().unwrap(), &workspace)
+                .expect_err("direct symlink must reject without trusting alias extension");
+            assert_eq!(err.kind, NanoErrorKind::FsReadDenied);
+            assert_eq!(
+                err.message,
+                "document_path: link or reparse component is not allowed"
+            );
+            std::fs::remove_file(&file_alias).unwrap();
+        } else {
+            eprintln!("LOUD SKIP: host refused direct file symlink creation");
+        }
+        std::fs::write(outside.join("secret.pdf"), b"%PDF-secret").unwrap();
+        let linked = workspace.join("linked");
+        if !make_dir_link(&linked, &outside) {
+            eprintln!("LOUD SKIP: host refused direct link/reparse creation");
+            return;
+        }
+        let aliased = linked.join("secret.pdf");
+        let err = confined_document_read(aliased.to_str().unwrap(), &workspace)
+            .expect_err("pre-existing link/reparse must reject before canonical resolution");
+        assert_eq!(err.kind, NanoErrorKind::FsReadDenied);
+        assert_eq!(
+            err.message,
+            "document_path: link or reparse component is not allowed"
+        );
+        #[cfg(windows)]
+        std::fs::remove_dir(&linked).unwrap();
+        #[cfg(unix)]
+        std::fs::remove_file(&linked).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     // ── P2a audit H-2: the confined image_path open ──────────────────────
 
     fn h2_temp_dir(tag: &str) -> std::path::PathBuf {
@@ -1535,6 +2081,19 @@ mod tests {
                 .expect("spawn mklink")
                 .status
                 .success();
+        }
+        #[cfg(unix)]
+        {
+            return std::os::unix::fs::symlink(target, link).is_ok();
+        }
+        #[allow(unreachable_code)]
+        false
+    }
+
+    fn make_file_link(link: &std::path::Path, target: &std::path::Path) -> bool {
+        #[cfg(windows)]
+        {
+            return std::os::windows::fs::symlink_file(target, link).is_ok();
         }
         #[cfg(unix)]
         {
