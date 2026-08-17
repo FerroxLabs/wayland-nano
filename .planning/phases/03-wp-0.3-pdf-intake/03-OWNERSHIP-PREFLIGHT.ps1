@@ -303,9 +303,7 @@ Compare-ManifestExact $resourcesBefore (Get-TreeManifest $ResourcesRoot) 'resour
 Assert-SharedDelta $sharedBefore (Get-TreeManifest $SharedRoot) $RepoRoot
 
 if ($Mode -eq 'Closure') {
-    if ($null -eq $control.closure
-        -or [string]::IsNullOrWhiteSpace([string]$control.closure.input_tip)
-        -or [string]::IsNullOrWhiteSpace([string]$control.closure.input_tree)) {
+    if (($null -eq $control.closure) -or [string]::IsNullOrWhiteSpace([string]$control.closure.input_tip) -or [string]::IsNullOrWhiteSpace([string]$control.closure.input_tree)) {
         throw 'closure input tip/tree must be bound before Closure'
     }
     $control | Add-Member -Force -NotePropertyName closure -NotePropertyValue ([ordered]@{
