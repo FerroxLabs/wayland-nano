@@ -165,16 +165,20 @@ fn git_probe_with_absence(repo_root: &Path, args: &[&str], any_nonzero_absent: b
         .arg("-C")
         .arg(repo_root)
         .args(args)
+        .env_clear()
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_COUNT", "0")
+        .env("GIT_CONFIG_GLOBAL", null_device())
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_SSH_COMMAND")
-        .env_remove("GIT_ASKPASS")
+        .env("GCM_INTERACTIVE", "Never")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    for name in git_launch_environment() {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
     let Ok(mut child) = command.spawn() else {
         return Probe::Unknown;
     };
@@ -205,6 +209,21 @@ fn git_probe_with_absence(repo_root: &Path, args: &[&str], any_nonzero_absent: b
             }
             Err(_) => return Probe::Unknown,
         }
+    }
+}
+
+fn null_device() -> &'static str {
+    if cfg!(windows) { "NUL" } else { "/dev/null" }
+}
+
+fn git_launch_environment() -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        &["PATH", "SYSTEMROOT", "PATHEXT", "COMSPEC", "TEMP", "TMP"]
+    }
+    #[cfg(not(windows))]
+    {
+        &["PATH", "TMPDIR", "TEMP", "TMP"]
     }
 }
 
@@ -468,9 +487,15 @@ fn invalid_receipt(error: impl std::fmt::Display) -> VerifyError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::process::Command;
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
     use super::*;
+    use crate::registry::{CwdPolicy, GateClosure, GateRegistryEntry};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn receipt(requirement: &str) -> Receipt {
         Receipt {
@@ -560,5 +585,102 @@ mod tests {
         let observed = std::fs::read(&target).unwrap();
         assert!(observed == old_bytes || observed == new_bytes);
         assert_eq!(read_receipt(&target).unwrap(), new);
+    }
+
+    #[test]
+    fn hostile_object_database_cannot_supply_foreign_commits() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let local = tempfile::tempdir().unwrap();
+        let foreign = tempfile::tempdir().unwrap();
+        init_repo(local.path());
+        init_repo(foreign.path());
+
+        std::fs::create_dir_all(foreign.path().join("tests")).unwrap();
+        std::fs::write(foreign.path().join("tests/red.rs"), "#[test] fn red() {}\n").unwrap();
+        git(foreign.path(), &["add", "tests/red.rs"]);
+        git(foreign.path(), &["commit", "-m", "observed red"]);
+        let observed = git_output(foreign.path(), &["rev-parse", "HEAD"]);
+        std::fs::write(foreign.path().join("fix.txt"), "fixed\n").unwrap();
+        git(foreign.path(), &["add", "fix.txt"]);
+        git(foreign.path(), &["commit", "-m", "fix"]);
+        let fixed = git_output(foreign.path(), &["rev-parse", "HEAD"]);
+
+        let closure = GateClosure {
+            argv: vec!["gate".into()],
+            env: BTreeMap::new(),
+            cwd_policy: CwdPolicy::RepoRoot,
+            wrapped_tools: Vec::new(),
+        };
+        let digest = closure_digest(&closure).unwrap();
+        let registry = GateRegistry {
+            schema: 1,
+            gates: BTreeMap::from([(
+                "gate-a".into(),
+                GateRegistryEntry {
+                    card: "unused".into(),
+                    script: "unused".into(),
+                    closure,
+                    closure_digest: digest.clone(),
+                    run_artifact: "unused".into(),
+                },
+            )]),
+            requirements: BTreeMap::from([("RCPT-01".into(), "gate-a".into())]),
+        };
+        let mut hostile_receipt = receipt("RCPT-01");
+        hostile_receipt.failing_run.observed_at_commit = observed;
+        hostile_receipt.fix_commit = fixed;
+        hostile_receipt.gate_closure_digest = digest;
+        let bytes = serde_json::to_vec(&hostile_receipt).unwrap();
+
+        let variable = "GIT_OBJECT_DIRECTORY";
+        let previous = std::env::var_os(variable);
+        unsafe {
+            std::env::set_var(variable, foreign.path().join(".git/objects"));
+        }
+        let result = preflight_receipt(local.path(), &bytes, &registry);
+        unsafe {
+            if let Some(value) = previous {
+                std::env::set_var(variable, value);
+            } else {
+                std::env::remove_var(variable);
+            }
+        }
+        assert_ne!(result, ReceiptPreflight::Ready);
+        assert!(matches!(
+            result,
+            ReceiptPreflight::FabricatedCommit | ReceiptPreflight::Unverifiable
+        ));
+    }
+
+    fn init_repo(path: &Path) {
+        git(path, &["init"]);
+        git(path, &["config", "user.name", "Nano Verify Test"]);
+        git(
+            path,
+            &["config", "user.email", "nano-verify@example.invalid"],
+        );
+    }
+
+    fn git(path: &Path, args: &[&str]) {
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(path)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    fn git_output(path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
 }

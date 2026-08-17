@@ -15,7 +15,11 @@ pub struct GateInvocation {
 
 /// Execute one gate subprocess. The production implementation is materialized by
 /// Plan 04-04 after its real-process contract has been observed failing.
-pub async fn run_gate(inv: &GateInvocation, artifact_path: &std::path::Path) -> GateOutcome {
+pub async fn run_gate(
+    inv: &GateInvocation,
+    artifact_path: &std::path::Path,
+    inventory: &[(String, FailCategory)],
+) -> GateOutcome {
     use tokio::io::AsyncReadExt;
     use tokio::process::Command;
 
@@ -121,7 +125,7 @@ pub async fn run_gate(inv: &GateInvocation, artifact_path: &std::path::Path) -> 
             return GateOutcome::FailClosed(FailClosedReason::Timeout);
         }
     };
-    parse_gate_output(&String::from_utf8_lossy(&captured), &[])
+    parse_gate_output(&String::from_utf8_lossy(&captured), inventory)
 }
 
 fn baseline_environment() -> &'static [&'static str] {

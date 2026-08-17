@@ -1,4 +1,6 @@
-use nano_verify::gate::{FailClosedReason, GateInvocation, GateOutcome, run_gate};
+use nano_verify::gate::{
+    CheckVerdict, FailCategory, FailClosedReason, GateInvocation, GateOutcome, run_gate,
+};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -13,6 +15,10 @@ fn fixture_entry() -> bool {
     match mode.to_string_lossy().as_ref() {
         "nonzero" => {
             println!("gate: 1/1");
+            std::process::exit(23);
+        }
+        "red" => {
+            println!("FAIL TG-01 value\ngate: 0/1");
             std::process::exit(23);
         }
         "argv" => {
@@ -109,18 +115,40 @@ fn invocation(mode: &str, timeout: Duration, extra: &[(&str, OsString)]) -> Gate
 }
 
 async fn run(mode: &str, artifact: &Path, extra: &[(&str, OsString)]) -> GateOutcome {
-    run_gate(&invocation(mode, Duration::from_secs(5), extra), artifact).await
+    run_gate(
+        &invocation(mode, Duration::from_secs(5), extra),
+        artifact,
+        &inventory(),
+    )
+    .await
+}
+
+fn inventory() -> Vec<(String, FailCategory)> {
+    vec![("TG-01".into(), FailCategory::Value)]
 }
 
 #[tokio::test]
 async fn run_gate_parses_stdout_despite_nonzero_exit() {
-    assert!(matches!(
+    assert_eq!(
         run("nonzero", Path::new("artifact"), &[]).await,
-        GateOutcome::FailClosed(FailClosedReason::InconsistentSummary {
-            passed: 1,
-            total: 1
-        })
-    ));
+        GateOutcome::Green {
+            verdicts: vec![CheckVerdict {
+                id: "TG-01".into(),
+                category: FailCategory::Value,
+                passed: true,
+            }],
+        }
+    );
+    assert_eq!(
+        run("red", Path::new("artifact"), &[]).await,
+        GateOutcome::Red {
+            verdicts: vec![CheckVerdict {
+                id: "TG-01".into(),
+                category: FailCategory::Value,
+                passed: false,
+            }],
+        }
+    );
 }
 
 #[tokio::test]
@@ -128,7 +156,7 @@ async fn run_gate_spawn_error_fails_closed() {
     let mut inv = invocation("nonzero", Duration::from_secs(1), &[]);
     inv.argv[0] = OsString::from("wayland-nano-definitely-absent-gate-program");
     assert!(
-        matches!(run_gate(&inv, Path::new("artifact")).await, GateOutcome::FailClosed(FailClosedReason::SpawnError(message)) if message.len() <= 96)
+        matches!(run_gate(&inv, Path::new("artifact"), &inventory()).await, GateOutcome::FailClosed(FailClosedReason::SpawnError(message)) if message.len() <= 96)
     );
 }
 
@@ -141,10 +169,7 @@ async fn run_gate_artifact_path_is_final_argv() {
     )];
     assert!(matches!(
         run("argv", &artifact, &extra).await,
-        GateOutcome::FailClosed(FailClosedReason::InconsistentSummary {
-            passed: 1,
-            total: 1
-        })
+        GateOutcome::Green { .. }
     ));
 }
 
@@ -158,13 +183,7 @@ async fn run_gate_env_baseline_allowlist() {
     unsafe {
         std::env::remove_var(LEAK_ENV);
     }
-    assert!(matches!(
-        outcome,
-        GateOutcome::FailClosed(FailClosedReason::InconsistentSummary {
-            passed: 1,
-            total: 1
-        })
-    ));
+    assert!(matches!(outcome, GateOutcome::Green { .. }));
 }
 
 #[tokio::test]
@@ -179,6 +198,7 @@ async fn run_gate_timeout_fails_closed() {
     let outcome = run_gate(
         &invocation("timeout", Duration::from_millis(500), &extra),
         Path::new("artifact"),
+        &inventory(),
     )
     .await;
     assert_eq!(outcome, GateOutcome::FailClosed(FailClosedReason::Timeout));
@@ -192,6 +212,22 @@ async fn run_gate_timeout_fails_closed() {
     assert_eq!(
         bounded,
         GateOutcome::FailClosed(FailClosedReason::NoGateOutput)
+    );
+}
+
+#[tokio::test]
+async fn run_gate_empty_inventory_fails_closed() {
+    assert_eq!(
+        run_gate(
+            &invocation("nonzero", Duration::from_secs(5), &[]),
+            Path::new("artifact"),
+            &[],
+        )
+        .await,
+        GateOutcome::FailClosed(FailClosedReason::InconsistentSummary {
+            passed: 1,
+            total: 1,
+        })
     );
 }
 
