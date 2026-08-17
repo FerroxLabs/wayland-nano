@@ -52,17 +52,175 @@ pub enum GateOutcome {
 
 impl GateOutcome {
     pub fn score(&self) -> (i64, i64) {
-        (0, 1)
+        match self {
+            Self::Green { verdicts } | Self::Red { verdicts } => {
+                let passed = verdicts.iter().filter(|verdict| verdict.passed).count();
+                (
+                    i64::try_from(passed).unwrap_or(i64::MAX),
+                    i64::try_from(verdicts.len()).unwrap_or(i64::MAX),
+                )
+            }
+            Self::FailClosed(_) => (0, 1),
+        }
     }
 
     pub fn fails(&self) -> Vec<String> {
-        vec!["<gate parser unavailable>".to_owned()]
+        match self {
+            Self::Green { .. } => Vec::new(),
+            Self::Red { verdicts } => verdicts
+                .iter()
+                .filter(|verdict| !verdict.passed)
+                .map(|verdict| format!("{} {}", verdict.id, verdict.category.as_str()))
+                .collect(),
+            Self::FailClosed(reason) => vec![reason.sentinel().to_owned()],
+        }
     }
 }
 
 /// PURE. stdout + the card's check inventory → outcome. Never panics.
-pub fn parse_gate_output(_stdout: &str, _inventory: &[(String, FailCategory)]) -> GateOutcome {
-    GateOutcome::FailClosed(FailClosedReason::Timeout)
+pub fn parse_gate_output(stdout: &str, inventory: &[(String, FailCategory)]) -> GateOutcome {
+    let mut summary = None;
+    let mut failures: Vec<(&str, FailCategory)> = Vec::new();
+
+    for line in stdout.lines() {
+        if let Some(parsed) = scan_summary(line) {
+            summary = Some(parsed);
+        }
+        if let Some(rest) = line.strip_prefix("FAIL ") {
+            let mut fields = rest.split_whitespace();
+            let id = fields.next().unwrap_or("");
+            let Some(category) = fields.next().and_then(FailCategory::parse) else {
+                return GateOutcome::FailClosed(FailClosedReason::UnknownCheckId(bounded_id(id)));
+            };
+            if !valid_check_id(id) || fields.next().is_some() {
+                return GateOutcome::FailClosed(FailClosedReason::UnknownCheckId(bounded_id(id)));
+            }
+            let Some((_, declared_category)) = inventory.iter().find(|(known, _)| known == id)
+            else {
+                return GateOutcome::FailClosed(FailClosedReason::UnknownCheckId(id.to_owned()));
+            };
+            if *declared_category != category
+                || failures.iter().any(|(failed_id, _)| *failed_id == id)
+            {
+                let (passed, total) = summary.unwrap_or((0, 0));
+                return GateOutcome::FailClosed(FailClosedReason::InconsistentSummary {
+                    passed,
+                    total,
+                });
+            }
+            failures.push((id, category));
+        }
+    }
+
+    let Some((passed, total)) = summary else {
+        return GateOutcome::FailClosed(FailClosedReason::NoGateOutput);
+    };
+    let inventory_total = u64::try_from(inventory.len()).unwrap_or(u64::MAX);
+    let fail_count = u64::try_from(failures.len()).unwrap_or(u64::MAX);
+    if inventory.is_empty()
+        || total != inventory_total
+        || passed != total.checked_sub(fail_count).unwrap_or(u64::MAX)
+    {
+        return GateOutcome::FailClosed(FailClosedReason::InconsistentSummary { passed, total });
+    }
+
+    let verdicts = inventory
+        .iter()
+        .map(|(id, category)| CheckVerdict {
+            id: id.clone(),
+            category: *category,
+            passed: !failures.iter().any(|(failed_id, _)| failed_id == id),
+        })
+        .collect();
+    if failures.is_empty() {
+        GateOutcome::Green { verdicts }
+    } else {
+        GateOutcome::Red { verdicts }
+    }
+}
+
+impl FailCategory {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "structure" => Some(Self::Structure),
+            "value" => Some(Self::Value),
+            "relation" => Some(Self::Relation),
+            "grounding" => Some(Self::Grounding),
+            "execution" => Some(Self::Execution),
+            "security" => Some(Self::Security),
+            _ => None,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Structure => "structure",
+            Self::Value => "value",
+            Self::Relation => "relation",
+            Self::Grounding => "grounding",
+            Self::Execution => "execution",
+            Self::Security => "security",
+        }
+    }
+}
+
+impl FailClosedReason {
+    const fn sentinel(&self) -> &'static str {
+        match self {
+            Self::NoGateOutput => "<no gate output>",
+            Self::Timeout => "<gate timeout>",
+            Self::SpawnError(_) => "<gate spawn error>",
+            Self::InconsistentSummary { .. } => "<inconsistent gate summary>",
+            Self::UnknownCheckId(_) => "<unknown check id>",
+        }
+    }
+}
+
+fn scan_summary(line: &str) -> Option<(u64, u64)> {
+    let line = line.trim_start();
+    let colon = line.find(':')?;
+    let label = &line[..colon];
+    if !label.ends_with("gate")
+        || label.is_empty()
+        || !label
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return None;
+    }
+
+    let mut rest = line[colon + 1..].trim_start();
+    let passed_end = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if passed_end == 0 {
+        return None;
+    }
+    let passed = rest[..passed_end].parse().ok()?;
+    rest = rest[passed_end..].trim_start();
+    rest = rest.strip_prefix('/')?.trim_start();
+    let total_end = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if total_end == 0 {
+        return None;
+    }
+    let total = rest[..total_end].parse().ok()?;
+    Some((passed, total))
+}
+
+fn valid_check_id(id: &str) -> bool {
+    let Some((prefix, digits)) = id.split_once('-') else {
+        return false;
+    };
+    (2..=4).contains(&prefix.len())
+        && prefix.bytes().all(|byte| byte.is_ascii_uppercase())
+        && digits.len() == 2
+        && digits.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn bounded_id(id: &str) -> String {
+    if valid_check_id(id) {
+        id.to_owned()
+    } else {
+        "<malformed>".to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -91,7 +249,7 @@ mod tests {
 
     #[test]
     fn parse_summary_last_match_wins() {
-        let actual = parse_gate_output("gate: 4/4\nnoise\ngate: 3/4", &inventory());
+        let actual = parse_gate_output("gate: 4/4\nFAIL TG-02 execution\ngate: 3/4", &inventory());
         assert_eq!(
             actual,
             GateOutcome::Red {
@@ -146,7 +304,7 @@ mod tests {
 
     #[test]
     fn parse_fail_v2_whitespace_collapses() {
-        let actual = parse_gate_output("FAIL\t TG-03   structure  \ngate: 3 / 4", &inventory());
+        let actual = parse_gate_output("FAIL   TG-03   structure  \ngate: 3 / 4", &inventory());
         assert_eq!(actual.fails(), vec!["TG-03 structure"]);
     }
 
