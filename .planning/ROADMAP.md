@@ -19,7 +19,7 @@ This milestone promotes the approved Wayland Nano 0.2 verified-change program th
 - [x] **Phase 1: WP-0.4 Frozen Contracts and Program Controls** - Freeze the four machine-checkable contracts and establish the evidence-backed serial promotion discipline. (completed 2026-08-16)
 - [x] **Phase 2: WP-0.2 Memory Hardening** - Measure retained growth, apply only the profile-selected correction, and prove the locked memory budget. (completed 2026-08-17)
 - [x] **Phase 3: WP-0.3 PDF Intake** - Deliver validated, resumable PDF intake over the Anthropic document wire with fail-closed routing. (completed 2026-08-17)
-- [ ] **Phase 4: WP-1 Gate and Receipt Foundation** - Deliver canonical gate execution and independently checkable red-green receipt primitives.
+- [x] **Phase 4: WP-1 Gate and Receipt Foundation** - Deliver canonical gate execution and independently checkable red-green receipt primitives. (completed 2026-08-20)
 - [ ] **Phase 5: WP-2 Gated Climb** - Deliver the budgeted, opaque-feedback, ratcheted climb engine.
 - [ ] **Phase 6: WP-3 Verify CLI and CI Surface** - Expose verified change through the CLI, offline receipt checking, and a pinned CI consumer.
 - [ ] **Phase 7: WP-4 Gate Cards and Dogfood** - Seal three mutant-tested Gate Card packs, dogfood them through the verifier, and hand the promoted evidence to the owner.
@@ -140,7 +140,35 @@ Plans:
   4. Merge through detached `.tmp-wt-integ` with `--no-ff` and rerun the complete `just gate-all` on the integration commit.
   5. Push integration `HEAD:master`; require CI green before Phase 5 and record the full one-line promotion result.
 
-**Plans**: TBD
+**Plans**: 8/9 plans executed
+
+Plans:
+**Wave 1**
+
+- [x] 04-01-PLAN.md — Establish the compiling nano-verify crate, dependency floor, error taxonomy, and owned module seams.
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 04-02-PLAN.md — Implement NFC-canonical registry loading, validation, mappings, and closure pins through retained RED evidence.
+- [x] 04-03-PLAN.md — Build the pure fail-closed gate-output parser and complete inventory reconstruction.
+- [x] 04-05-PLAN.md — Implement standalone canonical receipts and platform-authoritative atomic storage.
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 04-04-PLAN.md — Implement bounded argv-only subprocess execution and complete process-tree teardown.
+- [x] 04-06-PLAN.md — Implement read-only Git-backed receipt preflight and its materialized fixture battery.
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [x] 04-07-PLAN.md — Seal the WP-1 public surface, dependency lock review, and provenance ledger.
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [x] 04-08-PLAN.md — Run the binding Critical/High audit, at most one fix round, and independent recheck.
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [x] 04-09-PLAN.md — Run the exact WP-1/full repository promotion battery and produce the scoped canary-clean builder handoff.
 
 ### Phase 5: WP-2 Gated Climb
 
@@ -244,7 +272,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 1. WP-0.4 Frozen Contracts and Program Controls | 3/3 | Complete | 2026-08-16 |
 | 2. WP-0.2 Memory Hardening | 6/6 | Complete | 2026-08-17 |
 | 3. WP-0.3 PDF Intake | 13/13 | Complete | 2026-08-17 |
-| 4. WP-1 Gate and Receipt Foundation | 0/TBD | Not started | - |
+| 4. WP-1 Gate and Receipt Foundation | 9/9 | Complete | 2026-08-20 |
 | 5. WP-2 Gated Climb | 0/TBD | Not started | - |
 | 6. WP-3 Verify CLI and CI Surface | 0/TBD | Not started | - |
 | 7. WP-4 Gate Cards and Dogfood | 0/TBD | Not started | - |

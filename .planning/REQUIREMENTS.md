@@ -49,14 +49,14 @@
 
 ### WP-1 Gate and Receipt Foundation
 
-- [ ] **GATE-01**: `nano-verify` runs argv-only gate invocations with the canonical environment allowlist, bounded output, timeout/process-tree termination, and no network in the decision core.
-- [ ] **GATE-02**: Gate parsing uses the last valid summary, reconstructs the full card inventory, treats exit code as non-authoritative, and fails closed on missing output, timeout, spawn failure, unknown check IDs, or inconsistent totals.
-- [ ] **GATE-03**: Gate outcomes expose canonical scores and failure keys without leaking gate source, command, expected values, or ambient secrets to builders.
-- [ ] **RCPT-01**: Receipts are standalone schema-1 canonical JSON documents containing the canonical red evidence, gate identity/digest, observed commit, fix commit, mint time, and producer.
-- [ ] **RCPT-02**: Receipt writes use the canonical writer lock and true platform atomic replacement, with bounded contention and fail-closed reader retry behavior.
-- [ ] **RCPT-03**: Offline verification returns the canonical v1.1 verdicts and proves schema, red evidence, commit existence, ancestry/test existence, registry pin, and a bounded gate rerun at the fix commit.
-- [ ] **RCPT-04**: The complete named parser, subprocess, registry, receipt-preflight, ancestry/test-path, atomic-write contention/retry, and corruption tests pass against materialized fixture repositories.
-- [ ] **PROV-01**: Every donor-adapted file in `nano-verify` has an exact transformation entry in `UPSTREAM.md`.
+- [x] **GATE-01**: `nano-verify` runs argv-only gate invocations with the canonical environment allowlist, bounded output, timeout/process-tree termination, and no network in the decision core.
+- [x] **GATE-02**: Gate parsing uses the last valid summary, reconstructs the full card inventory, treats exit code as non-authoritative, and fails closed on missing output, timeout, spawn failure, unknown check IDs, or inconsistent totals.
+- [x] **GATE-03**: Gate outcomes expose canonical scores and failure keys without leaking gate source, command, expected values, or ambient secrets to builders.
+- [x] **RCPT-01**: Receipts are standalone schema-1 canonical JSON documents containing the canonical red evidence, gate identity/digest, observed commit, fix commit, mint time, and producer.
+- [x] **RCPT-02**: Receipt writes use the canonical writer lock and true platform atomic replacement, with bounded contention and fail-closed reader retry behavior.
+- [x] **RCPT-03**: WP-1 receipt preflight proves schema, genuine red evidence, commit existence, ancestry/test existence, and the registry pin, returning `Ready` only when those read-only checks pass; WP-3 `CLI-04` exclusively owns the bounded fix-commit gate rerun and canonical final verdict.
+- [x] **RCPT-04**: The complete named parser, subprocess, registry, receipt-preflight, ancestry/test-path, atomic-write contention/retry, and corruption tests pass against materialized fixture repositories.
+- [x] **PROV-01**: Every donor-adapted file in `nano-verify` has an exact transformation entry in `UPSTREAM.md`.
 
 ### WP-2 Gated Climb
 
