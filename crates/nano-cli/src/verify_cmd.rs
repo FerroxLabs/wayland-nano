@@ -1954,6 +1954,136 @@ mod tests {
         }
     }
 
+    mod materializer_confinement {
+        use std::path::PathBuf;
+
+        fn authority(target: &str, target_is_dir: bool) -> super::super::MaterializerAuthority {
+            super::super::MaterializerAuthority {
+                run_artifact: target.into(),
+                run_artifact_is_dir: target_is_dir,
+                protected: vec![
+                    "gates/registry.json".into(),
+                    "gates/demo/card.md".into(),
+                    "gates/demo/gate.ps1".into(),
+                    "receipts".into(),
+                    ".verify-control".into(),
+                ],
+            }
+        }
+
+        #[test]
+        fn component_confinement_and_symmetric_protection_are_closed() {
+            let directory = authority("artifact", true);
+            assert!(super::super::candidate_path_allowed("artifact/fix.txt", &directory));
+            for denied in [
+                "artifact",
+                "artifact2/fix.txt",
+                "artifact/../gates/registry.json",
+                "artifact\\fix.txt",
+                ".git/config",
+                "artifact/.git/config",
+                "gates",
+                "gates/registry.json.bak",
+            ] {
+                assert!(!super::super::candidate_path_allowed(denied, &directory), "{denied}");
+            }
+
+            let file = authority("artifact.txt", false);
+            assert!(super::super::candidate_path_allowed("artifact.txt", &file));
+            assert!(!super::super::candidate_path_allowed("artifact.txt/child", &file));
+
+            let protected_target = authority("gates", true);
+            assert!(!super::super::candidate_path_allowed("gates/new.txt", &protected_target));
+        }
+
+        #[test]
+        fn canonical_changed_path_digest_is_order_independent() {
+            let first = vec!["z.txt".into(), "artifact/a.txt".into()];
+            let second = vec!["artifact/a.txt".into(), "z.txt".into()];
+            assert_eq!(
+                super::super::canonical_changed_paths(&first).unwrap(),
+                super::super::canonical_changed_paths(&second).unwrap()
+            );
+            assert!(super::super::canonical_changed_paths(&["a".into(), "a".into()]).is_err());
+        }
+
+        #[test]
+        fn authority_paths_are_repo_relative_components() {
+            for denied in ["", ".", "..", "/abs", "C:/drive", "//server/share", "a//b"] {
+                let authority = authority(denied, true);
+                assert!(!super::super::candidate_path_allowed("a/file", &authority));
+            }
+            let _: PathBuf = authority("artifact", true).run_artifact.into();
+        }
+    }
+
+    mod materializer_transaction {
+        use std::path::Path;
+
+        fn git(root: &Path, args: &[&str]) -> String {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+            String::from_utf8(out.stdout).unwrap().trim().into()
+        }
+
+        fn repo() -> tempfile::TempDir {
+            let dir = tempfile::tempdir_in("F:/Temp/Codex").unwrap();
+            git(dir.path(), &["init", "-q"]);
+            git(dir.path(), &["config", "user.email", "verify@example.invalid"]);
+            git(dir.path(), &["config", "user.name", "Wayland Nano Verify"]);
+            std::fs::create_dir(dir.path().join("artifact")).unwrap();
+            std::fs::write(dir.path().join("artifact/base.txt"), b"old\n").unwrap();
+            git(dir.path(), &["add", "artifact/base.txt"]);
+            git(dir.path(), &["commit", "-qm", "base"]);
+            dir
+        }
+
+        #[test]
+        fn coherent_apply_commit_is_bound_to_sealed_manifest() {
+            let repo = repo();
+            let start = git(repo.path(), &["rev-parse", "HEAD"]);
+            let bytes = b"diff --git a/artifact/base.txt b/artifact/base.txt\n--- a/artifact/base.txt\n+++ b/artifact/base.txt\n@@ -1 +1 @@\n-old\n+new\n";
+            let authority = super::super::MaterializerAuthority {
+                run_artifact: "artifact".into(),
+                run_artifact_is_dir: true,
+                protected: vec!["gates/registry.json".into()],
+            };
+            let committed = super::super::materialize_candidate(
+                repo.path(),
+                &start,
+                bytes,
+                &authority,
+                "wayland-nano verify fix",
+            )
+            .unwrap();
+            assert_eq!(git(repo.path(), &["rev-parse", "HEAD^1"]), start);
+            assert_eq!(git(repo.path(), &["rev-parse", "HEAD"]), committed.fix_commit);
+            assert_eq!(std::fs::read(repo.path().join("artifact/base.txt")).unwrap(), b"new\n");
+            assert!(git(repo.path(), &["status", "--porcelain=v1", "--untracked-files=all"]).is_empty());
+        }
+
+        #[test]
+        fn precommit_failure_restores_exact_start() {
+            let repo = repo();
+            let start = git(repo.path(), &["rev-parse", "HEAD"]);
+            let bytes = b"diff --git a/artifact/base.txt b/artifact/base.txt\n--- a/artifact/base.txt\n+++ b/artifact/base.txt\n@@ -1 +1 @@\n-not-the-preimage\n+new\n";
+            let authority = super::super::MaterializerAuthority {
+                run_artifact: "artifact".into(),
+                run_artifact_is_dir: true,
+                protected: vec![],
+            };
+            assert!(super::super::materialize_candidate(repo.path(), &start, bytes, &authority, "fix").is_err());
+            assert_eq!(git(repo.path(), &["rev-parse", "HEAD"]), start);
+            assert_eq!(std::fs::read(repo.path().join("artifact/base.txt")).unwrap(), b"old\n");
+            assert!(git(repo.path(), &["status", "--porcelain=v1", "--untracked-files=all"]).is_empty());
+        }
+    }
+
     mod mint_flow {
         #[test]
         fn climb_config_preserves_caller_model_order_deadline_and_budget() {
