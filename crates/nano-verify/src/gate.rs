@@ -1,5 +1,45 @@
 //! Gate invocation and fail-closed output parsing primitives.
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateEvidence {
+    pub exit_code: Option<i64>,
+    pub log_digest: Option<String>,
+    pub artifact_sha256: String,
+}
+
+#[derive(Clone)]
+pub struct CandidateArtifact {
+    identity: std::sync::Arc<str>,
+    _seal: CandidateArtifactSeal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CandidateArtifactSeal;
+
+impl std::fmt::Debug for CandidateArtifact {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CandidateArtifact").finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for CandidateArtifact {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.identity, &other.identity)
+    }
+}
+
+impl Eq for CandidateArtifact {}
+
+impl CandidateArtifact {
+    #[cfg(test)]
+    pub(crate) fn inert(identity: &str) -> Self {
+        Self {
+            identity: std::sync::Arc::from(identity),
+            _seal: CandidateArtifactSeal,
+        }
+    }
+}
+
 /// One gate invocation. argv ONLY — no shell string ever reaches the OS
 /// (gate-runner.cts:116-123). Artifact path is appended as the final argv token at
 /// spawn time (gate-runner.cts:98,119); it is NOT part of the closure digest.

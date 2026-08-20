@@ -4,15 +4,22 @@
 //! primitives without depending on other Wayland Nano crates or exposing the WP-2
 //! climb engine and WP-3 CLI surfaces.
 
+pub mod climb;
 pub mod error;
 pub mod gate;
 pub mod receipt;
 pub mod registry;
 
+pub use climb::{
+    Candidate, ClimbConfig, ClimbOutcome, ClimbState, ClimbStep, LogCode, LogEntry, Phase,
+    RunDeadline, StepResult, StopReason, TerminalState, Tier, apply_result, better_candidate,
+    next_step,
+};
+
 pub use error::VerifyError;
 pub use gate::{
-    CheckVerdict, FailCategory, FailClosedReason, GateInvocation, GateOutcome, parse_gate_output,
-    run_gate,
+    CandidateArtifact, CheckVerdict, FailCategory, FailClosedReason, GateEvidence, GateInvocation,
+    GateOutcome, parse_gate_output, run_gate,
 };
 pub use receipt::{
     FailingRun, Receipt, ReceiptPreflight, VerifyVerdict, canonical_receipt, mint_receipt,
