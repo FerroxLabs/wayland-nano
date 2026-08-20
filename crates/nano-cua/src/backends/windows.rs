@@ -400,7 +400,14 @@ impl ComputerUseBackend for WindowsBackend {
         frontmost()
     }
     async fn dispatch(&self, expected: Option<&str>, op: CuaOp) -> CuaResult<CuaOpResult> {
-        if frontmost()?.as_deref() != expected {
+        // Focus check (§5.1): mismatch ⇒ FocusLost, not dispatched. Exception:
+        // a screenshot with NO recorded expectation is the §2.4 evidence path —
+        // it captures, never injects, and failing it closed would brick every
+        // pre/post-shot on a live desktop (something is ALWAYS frontmost there).
+        // Input ops keep the strict rule: expected=None vs a live frontmost app
+        // IS a mismatch and fails closed (first live run, F-49).
+        let is_bare_screenshot = matches!(op, CuaOp::Screenshot { .. }) && expected.is_none();
+        if !is_bare_screenshot && frontmost()?.as_deref() != expected {
             return Err(CuaError::FocusLost);
         }
         match op {
