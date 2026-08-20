@@ -367,7 +367,7 @@ fn handle_call(
         .cloned()
         .unwrap_or(Value::Null);
     match scenario {
-        "echo" | "threaded" => {
+        "echo" | "threaded" | "shutdown" => {
             let delay = request
                 .get("params")
                 .and_then(|p| p.get("arguments"))
@@ -375,6 +375,15 @@ fn handle_call(
                 .and_then(|d| d.as_u64())
                 .map(Duration::from_millis)
                 .unwrap_or(call_delay);
+            if scenario == "shutdown" {
+                obs(
+                    out,
+                    json!({
+                        "event": "call_started",
+                        "requestId": id,
+                    }),
+                );
+            }
             answer_call_later(out, id.clone(), delay, marker);
         }
         "silent" => {}

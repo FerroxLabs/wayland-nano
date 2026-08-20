@@ -570,10 +570,12 @@ fn graceful_shutdown_cancels_pending_and_returns() {
         supervisor_tick: Duration::from_millis(50),
         ..Default::default()
     };
-    let client = connect("echo", &[("FAKE_CALL_DELAY_MS", "5000")], options);
+    let client = connect("shutdown", &[("FAKE_CALL_DELAY_MS", "5000")], options);
     let call_client = client.clone();
     let call = std::thread::spawn(move || call_client.call_tool("echo", serde_json::json!({})));
-    std::thread::sleep(Duration::from_millis(100));
+    collect
+        .wait_for(is_call_started, Duration::from_secs(2))
+        .expect("pending call reached the shutdown probe");
     let start = Instant::now();
     client.close();
     assert!(start.elapsed() < Duration::from_secs(5));
@@ -603,10 +605,12 @@ fn cancel_race_at_close_never_loses_the_cancel() {
             supervisor_tick: Duration::from_millis(50),
             ..Default::default()
         };
-        let client = connect("echo", &[("FAKE_CALL_DELAY_MS", "5000")], options);
+        let client = connect("shutdown", &[("FAKE_CALL_DELAY_MS", "5000")], options);
         let call_client = client.clone();
         let call = std::thread::spawn(move || call_client.call_tool("echo", serde_json::json!({})));
-        std::thread::sleep(Duration::from_millis(100));
+        collect
+            .wait_for(is_call_started, Duration::from_secs(2))
+            .unwrap_or_else(|| panic!("round {round}: pending call reached shutdown probe"));
         client.close();
         let err = call.join().unwrap().expect_err("call fails typed at close");
         assert!(
@@ -619,6 +623,10 @@ fn cancel_race_at_close_never_loses_the_cancel() {
                 panic!("round {round}: pending id swept but the cancel never reached the wire")
             });
     }
+}
+
+fn is_call_started(v: &Value) -> bool {
+    v["method"] == "fake/obs" && v["params"]["event"] == "call_started"
 }
 
 struct AdvertiseElicitation;
@@ -650,10 +658,12 @@ fn concurrent_close_has_one_complete_cancel_sweep() {
             supervisor_tick: Duration::from_millis(50),
             ..Default::default()
         };
-        let client = connect("echo", &[("FAKE_CALL_DELAY_MS", "5000")], options);
+        let client = connect("shutdown", &[("FAKE_CALL_DELAY_MS", "5000")], options);
         let call_client = client.clone();
         let call = std::thread::spawn(move || call_client.call_tool("echo", serde_json::json!({})));
-        std::thread::sleep(Duration::from_millis(100));
+        collect
+            .wait_for(is_call_started, Duration::from_secs(2))
+            .unwrap_or_else(|| panic!("round {round}: pending call reached shutdown probe"));
 
         let barrier = Arc::new(Barrier::new(3));
         let close_a = client.clone();
@@ -689,9 +699,11 @@ fn concurrent_close_has_one_complete_cancel_sweep() {
 
 #[test]
 fn panicking_retirement_hook_cannot_strand_concurrent_close() {
+    let collect = Collect::default();
     let hook_ran = Arc::new(AtomicBool::new(false));
     let hook_flag = hook_ran.clone();
     let options = ConnectionOptions {
+        notification_sink: collect.sink(),
         request_handler: Arc::new(AdvertiseElicitation),
         slot_retired_hook: Arc::new(move |_| {
             hook_flag.store(true, Ordering::SeqCst);
@@ -701,10 +713,12 @@ fn panicking_retirement_hook_cannot_strand_concurrent_close() {
         supervisor_tick: Duration::from_millis(50),
         ..Default::default()
     };
-    let client = connect("echo", &[("FAKE_CALL_DELAY_MS", "5000")], options);
+    let client = connect("shutdown", &[("FAKE_CALL_DELAY_MS", "5000")], options);
     let call_client = client.clone();
     let call = std::thread::spawn(move || call_client.call_tool("echo", serde_json::json!({})));
-    std::thread::sleep(Duration::from_millis(100));
+    collect
+        .wait_for(is_call_started, Duration::from_secs(2))
+        .expect("pending call reached the shutdown probe");
     let other = client.clone();
     let close = std::thread::spawn(move || other.close());
     client.close();
@@ -718,11 +732,13 @@ fn panicking_retirement_hook_cannot_strand_concurrent_close() {
 
 #[test]
 fn retirement_hook_can_reenter_close_after_sweep_completion() {
+    let collect = Collect::default();
     let reentrant = Arc::new(Mutex::new(None::<McpClient>));
     let hook_client = reentrant.clone();
     let hook_ran = Arc::new(AtomicBool::new(false));
     let hook_flag = hook_ran.clone();
     let options = ConnectionOptions {
+        notification_sink: collect.sink(),
         request_handler: Arc::new(AdvertiseElicitation),
         slot_retired_hook: Arc::new(move |_| {
             hook_flag.store(true, Ordering::SeqCst);
@@ -734,11 +750,13 @@ fn retirement_hook_can_reenter_close_after_sweep_completion() {
         supervisor_tick: Duration::from_millis(50),
         ..Default::default()
     };
-    let client = connect("echo", &[("FAKE_CALL_DELAY_MS", "5000")], options);
+    let client = connect("shutdown", &[("FAKE_CALL_DELAY_MS", "5000")], options);
     *reentrant.lock().unwrap() = Some(client.clone());
     let call_client = client.clone();
     let call = std::thread::spawn(move || call_client.call_tool("echo", serde_json::json!({})));
-    std::thread::sleep(Duration::from_millis(100));
+    collect
+        .wait_for(is_call_started, Duration::from_secs(2))
+        .expect("pending call reached the shutdown probe");
     client.close();
     assert!(hook_ran.load(Ordering::SeqCst), "retirement hook ran");
     assert!(matches!(
