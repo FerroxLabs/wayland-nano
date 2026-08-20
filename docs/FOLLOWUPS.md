@@ -1388,3 +1388,18 @@ The GOALS/spec and owner-recorded 2026-08-14 media contract require `POST /v1/me
 - **Still open for WP-0.1:** the input-injection legs (click landing,
   focus invariance, HiDPI at two scale factors) need the spawned
   test-window helper; the flag stays FALSE until those land.
+
+## DEV-WP-2A: Gated-climb authority reconciliation — RESOLVED 2026-08-20
+
+WP-1 was promoted at exact master `5a630acd51b8a2f52058ce0f5fe157f1a879a4d6` with all six CI legs green in run `32356213829`. Before creating `feat/wp-2`, the owner/integrator reconciled the external V3 authorities and froze these exact UTF-8 bytes:
+
+- `GOALS.md` — 20,917 bytes, SHA-256 `299234b769ab0cdbd91207ed82f512f28d1cbc962d196317e526205f790d3b62`
+- `SPEC-WP-INTERFACES.md` — 56,256 bytes, SHA-256 `57c147b970094a83650ea95ca69fb586b63a70e586bdc140bc70f8ab1de48a4d`
+- `SPEC-WP12-nano-verify-engine.md` — 67,006 bytes, SHA-256 `8ae69bb42f492a26a4f8512775947a91e1c6c3ba541797756d1d53634cc5d491`
+- `SPEC-WP3-verify-cli-ci.md` — 56,656 bytes, SHA-256 `2aa1723f8960bef106afb64bfa1305275e71802f1b2d330ae0258afd07a69c00`
+
+The freeze preserves the landed WP-1 `run_gate(inv, artifact_path, inventory)` source/behavior surface and defines additive evidence-bearing execution APIs. Trusted nano-verify core owns the opaque workspace/candidate, bounded execution, exact inventory reconstruction, monotonic-millisecond deadlines, cancellation, the single schema-1 unified-diff parser, and the read-only expected-change derivation API. WP-2 never applies output or mutates Git. WP-3 alone binds a baseline to a detached starting commit, reparses accepted bytes once through the WP-2 parser, derives the expected-change manifest once, applies the diff through fixed `git apply` argv with strict target/protected-path rules, verifies staged/postimage digests, commits, reruns, and mints. `Receipt.test` is the selected registry script. WP-3 creates the exact empty schema-1 registry bootstrap; WP-4 alone populates it.
+
+The applied four-file authority package passed goal-backward, compile/API, and security review; the final security register closed T01–T10 plus parser/materializer injection, path escape, and rollback threats. Current execution uses F-only project/build/temp roots; the product contract does not hardcode a host drive. Two accidental agent edits to rollback-only D mirrors were precisely reverse-patched; the D `GOALS.md` pre-edit SHA was restored exactly, and the D WP12 agent markers were removed by recorded reverse patches. Neither D file is authority or promotion input.
+
+No WP-5/WP-6, DeepSeek harness, profiles, memory, MCP-server, external-agent, or other expansion scope is granted by this reconciliation.
