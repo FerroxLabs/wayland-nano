@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_DEADLINE_MS: u64 = 600_000;
@@ -5,6 +6,89 @@ const MAX_DEADLINE_MS: u64 = 3_600_000;
 const MAX_ESCALATION_MODELS: usize = 4;
 const EMPTY_REGISTRY_BOOTSTRAP: &[u8] = b"{\"gates\":{},\"requirements\":{},\"schema\":1}";
 const USAGE: &str = "usage: wayland-nano verify --requirement <id> [--gate <gate-id>] [--task <text>] [--budget N] --cheap-model <id> --escalation-model <id> [--escalation-model <id> ...] [--receipt-out <path>] [--deadline-ms N] [--json] | verify --verify-receipt <path> [--json]";
+
+pub struct VerifyEvents<W: Write> {
+    out: W,
+    run_id: String,
+    seq: u64,
+}
+
+impl<W: Write> VerifyEvents<W> {
+    pub fn new(out: W, run_id: String) -> Self {
+        Self {
+            out,
+            run_id,
+            seq: 0,
+        }
+    }
+
+    fn emit(&mut self, body: serde_json::Value) {
+        let mut frame = serde_json::json!({
+            "v": 1,
+            "session_id": self.run_id,
+            "seq": self.seq,
+        });
+        if let (Some(frame), Some(body)) = (frame.as_object_mut(), body.as_object()) {
+            frame.extend(body.clone());
+        }
+        self.seq = self.seq.saturating_add(1);
+        if let Ok(mut line) = serde_json::to_vec(&frame) {
+            line.push(b'\n');
+            let _ = self.out.write_all(&line);
+            let _ = self.out.flush();
+        }
+    }
+
+    pub fn verify_started(&mut self, requirement: &str, gate_id: &str) {
+        self.emit(serde_json::json!({"type":"verify_started", "requirement":requirement, "gate_id":gate_id}));
+    }
+
+    pub fn check_verdict(&mut self, verdict: &nano_verify::CheckVerdict) {
+        self.emit(serde_json::json!({"type":"check_verdict", "id":verdict.id, "category":verdict.category, "passed":verdict.passed}));
+    }
+
+    pub fn climb_update(&mut self, entry: &nano_verify::LogEntry) {
+        self.emit(serde_json::json!({"type":"climb_update", "phase":entry.phase, "score":entry.score, "accepted":entry.accepted, "code":entry.code}));
+    }
+
+    pub fn apply_started(&mut self, gate_id: &str) {
+        self.emit(
+            serde_json::json!({"type":"apply_started", "gate_id":gate_id, "code":"apply_started"}),
+        );
+    }
+
+    pub fn apply_verified(&mut self, gate_id: &str, changed_files: usize) {
+        self.emit(serde_json::json!({"type":"apply_verified", "gate_id":gate_id, "changed_files":changed_files, "code":"apply_verified"}));
+    }
+
+    pub fn receipt_minted(&mut self, receipt: &nano_verify::Receipt, _path: &Path) {
+        self.emit(serde_json::json!({"type":"receipt_minted", "requirement":receipt.requirement, "gate_id":receipt.gate_id}));
+    }
+
+    pub fn verify_completed(&mut self, terminal: &nano_verify::TerminalState, exit_code: i32) {
+        let terminal = match terminal {
+            nano_verify::TerminalState::Verified => "verified",
+            nano_verify::TerminalState::CriteriaChecked => "criteria_checked",
+            nano_verify::TerminalState::SelfChecked => "self_checked",
+            nano_verify::TerminalState::NeedsEscalation => "needs_escalation",
+            nano_verify::TerminalState::Blocked(_) => "blocked",
+            nano_verify::TerminalState::Cancelled => "cancelled",
+            nano_verify::TerminalState::TimedOut => "timed_out",
+            nano_verify::TerminalState::PermissionDenied => "permission_denied",
+            nano_verify::TerminalState::CrashedRecovered => "crashed_recovered",
+            nano_verify::TerminalState::Superseded => "superseded",
+        };
+        self.emit(serde_json::json!({"type":"verify_completed", "terminal":terminal, "exit_code":exit_code}));
+    }
+
+    pub fn error(&mut self, code: &str) {
+        let code = match code {
+            "generation_failed" | "artifact_failed" | "git_failed" | "store_failed" => code,
+            _ => "runtime_failed",
+        };
+        self.emit(serde_json::json!({"type":"error", "code":code}));
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerifyMode {
@@ -200,7 +284,9 @@ pub fn load_requested_registry(
 
 #[cfg(test)]
 mod tests {
-    use super::{EMPTY_REGISTRY_BOOTSTRAP, VerifyEvents, VerifyMode, load_requested_registry, parse_args};
+    use super::{
+        EMPTY_REGISTRY_BOOTSTRAP, VerifyEvents, VerifyMode, load_requested_registry, parse_args,
+    };
     use std::path::Path;
 
     fn args(values: &[&str]) -> Vec<String> {
@@ -245,25 +331,58 @@ mod tests {
         events.error("git_failed");
         drop(events);
 
-        let frames: Vec<serde_json::Value> = String::from_utf8(bytes).unwrap()
-            .lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        let frames: Vec<serde_json::Value> = String::from_utf8(bytes)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
         assert_eq!(frames.len(), 8);
         for (seq, frame) in frames.iter().enumerate() {
             assert_eq!(frame["v"], 1);
             assert_eq!(frame["session_id"], "wayland-nano-verify-test");
             assert_eq!(frame["seq"], seq);
         }
-        assert_eq!(sorted_keys(&frames[1]), vec!["category", "id", "passed", "seq", "session_id", "type", "v"]);
-        assert_eq!(sorted_keys(&frames[2]), vec!["accepted", "code", "phase", "score", "seq", "session_id", "type", "v"]);
-        assert_eq!(sorted_keys(&frames[5]), vec!["gate_id", "requirement", "seq", "session_id", "type", "v"]);
+        assert_eq!(
+            sorted_keys(&frames[1]),
+            vec!["category", "id", "passed", "seq", "session_id", "type", "v"]
+        );
+        assert_eq!(
+            sorted_keys(&frames[2]),
+            vec![
+                "accepted",
+                "code",
+                "phase",
+                "score",
+                "seq",
+                "session_id",
+                "type",
+                "v"
+            ]
+        );
+        assert_eq!(
+            sorted_keys(&frames[5]),
+            vec!["gate_id", "requirement", "seq", "session_id", "type", "v"]
+        );
         let output = serde_json::to_string(&frames).unwrap();
-        for secret in ["provider", "prompt", "F:/secret", "diff", "argv", "2026-08-21"] {
+        for secret in [
+            "provider",
+            "prompt",
+            "F:/secret",
+            "diff",
+            "argv",
+            "2026-08-21",
+        ] {
             assert!(!output.contains(secret), "leaked {secret}");
         }
     }
 
     fn sorted_keys(value: &serde_json::Value) -> Vec<&str> {
-        let mut keys: Vec<_> = value.as_object().unwrap().keys().map(String::as_str).collect();
+        let mut keys: Vec<_> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         keys.sort_unstable();
         keys
     }
