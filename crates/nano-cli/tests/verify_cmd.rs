@@ -1,5 +1,5 @@
 use nano_cli::verify_cmd::{
-    VerifyEvents, VerifyMode, VerifyParams, VerifyRuntime, run_with_runtime,
+    VerifyEvents, VerifyMode, VerifyParams, VerifyRuntime, run_with_runtime_and_events,
 };
 use nano_verify::{
     BaselineGateEvidence, BaselineGateExecution, CheckVerdict, CwdPolicy, ExecutionGateOutcome,
@@ -346,7 +346,11 @@ async fn verify_full_flow_green_mints_receipt() {
             json: true,
         },
     };
-    let code = run_with_runtime(&home, &repo.root, &params, &scripted).await;
+    let mut event_bytes = Vec::new();
+    let mut events = VerifyEvents::new(&mut event_bytes, "fixture-run".into());
+    let code =
+        run_with_runtime_and_events(&home, &repo.root, &params, &scripted, &mut events).await;
+    drop(events);
     assert_eq!(
         code,
         0,
@@ -368,6 +372,31 @@ async fn verify_full_flow_green_mints_receipt() {
     assert_eq!(receipt.failing_run.observed_at_commit, repo.observed);
     assert_eq!(receipt.fix_commit, git(&repo.root, &["rev-parse", "HEAD"]));
     assert_eq!(receipt.test, loaded.gates["fixture-add"].script);
+    let frames: Vec<serde_json::Value> = String::from_utf8(event_bytes)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let types: Vec<_> = frames
+        .iter()
+        .map(|frame| frame["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(types.first(), Some(&"verify_started"));
+    assert!(
+        types
+            .windows(2)
+            .any(|pair| pair == ["apply_started", "apply_verified"])
+    );
+    assert_eq!(
+        &types[types.len() - 2..],
+        ["receipt_minted", "verify_completed"]
+    );
+    for (seq, frame) in frames.iter().enumerate() {
+        assert_eq!(frame["v"], 1);
+        assert_eq!(frame["seq"], seq);
+        let text = frame.to_string();
+        assert!(!text.contains("gate.ps1") && !text.contains("a + b") && !text.contains(FIXTURES));
+    }
 }
 
 #[test]

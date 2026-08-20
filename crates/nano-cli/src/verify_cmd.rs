@@ -378,7 +378,24 @@ impl VerifyRuntime for ProductionRuntime {
 }
 
 pub async fn run(_home: &Path, workspace: &Path, params: &VerifyParams) -> i32 {
-    run_with_runtime(_home, workspace, params, &ProductionRuntime::new()).await
+    let mut events = VerifyEvents::new(
+        std::io::stdout(),
+        format!(
+            "wayland-nano-verify-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ),
+    );
+    run_with_runtime_and_events(
+        _home,
+        workspace,
+        params,
+        &ProductionRuntime::new(),
+        &mut events,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -398,6 +415,17 @@ pub async fn run_with_runtime<R: VerifyRuntime>(
     workspace: &Path,
     params: &VerifyParams,
     runtime: &R,
+) -> i32 {
+    let mut events = VerifyEvents::new(std::io::sink(), "wayland-nano-verify-test".into());
+    run_with_runtime_and_events(home, workspace, params, runtime, &mut events).await
+}
+
+pub async fn run_with_runtime_and_events<R: VerifyRuntime, W: Write>(
+    home: &Path,
+    workspace: &Path,
+    params: &VerifyParams,
+    runtime: &R,
+    events: &mut VerifyEvents<W>,
 ) -> i32 {
     match &params.mode {
         VerifyMode::CheckReceipt { path, json } => {
@@ -431,6 +459,7 @@ pub async fn run_with_runtime<R: VerifyRuntime>(
                 home,
                 receipt_out.as_deref(),
                 runtime,
+                events,
             )
             .await
         }
@@ -2062,10 +2091,90 @@ mod tests {
             }
             let _: PathBuf = authority("artifact", true).run_artifact.into();
         }
+
+        #[test]
+        fn runtime_authority_protects_repo_local_outputs_and_ignores_external_paths() {
+            let repo = tempfile::tempdir_in("F:/Temp/Codex").unwrap();
+            std::fs::create_dir_all(repo.path().join("gates/demo")).unwrap();
+            std::fs::create_dir_all(repo.path().join("artifact")).unwrap();
+            std::fs::create_dir_all(repo.path().join("outputs")).unwrap();
+            std::fs::create_dir_all(repo.path().join("temp-control")).unwrap();
+            std::fs::create_dir_all(repo.path().join("local-home")).unwrap();
+            for path in [
+                "gates/registry.json",
+                "gates/demo/card.md",
+                "gates/demo/gate.ps1",
+            ] {
+                std::fs::write(repo.path().join(path), b"x").unwrap();
+            }
+            let entry = nano_verify::GateRegistryEntry {
+                card: "gates/demo/card.md".into(),
+                script: "gates/demo/gate.ps1".into(),
+                closure: nano_verify::GateClosure {
+                    argv: vec![],
+                    env: Default::default(),
+                    cwd_policy: nano_verify::CwdPolicy::RepoRoot,
+                    wrapped_tools: vec![],
+                },
+                closure_digest: "a".repeat(64),
+                run_artifact: "artifact".into(),
+            };
+            let outside = tempfile::tempdir_in("F:/Temp/Codex").unwrap();
+            let output = repo.path().join("outputs/receipt.json");
+            let authority = super::super::materializer_authority(
+                repo.path(),
+                &entry,
+                &repo.path().join("local-home"),
+                Some(&output),
+                &[outside.path().to_owned()],
+                &repo.path().join("temp-control"),
+            )
+            .unwrap();
+            for denied in [
+                "gates/registry.json",
+                "gates/demo/card.md",
+                "gates/demo/gate.ps1",
+                "local-home/receipts",
+                "outputs/receipt.json",
+                "temp-control",
+            ] {
+                assert!(
+                    !super::super::candidate_path_allowed(denied, &authority),
+                    "{denied}"
+                );
+            }
+            assert!(super::super::candidate_path_allowed(
+                "artifact/ok.txt",
+                &authority
+            ));
+            assert!(
+                authority
+                    .protected
+                    .iter()
+                    .all(|path| !path.contains(outside.path().to_string_lossy().as_ref()))
+            );
+        }
     }
 
     mod materializer_transaction {
         use std::path::Path;
+
+        struct AdvancingClock(std::sync::atomic::AtomicU64);
+
+        impl super::super::VerifyRuntime for AdvancingClock {
+            fn now_millis(&self) -> u64 {
+                self.0.fetch_add(1_000, std::sync::atomic::Ordering::SeqCst)
+            }
+
+            async fn run_gate(
+                &self,
+                _: &nano_verify::GateInvocation,
+                _: &Path,
+                _: &[(String, nano_verify::FailCategory)],
+            ) -> nano_verify::ExecutionGateOutcome {
+                unreachable!()
+            }
+        }
 
         fn git(root: &Path, args: &[&str]) -> String {
             let out = std::process::Command::new("git")
@@ -2107,12 +2216,19 @@ mod tests {
             let parsed = nano_verify::parse_candidate_diff(bytes).unwrap();
             nano_verify::derive_expected_changes(&parsed, &repo.path().canonicalize().unwrap())
                 .unwrap();
+            let runtime = super::super::ProductionRuntime::new();
+            let deadline = nano_verify::RunDeadline {
+                monotonic_millis: 60_000,
+            };
             let committed = super::super::materialize_candidate(
                 repo.path(),
                 &start,
                 bytes,
                 &authority,
                 "wayland-nano verify fix",
+                &runtime,
+                deadline,
+                |_| {},
             )
             .unwrap();
             assert_eq!(git(repo.path(), &["rev-parse", "HEAD^1"]), start);
@@ -2143,9 +2259,22 @@ mod tests {
                 run_artifact_is_dir: true,
                 protected: vec![],
             };
+            let runtime = super::super::ProductionRuntime::new();
+            let deadline = nano_verify::RunDeadline {
+                monotonic_millis: 60_000,
+            };
             assert!(
-                super::super::materialize_candidate(repo.path(), &start, bytes, &authority, "fix")
-                    .is_err()
+                super::super::materialize_candidate(
+                    repo.path(),
+                    &start,
+                    bytes,
+                    &authority,
+                    "fix",
+                    &runtime,
+                    deadline,
+                    |_| {},
+                )
+                .is_err()
             );
             assert_eq!(git(repo.path(), &["rev-parse", "HEAD"]), start);
             assert_eq!(
@@ -2159,6 +2288,85 @@ mod tests {
                 )
                 .is_empty()
             );
+        }
+
+        #[test]
+        fn shared_deadline_expiry_between_git_operations_rolls_back() {
+            let repo = repo();
+            let start = git(repo.path(), &["rev-parse", "HEAD"]);
+            let bytes = b"diff --git a/artifact/base.txt b/artifact/base.txt\n--- a/artifact/base.txt\n+++ b/artifact/base.txt\n@@ -1 +1 @@\n-old\n+new\n";
+            let authority = super::super::MaterializerAuthority {
+                run_artifact: "artifact".into(),
+                run_artifact_is_dir: true,
+                protected: vec![],
+            };
+            let clock = AdvancingClock(0.into());
+            let mut apply_started = false;
+            let mut apply_verified = false;
+            assert!(
+                super::super::materialize_candidate(
+                    repo.path(),
+                    &start,
+                    bytes,
+                    &authority,
+                    "fix",
+                    &clock,
+                    nano_verify::RunDeadline {
+                        monotonic_millis: 7_000
+                    },
+                    |event| match event {
+                        super::super::MaterializerEvent::ApplyStarted => apply_started = true,
+                        super::super::MaterializerEvent::ApplyVerified(_) => apply_verified = true,
+                    },
+                )
+                .is_err()
+            );
+            assert!(
+                apply_started,
+                "deadline must advance across the bounded stdin Git seam"
+            );
+            assert!(
+                !apply_verified,
+                "expiry must prevent staged verification/commit"
+            );
+            assert_eq!(git(repo.path(), &["rev-parse", "HEAD"]), start);
+            assert_eq!(
+                std::fs::read(repo.path().join("artifact/base.txt")).unwrap(),
+                b"old\n"
+            );
+            assert!(
+                git(
+                    repo.path(),
+                    &["status", "--porcelain=v1", "--untracked-files=all"]
+                )
+                .is_empty()
+            );
+        }
+
+        #[test]
+        fn advancing_clock_blocks_climb_read_and_resolve_to_gate_boundaries() {
+            let clock = AdvancingClock(0.into());
+            let deadline = nano_verify::RunDeadline {
+                monotonic_millis: 5,
+            };
+            let first_called = std::cell::Cell::new(false);
+            let second_called = std::cell::Cell::new(false);
+            assert!(
+                super::super::scheduled_before_deadline(&clock, deadline, || {
+                    first_called.set(true);
+                    Ok(())
+                })
+                .is_ok()
+            );
+            assert!(
+                super::super::scheduled_before_deadline(&clock, deadline, || {
+                    second_called.set(true);
+                    Ok(())
+                })
+                .is_err()
+            );
+            assert!(first_called.get());
+            assert!(!second_called.get());
         }
     }
 
@@ -2354,11 +2562,99 @@ fn mint_terminal_exit(terminal: &nano_verify::TerminalState) -> i32 {
     }
 }
 
+fn finish_mint<W: Write>(
+    events: &mut VerifyEvents<W>,
+    terminal: nano_verify::TerminalState,
+    exit_code: i32,
+) -> i32 {
+    events.verify_completed(&terminal, exit_code);
+    exit_code
+}
+
+fn scheduled_before_deadline<R: VerifyRuntime, T>(
+    runtime: &R,
+    deadline: nano_verify::RunDeadline,
+    operation: impl FnOnce() -> Result<T, ()>,
+) -> Result<T, ()> {
+    remaining(runtime, deadline).ok_or(())?;
+    operation()
+}
+
 #[derive(Debug, Clone)]
 struct MaterializerAuthority {
     run_artifact: String,
     run_artifact_is_dir: bool,
     protected: Vec<String>,
+}
+
+fn resolve_repo_local(root: &Path, path: &Path) -> Result<Option<String>, ()> {
+    let candidate = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        root.join(path)
+    };
+    let mut ancestor = candidate.clone();
+    let mut suffix = Vec::new();
+    while !ancestor.exists() {
+        suffix.push(ancestor.file_name().ok_or(())?.to_owned());
+        ancestor = ancestor.parent().ok_or(())?.to_owned();
+    }
+    let resolved_parent = ancestor.canonicalize().map_err(|_| ())?;
+    let root = root.canonicalize().map_err(|_| ())?;
+    let resolved = suffix
+        .into_iter()
+        .rev()
+        .fold(resolved_parent, |path, component| path.join(component));
+    let Ok(relative) = resolved.strip_prefix(&root) else {
+        return Ok(None);
+    };
+    let relative = relative
+        .components()
+        .map(|component| match component {
+            std::path::Component::Normal(value) => value.to_str().ok_or(()),
+            _ => Err(()),
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .join("/");
+    if valid_repo_relative(&relative) {
+        Ok(Some(relative))
+    } else {
+        Err(())
+    }
+}
+
+fn materializer_authority(
+    repo_root: &Path,
+    entry: &nano_verify::GateRegistryEntry,
+    home: &Path,
+    receipt_out: Option<&Path>,
+    detached_or_control: &[PathBuf],
+    temp_control_parent: &Path,
+) -> Result<MaterializerAuthority, ()> {
+    let run_artifact = resolve_repo_local(repo_root, Path::new(&entry.run_artifact))?.ok_or(())?;
+    let mut protected = Vec::new();
+    for path in [
+        PathBuf::from("gates/registry.json"),
+        PathBuf::from(&entry.card),
+        PathBuf::from(&entry.script),
+    ]
+    .into_iter()
+    .chain(std::iter::once(home.join("receipts")))
+    .chain(receipt_out.map(Path::to_path_buf))
+    .chain(detached_or_control.iter().cloned())
+    .chain(std::iter::once(temp_control_parent.to_owned()))
+    {
+        if let Some(relative) = resolve_repo_local(repo_root, &path)? {
+            protected.push(relative);
+        }
+    }
+    protected.sort();
+    protected.dedup();
+    Ok(MaterializerAuthority {
+        run_artifact_is_dir: repo_root.join(&run_artifact).is_dir(),
+        run_artifact,
+        protected,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2367,6 +2663,11 @@ struct MaterializedCommit {
     diff_digest: String,
     base_tree_digest: String,
     changed_paths_digest: String,
+}
+
+enum MaterializerEvent {
+    ApplyStarted,
+    ApplyVerified(usize),
 }
 
 fn valid_repo_relative(path: &str) -> bool {
@@ -2427,8 +2728,16 @@ fn canonical_changed_paths(paths: &[String]) -> Result<(Vec<String>, String), ()
     Ok((sorted, format!("{:x}", Sha256::digest(bytes))))
 }
 
-fn git_with_input(repo: &Path, args: &[&str], input: &[u8]) -> Result<Vec<u8>, ()> {
+fn git_with_input(
+    repo: &Path,
+    args: &[&str],
+    input: &[u8],
+    timeout_ms: u64,
+) -> Result<Vec<u8>, ()> {
     use std::process::Stdio;
+    if timeout_ms == 0 {
+        return Err(());
+    }
     let mut child = std::process::Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -2444,15 +2753,35 @@ fn git_with_input(repo: &Path, args: &[&str], input: &[u8]) -> Result<Vec<u8>, (
         .ok_or(())?
         .write_all(input)
         .map_err(|_| ())?;
-    let output = child.wait_with_output().map_err(|_| ())?;
-    output.status.success().then_some(output.stdout).ok_or(())
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait().map_err(|_| ())? {
+            Some(status) => {
+                let mut stdout = Vec::new();
+                if let Some(mut pipe) = child.stdout.take() {
+                    std::io::Read::read_to_end(&mut pipe, &mut stdout).map_err(|_| ())?;
+                }
+                return status.success().then_some(stdout).ok_or(());
+            }
+            None if started.elapsed() >= std::time::Duration::from_millis(timeout_ms) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(());
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(5)),
+        }
+    }
 }
 
-fn staged_operations(repo: &Path) -> Result<Vec<(String, nano_verify::ChangeKind)>, ()> {
+fn staged_operations<R: VerifyRuntime>(
+    repo: &Path,
+    runtime: &R,
+    deadline: nano_verify::RunDeadline,
+) -> Result<Vec<(String, nano_verify::ChangeKind)>, ()> {
     let bytes = git_output_bounded(
         repo,
         &["diff", "--cached", "--name-status", "-z", "--no-renames"],
-        10_000,
+        remaining(runtime, deadline).ok_or(())?,
     )?;
     let fields: Vec<&[u8]> = bytes.split(|byte| *byte == 0).collect();
     if fields.last() != Some(&&[][..]) || (fields.len() - 1) % 2 != 0 {
@@ -2474,12 +2803,14 @@ fn staged_operations(repo: &Path) -> Result<Vec<(String, nano_verify::ChangeKind
     Ok(changes)
 }
 
-fn verify_manifest_state(
+fn verify_manifest_state<R: VerifyRuntime>(
     repo: &Path,
     manifest: &nano_verify::ExpectedChangeManifest,
+    runtime: &R,
+    deadline: nano_verify::RunDeadline,
 ) -> Result<(), ()> {
     use sha2::{Digest, Sha256};
-    let actual = staged_operations(repo)?;
+    let actual = staged_operations(repo, runtime, deadline)?;
     let expected: Vec<_> = manifest
         .entries()
         .iter()
@@ -2495,7 +2826,7 @@ fn verify_manifest_state(
                     || git_output_bounded(
                         repo,
                         &["cat-file", "-e", &format!(":{}", entry.path())],
-                        10_000,
+                        remaining(runtime, deadline).ok_or(())?,
                     )
                     .is_ok()
                 {
@@ -2503,8 +2834,11 @@ fn verify_manifest_state(
                 }
             }
             nano_verify::ChangeKind::Add | nano_verify::ChangeKind::Modify => {
-                let indexed =
-                    git_output_bounded(repo, &["show", &format!(":{}", entry.path())], 10_000)?;
+                let indexed = git_output_bounded(
+                    repo,
+                    &["show", &format!(":{}", entry.path())],
+                    remaining(runtime, deadline).ok_or(())?,
+                )?;
                 let digest = format!("{:x}", Sha256::digest(&indexed));
                 if entry.postimage_sha256() != Some(digest.as_str())
                     || std::fs::read(repo.join(entry.path())).map_err(|_| ())? != indexed
@@ -2515,11 +2849,16 @@ fn verify_manifest_state(
             }
         }
     }
-    if !git_text(repo, &["diff", "--name-only"], 10_000)?.is_empty()
+    if !git_text(
+        repo,
+        &["diff", "--name-only"],
+        remaining(runtime, deadline).ok_or(())?,
+    )?
+    .is_empty()
         || !git_text(
             repo,
             &["ls-files", "--others", "--exclude-standard"],
-            10_000,
+            remaining(runtime, deadline).ok_or(())?,
         )?
         .is_empty()
     {
@@ -2530,6 +2869,12 @@ fn verify_manifest_state(
 
 fn rollback_materializer(repo: &Path, starting_commit: &str) -> Result<(), ()> {
     git_success_bounded(repo, &["reset", "--hard", starting_commit], 10_000)?;
+    git_success_bounded(
+        repo,
+        &["read-tree", "--reset", "-u", starting_commit],
+        10_000,
+    )?;
+    git_success_bounded(repo, &["checkout-index", "--all", "--force"], 10_000)?;
     require_identity(
         repo,
         starting_commit,
@@ -2538,11 +2883,13 @@ fn rollback_materializer(repo: &Path, starting_commit: &str) -> Result<(), ()> {
     )
 }
 
-fn verify_committed_manifest(
+fn verify_committed_manifest<R: VerifyRuntime>(
     repo: &Path,
     starting_commit: &str,
     fix_commit: &str,
     manifest: &nano_verify::ExpectedChangeManifest,
+    runtime: &R,
+    deadline: nano_verify::RunDeadline,
 ) -> Result<(), ()> {
     use sha2::{Digest, Sha256};
     let bytes = git_output_bounded(
@@ -2555,7 +2902,7 @@ fn verify_committed_manifest(
             starting_commit,
             fix_commit,
         ],
-        10_000,
+        remaining(runtime, deadline).ok_or(())?,
     )?;
     let fields: Vec<&[u8]> = bytes.split(|byte| *byte == 0).collect();
     if fields.last() != Some(&&[][..]) || (fields.len() - 1) % 2 != 0 {
@@ -2589,7 +2936,7 @@ fn verify_committed_manifest(
                     || git_output_bounded(
                         repo,
                         &["cat-file", "-e", &format!("{fix_commit}:{}", entry.path())],
-                        10_000,
+                        remaining(runtime, deadline).ok_or(())?,
                     )
                     .is_ok()
                 {
@@ -2600,7 +2947,7 @@ fn verify_committed_manifest(
                 let blob = git_output_bounded(
                     repo,
                     &["show", &format!("{fix_commit}:{}", entry.path())],
-                    10_000,
+                    remaining(runtime, deadline).ok_or(())?,
                 )?;
                 let digest = format!("{:x}", Sha256::digest(blob));
                 if entry.postimage_sha256() != Some(digest.as_str()) {
@@ -2612,12 +2959,16 @@ fn verify_committed_manifest(
     Ok(())
 }
 
-fn materialize_candidate(
+#[allow(clippy::too_many_arguments)]
+fn materialize_candidate<R: VerifyRuntime>(
     repo: &Path,
     starting_commit: &str,
     accepted_bytes: &[u8],
     authority: &MaterializerAuthority,
     commit_message: &str,
+    runtime: &R,
+    deadline: nano_verify::RunDeadline,
+    mut event: impl FnMut(MaterializerEvent),
 ) -> Result<MaterializedCommit, ()> {
     use sha2::{Digest, Sha256};
     let canonical = repo.canonicalize().map_err(|_| ())?;
@@ -2625,8 +2976,17 @@ fn materialize_candidate(
     if accepted_bytes.len() > 16 * 1024 * 1024 {
         return Err(());
     }
-    let starting_tree = git_text(repo, &["rev-parse", "HEAD^{tree}"], 10_000)?;
-    require_identity(repo, starting_commit, &starting_tree, 10_000)?;
+    let starting_tree = git_text(
+        repo,
+        &["rev-parse", "HEAD^{tree}"],
+        remaining(runtime, deadline).ok_or(())?,
+    )?;
+    require_identity(
+        repo,
+        starting_commit,
+        &starting_tree,
+        remaining(runtime, deadline).ok_or(())?,
+    )?;
     let parsed = nano_verify::parse_candidate_diff(accepted_bytes).map_err(|_| ())?;
     let bytes_digest = format!("{:x}", Sha256::digest(accepted_bytes));
     if parsed.bytes_sha256() != bytes_digest {
@@ -2636,7 +2996,12 @@ fn materialize_candidate(
     if manifest.diff_digest() != parsed.bytes_sha256() {
         return Err(());
     }
-    require_identity(repo, starting_commit, &starting_tree, 10_000)?;
+    require_identity(
+        repo,
+        starting_commit,
+        &starting_tree,
+        remaining(runtime, deadline).ok_or(())?,
+    )?;
     let (paths, changed_paths_digest) = canonical_changed_paths(parsed.paths())?;
     if paths
         .iter()
@@ -2646,21 +3011,37 @@ fn materialize_candidate(
     }
 
     let transaction = (|| {
+        remaining(runtime, deadline).ok_or(())?;
         git_with_input(
             repo,
             &["apply", "--check", "--index", "--whitespace=error-all", "-"],
             accepted_bytes,
+            remaining(runtime, deadline).ok_or(())?,
         )?;
+        event(MaterializerEvent::ApplyStarted);
+        remaining(runtime, deadline).ok_or(())?;
         git_with_input(
             repo,
             &["apply", "--index", "--whitespace=error-all", "-"],
             accepted_bytes,
+            remaining(runtime, deadline).ok_or(())?,
         )?;
-        if git_text(repo, &["rev-parse", "HEAD"], 10_000)? != starting_commit {
+        if git_text(
+            repo,
+            &["rev-parse", "HEAD"],
+            remaining(runtime, deadline).ok_or(())?,
+        )? != starting_commit
+        {
             return Err(());
         }
-        verify_manifest_state(repo, &manifest)?;
-        git_success_bounded(repo, &["commit", "-m", commit_message], 10_000)?;
+        verify_manifest_state(repo, &manifest, runtime, deadline)?;
+        event(MaterializerEvent::ApplyVerified(manifest.entries().len()));
+        remaining(runtime, deadline).ok_or(())?;
+        git_success_bounded(
+            repo,
+            &["commit", "-m", commit_message],
+            remaining(runtime, deadline).ok_or(())?,
+        )?;
         Ok::<_, ()>(())
     })();
     if transaction.is_err() {
@@ -2668,30 +3049,61 @@ fn materialize_candidate(
         return Err(());
     }
 
-    let fix_commit = git_text(repo, &["rev-parse", "HEAD"], 10_000)?;
-    if git_text(repo, &["rev-parse", "HEAD^1"], 10_000)? != starting_commit {
-        return Err(());
-    }
-    verify_committed_manifest(repo, starting_commit, &fix_commit, &manifest)?;
-    if !git_text(
-        repo,
-        &["status", "--porcelain=v1", "--untracked-files=all"],
-        10_000,
-    )?
-    .is_empty()
-    {
-        return Err(());
-    }
-    if git_text(repo, &["rev-parse", "HEAD"], 10_000)? != fix_commit
-        || !git_text(
+    let postcommit = (|| {
+        let fix_commit = git_text(
+            repo,
+            &["rev-parse", "HEAD"],
+            remaining(runtime, deadline).ok_or(())?,
+        )?;
+        if git_text(
+            repo,
+            &["rev-parse", "HEAD^1"],
+            remaining(runtime, deadline).ok_or(())?,
+        )? != starting_commit
+        {
+            return Err(());
+        }
+        remaining(runtime, deadline).ok_or(())?;
+        verify_committed_manifest(
+            repo,
+            starting_commit,
+            &fix_commit,
+            &manifest,
+            runtime,
+            deadline,
+        )?;
+        if !git_text(
             repo,
             &["status", "--porcelain=v1", "--untracked-files=all"],
-            10_000,
+            remaining(runtime, deadline).ok_or(())?,
         )?
         .is_empty()
-    {
-        return Err(());
-    }
+        {
+            return Err(());
+        }
+        if git_text(
+            repo,
+            &["rev-parse", "HEAD"],
+            remaining(runtime, deadline).ok_or(())?,
+        )? != fix_commit
+            || !git_text(
+                repo,
+                &["status", "--porcelain=v1", "--untracked-files=all"],
+                remaining(runtime, deadline).ok_or(())?,
+            )?
+            .is_empty()
+        {
+            return Err(());
+        }
+        Ok::<_, ()>(fix_commit)
+    })();
+    let fix_commit = match postcommit {
+        Ok(fix_commit) => fix_commit,
+        Err(()) => {
+            rollback_materializer(repo, starting_commit)?;
+            return Err(());
+        }
+    };
     Ok(MaterializedCommit {
         fix_commit,
         diff_digest: manifest.diff_digest().to_owned(),
@@ -2713,6 +3125,7 @@ async fn mint_until_materializer<R: VerifyRuntime>(
     home: &Path,
     receipt_out: Option<&Path>,
     runtime: &R,
+    events: &mut VerifyEvents<impl Write>,
 ) -> i32 {
     let Ok(repo_root) = runtime.canonical_repo_root(workspace) else {
         return 2;
@@ -2733,11 +3146,19 @@ async fn mint_until_materializer<R: VerifyRuntime>(
     let Some((gate_id, entry)) = selected else {
         return 2;
     };
-    let Ok((starting_commit, starting_tree)) = clean_identity(&repo_root, 10_000) else {
-        return 3;
+    events.verify_started(requirement, gate_id);
+    let Some(identity_budget) = remaining(runtime, deadline) else {
+        return finish_mint(events, nano_verify::TerminalState::TimedOut, 3);
+    };
+    let Ok((starting_commit, starting_tree)) = clean_identity(&repo_root, identity_budget) else {
+        return finish_mint(
+            events,
+            nano_verify::TerminalState::Blocked("git_failed".into()),
+            3,
+        );
     };
     let Ok(baseline_root) = baseline_worktree_path() else {
-        return 3;
+        return finish_mint(events, nano_verify::TerminalState::CrashedRecovered, 1);
     };
     let baseline_result = async {
         git_success_bounded(
@@ -2784,27 +3205,57 @@ async fn mint_until_materializer<R: VerifyRuntime>(
         if !eligible_baseline(&execution, &inventory) {
             return Err(());
         }
-        Ok((inventory, execution.evidence))
+        let nano_verify::ExecutionGateOutcome::Red { verdicts } = execution.outcome else {
+            return Err(());
+        };
+        Ok((inventory, execution.evidence, verdicts))
     }
     .await;
-    let cleanup = cleanup_receipt_worktree(&repo_root, &baseline_root, 30_000);
-    let Ok((inventory, baseline_evidence)) = baseline_result else {
-        return 3;
+    let cleanup = remaining(runtime, deadline)
+        .ok_or(())
+        .and_then(|budget| cleanup_receipt_worktree(&repo_root, &baseline_root, budget));
+    let Ok((inventory, baseline_evidence, baseline_verdicts)) = baseline_result else {
+        return finish_mint(
+            events,
+            nano_verify::TerminalState::Blocked("baseline_failed".into()),
+            3,
+        );
     };
+    for verdict in &baseline_verdicts {
+        events.check_verdict(verdict);
+    }
     if cleanup.is_err()
-        || require_identity(&repo_root, &starting_commit, &starting_tree, 10_000).is_err()
+        || remaining(runtime, deadline)
+            .and_then(|budget| {
+                require_identity(&repo_root, &starting_commit, &starting_tree, budget).ok()
+            })
+            .is_none()
         || remaining(runtime, deadline).is_none()
     {
-        return 3;
+        return finish_mint(events, nano_verify::TerminalState::TimedOut, 3);
     }
     let Some(remaining_ms) = remaining(runtime, deadline) else {
-        return 3;
+        return finish_mint(events, nano_verify::TerminalState::TimedOut, 3);
     };
     let Ok(invocation) = registry_invocation(&repo_root, gate_id, entry, remaining_ms) else {
-        return 3;
+        return finish_mint(
+            events,
+            nano_verify::TerminalState::Blocked("gate_failed".into()),
+            3,
+        );
     };
-    let Ok(artifact_workspace) = nano_verify::create_artifact_workspace() else {
-        return 1;
+    let Ok(temp_control_parent) = std::env::temp_dir().canonicalize() else {
+        events.error("artifact_failed");
+        return finish_mint(events, nano_verify::TerminalState::CrashedRecovered, 1);
+    };
+    let Ok(artifact_workspace) = scheduled_before_deadline(runtime, deadline, || {
+        nano_verify::create_artifact_workspace().map_err(|_| ())
+    }) else {
+        if remaining(runtime, deadline).is_none() {
+            return finish_mint(events, nano_verify::TerminalState::TimedOut, 3);
+        }
+        events.error("artifact_failed");
+        return finish_mint(events, nano_verify::TerminalState::CrashedRecovered, 1);
     };
     let cfg = climb_config(cheap_model, escalation_models, budget, deadline);
     let effects = RuntimeEffects { runtime };
@@ -2817,25 +3268,38 @@ async fn mint_until_materializer<R: VerifyRuntime>(
         &effects,
     )
     .await;
+    for entry in outcome.log() {
+        events.climb_update(entry);
+    }
     let exit = mint_terminal_exit(outcome.terminal());
     let Some(accepted) = outcome.accepted_artifact() else {
+        let terminal_exit = if exit == 0 { 3 } else { exit };
+        events.verify_completed(outcome.terminal(), terminal_exit);
         return if exit == 0 { 3 } else { exit };
     };
     if exit != 0 {
+        events.verify_completed(outcome.terminal(), exit);
         return exit;
     }
-    let Ok(bytes) = accepted.read_exact_bytes() else {
-        return 1;
+    let Ok(bytes) = scheduled_before_deadline(runtime, deadline, || {
+        accepted.read_exact_bytes().map_err(|_| ())
+    }) else {
+        if remaining(runtime, deadline).is_none() {
+            return finish_mint(events, nano_verify::TerminalState::TimedOut, 3);
+        }
+        events.error("artifact_failed");
+        return finish_mint(events, nano_verify::TerminalState::CrashedRecovered, 1);
     };
-    let run_artifact = repo_root.join(&entry.run_artifact);
-    let authority = MaterializerAuthority {
-        run_artifact: entry.run_artifact.clone(),
-        run_artifact_is_dir: run_artifact.is_dir(),
-        protected: vec![
-            "gates/registry.json".into(),
-            entry.card.clone(),
-            entry.script.clone(),
-        ],
+    let Ok(authority) = materializer_authority(
+        &repo_root,
+        entry,
+        home,
+        receipt_out,
+        std::slice::from_ref(&baseline_root),
+        &temp_control_parent,
+    ) else {
+        events.error("artifact_failed");
+        return finish_mint(events, nano_verify::TerminalState::CrashedRecovered, 1);
     };
     let Ok(committed) = materialize_candidate(
         &repo_root,
@@ -2843,30 +3307,58 @@ async fn mint_until_materializer<R: VerifyRuntime>(
         &bytes,
         &authority,
         "wayland-nano verify: materialize accepted candidate",
+        runtime,
+        deadline,
+        |event| match event {
+            MaterializerEvent::ApplyStarted => events.apply_started(gate_id),
+            MaterializerEvent::ApplyVerified(count) => events.apply_verified(gate_id, count),
+        },
     ) else {
-        return 1;
+        events.error("git_failed");
+        return finish_mint(events, nano_verify::TerminalState::CrashedRecovered, 1);
     };
     let Some(remaining_ms) = remaining(runtime, deadline) else {
-        return 3;
+        return finish_mint(events, nano_verify::TerminalState::TimedOut, 3);
     };
     let Ok(invocation) = registry_invocation(&repo_root, gate_id, entry, remaining_ms) else {
-        return 3;
+        return finish_mint(
+            events,
+            nano_verify::TerminalState::Blocked("gate_failed".into()),
+            3,
+        );
     };
+    if remaining(runtime, deadline).is_none() {
+        return finish_mint(events, nano_verify::TerminalState::TimedOut, 3);
+    }
     let Ok(artifact) = runtime.resolve_artifact(&repo_root, Path::new(&entry.run_artifact)) else {
-        return 3;
+        return finish_mint(
+            events,
+            nano_verify::TerminalState::Blocked("artifact_failed".into()),
+            3,
+        );
     };
+    if remaining(runtime, deadline).is_none() {
+        return finish_mint(events, nano_verify::TerminalState::TimedOut, 3);
+    }
     let rerun = runtime.run_gate(&invocation, &artifact, &inventory).await;
-    if !matches!(rerun, nano_verify::ExecutionGateOutcome::Green { .. })
-        || clean_identity(&repo_root, 10_000)
+    let coherence =
+        remaining(runtime, deadline).and_then(|budget| clean_identity(&repo_root, budget).ok());
+    if coherence.is_none()
+        || !matches!(rerun, nano_verify::ExecutionGateOutcome::Green { .. })
+        || coherence
             .map(|(head, _)| head != committed.fix_commit)
             .unwrap_or(true)
     {
-        return 3;
+        return finish_mint(events, nano_verify::TerminalState::TimedOut, 3);
     }
     let (Some(exit_code), Some(log_digest)) =
         (baseline_evidence.exit_code, baseline_evidence.log_digest)
     else {
-        return 3;
+        return finish_mint(
+            events,
+            nano_verify::TerminalState::Blocked("baseline_failed".into()),
+            3,
+        );
     };
     let receipt = nano_verify::Receipt {
         schema: 1,
@@ -2884,23 +3376,42 @@ async fn mint_until_materializer<R: VerifyRuntime>(
         minted_by: format!("wayland-nano {}", env!("CARGO_PKG_VERSION")),
     };
     let Ok(receipt) = nano_verify::mint_receipt(receipt) else {
-        return 1;
+        events.error("store_failed");
+        return finish_mint(events, nano_verify::TerminalState::CrashedRecovered, 1);
     };
+    if remaining(runtime, deadline).is_none() {
+        return finish_mint(events, nano_verify::TerminalState::TimedOut, 3);
+    }
     let store = home.join("receipts");
     if std::fs::create_dir_all(&store).is_err() {
-        return 1;
+        events.error("store_failed");
+        return finish_mint(events, nano_verify::TerminalState::CrashedRecovered, 1);
+    }
+    if remaining(runtime, deadline).is_none() {
+        return finish_mint(events, nano_verify::TerminalState::TimedOut, 3);
     }
     let Ok(store_path) = nano_verify::write_receipt(&store, &receipt) else {
-        return 1;
+        events.error("store_failed");
+        return finish_mint(events, nano_verify::TerminalState::CrashedRecovered, 1);
     };
-    let Ok(bytes) = std::fs::read(&store_path) else {
-        return 1;
-    };
-    if let Some(output) = receipt_out
-        && crate::exec_mode::atomic_replace_write(output, &bytes).is_err()
-    {
-        return 1;
+    if remaining(runtime, deadline).is_none() {
+        return finish_mint(events, nano_verify::TerminalState::TimedOut, 3);
     }
+    let Ok(bytes) = std::fs::read(&store_path) else {
+        events.error("store_failed");
+        return finish_mint(events, nano_verify::TerminalState::CrashedRecovered, 1);
+    };
+    if let Some(output) = receipt_out {
+        if remaining(runtime, deadline).is_none() {
+            return finish_mint(events, nano_verify::TerminalState::TimedOut, 3);
+        }
+        if crate::exec_mode::atomic_replace_write(output, &bytes).is_err() {
+            events.error("store_failed");
+            return finish_mint(events, nano_verify::TerminalState::CrashedRecovered, 1);
+        }
+    }
+    events.receipt_minted(&receipt, &store_path);
+    events.verify_completed(&nano_verify::TerminalState::Verified, 0);
     0
 }
 
