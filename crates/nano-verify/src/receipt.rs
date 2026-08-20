@@ -157,7 +157,18 @@ enum ProbeFailure {
     Stdout,
     Timeout,
     Wait,
+    #[cfg(windows)]
+    OpenProcess,
+    #[cfg(windows)]
+    WaitApi,
+    #[cfg(windows)]
+    ExitCode,
+    #[cfg(windows)]
+    NoExitCode,
 }
+
+#[cfg(windows)]
+const PROCESS_SYNCHRONIZE: u32 = 0x0010_0000;
 
 fn unknown_probe(reason: ProbeFailure) -> Probe {
     // Fixed labels make CI failures actionable without exposing the repository
@@ -204,7 +215,7 @@ fn git_probe_with_absence(repo_root: &Path, args: &[&str], any_nonzero_absent: b
             terminate_git(&mut child);
             return unknown_probe(ProbeFailure::Timeout);
         }
-        Err(()) => return unknown_probe(ProbeFailure::Wait),
+        Err(reason) => return unknown_probe(reason),
     };
     let mut output = Vec::new();
     if child
@@ -230,28 +241,43 @@ fn terminate_git(child: &mut std::process::Child) {
 
 #[cfg(windows)]
 fn terminate_git(child: &mut std::process::Child) {
-    use std::os::windows::io::AsRawHandle as _;
-    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
-    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
+        WaitForSingleObject,
+    };
 
-    let _ = child.kill();
-    // SAFETY: `Child` owns a live process handle for the duration of this call.
-    // A successful `kill` signals this handle; keep cleanup bounded if the API
-    // fails rather than re-entering Rust's emulation-sensitive `Child::wait`.
-    let _ = unsafe { WaitForSingleObject(child.as_raw_handle() as isize, 1_000) } == WAIT_OBJECT_0;
+    // Open a native handle from the PID instead of using Rust's inherited child
+    // handle, which can be unusable when ARM64 Windows supervises x64 Git.
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
+            0,
+            child.id(),
+        )
+    };
+    if handle == 0 {
+        return;
+    }
+    // SAFETY: `handle` is owned here and closed below. Cleanup remains bounded.
+    unsafe {
+        let _ = TerminateProcess(handle, 1);
+        let _ = WaitForSingleObject(handle, 1_000) == WAIT_OBJECT_0;
+        let _ = CloseHandle(handle);
+    }
 }
 
 #[cfg(not(windows))]
 fn wait_for_git(
     child: &mut std::process::Child,
     deadline: Instant,
-) -> Result<Option<std::process::ExitStatus>, ()> {
+) -> Result<Option<std::process::ExitStatus>, ProbeFailure> {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Ok(Some(status)),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
             Ok(None) => return Ok(None),
-            Err(_) => return Err(()),
+            Err(_) => return Err(ProbeFailure::Wait),
         }
     }
 }
@@ -260,32 +286,51 @@ fn wait_for_git(
 fn wait_for_git(
     child: &mut std::process::Child,
     deadline: Instant,
-) -> Result<Option<std::process::ExitStatus>, ()> {
-    use std::os::windows::io::AsRawHandle as _;
+) -> Result<Option<std::process::ExitStatus>, ProbeFailure> {
     use std::os::windows::process::ExitStatusExt as _;
-    use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
-    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
+    };
 
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         return Ok(None);
     }
     let timeout_ms = remaining.as_millis().min(u128::from(u32::MAX)) as u32;
-    // SAFETY: `Child` owns a live process handle for the duration of this call.
-    match unsafe { WaitForSingleObject(child.as_raw_handle() as isize, timeout_ms) } {
+    // A fresh native handle avoids the emulation-sensitive handle Rust inherited
+    // while spawning x64 Git from an ARM64 process.
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            child.id(),
+        )
+    };
+    if handle == 0 {
+        return Err(ProbeFailure::OpenProcess);
+    }
+    // SAFETY: `handle` is live and owned until the unconditional close below.
+    let wait_result = unsafe { WaitForSingleObject(handle, timeout_ms) };
+    let result = match wait_result {
         WAIT_OBJECT_0 => {
             let mut exit_code = 0;
-            // SAFETY: the wait above proved that the live process handle is
-            // signaled, so its exit code is final rather than STILL_ACTIVE.
-            if unsafe { GetExitCodeProcess(child.as_raw_handle() as isize, &mut exit_code) } == 0 {
-                Err(())
+            if unsafe { GetExitCodeProcess(handle, &mut exit_code) } == 0 {
+                Err(ProbeFailure::ExitCode)
+            } else if exit_code == 259 {
+                Err(ProbeFailure::NoExitCode)
             } else {
                 Ok(Some(std::process::ExitStatus::from_raw(exit_code)))
             }
         }
         WAIT_TIMEOUT => Ok(None),
-        _ => Err(()),
+        _ => Err(ProbeFailure::WaitApi),
+    };
+    // SAFETY: this function owns `handle`, and it is no longer used.
+    unsafe {
+        let _ = CloseHandle(handle);
     }
+    result
 }
 
 fn null_device() -> &'static str {
