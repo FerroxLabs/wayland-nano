@@ -278,11 +278,55 @@ trait VerifyRuntime {
     ) -> Result<Option<nano_verify::GateRegistry>, i32> {
         load_requested_registry(repo_root, gate, requirement)
     }
+    fn load_receipt_registry(&self, repo_root: &Path) -> Result<nano_verify::GateRegistry, ()> {
+        nano_verify::load_registry(repo_root).map_err(|_| ())
+    }
     fn resolve_artifact(&self, root: &Path, relative: &Path) -> Result<PathBuf, ()> {
         confined_existing(root, relative)
     }
     fn inventory(&self, card: &Path) -> Result<Vec<(String, nano_verify::FailCategory)>, ()> {
         nano_verify::check_inventory(card).map_err(|_| ())
+    }
+    fn receipt_budget_ms(&self) -> Result<u64, ()> {
+        receipt_budget_ms()
+    }
+    fn receipt_worktree_path(&self) -> Result<PathBuf, ()> {
+        receipt_worktree_path()
+    }
+    fn add_receipt_worktree(
+        &self,
+        repo_root: &Path,
+        worktree: &Path,
+        fix_commit: &str,
+        timeout_ms: u64,
+    ) -> Result<(), ()> {
+        git_success_bounded(
+            repo_root,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                &worktree.to_string_lossy(),
+                fix_commit,
+            ],
+            timeout_ms,
+        )
+    }
+    fn verify_receipt_worktree(
+        &self,
+        worktree: &Path,
+        fix_commit: &str,
+        timeout_ms: u64,
+    ) -> Result<(), ()> {
+        verify_receipt_worktree(worktree, fix_commit, timeout_ms)
+    }
+    fn cleanup_receipt_worktree(
+        &self,
+        repo_root: &Path,
+        worktree: &Path,
+        timeout_ms: u64,
+    ) -> Result<(), ()> {
+        cleanup_receipt_worktree(repo_root, worktree, timeout_ms)
     }
     async fn run_gate(
         &self,
@@ -368,12 +412,8 @@ async fn check_receipt<R: VerifyRuntime>(
     let Ok(repo_root) = runtime.canonical_repo_root(workspace) else {
         return finish_receipt(nano_verify::VerifyVerdict::Unverifiable, identity, json);
     };
-    let Ok(Some(registry)) = runtime.load_registry(
-        &repo_root,
-        Some(&receipt.gate_id),
-        Some(&receipt.requirement),
-    ) else {
-        return finish_receipt(nano_verify::VerifyVerdict::GateMismatch, identity, json);
+    let Ok(registry) = runtime.load_receipt_registry(&repo_root) else {
+        return finish_receipt(nano_verify::VerifyVerdict::Unverifiable, identity, json);
     };
     if let Err(verdict) = preflight_verdict(nano_verify::preflight_receipt(
         &repo_root, &bytes, &registry,
@@ -386,10 +426,206 @@ async fn check_receipt<R: VerifyRuntime>(
     if receipt.test != entry.script {
         return finish_receipt(nano_verify::VerifyVerdict::GateMismatch, identity, json);
     }
+    let verdict = rerun_ready_receipt(&repo_root, &receipt, &registry, runtime).await;
+    finish_receipt(verdict, identity, json)
+}
 
-    // A Ready preflight is necessary but never sufficient for validity. Plan 03's
-    // detached, bounded re-run below is the only path allowed to return Valid.
-    finish_receipt(nano_verify::VerifyVerdict::Unverifiable, identity, json)
+async fn rerun_ready_receipt<R: VerifyRuntime>(
+    repo_root: &Path,
+    receipt: &nano_verify::Receipt,
+    registry: &nano_verify::GateRegistry,
+    runtime: &R,
+) -> nano_verify::VerifyVerdict {
+    use nano_verify::VerifyVerdict::{GateMismatch, Unverifiable, Valid};
+
+    let Ok(budget_ms) = runtime.receipt_budget_ms() else {
+        return Unverifiable;
+    };
+    let Some(deadline) = runtime.now_millis().checked_add(budget_ms) else {
+        return Unverifiable;
+    };
+    if runtime.temp_preflight().is_err() {
+        return Unverifiable;
+    }
+    let Ok(worktree) = runtime.receipt_worktree_path() else {
+        return Unverifiable;
+    };
+
+    let provisional = async {
+        let remaining = receipt_remaining(runtime, deadline)?;
+        runtime.add_receipt_worktree(repo_root, &worktree, &receipt.fix_commit, remaining)?;
+        let remaining = receipt_remaining(runtime, deadline)?;
+        runtime.verify_receipt_worktree(&worktree, &receipt.fix_commit, remaining)?;
+        let entry = registry.gates.get(&receipt.gate_id).ok_or(())?;
+        let artifact = runtime.resolve_artifact(&worktree, Path::new(&entry.run_artifact))?;
+        let inventory = runtime.inventory(&worktree.join(&entry.card))?;
+        let remaining = receipt_remaining(runtime, deadline)?;
+        let cwd = match entry.closure.cwd_policy {
+            nano_verify::CwdPolicy::RepoRoot => worktree.clone(),
+            nano_verify::CwdPolicy::GateDir => worktree
+                .join(&entry.card)
+                .parent()
+                .map(Path::to_path_buf)
+                .ok_or(())?,
+        };
+        let invocation = nano_verify::GateInvocation {
+            argv: entry.closure.argv.iter().map(Into::into).collect(),
+            cwd,
+            env: entry
+                .closure
+                .env
+                .iter()
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect(),
+            timeout: std::time::Duration::from_millis(remaining.min(400_000)),
+            gate_id: receipt.gate_id.clone(),
+        };
+        let outcome = runtime.run_gate(&invocation, &artifact, &inventory).await;
+        receipt_remaining(runtime, deadline)?;
+        Ok::<_, ()>(match outcome {
+            nano_verify::ExecutionGateOutcome::Green { .. } => Valid,
+            nano_verify::ExecutionGateOutcome::Red { .. } => GateMismatch,
+            nano_verify::ExecutionGateOutcome::FailClosed(_) => Unverifiable,
+        })
+    }
+    .await
+    .unwrap_or(Unverifiable);
+
+    // Cleanup is mandatory even after the verification budget expires. Give the
+    // bounded Git cleanup sequence its own finite slice of the configured budget;
+    // otherwise a timeout would reduce cleanup to a guaranteed one-millisecond race.
+    let cleanup_budget = budget_ms.min(30_000);
+    if runtime
+        .cleanup_receipt_worktree(repo_root, &worktree, cleanup_budget)
+        .is_err()
+    {
+        Unverifiable
+    } else {
+        provisional
+    }
+}
+
+fn receipt_remaining<R: VerifyRuntime>(runtime: &R, deadline: u64) -> Result<u64, ()> {
+    deadline
+        .checked_sub(runtime.now_millis())
+        .filter(|remaining| *remaining > 0)
+        .ok_or(())
+}
+
+fn receipt_budget_ms() -> Result<u64, ()> {
+    const DEFAULT: u64 = 120_000;
+    const MAX: u64 = 600_000;
+    match std::env::var("NANO_VERIFY_RECEIPT_BUDGET_MS") {
+        Ok(value) => value
+            .parse::<u64>()
+            .ok()
+            .filter(|value| (1..=MAX).contains(value))
+            .ok_or(()),
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT),
+        Err(std::env::VarError::NotUnicode(_)) => Err(()),
+    }
+}
+
+fn receipt_worktree_path() -> Result<PathBuf, ()> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let root = canonical_env_dir("TEMP")?;
+    if !is_f_drive(&root) {
+        return Err(());
+    }
+    let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = root.join(format!(
+        "wayland-nano-receipt-{}-{nonce}",
+        std::process::id()
+    ));
+    if path.exists() {
+        return Err(());
+    }
+    Ok(path)
+}
+
+fn verify_receipt_worktree(worktree: &Path, fix_commit: &str, timeout_ms: u64) -> Result<(), ()> {
+    let head = git_output_bounded(worktree, &["rev-parse", "HEAD"], timeout_ms)?;
+    if String::from_utf8(head).map_err(|_| ())?.trim() != fix_commit {
+        return Err(());
+    }
+    let status = git_output_bounded(worktree, &["status", "--porcelain=v1"], timeout_ms)?;
+    if !status.is_empty() {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn cleanup_receipt_worktree(repo_root: &Path, worktree: &Path, timeout_ms: u64) -> Result<(), ()> {
+    let path_text = worktree.to_string_lossy();
+    let _ = git_success_bounded(
+        repo_root,
+        &["worktree", "remove", "--force", &path_text],
+        timeout_ms,
+    );
+    git_success_bounded(repo_root, &["worktree", "prune"], timeout_ms)?;
+    if worktree.exists() {
+        return Err(());
+    }
+    let listed = git_output_bounded(repo_root, &["worktree", "list", "--porcelain"], timeout_ms)?;
+    let expected = normalized_path_text(worktree);
+    let residue = String::from_utf8(listed)
+        .map_err(|_| ())?
+        .lines()
+        .any(|line| {
+            line.strip_prefix("worktree ")
+                .is_some_and(|path| normalized_path_text(Path::new(path)) == expected)
+        });
+    if residue {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn normalized_path_text(path: &Path) -> String {
+    let value = path.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    return value.to_ascii_lowercase();
+    #[cfg(not(windows))]
+    value
+}
+
+fn git_success_bounded(repo: &Path, args: &[&str], timeout_ms: u64) -> Result<(), ()> {
+    git_output_bounded(repo, args, timeout_ms).map(|_| ())
+}
+
+fn git_output_bounded(repo: &Path, args: &[&str], timeout_ms: u64) -> Result<Vec<u8>, ()> {
+    use std::process::Stdio;
+
+    if timeout_ms == 0 {
+        return Err(());
+    }
+    let mut child = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| ())?;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait().map_err(|_| ())? {
+            Some(status) => {
+                let mut stdout = Vec::new();
+                if let Some(mut pipe) = child.stdout.take() {
+                    std::io::Read::read_to_end(&mut pipe, &mut stdout).map_err(|_| ())?;
+                }
+                return status.success().then_some(stdout).ok_or(());
+            }
+            None if started.elapsed() >= std::time::Duration::from_millis(timeout_ms) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(());
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(5)),
+        }
+    }
 }
 
 fn receipt_structure(bytes: &[u8]) -> Result<nano_verify::Receipt, nano_verify::VerifyVerdict> {
@@ -941,6 +1177,79 @@ mod tests {
                 1
             );
         }
+    }
+
+    #[tokio::test]
+    async fn receipt_rerun_timeout_starts_no_gate_and_still_cleans_up() {
+        let (receipt, registry) = rerun_inputs();
+        let runtime = ReceiptRerunRuntime {
+            times: std::sync::Mutex::new([0, 100].into()),
+            outcome: nano_verify::ExecutionGateOutcome::Green {
+                verdicts: Vec::new(),
+            },
+            add_ok: true,
+            identity_ok: true,
+            cleanup_ok: true,
+            gate_calls: Default::default(),
+            cleanup_calls: Default::default(),
+        };
+        assert_eq!(
+            super::rerun_ready_receipt(Path::new("F:/repo"), &receipt, &registry, &runtime).await,
+            nano_verify::VerifyVerdict::Unverifiable
+        );
+        assert_eq!(
+            runtime.gate_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            runtime
+                .cleanup_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[test]
+    fn receipt_rerun_cleanup_removes_real_detached_worktree_and_registration() {
+        let repo = fixture_repo();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["config", "user.name", "WP3 Test"]);
+        git(&["config", "user.email", "wp3@example.invalid"]);
+        git(&["add", "."]);
+        git(&["commit", "-m", "fixture"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        let worktree = repo.path().with_extension("detached");
+
+        super::git_success_bounded(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                &worktree.to_string_lossy(),
+                &head,
+            ],
+            10_000,
+        )
+        .unwrap();
+        super::verify_receipt_worktree(&worktree, &head, 10_000).unwrap();
+        super::cleanup_receipt_worktree(repo.path(), &worktree, 10_000).unwrap();
+        assert!(!worktree.exists());
+        let listed = git(&["worktree", "list", "--porcelain"]);
+        assert!(
+            !listed
+                .replace('\\', "/")
+                .contains(&worktree.to_string_lossy().replace('\\', "/"))
+        );
     }
 
     fn args(values: &[&str]) -> Vec<String> {
