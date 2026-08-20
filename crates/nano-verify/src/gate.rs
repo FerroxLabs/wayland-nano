@@ -203,6 +203,11 @@ pub(crate) fn validate_artifact_workspace(
     validate_workspace_inner(&workspace.inner)
 }
 
+#[cfg(test)]
+pub(crate) fn mutate_candidate_for_test(artifact: &CandidateArtifact) {
+    std::fs::write(&artifact.path, b"mutated after binding\n").unwrap();
+}
+
 fn validate_workspace_inner(inner: &ArtifactWorkspaceInner) -> Result<(), crate::VerifyError> {
     let canonical = inner
         .root
@@ -983,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn wp2_gate_execution_evidence_matrix() {
+    fn detailed_verdict_coherence_maps_exact_fields() {
         let detailed = parse_execution_output("FAIL TG-01 value\ngate: 4/4\n", &inventory());
         assert_eq!(
             detailed,

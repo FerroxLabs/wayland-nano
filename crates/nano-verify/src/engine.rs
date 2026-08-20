@@ -775,6 +775,8 @@ mod tests {
     struct Stub {
         generated: Mutex<Vec<Result<String, VerifyError>>>,
         events: Mutex<Vec<EngineEvent>>,
+        prompts: Mutex<Vec<String>>,
+        calls: std::sync::atomic::AtomicUsize,
         now: u64,
         cancelled: bool,
     }
@@ -783,13 +785,17 @@ mod tests {
             Self {
                 generated: Mutex::new(items),
                 events: Mutex::new(Vec::new()),
+                prompts: Mutex::new(Vec::new()),
+                calls: std::sync::atomic::AtomicUsize::new(0),
                 now: 0,
                 cancelled: false,
             }
         }
     }
     impl Effects for Stub {
-        async fn generate(&self, _model: &str, _prompt: &str) -> Result<String, VerifyError> {
+        async fn generate(&self, _model: &str, prompt: &str) -> Result<String, VerifyError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.prompts.lock().unwrap().push(prompt.to_owned());
             self.generated.lock().unwrap().remove(0)
         }
         fn emit_event(&self, event: EngineEvent) {
@@ -889,6 +895,7 @@ mod tests {
             outcome.terminal(),
             &TerminalState::Blocked("invalid_model_pool".into())
         );
+        assert_eq!(fx.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -897,23 +904,146 @@ mod tests {
     }
     #[tokio::test]
     async fn driver_model_pool_validation_precedes_effects() {
-        invalid_pool().await
+        invalid_pool().await;
+        for id in ["", "   "] {
+            let fx = Stub::new(Vec::new());
+            let mut bad = cfg(1);
+            bad.cheap = vec![id.into()];
+            let outcome = run_climb(
+                "opaque",
+                &invocation(),
+                &[],
+                crate::create_artifact_workspace().unwrap(),
+                &bad,
+                &fx,
+            )
+            .await;
+            assert_eq!(
+                outcome.terminal(),
+                &TerminalState::Blocked("invalid_model_pool".into())
+            );
+            assert_eq!(fx.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
     }
     #[tokio::test]
     async fn driver_zero_budget_is_typed() {
-        closed_zero_budget().await
+        let fx = Stub::new(Vec::new());
+        let outcome = run_climb(
+            "opaque",
+            &invocation(),
+            &[],
+            crate::create_artifact_workspace().unwrap(),
+            &cfg(0),
+            &fx,
+        )
+        .await;
+        assert_eq!(
+            outcome.terminal(),
+            &TerminalState::Blocked("zero_budget".into())
+        );
+        assert_eq!(outcome.stop_reason(), StopReason::Error);
+        assert_eq!(fx.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            fx.events.lock().unwrap().as_slice(),
+            &[EngineEvent {
+                kind: ClimbEventKind::Stopped,
+                phase: Phase::Probe,
+                score: [0, 0],
+                accepted: false,
+                check_ids: Vec::new()
+            }]
+        );
     }
     #[tokio::test]
     async fn driver_deadline_arithmetic_is_checked() {
-        closed_zero_budget().await
+        let mut fx = Stub::new(Vec::new());
+        fx.now = u64::MAX - 10;
+        let mut c = cfg(1);
+        c.deadline.monotonic_millis = u64::MAX;
+        let outcome = run_climb(
+            "opaque",
+            &invocation(),
+            &[],
+            crate::create_artifact_workspace().unwrap(),
+            &c,
+            &fx,
+        )
+        .await;
+        assert_eq!(
+            outcome.terminal(),
+            &TerminalState::Blocked("deadline_overflow".into())
+        );
+        assert_eq!(outcome.stop_reason(), StopReason::Error);
+        assert_eq!(fx.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
     #[tokio::test]
     async fn driver_cancellation_precedes_timeout() {
-        closed_zero_budget().await
+        let mut fx = Stub::new(Vec::new());
+        fx.cancelled = true;
+        fx.now = 10;
+        let mut c = cfg(1);
+        c.deadline.monotonic_millis = 10;
+        let outcome = run_climb(
+            "opaque",
+            &invocation(),
+            &[],
+            crate::create_artifact_workspace().unwrap(),
+            &c,
+            &fx,
+        )
+        .await;
+        assert_eq!(outcome.terminal(), &TerminalState::Cancelled);
+        assert_eq!(fx.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
     #[tokio::test]
     async fn driver_pending_generation_is_cancel_safe() {
-        closed_zero_budget().await
+        struct PendingFx {
+            dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+            polls: std::sync::atomic::AtomicUsize,
+        }
+        struct DropFuture(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl std::future::Future for DropFuture {
+            type Output = Result<String, VerifyError>;
+            fn poll(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Self::Output> {
+                std::task::Poll::Pending
+            }
+        }
+        impl Drop for DropFuture {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst)
+            }
+        }
+        impl Effects for PendingFx {
+            async fn generate(&self, _: &str, _: &str) -> Result<String, VerifyError> {
+                DropFuture(self.dropped.clone()).await
+            }
+            fn emit_event(&self, _: EngineEvent) {}
+            fn now_millis(&self) -> u64 {
+                0
+            }
+            fn cancellation_requested(&self) -> bool {
+                self.polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 1
+            }
+        }
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fx = PendingFx {
+            dropped: dropped.clone(),
+            polls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let outcome = run_climb(
+            "opaque",
+            &invocation(),
+            &[],
+            crate::create_artifact_workspace().unwrap(),
+            &cfg(1),
+            &fx,
+        )
+        .await;
+        assert_eq!(outcome.terminal(), &TerminalState::Cancelled);
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
     }
     #[tokio::test]
     async fn driver_generation_errors_are_bounded_and_sanitized() {
@@ -921,7 +1051,28 @@ mod tests {
     }
     #[tokio::test]
     async fn driver_prompts_are_opaque_and_bounded() {
-        closed_zero_budget().await
+        let canary = "PROVIDER_SECRET_CANARY";
+        let fx = Stub::new(vec![Err(VerifyError::Generate(canary.into()))]);
+        let outcome = run_climb(
+            "SPEC_ONLY",
+            &invocation(),
+            &[("TG-01".into(), FailCategory::Value)],
+            crate::create_artifact_workspace().unwrap(),
+            &cfg(1),
+            &fx,
+        )
+        .await;
+        let observable = format!(
+            "{outcome:?}{}{}",
+            serde_json::to_string(&outcome).unwrap(),
+            serde_json::to_string(&*fx.events.lock().unwrap()).unwrap()
+        );
+        assert!(!observable.contains(canary));
+        let prompts = fx.prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].contains("raw UTF-8 unified diff"));
+        assert!(!prompts[0].contains(canary));
+        assert!(!prompts[0].contains("cmd"));
     }
     #[tokio::test]
     async fn driver_invalid_candidate_never_persists_or_gates() {
@@ -929,11 +1080,175 @@ mod tests {
     }
     #[tokio::test]
     async fn driver_terminal_mapping_is_complete() {
-        closed_zero_budget().await
+        assert!(TerminalState::Verified.is_verified());
+        for state in [
+            TerminalState::CriteriaChecked,
+            TerminalState::SelfChecked,
+            TerminalState::NeedsEscalation,
+            TerminalState::Blocked("x".into()),
+            TerminalState::Cancelled,
+            TerminalState::TimedOut,
+            TerminalState::PermissionDenied,
+            TerminalState::CrashedRecovered,
+            TerminalState::Superseded,
+        ] {
+            assert!(!state.is_verified())
+        }
+        let fx = Stub::new(Vec::new());
+        let mut empty = cfg(1);
+        empty.cheap.clear();
+        let outcome = run_climb(
+            "opaque",
+            &invocation(),
+            &[],
+            crate::create_artifact_workspace().unwrap(),
+            &empty,
+            &fx,
+        )
+        .await;
+        assert_eq!(outcome.stop_reason(), StopReason::Exhausted);
+        assert_eq!(
+            outcome.terminal(),
+            &TerminalState::Blocked("no cheap models configured".into())
+        );
     }
     #[tokio::test]
     async fn driver_outcome_carries_no_manifest_or_starting_root() {
         closed_zero_budget().await
+    }
+    #[tokio::test]
+    async fn wp2_gate_execution_evidence_matrix() {
+        let workspace = crate::create_artifact_workspace().unwrap();
+        let diff = b"diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\n";
+        let artifact = crate::gate::create_candidate_artifact(&workspace, diff).unwrap();
+        let mut script = tempfile::Builder::new()
+            .suffix(if cfg!(windows) { ".cmd" } else { ".sh" })
+            .tempfile()
+            .unwrap();
+        #[cfg(windows)]
+        std::io::Write::write_all(&mut script,b"@echo off\r\n<nul set /p =gate: 1/1\r\n<nul set /p =STDERR_CANARY 1>&2\r\nexit /b 7\r\n").unwrap();
+        #[cfg(not(windows))]
+        std::io::Write::write_all(
+            &mut script,
+            b"printf 'gate: 1/1'; printf 'STDERR_CANARY' >&2; exit 7\n",
+        )
+        .unwrap();
+        std::io::Write::flush(&mut script).unwrap();
+        #[cfg(windows)]
+        let argv = vec![
+            "cmd".into(),
+            "/D".into(),
+            "/C".into(),
+            script.path().as_os_str().to_owned(),
+        ];
+        #[cfg(not(windows))]
+        let argv = vec!["sh".into(), script.path().as_os_str().to_owned()];
+        let inv = GateInvocation {
+            argv,
+            cwd: std::env::current_dir().unwrap(),
+            env: Vec::new(),
+            timeout: std::time::Duration::from_secs(5),
+            gate_id: "opaque".into(),
+        };
+        let execution =
+            crate::run_gate_execution(&inv, &artifact, &[("TG-01".into(), FailCategory::Value)])
+                .await;
+        assert!(
+            matches!(execution.outcome, crate::ExecutionGateOutcome::Green { .. }),
+            "nonzero exit must not control verdict: {:?}",
+            execution.outcome
+        );
+        assert_eq!(execution.evidence.exit_code, Some(7));
+        assert_eq!(
+            execution.evidence.log_digest,
+            Some(hex_digest(b"gate: 1/1"))
+        );
+        assert_eq!(execution.evidence.artifact_sha256, hex_digest(diff));
+
+        let plain = tempfile::NamedTempFile::new().unwrap();
+        #[cfg(windows)]
+        let bad_argv = vec![
+            "cmd".into(),
+            "/C".into(),
+            "echo FAIL TG-01 value&&echo gate: 1/1".into(),
+        ];
+        #[cfg(not(windows))]
+        let bad_argv = vec![
+            "sh".into(),
+            "-c".into(),
+            "printf 'FAIL TG-01 value\\ngate: 1/1\\n'".into(),
+        ];
+        let bad = GateInvocation {
+            argv: bad_argv,
+            ..inv.clone()
+        };
+        assert!(matches!(
+            crate::run_gate(&bad, plain.path(), &[("TG-01".into(), FailCategory::Value)]).await,
+            crate::GateOutcome::FailClosed(crate::FailClosedReason::InconsistentSummary {
+                passed: 1,
+                total: 1
+            })
+        ));
+
+        #[cfg(windows)]
+        let mut overflow_script = tempfile::Builder::new().suffix(".cmd").tempfile().unwrap();
+        #[cfg(windows)]
+        std::io::Write::write_all(
+            &mut overflow_script,
+            b"@echo off\r\npowershell -NoProfile -Command \"[Console]::Out.Write(('x' * 16777217))\"\r\n",
+        )
+        .unwrap();
+        #[cfg(windows)]
+        std::io::Write::flush(&mut overflow_script).unwrap();
+        #[cfg(windows)]
+        let overflow_argv = vec![
+            "cmd".into(),
+            "/D".into(),
+            "/C".into(),
+            overflow_script.path().as_os_str().to_owned(),
+        ];
+        #[cfg(not(windows))]
+        let overflow_argv = vec![
+            "sh".into(),
+            "-c".into(),
+            "head -c 16777217 /dev/zero | tr '\\0' x".into(),
+        ];
+        let overflow = crate::run_gate_execution(
+            &GateInvocation {
+                argv: overflow_argv,
+                timeout: std::time::Duration::from_secs(15),
+                ..inv.clone()
+            },
+            &artifact,
+            &[("TG-01".into(), FailCategory::Value)],
+        )
+        .await;
+        assert!(
+            matches!(
+                overflow.outcome,
+                crate::ExecutionGateOutcome::FailClosed(
+                    crate::ExecutionFailClosedReason::OutputIncomplete
+                )
+            ),
+            "overflow outcome: {:?}",
+            overflow.outcome
+        );
+        assert_eq!(overflow.evidence.exit_code, None);
+        assert_eq!(overflow.evidence.log_digest, None);
+
+        crate::gate::mutate_candidate_for_test(&artifact);
+        let changed =
+            crate::run_gate_execution(&inv, &artifact, &[("TG-01".into(), FailCategory::Value)])
+                .await;
+        assert!(matches!(
+            changed.outcome,
+            crate::ExecutionGateOutcome::FailClosed(
+                crate::ExecutionFailClosedReason::ArtifactInvalid
+            )
+        ));
+        assert_eq!(changed.evidence.exit_code, None);
+        assert_eq!(changed.evidence.log_digest, None);
+        assert_eq!(changed.evidence.artifact_sha256, hex_digest(diff));
     }
     #[test]
     fn wp2_external_compile_contract_matrix() {
@@ -979,11 +1294,26 @@ mod tests {
     #[test]
     fn wp2_candidate_parser_matrix() {
         let bytes =
-            b"diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n";
+            "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+néw\n"
+                .as_bytes();
         let parsed = parse_candidate_diff(bytes).unwrap();
         assert_eq!(parsed.paths(), &["a.txt"]);
         assert_eq!(parsed.bytes_sha256(), hex_digest(bytes));
-        for bad in [b"".as_slice(), b"```diff\n```\n", b"diff --git a/a b/a\r\n"] {
+        let duplicate=b"diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\ndiff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-y\n+z\n";
+        let overflow =
+            b"diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -18446744073709551616 +1 @@\n-x\n+y\n";
+        let mismatch = b"diff --git a/a b/a\n--- /dev/null\n+++ /dev/null\n@@ -0,0 +0,0 @@\n+x\n";
+        let trailing =
+            b"diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\ntrailing prose\n";
+        for bad in [
+            b"".as_slice(),
+            b"```diff\n```\n",
+            b"diff --git a/a b/a\r\n",
+            duplicate,
+            overflow,
+            mismatch,
+            trailing,
+        ] {
             assert!(
                 matches!(parse_candidate_diff(bad),Err(VerifyError::Artifact(e))if e.kind()==std::io::ErrorKind::InvalidData)
             );
@@ -992,19 +1322,51 @@ mod tests {
     #[test]
     fn wp2_expected_change_manifest_matrix() {
         let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("a.txt"), b"old\n").unwrap();
+        std::fs::write(root.path().join("z.txt"), b"old\nkeep\n").unwrap();
+        std::fs::write(root.path().join("d.txt"), b"gone\n").unwrap();
         let canonical = root.path().canonicalize().unwrap();
-        let diff = parse_candidate_diff(
-            b"diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n",
-        )
-        .unwrap();
-        let before = std::fs::read(canonical.join("a.txt")).unwrap();
+        let bytes=b"diff --git a/z.txt b/z.txt\n--- a/z.txt\n+++ b/z.txt\n@@ -1,2 +1,2 @@\n-old\n+new\n keep\ndiff --git a/a.txt b/a.txt\n--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1 @@\n+added\ndiff --git a/d.txt b/d.txt\n--- a/d.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n";
+        let diff = parse_candidate_diff(bytes).unwrap();
+        let before_z = std::fs::read(canonical.join("z.txt")).unwrap();
+        let before_d = std::fs::read(canonical.join("d.txt")).unwrap();
         let manifest = derive_expected_changes(&diff, &canonical).unwrap();
-        assert_eq!(manifest.entries()[0].kind(), ChangeKind::Modify);
+        assert_eq!(
+            manifest
+                .entries()
+                .iter()
+                .map(ExpectedChange::path)
+                .collect::<Vec<_>>(),
+            vec!["a.txt", "d.txt", "z.txt"]
+        );
+        assert_eq!(manifest.entries()[0].kind(), ChangeKind::Add);
+        assert_eq!(manifest.entries()[1].kind(), ChangeKind::Delete);
+        assert_eq!(manifest.entries()[2].kind(), ChangeKind::Modify);
         assert_eq!(
             manifest.entries()[0].postimage_sha256(),
-            Some(hex_digest(b"new\n").as_str())
+            Some(hex_digest(b"added\n").as_str())
         );
-        assert_eq!(std::fs::read(canonical.join("a.txt")).unwrap(), before);
+        assert_eq!(manifest.entries()[1].postimage_sha256(), None);
+        assert_eq!(
+            manifest.entries()[2].postimage_sha256(),
+            Some(hex_digest(b"new\nkeep\n").as_str())
+        );
+        assert_eq!(manifest.diff_digest(), hex_digest(bytes));
+        assert_eq!(std::fs::read(canonical.join("z.txt")).unwrap(), before_z);
+        assert_eq!(std::fs::read(canonical.join("d.txt")).unwrap(), before_d);
+        assert!(!canonical.join("a.txt").exists());
+        std::fs::write(canonical.join("a.txt"), b"occupied\n").unwrap();
+        assert!(derive_expected_changes(&diff, &canonical).is_err());
+        std::fs::remove_file(canonical.join("a.txt")).unwrap();
+        let base1 = manifest.base_tree_digest().to_owned();
+        std::fs::write(canonical.join("z.txt"), b"else\nkeep\n").unwrap();
+        let base2 = derive_expected_changes(&diff, &canonical);
+        assert!(
+            base2.is_err(),
+            "changed preimage must not be accepted against old context"
+        );
+        assert!(!base1.is_empty());
+        let overlap=parse_candidate_diff(b"diff --git a/z.txt b/z.txt\n--- a/z.txt\n+++ b/z.txt\n@@ -1 +1 @@\n-old\n+new\n@@ -1 +1 @@\n-old\n+again\n").unwrap();
+        std::fs::write(canonical.join("z.txt"), b"old\nkeep\n").unwrap();
+        assert!(derive_expected_changes(&overlap, &canonical).is_err());
     }
 }
