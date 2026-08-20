@@ -198,32 +198,65 @@ fn git_probe_with_absence(repo_root: &Path, args: &[&str], any_nonzero_absent: b
         return unknown_probe(ProbeFailure::Spawn);
     };
     let deadline = Instant::now() + Duration::from_secs(3);
+    let status = match wait_for_git(&mut child, deadline) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return unknown_probe(ProbeFailure::Timeout);
+        }
+        Err(()) => return unknown_probe(ProbeFailure::Wait),
+    };
+    let mut output = Vec::new();
+    if child
+        .stdout
+        .take()
+        .is_none_or(|mut stdout| stdout.read_to_end(&mut output).is_err())
+    {
+        return unknown_probe(ProbeFailure::Stdout);
+    }
+    match status.code() {
+        Some(0) => Probe::Present(output),
+        Some(1) => Probe::Absent,
+        Some(_) if any_nonzero_absent => Probe::Absent,
+        _ => unknown_probe(ProbeFailure::Wait),
+    }
+}
+
+#[cfg(not(windows))]
+fn wait_for_git(
+    child: &mut std::process::Child,
+    deadline: Instant,
+) -> Result<Option<std::process::ExitStatus>, ()> {
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut output = Vec::new();
-                if child
-                    .stdout
-                    .take()
-                    .is_none_or(|mut stdout| stdout.read_to_end(&mut output).is_err())
-                {
-                    return unknown_probe(ProbeFailure::Stdout);
-                }
-                return match status.code() {
-                    Some(0) => Probe::Present(output),
-                    Some(1) => Probe::Absent,
-                    Some(_) if any_nonzero_absent => Probe::Absent,
-                    _ => unknown_probe(ProbeFailure::Wait),
-                };
-            }
+            Ok(Some(status)) => return Ok(Some(status)),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return unknown_probe(ProbeFailure::Timeout);
-            }
-            Err(_) => return unknown_probe(ProbeFailure::Wait),
+            Ok(None) => return Ok(None),
+            Err(_) => return Err(()),
         }
+    }
+}
+
+#[cfg(windows)]
+fn wait_for_git(
+    child: &mut std::process::Child,
+    deadline: Instant,
+) -> Result<Option<std::process::ExitStatus>, ()> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Ok(None);
+    }
+    let timeout_ms = remaining.as_millis().min(u128::from(u32::MAX)) as u32;
+    // SAFETY: `Child` owns a live process handle for the duration of this call.
+    match unsafe { WaitForSingleObject(child.as_raw_handle() as isize, timeout_ms) } {
+        WAIT_OBJECT_0 => child.wait().map(Some).map_err(|_| ()),
+        WAIT_TIMEOUT => Ok(None),
+        _ => Err(()),
     }
 }
 
