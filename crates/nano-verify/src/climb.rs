@@ -443,4 +443,176 @@ mod tests {
             }
         );
     }
+
+    fn result(model: &str, id: Option<&str>, score: (i64, i64), fails: &[&str]) -> StepResult {
+        StepResult {
+            model: model.into(),
+            text: id.unwrap_or_default().into(),
+            artifact: id.map(CandidateArtifact::inert),
+            score,
+            fails: fails.iter().map(|failure| (*failure).into()).collect(),
+            evidence: id.map(|id| GateEvidence {
+                exit_code: Some(0),
+                log_digest: Some(format!("log-{id}")),
+                artifact_sha256: format!("sha-{id}"),
+            }),
+        }
+    }
+
+    #[test]
+    fn probe_ensemble_surgical_consolidate_path() {
+        let mut cfg = config(20);
+        cfg.cheap.push("c2".into());
+        cfg.ladder.push("l1".into());
+        let mut state = ClimbState {
+            cfg,
+            calls: 0,
+            phase: Phase::Probe,
+            best: None,
+            tried: BTreeMap::new(),
+            wins: BTreeMap::new(),
+            consolidated: false,
+        };
+
+        let probe = next_step(&state);
+        assert_eq!(probe, ClimbStep::Probe { model: "c0".into() });
+        state = apply_result(
+            &state,
+            &probe,
+            &[result("c0", Some("probe"), (1, 4), &["A", "B", "C"])],
+        );
+        let ensemble = next_step(&state);
+        assert_eq!(
+            ensemble,
+            ClimbStep::Ensemble {
+                models: vec!["c1".into(), "c2".into()]
+            }
+        );
+        state = apply_result(
+            &state,
+            &ensemble,
+            &[
+                result("c1", None, (0, 4), &[]),
+                result("c2", Some("ensemble"), (2, 4), &["A", "B"]),
+            ],
+        );
+        assert_eq!(state.calls, 3);
+        assert_eq!(state.best.as_ref().unwrap().text, "ensemble");
+        assert_eq!(
+            state.best.as_ref().unwrap().evidence.artifact_sha256,
+            "sha-ensemble"
+        );
+
+        state.wins.insert("c1".into(), 4);
+        let cheap = next_step(&state);
+        assert_eq!(
+            cheap,
+            ClimbStep::Surgical {
+                model: "c1".into(),
+                target: "A".into(),
+                others: vec!["B".into()],
+                tier: Tier::Cheap
+            }
+        );
+        state = apply_result(&state, &cheap, &[result("c1", None, (0, 4), &[])]);
+        assert_eq!(state.calls, 4);
+        assert_eq!(state.tried["A"], vec!["c1"]);
+
+        state
+            .tried
+            .insert("A".into(), vec!["c0".into(), "c1".into(), "c2".into()]);
+        let ladder = next_step(&state);
+        assert_eq!(
+            ladder,
+            ClimbStep::Surgical {
+                model: "l0".into(),
+                target: "A".into(),
+                others: vec!["B".into()],
+                tier: Tier::Escalate
+            }
+        );
+        state = apply_result(
+            &state,
+            &ladder,
+            &[result("l0", Some("surgical"), (2, 4), &["B"])],
+        );
+        assert_eq!(state.best.as_ref().unwrap().text, "surgical");
+        assert!(!state.tried.contains_key("A"));
+
+        state.tried.insert(
+            "B".into(),
+            vec![
+                "c0".into(),
+                "c1".into(),
+                "c2".into(),
+                "l0".into(),
+                "l1".into(),
+            ],
+        );
+        let consolidate = next_step(&state);
+        assert_eq!(
+            consolidate,
+            ClimbStep::Consolidate {
+                model: "c1".into(),
+                fails: vec!["B".into()]
+            }
+        );
+        let winner = result("c1", Some("winner"), (3, 4), &[]);
+        let winner_artifact = winner.artifact.clone().unwrap();
+        state = apply_result(&state, &consolidate, &[winner]);
+        assert!(state.tried.is_empty());
+        assert_eq!(state.best.as_ref().unwrap().artifact, winner_artifact);
+        assert_eq!(
+            next_step(&state),
+            ClimbStep::Stop {
+                reason: StopReason::Solved
+            }
+        );
+
+        let mut plateau = state.clone();
+        plateau.best = Some(candidate("red", (2, 4), &["B"]));
+        plateau.calls = 6;
+        plateau.consolidated = true;
+        plateau.tried.insert(
+            "B".into(),
+            vec![
+                "c0".into(),
+                "c1".into(),
+                "c2".into(),
+                "l0".into(),
+                "l1".into(),
+            ],
+        );
+        assert_eq!(
+            next_step(&plateau),
+            ClimbStep::Stop {
+                reason: StopReason::Plateau
+            }
+        );
+
+        let mut truncated = plateau;
+        truncated.phase = Phase::Ensemble;
+        truncated.calls = 19;
+        assert_eq!(
+            next_step(&truncated),
+            ClimbStep::Ensemble {
+                models: vec!["c1".into()]
+            }
+        );
+
+        let ordered = apply_result(
+            &ClimbState {
+                cfg: config(12),
+                calls: 0,
+                phase: Phase::Probe,
+                best: None,
+                tried: BTreeMap::new(),
+                wins: BTreeMap::new(),
+                consolidated: false,
+            },
+            &ClimbStep::Probe { model: "c0".into() },
+            &[result("c0", Some("ordered"), (1, 3), &["Z", "A", "Z"])],
+        );
+        assert_eq!(ordered.best.as_ref().unwrap().fails, vec!["Z", "A"]);
+    }
 }
