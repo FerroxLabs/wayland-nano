@@ -43,6 +43,7 @@ fn fixture_entry() -> bool {
         "env" => {
             let allowed = baseline_names()
                 .into_iter()
+                .chain(os_synthesized_child_names())
                 .chain([
                     MODE_ENV,
                     "NANO_VERIFY_EXPECTED_ARTIFACT",
@@ -113,6 +114,20 @@ fn baseline_names() -> Vec<&'static str> {
         names.extend(["SYSTEMROOT", "PATHEXT", "USERPROFILE", "COMSPEC"]);
     }
     names
+}
+
+fn os_synthesized_child_names() -> Vec<&'static str> {
+    #[cfg(all(windows, target_arch = "aarch64"))]
+    {
+        // Windows ARM synthesizes this key in the child environment even
+        // after env_clear. It is fixture-observed OS state, not part of the
+        // canonical inherited baseline in GateInvocation.
+        vec!["PROCESSOR_ARCHITECTURE"]
+    }
+    #[cfg(not(all(windows, target_arch = "aarch64")))]
+    {
+        Vec::new()
+    }
 }
 
 fn invocation(mode: &str, timeout: Duration, extra: &[(&str, OsString)]) -> GateInvocation {
