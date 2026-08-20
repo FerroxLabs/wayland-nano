@@ -144,8 +144,11 @@ pub fn better_candidate(candidate: &Candidate, best: Option<&Candidate>) -> bool
     let Some(best) = best else {
         return true;
     };
+    if candidate.score.0 > best.score.0 {
+        return true;
+    }
     if candidate.score.0 != best.score.0 {
-        return candidate.score.0 > best.score.0;
+        return false;
     }
     let candidate_fails = canonical_failures(&candidate.fails);
     let best_fails = canonical_failures(&best.fails);
