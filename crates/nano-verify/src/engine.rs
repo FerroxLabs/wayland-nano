@@ -387,7 +387,7 @@ mod unix_descriptor {
     const O_RDONLY: i32 = 0;
 
     unsafe extern "C" {
-        fn openat(dirfd: i32, path: *const i8, flags: i32, ...) -> i32;
+        fn openat(dirfd: i32, path: *const std::ffi::c_char, flags: i32, ...) -> i32;
     }
 
     fn open_at(dir: RawFd, name: &str, flags: i32) -> Result<File, std::io::Error> {
