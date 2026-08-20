@@ -937,8 +937,33 @@ mod tests {
     }
     #[test]
     fn wp2_external_compile_contract_matrix() {
-        fn accepts(_: fn(&CandidateDiff, &Path) -> Result<ExpectedChangeManifest, VerifyError>) {}
-        accepts(derive_expected_changes);
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _guard = LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let target = std::env::temp_dir().join(format!(
+            "wp2-driver-contract-{}-{nonce}",
+            std::process::id()
+        ));
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let output =
+            std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+                .args(["test", "--offline", "--quiet", "--manifest-path"])
+                .arg(&manifest)
+                .args(["--test", "wp2_public_contract"])
+                .env("CARGO_TARGET_DIR", &target)
+                .output()
+                .expect("launch downstream contract matrix");
+        let _ = std::fs::remove_dir_all(&target);
+        assert!(
+            output.status.success(),
+            "downstream contract matrix failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[tokio::test]
