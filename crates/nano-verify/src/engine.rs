@@ -1312,10 +1312,11 @@ mod tests {
         let mismatch = b"diff --git a/a b/a\n--- /dev/null\n+++ /dev/null\n@@ -0,0 +1 @@\n+x\n";
         let trailing =
             b"diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\ntrailing prose\n";
+        let crlf = b"diff --git a/a b/a\r\n--- a/a\r\n+++ b/a\r\n@@ -1 +1 @@\r\n-x\r\n+y\r\n";
         for bad in [
             b"".as_slice(),
             b"```diff\n```\n",
-            b"diff --git a/a b/a\r\n",
+            crlf,
             duplicate,
             overflow,
             mismatch,
