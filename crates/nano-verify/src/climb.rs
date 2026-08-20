@@ -384,6 +384,44 @@ impl PartialEq for ClimbOutcome {
 }
 
 impl ClimbOutcome {
+    /// The sole sealed construction path for trusted crate-internal drivers.
+    ///
+    /// Semantic result fields and the accepted artifact are derived from one immutable
+    /// state snapshot so an artifact cannot be paired with another candidate's score,
+    /// failures, or call count.
+    #[allow(dead_code, reason = "consumed by the Plan 02 trusted driver")]
+    pub(crate) fn from_state(
+        state: &ClimbState,
+        terminal: TerminalState,
+        stop_reason: StopReason,
+        escalated: bool,
+        cost_usd: Option<f64>,
+        log: Vec<LogEntry>,
+    ) -> Self {
+        let (score, fails, accepted_artifact) = state.best.as_ref().map_or_else(
+            || ([0, 0], Vec::new(), None),
+            |best| {
+                (
+                    [best.score.0, best.score.1],
+                    best.fails.clone(),
+                    Some(best.artifact.clone()),
+                )
+            },
+        );
+        Self {
+            terminal,
+            score,
+            fails,
+            rounds_used: state.calls,
+            escalated,
+            stop_reason,
+            cost_usd,
+            log,
+            accepted_artifact,
+            _seal: OutcomeSeal,
+        }
+    }
+
     pub fn terminal(&self) -> &TerminalState {
         &self.terminal
     }
@@ -480,6 +518,23 @@ mod tests {
             ClimbStep::Stop {
                 reason: StopReason::Budget
             }
+        );
+        let outcome = ClimbOutcome::from_state(
+            &state,
+            TerminalState::NeedsEscalation,
+            StopReason::Budget,
+            false,
+            None,
+            Vec::new(),
+        );
+        assert_eq!(outcome.terminal(), &TerminalState::NeedsEscalation);
+        assert_eq!(outcome.score(), [1, 2]);
+        assert_eq!(outcome.fails(), &["A"]);
+        assert_eq!(outcome.rounds_used(), 3);
+        assert_eq!(outcome.stop_reason(), StopReason::Budget);
+        assert_eq!(
+            outcome.accepted_artifact(),
+            state.best.as_ref().map(|best| &best.artifact)
         );
     }
 
