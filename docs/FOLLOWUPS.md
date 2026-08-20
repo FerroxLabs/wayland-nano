@@ -1371,3 +1371,20 @@ The canonical `shared/fixtures/flux/pdf` leaf did not exist when the D9 baseline
 ### DEV-WP-0.3N — Authoritative Flux PDF endpoint (RESOLVED 2026-08-17)
 
 The GOALS/spec and owner-recorded 2026-08-14 media contract require `POST /v1/messages`, but research D5 accidentally pinned the older `/anthropic/v1/messages` compatibility path. Live path-only probes showed the compatibility path returned 200 with a zero document-token delta and no oracle, while `/v1/messages` produced a 13,831-token delta and the exact oracle on the same PDF block. Catalog authority, adapter default, generated golden, SHA pin, tests, provenance and closure checks now use `/v1/messages`; historical compatibility fixtures remain historical evidence rather than production authority.
+
+## F-49: CUA Windows backend focus-checked the evidence screenshot — FIXED
+
+- **Filed:** 2026-08-20, found by the FIRST live-desktop CUA run (WP-0.1
+  passive leg). The Windows backend applied the focus check to EVERY op;
+  a screenshot dispatched with no recorded expectation (`expected=None`,
+  the §2.4 evidence path — `nano-agent/src/cua.rs` `capture_shot`) always
+  mismatched on a live desktop, so the pre/post-shot path was dead on
+  Windows live sessions.
+- **Fix:** `backends/windows.rs` dispatch skips the focus check ONLY for
+  a screenshot with no recorded expectation; input ops keep the strict
+  mismatch rule (fail closed). Live proof: `windows_hidpi_coordinate_equivalence`
+  green with `NANO_CUA_LIVE=1` on the host desktop.
+- **Severity:** SEV-2 (advertised engine broken on the live path).
+- **Still open for WP-0.1:** the input-injection legs (click landing,
+  focus invariance, HiDPI at two scale factors) need the spawned
+  test-window helper; the flag stays FALSE until those land.
