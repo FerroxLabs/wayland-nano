@@ -554,6 +554,76 @@ mod tests {
     };
     use std::path::Path;
 
+    fn receipt_bytes(exit_code: i64, log_digest: &str) -> Vec<u8> {
+        serde_json::to_vec(&nano_verify::Receipt {
+            schema: 1,
+            requirement: "CLI-01".into(),
+            test: "gates/demo/gate.cmd".into(),
+            gate_id: "demo".into(),
+            gate_closure_digest: "a".repeat(64),
+            failing_run: nano_verify::FailingRun {
+                exit_code,
+                log_digest: log_digest.into(),
+                observed_at_commit: "b".repeat(40),
+            },
+            fix_commit: "c".repeat(40),
+            minted_at: "2026-08-21T00:00:00Z".into(),
+            minted_by: "wayland-nano 0.3.0".into(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn receipt_preflight_structure_obeys_parse_then_red_order() {
+        assert_eq!(
+            super::receipt_structure(b"{not-json"),
+            Err(nano_verify::VerifyVerdict::Unverifiable)
+        );
+        let unknown = br#"{"schema":1,"unknown":true}"#;
+        assert_eq!(
+            super::receipt_structure(unknown),
+            Err(nano_verify::VerifyVerdict::Unverifiable)
+        );
+        assert_eq!(
+            super::receipt_structure(&receipt_bytes(0, &"a".repeat(64))),
+            Err(nano_verify::VerifyVerdict::NeverRed)
+        );
+        assert_eq!(
+            super::receipt_structure(&receipt_bytes(1, "malformed")),
+            Err(nano_verify::VerifyVerdict::NeverRed)
+        );
+    }
+
+    #[test]
+    fn receipt_preflight_maps_every_imported_terminal_verdict() {
+        use nano_verify::{ReceiptPreflight as P, VerifyVerdict as V};
+        assert_eq!(super::preflight_verdict(P::NeverRed), Err(V::NeverRed));
+        assert_eq!(
+            super::preflight_verdict(P::FabricatedCommit),
+            Err(V::FabricatedCommit)
+        );
+        assert_eq!(
+            super::preflight_verdict(P::GateMismatch),
+            Err(V::GateMismatch)
+        );
+        assert_eq!(
+            super::preflight_verdict(P::AncestryUnproven),
+            Err(V::AncestryUnproven)
+        );
+        assert_eq!(
+            super::preflight_verdict(P::Unverifiable),
+            Err(V::Unverifiable)
+        );
+        assert_eq!(super::preflight_verdict(P::Ready), Ok(()));
+    }
+
+    #[test]
+    fn changed_structurally_valid_log_digest_is_provenance_not_offline_proof() {
+        let first = super::receipt_structure(&receipt_bytes(1, &"1".repeat(64))).unwrap();
+        let changed = super::receipt_structure(&receipt_bytes(1, &"2".repeat(64))).unwrap();
+        assert_ne!(first.failing_run.log_digest, changed.failing_run.log_digest);
+    }
+
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
     }
