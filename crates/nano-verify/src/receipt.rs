@@ -158,7 +158,7 @@ enum ProbeFailure {
     Timeout,
     #[cfg(not(windows))]
     Wait,
-    Nonzero,
+    Nonzero(GitExitCode),
     NoExitCode,
     #[cfg(windows)]
     OpenProcess,
@@ -168,9 +168,14 @@ enum ProbeFailure {
     ExitCode,
 }
 
+#[cfg(windows)]
+type GitExitCode = u32;
+#[cfg(not(windows))]
+type GitExitCode = i32;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GitExit {
-    Code(i64),
+    Code(GitExitCode),
     #[cfg_attr(windows, allow(dead_code))]
     NoExitCode,
 }
@@ -182,7 +187,7 @@ const PROCESS_SYNCHRONIZE: u32 = 0x0010_0000;
 fn classify_windows_process_exit(raw_exit: u32) -> Option<GitExit> {
     use windows_sys::Win32::Foundation::STILL_ACTIVE;
 
-    (raw_exit != STILL_ACTIVE as u32).then_some(GitExit::Code(i64::from(raw_exit)))
+    (raw_exit != STILL_ACTIVE as u32).then_some(GitExit::Code(raw_exit))
 }
 
 fn unknown_probe(reason: ProbeFailure) -> Probe {
@@ -251,7 +256,7 @@ fn classify_git_exit(status: GitExit, output: Vec<u8>, any_nonzero_absent: bool)
         GitExit::Code(0) => Probe::Present(output),
         GitExit::Code(1) => Probe::Absent,
         GitExit::Code(_) if any_nonzero_absent => Probe::Absent,
-        GitExit::Code(_) => unknown_probe(ProbeFailure::Nonzero),
+        GitExit::Code(code) => unknown_probe(ProbeFailure::Nonzero(code)),
         GitExit::NoExitCode => unknown_probe(ProbeFailure::NoExitCode),
     }
 }
@@ -308,7 +313,7 @@ fn wait_for_git(
         match child.try_wait() {
             Ok(Some(status)) => {
                 return Ok(Some(match status.code() {
-                    Some(code) => GitExit::Code(i64::from(code)),
+                    Some(code) => GitExit::Code(code),
                     None => GitExit::NoExitCode,
                 }));
             }
@@ -670,6 +675,18 @@ mod tests {
     fn unknown_probe_uses_a_bounded_secret_safe_reason() {
         assert_eq!(format!("{:?}", ProbeFailure::Spawn), "Spawn");
         assert!(matches!(unknown_probe(ProbeFailure::Spawn), Probe::Unknown));
+    }
+
+    #[test]
+    fn nonzero_probe_reason_reports_only_a_bounded_raw_exit_code() {
+        #[cfg(windows)]
+        let (code, expected) = (u32::MAX, "Nonzero(4294967295)");
+        #[cfg(not(windows))]
+        let (code, expected) = (i32::MIN, "Nonzero(-2147483648)");
+
+        let reason = format!("{:?}", ProbeFailure::Nonzero(code));
+        assert_eq!(reason, expected);
+        assert!(reason.len() <= 20);
     }
 
     #[test]
