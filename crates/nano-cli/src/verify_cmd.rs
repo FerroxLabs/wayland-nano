@@ -200,11 +200,72 @@ pub fn load_requested_registry(
 
 #[cfg(test)]
 mod tests {
-    use super::{EMPTY_REGISTRY_BOOTSTRAP, VerifyMode, load_requested_registry, parse_args};
+    use super::{EMPTY_REGISTRY_BOOTSTRAP, VerifyEvents, VerifyMode, load_requested_registry, parse_args};
     use std::path::Path;
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn events_emit_only_closed_fields_with_monotonic_sequence() {
+        let mut bytes = Vec::new();
+        let mut events = VerifyEvents::new(&mut bytes, "wayland-nano-verify-test".into());
+        events.verify_started("CLI-01", "fixture");
+        events.check_verdict(&nano_verify::CheckVerdict {
+            id: "CLI-01".into(),
+            category: nano_verify::FailCategory::Security,
+            passed: false,
+        });
+        events.climb_update(&nano_verify::LogEntry {
+            phase: nano_verify::Phase::Surgical,
+            score: [1, 2],
+            accepted: true,
+            code: nano_verify::LogCode::Accepted,
+        });
+        events.apply_started("fixture");
+        events.apply_verified("fixture", 2);
+        let receipt = nano_verify::Receipt {
+            schema: 1,
+            requirement: "CLI-01".into(),
+            test: "fixture".into(),
+            gate_id: "fixture".into(),
+            gate_closure_digest: "a".repeat(64),
+            failing_run: nano_verify::FailingRun {
+                exit_code: 1,
+                log_digest: "b".repeat(64),
+                observed_at_commit: "c".repeat(40),
+            },
+            fix_commit: "d".repeat(40),
+            minted_at: "2026-08-21T00:00:00Z".into(),
+            minted_by: "wayland-nano".into(),
+        };
+        events.receipt_minted(&receipt, Path::new("F:/secret/receipt.json"));
+        events.verify_completed(&nano_verify::TerminalState::Verified, 0);
+        events.error("git_failed");
+        drop(events);
+
+        let frames: Vec<serde_json::Value> = String::from_utf8(bytes).unwrap()
+            .lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(frames.len(), 8);
+        for (seq, frame) in frames.iter().enumerate() {
+            assert_eq!(frame["v"], 1);
+            assert_eq!(frame["session_id"], "wayland-nano-verify-test");
+            assert_eq!(frame["seq"], seq);
+        }
+        assert_eq!(sorted_keys(&frames[1]), vec!["category", "id", "passed", "seq", "session_id", "type", "v"]);
+        assert_eq!(sorted_keys(&frames[2]), vec!["accepted", "code", "phase", "score", "seq", "session_id", "type", "v"]);
+        assert_eq!(sorted_keys(&frames[5]), vec!["gate_id", "requirement", "seq", "session_id", "type", "v"]);
+        let output = serde_json::to_string(&frames).unwrap();
+        for secret in ["provider", "prompt", "F:/secret", "diff", "argv", "2026-08-21"] {
+            assert!(!output.contains(secret), "leaked {secret}");
+        }
+    }
+
+    fn sorted_keys(value: &serde_json::Value) -> Vec<&str> {
+        let mut keys: Vec<_> = value.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        keys
     }
 
     #[test]
