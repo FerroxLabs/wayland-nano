@@ -1,9 +1,9 @@
 # Phase 5: WP-2 Gated Climb - Pattern Map
 
-**Mapped:** 2026-08-20  
-**Branch base inspected:** `7bcbc12fec0624aacbc3953e4f2c7d1a2c4414e0`  
-**Files classified:** 8 implementation/provenance/test surfaces  
-**Primary analog families:** 5  
+**Mapped:** 2026-08-20
+**Branch base inspected:** `7bcbc12fec0624aacbc3953e4f2c7d1a2c4414e0`
+**Files classified:** 8 implementation/provenance/test surfaces
+**Primary analog families:** 5
 **Authority reconciliation:** `docs/FOLLOWUPS.md` DEV-WP-2A (resolved 2026-08-20)
 
 ## Frozen Authority
@@ -282,7 +282,7 @@ No global provider discovery, model defaults, wall clock, caller workspace path,
 
 ## Metadata
 
-**Analog search scope:** `crates/nano-verify`, focused security/orchestration analogs under `crates/nano-protocol`, `crates/nano-agent`, `crates/nano-model`, and `crates/nano-cli`; frozen Ferrox and wcore donor snapshots.  
-**Primary analogs fully inspected:** Ferrox `gate-climb.cts`, Ferrox `gate-first-executor.cts`, wcore `anvil/climb.rs`, wcore `anvil/mod.rs`, existing `nano-verify` gate/registry/receipt modules.  
-**Pattern extraction date:** 2026-08-20  
+**Analog search scope:** `crates/nano-verify`, focused security/orchestration analogs under `crates/nano-protocol`, `crates/nano-agent`, `crates/nano-model`, and `crates/nano-cli`; frozen Ferrox and wcore donor snapshots.
+**Primary analogs fully inspected:** Ferrox `gate-climb.cts`, Ferrox `gate-first-executor.cts`, wcore `anvil/climb.rs`, wcore `anvil/mod.rs`, existing `nano-verify` gate/registry/receipt modules.
+**Pattern extraction date:** 2026-08-20
 **Planning readiness:** Complete. Planner must treat frozen authority text as stronger than every analog excerpt.

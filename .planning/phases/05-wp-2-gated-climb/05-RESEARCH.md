@@ -346,5 +346,5 @@ No external web/package claims were needed; this is a codebase-only, single-tech
 - Pitfalls: HIGH — derived directly from mandatory test and compatibility clauses.
 - Security: HIGH — frozen threat-boundary semantics plus repository fail-closed rules.
 
-**Research date:** 2026-08-20  
+**Research date:** 2026-08-20
 **Valid until:** authority bytes or owner reconciliation changes; otherwise stable for this phase.
