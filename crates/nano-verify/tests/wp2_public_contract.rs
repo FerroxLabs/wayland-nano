@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     fs,
     path::PathBuf,
     process::{Command, Output, Stdio},
@@ -10,6 +11,8 @@ static DOWNSTREAM_CARGO_LOCK: Mutex<()> = Mutex::new(());
 
 struct FixtureRoot {
     path: PathBuf,
+    target_root: PathBuf,
+    next_target: Cell<u32>,
     _guard: MutexGuard<'static, ()>,
 }
 
@@ -35,8 +38,32 @@ impl FixtureRoot {
             std::process::id()
         ));
         fs::create_dir(&path).expect("create private downstream fixture root");
+        let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("nano-verify must be inside the workspace crates directory")
+            .to_path_buf();
+        let target_base = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .map(|target| {
+                if target.is_absolute() {
+                    target
+                } else {
+                    workspace_root.join(target)
+                }
+            })
+            .unwrap_or_else(|| workspace_root.join("target"));
+        let target_root = target_base.join(format!(
+            "w2-{}-{:x}",
+            std::process::id(),
+            nonce & 0xffff_ffff
+        ));
+        fs::create_dir_all(&target_base).expect("create downstream target base");
+        fs::create_dir(&target_root).expect("create unique short downstream target root");
         Self {
             path,
+            target_root,
+            next_target: Cell::new(0),
             _guard: guard,
         }
     }
@@ -63,7 +90,9 @@ impl FixtureRoot {
         .expect("write downstream manifest");
         fs::write(project.join("src/lib.rs"), source).expect("write downstream source");
 
-        let target = self.path.join(format!("target-{name}"));
+        let target_index = self.next_target.get();
+        self.next_target.set(target_index + 1);
+        let target = self.target_root.join(format!("t{target_index}"));
         let stderr = tempfile::tempfile().expect("create bounded downstream stderr capture");
         let stderr_child = stderr
             .try_clone()
@@ -110,6 +139,12 @@ impl Drop for FixtureRoot {
             panic!(
                 "remove serialized downstream fixture {}: {error}",
                 self.path.display()
+            )
+        });
+        fs::remove_dir_all(&self.target_root).unwrap_or_else(|error| {
+            panic!(
+                "remove serialized downstream target root {}: {error}",
+                self.target_root.display()
             )
         });
     }
