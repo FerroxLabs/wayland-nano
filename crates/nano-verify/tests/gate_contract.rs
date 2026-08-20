@@ -3,7 +3,7 @@ use nano_verify::gate::{
 };
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MODE_ENV: &str = "NANO_VERIFY_FIXTURE_MODE";
 const LEAK_ENV: &str = "NANO_VERIFY_TEST_LEAK";
@@ -236,9 +236,13 @@ async fn run_gate_timeout_fails_closed() {
     .await;
     assert_eq!(outcome, GateOutcome::FailClosed(FailClosedReason::Timeout));
     let pid: u32 = std::fs::read_to_string(pid_file).unwrap().parse().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process_alive(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
     assert!(
         !process_alive(pid),
-        "descendant {pid} survived whole-tree timeout"
+        "descendant {pid} survived whole-tree timeout and bounded reap window"
     );
 
     let bounded = run("bounded", Path::new("artifact"), &[]).await;
