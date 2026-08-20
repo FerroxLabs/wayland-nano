@@ -1,0 +1,36 @@
+name: verify-dogfood-after-wp4
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  WAYLANDNANO_VERSION: "0.3.0"
+
+jobs:
+  dogfood-sealed-mutants:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install schema-pinned verifier
+        run: npm install --no-save "waylandnano@${WAYLANDNANO_VERSION}"
+      - name: Reject every sealed WP-4 mutant with identifiers-only output
+        shell: pwsh
+        run: |
+          # Dormant docs-owned contract: WP-4 supplies this runner and its sealed
+          # mutant registry before the owner promotes the workflow.
+          & docs/verify/ci/run-sealed-mutants.ps1 -ExpectedExit 3 -IdentifiersOnly
+      - name: Verify WP-4 fixture receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r receipt; do
+            npx --no-install wayland-nano verify --verify-receipt "$receipt" --json
+          done < <(find crates/nano-cli/tests/fixtures/verify -type f -name '*.receipt.json' -print | sort)
