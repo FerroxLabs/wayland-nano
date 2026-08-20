@@ -27,7 +27,7 @@ WP-3 now has a builder-distinct independent PASS on exact committed bytes, one c
 
 ## Accomplishments
 
-- Bound final product `35c0112270b20c8cce25695d1a7e46cdad94d3c4`, tree `13ef21e895e79111281c83983c679573f00e14b9`, and canonical binary-diff digest `bdf6dc7de411d540d2afe2f537e25da5de84de3803aab85305bfdf7ea83bcdbe`.
+- Bound final product `40baef2718e2b305b9515273256be5673e4db4e6`, tree `13ef21e895e79111281c83983c679573f00e14b9`, and canonical binary-diff digest `bdf6dc7de411d540d2afe2f537e25da5de84de3803aab85305bfdf7ea83bcdbe`.
 - Closed all four independent High findings in the sole consolidated round; final independent verdict has zero Critical/High findings.
 - Wired real production JSONL lifecycle evidence, completed runtime protection for receipt/control paths, and enforced the absolute deadline across scheduled artifact, gate, Git, and store operations.
 - Made failed materializer postchecks restore and prove the trusted starting tree deterministically under Windows parallel load.
@@ -35,7 +35,7 @@ WP-3 now has a builder-distinct independent PASS on exact committed bytes, one c
 
 ## Commits
 
-1. `35c0112` — `fix(06-09): close verifier audit findings` (the sole consolidated product fix commit, amended until all gates were stable).
+1. `40baef2` — integrated equivalent of the sole consolidated product fix commit; its tree is byte-identical to the independently reviewed product tree.
 2. Metadata closure commit — contains only the four Plan 09 metadata paths.
 
 ## Verification

@@ -5,7 +5,7 @@
   "rechecker_identity": "wp3-independent-reviewer",
   "reviewer_reuse_policy": "auditor-rechecker-may-match-builder-forbidden",
   "product_base": "d7f4d3a2260f6d08e026fcb1263448355a7f175b",
-  "product_head": "35c0112270b20c8cce25695d1a7e46cdad94d3c4",
+  "product_head": "40baef2718e2b305b9515273256be5673e4db4e6",
   "product_tree": "13ef21e895e79111281c83983c679573f00e14b9",
   "canonical_binary_diff_digest": "bdf6dc7de411d540d2afe2f537e25da5de84de3803aab85305bfdf7ea83bcdbe",
   "findings": [
