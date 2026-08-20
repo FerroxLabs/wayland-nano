@@ -201,8 +201,7 @@ fn git_probe_with_absence(repo_root: &Path, args: &[&str], any_nonzero_absent: b
     let status = match wait_for_git(&mut child, deadline) {
         Ok(Some(status)) => status,
         Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_git(&mut child);
             return unknown_probe(ProbeFailure::Timeout);
         }
         Err(()) => return unknown_probe(ProbeFailure::Wait),
@@ -221,6 +220,25 @@ fn git_probe_with_absence(repo_root: &Path, args: &[&str], any_nonzero_absent: b
         Some(_) if any_nonzero_absent => Probe::Absent,
         _ => unknown_probe(ProbeFailure::Wait),
     }
+}
+
+#[cfg(not(windows))]
+fn terminate_git(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(windows)]
+fn terminate_git(child: &mut std::process::Child) {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+    let _ = child.kill();
+    // SAFETY: `Child` owns a live process handle for the duration of this call.
+    // A successful `kill` signals this handle; keep cleanup bounded if the API
+    // fails rather than re-entering Rust's emulation-sensitive `Child::wait`.
+    let _ = unsafe { WaitForSingleObject(child.as_raw_handle() as isize, 1_000) } == WAIT_OBJECT_0;
 }
 
 #[cfg(not(windows))]
@@ -244,8 +262,9 @@ fn wait_for_git(
     deadline: Instant,
 ) -> Result<Option<std::process::ExitStatus>, ()> {
     use std::os::windows::io::AsRawHandle as _;
+    use std::os::windows::process::ExitStatusExt as _;
     use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
-    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
@@ -254,7 +273,16 @@ fn wait_for_git(
     let timeout_ms = remaining.as_millis().min(u128::from(u32::MAX)) as u32;
     // SAFETY: `Child` owns a live process handle for the duration of this call.
     match unsafe { WaitForSingleObject(child.as_raw_handle() as isize, timeout_ms) } {
-        WAIT_OBJECT_0 => child.wait().map(Some).map_err(|_| ()),
+        WAIT_OBJECT_0 => {
+            let mut exit_code = 0;
+            // SAFETY: the wait above proved that the live process handle is
+            // signaled, so its exit code is final rather than STILL_ACTIVE.
+            if unsafe { GetExitCodeProcess(child.as_raw_handle() as isize, &mut exit_code) } == 0 {
+                Err(())
+            } else {
+                Ok(Some(std::process::ExitStatus::from_raw(exit_code)))
+            }
+        }
         WAIT_TIMEOUT => Ok(None),
         _ => Err(()),
     }
