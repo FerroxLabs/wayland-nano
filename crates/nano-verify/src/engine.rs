@@ -400,6 +400,18 @@ mod unix_descriptor {
             Ok(unsafe { File::from_raw_fd(fd) })
         }
     }
+
+    fn map_unsafe_open(error: std::io::Error, message: &'static str) -> VerifyError {
+        #[cfg(target_os = "linux")]
+        let unsafe_path = matches!(error.raw_os_error(), Some(20 | 40));
+        #[cfg(target_os = "macos")]
+        let unsafe_path = matches!(error.raw_os_error(), Some(20 | 62));
+        if unsafe_path {
+            super::invalid_io(message).into()
+        } else {
+            artifact_io(error)
+        }
+    }
     #[cfg(target_os = "linux")]
     fn mount_identity(file: &File) -> Result<u64, VerifyError> {
         let text = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd()))
@@ -460,7 +472,7 @@ mod unix_descriptor {
                     part,
                     O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC,
                 )
-                .map_err(artifact_io)?;
+                .map_err(|error| map_unsafe_open(error, "unsafe path component"))?;
                 let meta = dir.metadata().map_err(artifact_io)?;
                 let id = FileIdentity {
                     first: meta.dev(),
@@ -484,7 +496,7 @@ mod unix_descriptor {
             let mut opened = Vec::with_capacity(self.dirs.len());
             for (name, _, expected, expected_mount) in &self.dirs {
                 let current = open_at(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-                    .map_err(artifact_io)?;
+                    .map_err(|error| map_unsafe_open(error, "unsafe path component"))?;
                 let meta = current.metadata().map_err(artifact_io)?;
                 let id = FileIdentity {
                     first: meta.dev(),
@@ -512,17 +524,18 @@ mod unix_descriptor {
         if kind == super::ChangeKind::Add {
             match open_at(chain.parent_fd(), &leaf, flags) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(artifact_io(e)),
+                Err(e) => return Err(map_unsafe_open(e, "invalid add target")),
                 Ok(_) => return invalid("add target exists"),
             }
             chain.revalidate()?;
             return match open_at(chain.parent_fd(), &leaf, flags) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                Err(e) => Err(artifact_io(e)),
+                Err(e) => Err(map_unsafe_open(e, "invalid add target")),
                 Ok(_) => invalid("add target changed during read"),
             };
         }
-        let mut file = open_at(chain.parent_fd(), &leaf, flags).map_err(artifact_io)?;
+        let mut file = open_at(chain.parent_fd(), &leaf, flags)
+            .map_err(|error| map_unsafe_open(error, "invalid preimage"))?;
         let before = file.metadata().map_err(artifact_io)?;
         if !before.is_file() || before.nlink() != 1 {
             return invalid("invalid preimage");
@@ -530,7 +543,8 @@ mod unix_descriptor {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).map_err(artifact_io)?;
         let after = file.metadata().map_err(artifact_io)?;
-        let reopened = open_at(chain.parent_fd(), &leaf, flags).map_err(artifact_io)?;
+        let reopened = open_at(chain.parent_fd(), &leaf, flags)
+            .map_err(|error| map_unsafe_open(error, "invalid preimage"))?;
         let current = reopened.metadata().map_err(artifact_io)?;
         if before.dev() != after.dev()
             || before.ino() != after.ino()
