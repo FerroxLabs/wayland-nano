@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, fs, path::Path, process::Command};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::Path,
+    process::Command,
+    sync::{Mutex, MutexGuard},
+};
 
 use nano_verify::{
     receipt::{
@@ -8,6 +14,8 @@ use nano_verify::{
     registry::{CwdPolicy, GateClosure, GateRegistry, GateRegistryEntry, closure_digest},
 };
 
+static RECEIPT_GIT_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 struct Repo {
     dir: tempfile::TempDir,
     observed: String,
@@ -15,6 +23,8 @@ struct Repo {
     unrelated: String,
     blob: String,
     registry: GateRegistry,
+    // Drop last so TempDir cleanup remains inside the serialized lifetime.
+    _guard: MutexGuard<'static, ()>,
 }
 
 fn git(root: &Path, args: &[&str]) -> String {
@@ -36,6 +46,9 @@ fn git(root: &Path, args: &[&str]) -> String {
 }
 
 fn fixture() -> Repo {
+    let guard = RECEIPT_GIT_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempfile::tempdir().unwrap();
     git(dir.path(), &["init", "-q"]);
     fs::create_dir_all(dir.path().join("tests")).unwrap();
@@ -116,6 +129,7 @@ fn fixture() -> Repo {
         unrelated,
         blob,
         registry,
+        _guard: guard,
     }
 }
 
