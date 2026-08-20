@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "base_sha": "d7f4d3a2260f6d08e026fcb1263448355a7f175b",
+  "product_head": "40baef2718e2b305b9515273256be5673e4db4e6",
+  "product_tree": "13ef21e895e79111281c83983c679573f00e14b9",
+  "metadata_parent": "672df5945705d97435c1f92194866d2ff81dee3a",
+  "workflow_name": "wayland-nano-gate",
+  "workflow_path": ".github/workflows/gate.yml",
+  "ci_consumer_paths": [
+    "docs/verify/ci/verify-dogfood.yml",
+    "docs/verify/ci/verify-receipt-check.yml"
+  ],
+  "github_workflow_promotion": "deferred-until-after-wp4-mutants",
+  "required_jobs": [
+    "gate (windows-latest, x64)",
+    "gate (windows-11-arm, arm64)",
+    "gate (macos-14, arm64)",
+    "gate (macos-15-intel, x64)",
+    "gate (ubuntu-22.04, x64)",
+    "gate (ubuntu-24.04-arm, arm64)"
+  ],
+  "integration_expectations": {
+    "builder_tip_protocol": "Commit only .planning/phases/06-wp-3-verify-cli-and-ci-surface/06-PROMOTION-REQUEST.json on metadata_parent; that request-only commit is builder_tip and the request does not name it.",
+    "ci_query": "Require one authenticated exact-SHA wayland-nano-gate run for pushed origin/master with exactly the six literal required_jobs completed/success.",
+    "github_workflow_deferral": "deferred-until-after-wp4-mutants",
+    "integration_gate": "In a detached F: integration worktree, merge --no-ff with parent 1 equal freshly fetched origin/master and parent 2 equal builder_tip, then run F-only just gate-all.",
+    "master_tip": "Push detached integration HEAD:master, fetch origin, and require origin/master equals the integration commit.",
+    "merge_parents": "Require integration parent 1 equals pre-merge origin/master and parent 2 equals builder_tip.",
+    "request_only_diff": "Require git diff --name-only metadata_parent..builder_tip equals only .planning/phases/06-wp-3-verify-cli-and-ci-surface/06-PROMOTION-REQUEST.json."
+  }
+}
+
