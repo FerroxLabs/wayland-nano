@@ -500,6 +500,14 @@ mod tests {
             &candidate("lower", (1, 4), &["A"]),
             Some(&best)
         ));
+        assert!(!better_candidate(
+            &candidate("equal", (2, 4), &["A", "B"]),
+            Some(&best)
+        ));
+        assert!(!better_candidate(
+            &candidate("uncontained", (2, 4), &["C"]),
+            Some(&best)
+        ));
     }
 
     #[test]
@@ -552,6 +560,42 @@ mod tests {
                 reason: StopReason::Solved
             }
         );
+
+        let attempted = ClimbState {
+            cfg: config(4),
+            calls: 0,
+            phase: Phase::Surgical,
+            best: Some(candidate("best", (1, 2), &["A"])),
+            tried: BTreeMap::new(),
+            wins: BTreeMap::new(),
+            consolidated: false,
+        };
+        let generation_failure = ClimbStep::Surgical {
+            model: "c0".into(),
+            target: "A".into(),
+            others: Vec::new(),
+            tier: Tier::Cheap,
+        };
+        let attempted = apply_result(
+            &attempted,
+            &generation_failure,
+            &[result("c0", None, (0, 2), &[])],
+        );
+        assert_eq!(attempted.calls, 1);
+        assert!(attempted.wins.is_empty());
+        let rejected = apply_result(
+            &attempted,
+            &ClimbStep::Surgical {
+                model: "c1".into(),
+                target: "A".into(),
+                others: Vec::new(),
+                tier: Tier::Cheap,
+            },
+            &[result("c1", Some("reject"), (0, 2), &[])],
+        );
+        assert_eq!(rejected.calls, 2);
+        assert!(rejected.wins.is_empty());
+        assert_eq!(rejected.best.as_ref().unwrap().text, "best");
     }
 
     fn result(model: &str, id: Option<&str>, score: (i64, i64), fails: &[&str]) -> StepResult {
@@ -631,6 +675,8 @@ mod tests {
         state
             .tried
             .insert("A".into(), vec!["c0".into(), "c1".into(), "c2".into()]);
+        state.tried.insert("B".into(), vec!["c2".into()]);
+        state.wins.insert("l1".into(), 99);
         let ladder = next_step(&state);
         assert_eq!(
             ladder,
@@ -648,6 +694,7 @@ mod tests {
         );
         assert_eq!(state.best.as_ref().unwrap().text, "surgical");
         assert!(!state.tried.contains_key("A"));
+        assert_eq!(state.tried["B"], vec!["c2"]);
 
         state.tried.insert(
             "B".into(),
@@ -669,9 +716,12 @@ mod tests {
         );
         let winner = result("c1", Some("winner"), (3, 4), &[]);
         let winner_artifact = winner.artifact.clone().unwrap();
+        let winner_evidence = winner.evidence.clone().unwrap();
         state = apply_result(&state, &consolidate, &[winner]);
         assert!(state.tried.is_empty());
         assert_eq!(state.best.as_ref().unwrap().artifact, winner_artifact);
+        assert_eq!(state.best.as_ref().unwrap().evidence, winner_evidence);
+        assert_eq!(state.best.as_ref().unwrap().text, "winner");
         assert_eq!(
             next_step(&state),
             ClimbStep::Stop {
@@ -707,6 +757,33 @@ mod tests {
             next_step(&truncated),
             ClimbStep::Ensemble {
                 models: vec!["c1".into()]
+            }
+        );
+
+        let equal_wins = ClimbState {
+            cfg: ClimbConfig {
+                cheap: vec!["z-caller-first".into(), "a-caller-second".into()],
+                ladder: Vec::new(),
+                budget: 4,
+                seed_n: 2,
+                deadline: RunDeadline {
+                    monotonic_millis: 1,
+                },
+            },
+            calls: 1,
+            phase: Phase::Surgical,
+            best: Some(candidate("tie", (1, 2), &["T"])),
+            tried: BTreeMap::new(),
+            wins: BTreeMap::from([("z-caller-first".into(), 2), ("a-caller-second".into(), 2)]),
+            consolidated: false,
+        };
+        assert_eq!(
+            next_step(&equal_wins),
+            ClimbStep::Surgical {
+                model: "z-caller-first".into(),
+                target: "T".into(),
+                others: Vec::new(),
+                tier: Tier::Cheap,
             }
         );
 
