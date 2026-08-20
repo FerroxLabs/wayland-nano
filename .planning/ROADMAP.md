@@ -212,17 +212,55 @@ Plans:
   2. Requirement mappings and canonical registry closures drive production climbs and repo-confined run-only gates without duplicated engine contracts.
   3. JSONL v1 exposes the closed verify event vocabulary and full check verdicts without leaking gate commands, source, fixture values, or expected answers.
   4. Offline verification uses a cleaned-up detached fix-commit worktree and bounded gate rerun to return the canonical verdict, failing closed on malformed, fabricated, unproven, drifted, red, or unverifiable evidence.
-  5. The full fixture/exit-matrix battery passes, and operators have a schema-version-pinned CI consumer and adoption instructions whose `.github/` promotion remains an integrator action.
+  5. The full fixture/exit-matrix battery passes, and operators have a schema-version-pinned docs-only CI consumer; `.github/workflows/**` promotion is forbidden during WP-3 and deferred until after WP-4 sealed mutants land.
 
 **Promotion Gate**:
 
   1. Start clean worktree `.tmp-wt-vc-wp-3` on `feat/wp-3` at a newly recorded current `origin/master` SHA only after Phase 5 promotion; builder does not merge or push.
   2. Run one Critical/High audit, at most one fix round, and fix verification within the exact WP-3 CLI/docs/fixture/provenance ownership.
   3. Run all 13 named CLI tests, trust-boundary and deletion-hole teeth checks, workflow validation, and the complete local `just gate-all`, including `gate-gen-check`.
-  4. Merge through detached `.tmp-wt-integ` with `--no-ff`, rerun the complete `just gate-all`, and promote approved CI workflow content only through the integrator lane.
+  4. Merge through detached `.tmp-wt-integ` with `--no-ff` and rerun the complete `just gate-all`; retain CI workflow content under `docs/verify/ci/**` and make no `.github/workflows/**` promotion before WP-4 mutant evidence lands.
   5. Push integration `HEAD:master`; require CI green before Phase 7 and record the full one-line promotion result.
 
-**Plans**: TBD
+**Plans**: 10 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 06-01-PLAN.md — Establish the exact CLI parser/import contract and empty registry bootstrap.
+- [ ] 06-07-PLAN.md — Author schema-pinned docs-owned CI consumers and adoption instructions.
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 06-02-PLAN.md — Implement closed events, F-only deadlines, registry resolution, and run-only.
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 06-03-PLAN.md — Implement offline receipt preflight, detached rerun, verdicts, and cleanup.
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 06-04-PLAN.md — Wire eligible red baseline, production Effects, climb, and success-only minting.
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 06-05-PLAN.md — Implement the deterministic sealed-manifest materializer and rollback transaction.
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [ ] 06-06-PLAN.md — Build hermetic fixtures and the exact 13-test authoritative battery.
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
+- [ ] 06-08-PLAN.md — Close exact provenance and freeze the WP-3 ownership inventory.
+
+**Wave 8** *(blocked on Wave 7 completion)*
+
+- [ ] 06-09-PLAN.md — Run the single bounded audit and optional constrained fix round.
+
+**Wave 9** *(blocked on Wave 8 completion)*
+
+- [ ] 06-10-PLAN.md — Run final audited-byte gates and freeze the builder-only promotion handoff.
 
 ### Phase 7: WP-4 Gate Cards and Dogfood
 

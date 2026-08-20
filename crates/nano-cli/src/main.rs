@@ -122,13 +122,29 @@ fn main() {
             let mut out = std::io::stdout();
             nano_cli::plugin_cmds::run(&home, &args[2..], &mut out)
         }
+        // WP3: gated-climb verification + red-green receipts (JSONL v1 on
+        // stdout; the verify exit matrix 0/1/2/3/6, §2 of SPEC-WP3).
+        Some("verify") => {
+            let home = nano_home();
+            let workspace = std::env::current_dir().expect("cwd");
+            match nano_cli::verify_cmd::parse_args(&args[2..]) {
+                Err(code) => code,
+                Ok(params) => {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("tokio runtime");
+                    runtime.block_on(nano_cli::verify_cmd::run(&home, &workspace, &params))
+                }
+            }
+        }
         Some("--version") | Some("-V") => {
             println!("wayland-nano {}", env!("CARGO_PKG_VERSION"));
             0
         }
         _ => {
             eprintln!(
-                "usage: wayland-nano doctor | protocol-host | acp-host | auth login|status|logout <server> | exec | session fork | sessions | rules | plugin | goal | --version"
+                "usage: wayland-nano doctor | protocol-host | acp-host | auth login|status|logout <server> | exec | session fork | sessions | rules | plugin | verify | goal | --version"
             );
             2
         }

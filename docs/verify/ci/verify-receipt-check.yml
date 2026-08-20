@@ -1,0 +1,43 @@
+name: red-green-receipt-check
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  WAYLANDNANO_VERSION: "0.3.0"
+
+jobs:
+  verify-receipts:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install schema-pinned verifier
+        run: npm install --no-save "waylandnano@${WAYLANDNANO_VERSION}"
+      - name: Verify receipts touched by this PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --name-status "origin/${{ github.base_ref }}...HEAD" -- 'receipts/**' |
+            while read -r status path rest; do
+              case "$status" in
+                D*|R*)
+                  echo "receipt removed or renamed: $path${rest:+ -> $rest}" >&2
+                  exit 1
+                  ;;
+                A*|M*)
+                  npx --no-install wayland-nano verify --verify-receipt "$path" --json
+                  ;;
+                *)
+                  echo "unexpected receipt diff status: $status" >&2
+                  exit 1
+                  ;;
+              esac
+            done

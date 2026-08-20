@@ -1,0 +1,1 @@
+{"schema":1,"requirement":"CLI-05","test":"gates/fixture-add/gate.sh","gate_id":"fixture-add","gate_closure_digest":"{{DIGEST}}","failing_run":{"exit_code":7,"log_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","observed_at_commit":"{{OBSERVED}}"},"fix_commit":"{{FIX}}","minted_at":"2026-08-21T00:00:00Z","minted_by":"wayland-nano fixture"}

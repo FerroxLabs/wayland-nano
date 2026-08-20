@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "builder_identity": "execute_wp3_09",
+  "auditor_identity": "wp3-independent-reviewer",
+  "rechecker_identity": "wp3-independent-reviewer",
+  "reviewer_reuse_policy": "auditor-rechecker-may-match-builder-forbidden",
+  "product_base": "d7f4d3a2260f6d08e026fcb1263448355a7f175b",
+  "product_head": "40baef2718e2b305b9515273256be5673e4db4e6",
+  "product_tree": "13ef21e895e79111281c83983c679573f00e14b9",
+  "canonical_binary_diff_digest": "bdf6dc7de411d540d2afe2f537e25da5de84de3803aab85305bfdf7ea83bcdbe",
+  "findings": [
+    {
+      "id": "H1",
+      "severity": "high",
+      "status": "resolved",
+      "summary": "Production JSONL event stream was not wired.",
+      "evidence": [
+        "Production now owns the VerifyEvents sink and the full-flow test proves ordered identifier-only frames.",
+        "The final independent recheck found no event-order or leakage regression."
+      ]
+    },
+    {
+      "id": "H2",
+      "severity": "high",
+      "status": "resolved",
+      "summary": "Runtime materializer protection omitted receipt and control paths.",
+      "evidence": [
+        "The runtime authority now includes repo-local receipt store/output, detached baseline, and canonical TEMP control parent paths.",
+        "The repo-local control-path regression test and final independent recheck passed."
+      ]
+    },
+    {
+      "id": "H3",
+      "severity": "high",
+      "status": "resolved",
+      "summary": "The shared deadline was not resampled at every scheduled boundary.",
+      "evidence": [
+        "Artifact, gate, Git, materializer, and receipt-store boundaries now require fresh positive remaining time.",
+        "Bounded rollback and advancing-clock regressions pass, including three repeated full nano-cli library runs and just gate-all."
+      ]
+    },
+    {
+      "id": "H4",
+      "severity": "high",
+      "status": "resolved",
+      "summary": "The mutation ledger was not bound to the final audited product.",
+      "evidence": [
+        "M01-M08 were rerun against final product_head with assertion-specific RED and identical-command GREEN.",
+        "All nine rows bind final pristine_head and exact live restored blobs."
+      ]
+    }
+  ],
+  "fix_rounds": 1
+}
