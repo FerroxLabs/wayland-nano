@@ -155,11 +155,6 @@ pub fn better_candidate(candidate: &Candidate, best: Option<&Candidate>) -> bool
             .all(|failure| best_fails.contains(failure))
 }
 pub fn next_step(state: &ClimbState) -> ClimbStep {
-    if state.calls >= state.cfg.budget {
-        return ClimbStep::Stop {
-            reason: StopReason::Budget,
-        };
-    }
     if state
         .best
         .as_ref()
@@ -167,6 +162,11 @@ pub fn next_step(state: &ClimbState) -> ClimbStep {
     {
         return ClimbStep::Stop {
             reason: StopReason::Solved,
+        };
+    }
+    if state.calls >= state.cfg.budget {
+        return ClimbStep::Stop {
+            reason: StopReason::Budget,
         };
     }
     match state.phase {
@@ -535,6 +535,22 @@ mod tests {
         assert_eq!(
             outcome.accepted_artifact(),
             state.best.as_ref().map(|best| &best.artifact)
+        );
+
+        let solved_on_last_call = ClimbState {
+            cfg: config(1),
+            calls: 1,
+            phase: Phase::Ensemble,
+            best: Some(candidate("green", (2, 2), &[])),
+            tried: BTreeMap::new(),
+            wins: BTreeMap::new(),
+            consolidated: false,
+        };
+        assert_eq!(
+            next_step(&solved_on_last_call),
+            ClimbStep::Stop {
+                reason: StopReason::Solved
+            }
         );
     }
 
