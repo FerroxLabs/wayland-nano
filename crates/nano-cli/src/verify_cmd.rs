@@ -334,6 +334,14 @@ trait VerifyRuntime {
         artifact: &Path,
         inventory: &[(String, nano_verify::FailCategory)],
     ) -> nano_verify::ExecutionGateOutcome;
+    async fn run_baseline_gate(
+        &self,
+        invocation: &nano_verify::GateInvocation,
+        artifact: &Path,
+        inventory: &[(String, nano_verify::FailCategory)],
+    ) -> nano_verify::BaselineGateExecution {
+        nano_verify::run_gate_baseline_execution(invocation, artifact, inventory).await
+    }
 }
 
 struct ProductionRuntime {
@@ -351,6 +359,10 @@ impl ProductionRuntime {
 impl VerifyRuntime for ProductionRuntime {
     fn now_millis(&self) -> u64 {
         u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    async fn generate(&self, model: &str, prompt: &str) -> Result<String, ()> {
+        production_generate(model, prompt).await
     }
 
     async fn run_gate(
@@ -374,18 +386,33 @@ async fn run_with<R: VerifyRuntime>(workspace: &Path, params: &VerifyParams, run
         VerifyMode::CheckReceipt { path, json } => {
             check_receipt(workspace, path, *json, runtime).await
         }
-        VerifyMode::Mint { deadline_ms, .. } => {
-            let Some(_) = runtime.now_millis().checked_add(*deadline_ms) else {
+        VerifyMode::Mint {
+            requirement,
+            gate,
+            task,
+            budget,
+            cheap_model,
+            escalation_models,
+            deadline_ms,
+            ..
+        } => {
+            let Some(deadline) = runtime.now_millis().checked_add(*deadline_ms) else {
                 return 2;
             };
-            if runtime.canonical_repo_root(workspace).is_err() {
-                return 2;
-            }
-            if runtime.temp_preflight().is_err() {
-                return 3;
-            }
-            // Later plans attach climb and materialization after this closed entry gate.
-            3
+            mint_until_materializer(
+                workspace,
+                requirement,
+                gate.as_deref(),
+                task.as_deref(),
+                *budget,
+                cheap_model,
+                escalation_models,
+                nano_verify::RunDeadline {
+                    monotonic_millis: deadline,
+                },
+                runtime,
+            )
+            .await
         }
         VerifyMode::RunOnly {
             gate,
@@ -916,6 +943,7 @@ pub fn load_requested_registry(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
         EMPTY_REGISTRY_BOOTSTRAP, VerifyEvents, VerifyMode, VerifyParams, load_requested_registry,
@@ -1873,8 +1901,6 @@ mod tests {
     }
 
     mod baseline {
-        use super::*;
-
         fn verdict(id: &str, passed: bool) -> nano_verify::CheckVerdict {
             nano_verify::CheckVerdict {
                 id: id.into(),
@@ -1929,8 +1955,6 @@ mod tests {
     }
 
     mod mint_flow {
-        use super::*;
-
         #[test]
         fn climb_config_preserves_caller_model_order_deadline_and_budget() {
             let cfg = super::super::climb_config(
@@ -1951,7 +1975,10 @@ mod tests {
         fn production_request_is_one_user_message_without_tools_or_streaming() {
             let request = super::super::generation_request("wire-model", "repair this");
             assert_eq!(request.model, "wire-model");
-            assert_eq!(request.messages, [nano_model::types::Message::user("repair this")]);
+            assert_eq!(
+                request.messages,
+                [nano_model::types::Message::user("repair this")]
+            );
             assert!(request.tools.is_empty());
             assert!(!request.stream);
             assert!(request.system.is_none());
@@ -1965,7 +1992,9 @@ mod tests {
                 ModelEvent::TextDelta("one".into()),
                 ModelEvent::Usage(Usage::default()),
                 ModelEvent::TextDelta("two".into()),
-                ModelEvent::Done { stop_reason: "done".into() },
+                ModelEvent::Done {
+                    stop_reason: "done".into(),
+                },
             ];
             assert_eq!(super::super::collect_text(&events), "onetwo");
         }
@@ -1980,4 +2009,334 @@ mod tests {
             assert_eq!(super::super::mint_terminal_exit(&Blocked("x".into())), 3);
         }
     }
+}
+
+struct RuntimeEffects<'a, R> {
+    runtime: &'a R,
+}
+
+impl<R: VerifyRuntime> nano_verify::Effects for RuntimeEffects<'_, R> {
+    async fn generate(
+        &self,
+        model: &str,
+        prompt: &str,
+    ) -> Result<String, nano_verify::VerifyError> {
+        self.runtime
+            .generate(model, prompt)
+            .await
+            .map_err(|()| nano_verify::VerifyError::Generate("generation_failed".into()))
+    }
+
+    fn emit_event(&self, _event: nano_verify::EngineEvent) {}
+
+    fn now_millis(&self) -> u64 {
+        self.runtime.now_millis()
+    }
+
+    fn cancellation_requested(&self) -> bool {
+        false
+    }
+}
+
+fn generation_request(model: &str, prompt: &str) -> nano_model::types::ModelRequest {
+    nano_model::types::ModelRequest {
+        model: model.to_owned(),
+        messages: vec![nano_model::types::Message::user(prompt)],
+        ..Default::default()
+    }
+}
+
+fn collect_text(events: &[nano_model::types::ModelEvent]) -> String {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            nano_model::types::ModelEvent::TextDelta(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn production_generate(model: &str, prompt: &str) -> Result<String, ()> {
+    use nano_agent::turn::ModelDriver;
+    use nano_model::provider_catalog::WireKind;
+
+    let (router, diagnostic) = crate::provider_router::ProviderRouter::from_env();
+    if diagnostic.is_some() {
+        return Err(());
+    }
+    let env_reader = |name: &str| std::env::var(name).ok();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ())?
+        .as_secs();
+    let binding = router
+        .resolve_binding(model, &env_reader, now)
+        .map_err(|_| ())?;
+    let policy = nano_egress::policy::EgressPolicy::new().allow_url(&binding.base_url);
+    let egress = nano_egress::client::EgressClient::new(policy);
+    let driver = match binding.wire {
+        WireKind::OpenAiCompletions => {
+            let client = nano_model::flux_completions::FluxCompletionsClient::new(egress)
+                .with_base_url(binding.base_url)
+                .with_api_path(binding.api_path);
+            nano_agent::wiring::ProviderDriver::openai(
+                client,
+                binding.credential.secret().to_owned(),
+            )
+        }
+        WireKind::AnthropicMessages => {
+            let client = nano_model::anthropic_messages::AnthropicMessagesClient::new(egress)
+                .with_base_url(binding.base_url)
+                .with_api_path(binding.api_path);
+            nano_agent::wiring::ProviderDriver::anthropic(
+                client,
+                binding.credential.secret().to_owned(),
+            )
+        }
+    };
+    let response = driver
+        .complete(&generation_request(&binding.model, prompt))
+        .await
+        .map_err(|_| ())?;
+    Ok(collect_text(&response.events))
+}
+
+fn climb_config(
+    cheap_model: &str,
+    escalation_models: &[String],
+    budget: Option<u32>,
+    deadline: nano_verify::RunDeadline,
+) -> nano_verify::ClimbConfig {
+    nano_verify::ClimbConfig {
+        cheap: vec![cheap_model.to_owned()],
+        ladder: escalation_models.to_vec(),
+        budget: budget.unwrap_or(8),
+        seed_n: 1,
+        deadline,
+    }
+}
+
+fn eligible_baseline(
+    execution: &nano_verify::BaselineGateExecution,
+    inventory: &[(String, nano_verify::FailCategory)],
+) -> bool {
+    let nano_verify::ExecutionGateOutcome::Red { verdicts } = &execution.outcome else {
+        return false;
+    };
+    let complete = verdicts.len() == inventory.len()
+        && inventory.iter().all(|(id, category)| {
+            verdicts
+                .iter()
+                .any(|verdict| verdict.id == *id && verdict.category == *category)
+        });
+    complete
+        && execution.evidence.exit_code.is_some_and(|code| code != 0)
+        && execution
+            .evidence
+            .log_digest
+            .as_deref()
+            .is_some_and(|digest| lower_hex(digest, 64))
+}
+
+fn mint_terminal_exit(terminal: &nano_verify::TerminalState) -> i32 {
+    match terminal {
+        nano_verify::TerminalState::Verified => 0,
+        nano_verify::TerminalState::Cancelled | nano_verify::TerminalState::CrashedRecovered => 1,
+        _ => 3,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn mint_until_materializer<R: VerifyRuntime>(
+    workspace: &Path,
+    requirement: &str,
+    requested_gate: Option<&str>,
+    task: Option<&str>,
+    budget: Option<u32>,
+    cheap_model: &str,
+    escalation_models: &[String],
+    deadline: nano_verify::RunDeadline,
+    runtime: &R,
+) -> i32 {
+    let Ok(repo_root) = runtime.canonical_repo_root(workspace) else {
+        return 2;
+    };
+    if runtime.temp_preflight().is_err() || remaining(runtime, deadline).is_none() {
+        return 3;
+    }
+    let Some(registry) = runtime
+        .load_registry(&repo_root, requested_gate, Some(requirement))
+        .ok()
+        .flatten()
+    else {
+        return 2;
+    };
+    let selected = requested_gate
+        .and_then(|id| registry.gates.get(id).map(|entry| (id, entry)))
+        .or_else(|| nano_verify::gate_for_requirement(&registry, requirement).ok());
+    let Some((gate_id, entry)) = selected else {
+        return 2;
+    };
+    let Ok((starting_commit, starting_tree)) = clean_identity(&repo_root, 10_000) else {
+        return 3;
+    };
+    let Ok(baseline_root) = baseline_worktree_path() else {
+        return 3;
+    };
+    let baseline_result = async {
+        git_success_bounded(
+            &repo_root,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                &baseline_root.to_string_lossy(),
+                &starting_commit,
+            ],
+            remaining(runtime, deadline).ok_or(())?,
+        )?;
+        require_identity(
+            &baseline_root,
+            &starting_commit,
+            &starting_tree,
+            remaining(runtime, deadline).ok_or(())?,
+        )?;
+        let artifact = runtime.resolve_artifact(&baseline_root, Path::new(&entry.run_artifact))?;
+        let inventory = runtime.inventory(&baseline_root.join(&entry.card))?;
+        let invocation = registry_invocation(
+            &baseline_root,
+            gate_id,
+            entry,
+            remaining(runtime, deadline).ok_or(())?,
+        )?;
+        let execution = runtime
+            .run_baseline_gate(&invocation, &artifact, &inventory)
+            .await;
+        require_identity(
+            &baseline_root,
+            &starting_commit,
+            &starting_tree,
+            remaining(runtime, deadline).ok_or(())?,
+        )?;
+        require_identity(
+            &repo_root,
+            &starting_commit,
+            &starting_tree,
+            remaining(runtime, deadline).ok_or(())?,
+        )?;
+        if !eligible_baseline(&execution, &inventory) {
+            return Err(());
+        }
+        Ok(inventory)
+    }
+    .await;
+    let cleanup = cleanup_receipt_worktree(&repo_root, &baseline_root, 30_000);
+    let Ok(inventory) = baseline_result else {
+        return 3;
+    };
+    if cleanup.is_err()
+        || require_identity(&repo_root, &starting_commit, &starting_tree, 10_000).is_err()
+        || remaining(runtime, deadline).is_none()
+    {
+        return 3;
+    }
+    let Some(remaining_ms) = remaining(runtime, deadline) else {
+        return 3;
+    };
+    let Ok(invocation) = registry_invocation(&repo_root, gate_id, entry, remaining_ms) else {
+        return 3;
+    };
+    let Ok(artifact_workspace) = nano_verify::create_artifact_workspace() else {
+        return 1;
+    };
+    let cfg = climb_config(cheap_model, escalation_models, budget, deadline);
+    let effects = RuntimeEffects { runtime };
+    let outcome = nano_verify::run_climb(
+        task.unwrap_or(requirement),
+        &invocation,
+        &inventory,
+        artifact_workspace,
+        &cfg,
+        &effects,
+    )
+    .await;
+    let exit = mint_terminal_exit(outcome.terminal());
+    if exit != 0 || outcome.accepted_artifact().is_none() {
+        return if exit == 0 { 3 } else { exit };
+    }
+    // Plan 06-05 owns the trusted materializer and connects this verified,
+    // sealed artifact to the coherent commit/rerun/receipt transaction.
+    3
+}
+
+fn registry_invocation(
+    root: &Path,
+    gate_id: &str,
+    entry: &nano_verify::GateRegistryEntry,
+    remaining_ms: u64,
+) -> Result<nano_verify::GateInvocation, ()> {
+    if remaining_ms == 0 {
+        return Err(());
+    }
+    let cwd = match entry.closure.cwd_policy {
+        nano_verify::CwdPolicy::RepoRoot => root.to_owned(),
+        nano_verify::CwdPolicy::GateDir => root
+            .join(&entry.card)
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or(())?,
+    };
+    Ok(nano_verify::GateInvocation {
+        argv: entry.closure.argv.iter().map(Into::into).collect(),
+        cwd,
+        env: entry
+            .closure
+            .env
+            .iter()
+            .map(|(key, value)| (key.into(), value.into()))
+            .collect(),
+        timeout: std::time::Duration::from_millis(remaining_ms.min(400_000)),
+        gate_id: gate_id.to_owned(),
+    })
+}
+
+fn baseline_worktree_path() -> Result<PathBuf, ()> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let root = canonical_env_dir("TEMP")?;
+    Ok(root.join(format!(
+        "wayland-nano-baseline-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )))
+}
+
+fn clean_identity(repo: &Path, timeout_ms: u64) -> Result<(String, String), ()> {
+    let commit = git_text(repo, &["rev-parse", "HEAD"], timeout_ms)?;
+    let tree = git_text(repo, &["rev-parse", "HEAD^{tree}"], timeout_ms)?;
+    if !git_text(
+        repo,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+        timeout_ms,
+    )?
+    .is_empty()
+    {
+        return Err(());
+    }
+    Ok((commit, tree))
+}
+
+fn require_identity(repo: &Path, commit: &str, tree: &str, timeout_ms: u64) -> Result<(), ()> {
+    let actual = clean_identity(repo, timeout_ms)?;
+    if actual.0 == commit && actual.1 == tree {
+        Ok(())
+    } else {
+        Err(())
+    }
+}
+
+fn git_text(repo: &Path, args: &[&str], timeout_ms: u64) -> Result<String, ()> {
+    let bytes = git_output_bounded(repo, args, timeout_ms)?;
+    String::from_utf8(bytes)
+        .map(|text| text.trim().to_owned())
+        .map_err(|_| ())
 }
