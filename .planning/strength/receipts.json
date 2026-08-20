@@ -53,6 +53,78 @@
         "log_digest": "0a1f3d5f11234749d7eb6315e8b00791473dd88d796165897f1a67790af5e290"
       },
       "commit": "b62685154eb217660bcac4f91df5094fe2650503"
+    },
+    "GATE-01": {
+      "requirement": "GATE-01",
+      "test": "cargo test -p nano-verify --test gate_contract",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "060f080bdba25ba9929bd2766421456b874eb14bad5a1e244f44918f6b6eb697"
+      },
+      "commit": "5dba65e3f8897990ef75f5610961e3efc8486abc"
+    },
+    "GATE-02": {
+      "requirement": "GATE-02",
+      "test": "cargo test -p nano-verify parse_summary_last_match_wins",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "c2de4c48051ea893a4e98682160abe0dd0e94981f24378582d65bdf5d02d1352"
+      },
+      "commit": "8f63aaf5110469768e129f1f08f710fd599555a7"
+    },
+    "GATE-03": {
+      "requirement": "GATE-03",
+      "test": "cargo test -p nano-verify parse_fail_v2_canonical",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "789335d16cdbfd9dd952b3adf95ade095d8a9107398e4fea6ceaa9b36cc9e7f5"
+      },
+      "commit": "8f63aaf5110469768e129f1f08f710fd599555a7"
+    },
+    "RCPT-01": {
+      "requirement": "RCPT-01",
+      "test": "cargo test -p nano-verify canonical_schema_and_mint_validation",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "fbd2b769c19485938ffc6504d34fe5eadee8d2f0dd912af5768ab6ba0f7ac1cb"
+      },
+      "commit": "b08dceec51a8b1ef9d1e66babbb0ccd11bd15ea3"
+    },
+    "RCPT-02": {
+      "requirement": "RCPT-02",
+      "test": "cargo test -p nano-verify store_",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "3abf19e8d2acc0c05a22160e02c9bbf60fa5fc1847338bdc4f041d85557ada01"
+      },
+      "commit": "fe21f30b68979cce2e75213a15aaa128697c7fd4"
+    },
+    "RCPT-03": {
+      "requirement": "RCPT-03",
+      "test": "cargo test -p nano-verify --test receipt_git",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "bb9fc9de3a80536029b704f14f249eb95e7e32390032ed6449b1bfe8bae69728"
+      },
+      "commit": "e5718c16deb4297fcb2a87ef00244032d70fa82c"
+    },
+    "RCPT-04": {
+      "requirement": "RCPT-04",
+      "test": "cargo test -p nano-verify",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "c7d5647e47df679a98a13681f728e3b5822b7ba359bf1caa7c984aedb9884e87"
+      },
+      "commit": "e5718c16deb4297fcb2a87ef00244032d70fa82c"
+    },
+    "PROV-01": {
+      "requirement": "PROV-01",
+      "test": "PowerShell UPSTREAM.md exact nano-verify 3-row provenance oracle",
+      "failing_run": {
+        "exit_code": 1,
+        "log_digest": "53c8a80cc5cd7dde6b55155c9e4806cf34fbce39f5ff966755e4021b952473b5"
+      },
+      "commit": "932a55734df27126cb4509f099db998a529d7577"
     }
   }
 }
