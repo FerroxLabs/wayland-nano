@@ -291,7 +291,7 @@ pub fn derive_expected_changes(
             None => base.push(0),
             Some(bytes) => {
                 base.push(1);
-                bind_len(&mut base, bytes);
+                base.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
                 base.extend_from_slice(&Sha256::digest(bytes));
             }
         }
@@ -1343,6 +1343,29 @@ mod tests {
             PARSER_CALLS.with(std::cell::Cell::get),
             0,
             "manifest derivation must consume retained records without reparsing"
+        );
+        let mut expected_base = b"wayland-nano.expected-change.base.v1\0".to_vec();
+        for (path, kind, preimage) in [
+            ("z.txt", 1_u8, Some(b"old\nkeep\n".as_slice())),
+            ("a.txt", 0_u8, None),
+            ("d.txt", 2_u8, Some(b"gone\n".as_slice())),
+        ] {
+            expected_base.extend_from_slice(&(path.len() as u64).to_le_bytes());
+            expected_base.extend_from_slice(path.as_bytes());
+            expected_base.push(kind);
+            match preimage {
+                None => expected_base.push(0),
+                Some(bytes) => {
+                    expected_base.push(1);
+                    expected_base.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+                    expected_base.extend_from_slice(&Sha256::digest(bytes));
+                }
+            }
+        }
+        assert_eq!(
+            manifest.base_tree_digest(),
+            hex_digest(&expected_base),
+            "base digest must be exactly domain + path/kind + absent-or-length-and-SHA facts"
         );
         assert_eq!(
             manifest
