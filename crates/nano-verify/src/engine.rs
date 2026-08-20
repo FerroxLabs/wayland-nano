@@ -393,7 +393,7 @@ mod unix_descriptor {
     fn open_at(dir: RawFd, name: &str, flags: i32) -> Result<File, std::io::Error> {
         let name = CString::new(name)
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "unsafe path"))?;
-        let fd = unsafe { openat(dir, name.as_ptr(), flags) };
+        let fd = unsafe { openat(dir, name.as_ptr(), flags, 0_u32) };
         if fd < 0 {
             Err(std::io::Error::last_os_error())
         } else {
