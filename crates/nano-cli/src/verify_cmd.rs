@@ -685,7 +685,7 @@ mod tests {
         EMPTY_REGISTRY_BOOTSTRAP, VerifyEvents, VerifyMode, VerifyParams, load_requested_registry,
         parse_args,
     };
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     fn receipt_bytes(exit_code: i64, log_digest: &str) -> Vec<u8> {
         serde_json::to_vec(&nano_verify::Receipt {
@@ -755,6 +755,192 @@ mod tests {
         let first = super::receipt_structure(&receipt_bytes(1, &"1".repeat(64))).unwrap();
         let changed = super::receipt_structure(&receipt_bytes(1, &"2".repeat(64))).unwrap();
         assert_ne!(first.failing_run.log_digest, changed.failing_run.log_digest);
+    }
+
+    struct ReceiptRerunRuntime {
+        times: std::sync::Mutex<std::collections::VecDeque<u64>>,
+        outcome: nano_verify::ExecutionGateOutcome,
+        add_ok: bool,
+        identity_ok: bool,
+        cleanup_ok: bool,
+        gate_calls: std::sync::atomic::AtomicUsize,
+        cleanup_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl super::VerifyRuntime for ReceiptRerunRuntime {
+        fn now_millis(&self) -> u64 {
+            self.times.lock().unwrap().pop_front().unwrap_or(u64::MAX)
+        }
+
+        fn receipt_budget_ms(&self) -> Result<u64, ()> {
+            Ok(100)
+        }
+
+        fn receipt_worktree_path(&self) -> Result<std::path::PathBuf, ()> {
+            Ok("F:/Temp/Codex/wp3-rerun-scripted".into())
+        }
+
+        fn add_receipt_worktree(&self, _: &Path, _: &Path, _: &str, _: u64) -> Result<(), ()> {
+            self.add_ok.then_some(()).ok_or(())
+        }
+
+        fn verify_receipt_worktree(&self, _: &Path, _: &str, _: u64) -> Result<(), ()> {
+            self.identity_ok.then_some(()).ok_or(())
+        }
+
+        fn cleanup_receipt_worktree(&self, _: &Path, _: &Path, _: u64) -> Result<(), ()> {
+            self.cleanup_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.cleanup_ok.then_some(()).ok_or(())
+        }
+
+        fn resolve_artifact(&self, root: &Path, relative: &Path) -> Result<PathBuf, ()> {
+            Ok(root.join(relative))
+        }
+
+        fn inventory(&self, _: &Path) -> Result<Vec<(String, nano_verify::FailCategory)>, ()> {
+            Ok(vec![(
+                "CLI-01".into(),
+                nano_verify::FailCategory::Structure,
+            )])
+        }
+
+        async fn run_gate(
+            &self,
+            _: &nano_verify::GateInvocation,
+            _: &Path,
+            _: &[(String, nano_verify::FailCategory)],
+        ) -> nano_verify::ExecutionGateOutcome {
+            self.gate_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.outcome.clone()
+        }
+    }
+
+    fn rerun_runtime(
+        outcome: nano_verify::ExecutionGateOutcome,
+        add_ok: bool,
+        identity_ok: bool,
+        cleanup_ok: bool,
+    ) -> ReceiptRerunRuntime {
+        ReceiptRerunRuntime {
+            times: std::sync::Mutex::new([0, 1, 2, 3, 4].into()),
+            outcome,
+            add_ok,
+            identity_ok,
+            cleanup_ok,
+            gate_calls: Default::default(),
+            cleanup_calls: Default::default(),
+        }
+    }
+
+    fn rerun_inputs() -> (nano_verify::Receipt, nano_verify::GateRegistry) {
+        let receipt: nano_verify::Receipt =
+            serde_json::from_slice(&receipt_bytes(1, &"a".repeat(64))).unwrap();
+        let closure = nano_verify::GateClosure {
+            argv: vec!["gates/demo/gate.cmd".into()],
+            env: Default::default(),
+            cwd_policy: nano_verify::CwdPolicy::RepoRoot,
+            wrapped_tools: Vec::new(),
+        };
+        let registry = nano_verify::GateRegistry {
+            schema: 1,
+            gates: std::collections::BTreeMap::from([(
+                "demo".into(),
+                nano_verify::GateRegistryEntry {
+                    card: "gates/demo/card.md".into(),
+                    script: "gates/demo/gate.cmd".into(),
+                    closure_digest: nano_verify::closure_digest(&closure).unwrap(),
+                    closure,
+                    run_artifact: "artifact".into(),
+                },
+            )]),
+            requirements: std::collections::BTreeMap::from([("CLI-01".into(), "demo".into())]),
+        };
+        (receipt, registry)
+    }
+
+    #[tokio::test]
+    async fn receipt_rerun_green_is_valid_and_red_is_gate_mismatch() {
+        let (receipt, registry) = rerun_inputs();
+        let green = rerun_runtime(
+            nano_verify::ExecutionGateOutcome::Green {
+                verdicts: Vec::new(),
+            },
+            true,
+            true,
+            true,
+        );
+        assert_eq!(
+            super::rerun_ready_receipt(Path::new("F:/repo"), &receipt, &registry, &green).await,
+            nano_verify::VerifyVerdict::Valid
+        );
+        assert_eq!(
+            green
+                .cleanup_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+
+        let red = rerun_runtime(
+            nano_verify::ExecutionGateOutcome::Red {
+                verdicts: Vec::new(),
+            },
+            true,
+            true,
+            true,
+        );
+        assert_eq!(
+            super::rerun_ready_receipt(Path::new("F:/repo"), &receipt, &registry, &red).await,
+            nano_verify::VerifyVerdict::GateMismatch
+        );
+        assert_eq!(
+            red.cleanup_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn receipt_rerun_spawn_probe_and_cleanup_fail_closed_without_residue() {
+        let (receipt, registry) = rerun_inputs();
+        for runtime in [
+            rerun_runtime(
+                nano_verify::ExecutionGateOutcome::Green {
+                    verdicts: Vec::new(),
+                },
+                false,
+                true,
+                true,
+            ),
+            rerun_runtime(
+                nano_verify::ExecutionGateOutcome::Green {
+                    verdicts: Vec::new(),
+                },
+                true,
+                false,
+                true,
+            ),
+            rerun_runtime(
+                nano_verify::ExecutionGateOutcome::Green {
+                    verdicts: Vec::new(),
+                },
+                true,
+                true,
+                false,
+            ),
+        ] {
+            assert_eq!(
+                super::rerun_ready_receipt(Path::new("F:/repo"), &receipt, &registry, &runtime)
+                    .await,
+                nano_verify::VerifyVerdict::Unverifiable
+            );
+            assert_eq!(
+                runtime
+                    .cleanup_calls
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+        }
     }
 
     fn args(values: &[&str]) -> Vec<String> {
