@@ -1871,4 +1871,113 @@ mod tests {
             assert_eq!(parse_args(&args(&bad)), Err(2), "{bad:?}");
         }
     }
+
+    mod baseline {
+        use super::*;
+
+        fn verdict(id: &str, passed: bool) -> nano_verify::CheckVerdict {
+            nano_verify::CheckVerdict {
+                id: id.into(),
+                category: nano_verify::FailCategory::Structure,
+                passed,
+            }
+        }
+
+        #[test]
+        fn only_complete_nonzero_red_with_lower_hex_digest_is_eligible() {
+            let inventory = vec![("A".into(), nano_verify::FailCategory::Structure)];
+            let execution = nano_verify::BaselineGateExecution {
+                outcome: nano_verify::ExecutionGateOutcome::Red {
+                    verdicts: vec![verdict("A", false)],
+                },
+                evidence: nano_verify::BaselineGateEvidence {
+                    exit_code: Some(7),
+                    log_digest: Some("a".repeat(64)),
+                },
+            };
+            assert!(super::super::eligible_baseline(&execution, &inventory));
+
+            for execution in [
+                nano_verify::BaselineGateExecution {
+                    outcome: nano_verify::ExecutionGateOutcome::Green {
+                        verdicts: vec![verdict("A", true)],
+                    },
+                    evidence: execution.evidence.clone(),
+                },
+                nano_verify::BaselineGateExecution {
+                    outcome: nano_verify::ExecutionGateOutcome::Red { verdicts: vec![] },
+                    evidence: execution.evidence.clone(),
+                },
+                nano_verify::BaselineGateExecution {
+                    outcome: execution.outcome.clone(),
+                    evidence: nano_verify::BaselineGateEvidence {
+                        exit_code: Some(0),
+                        log_digest: execution.evidence.log_digest.clone(),
+                    },
+                },
+                nano_verify::BaselineGateExecution {
+                    outcome: execution.outcome.clone(),
+                    evidence: nano_verify::BaselineGateEvidence {
+                        exit_code: Some(7),
+                        log_digest: None,
+                    },
+                },
+            ] {
+                assert!(!super::super::eligible_baseline(&execution, &inventory));
+            }
+        }
+    }
+
+    mod mint_flow {
+        use super::*;
+
+        #[test]
+        fn climb_config_preserves_caller_model_order_deadline_and_budget() {
+            let cfg = super::super::climb_config(
+                "cheap",
+                &["first".into(), "second".into()],
+                Some(9),
+                nano_verify::RunDeadline {
+                    monotonic_millis: 42,
+                },
+            );
+            assert_eq!(cfg.cheap, ["cheap"]);
+            assert_eq!(cfg.ladder, ["first", "second"]);
+            assert_eq!(cfg.budget, 9);
+            assert_eq!(cfg.deadline.monotonic_millis, 42);
+        }
+
+        #[test]
+        fn production_request_is_one_user_message_without_tools_or_streaming() {
+            let request = super::super::generation_request("wire-model", "repair this");
+            assert_eq!(request.model, "wire-model");
+            assert_eq!(request.messages, [nano_model::types::Message::user("repair this")]);
+            assert!(request.tools.is_empty());
+            assert!(!request.stream);
+            assert!(request.system.is_none());
+        }
+
+        #[test]
+        fn generation_collects_text_deltas_only() {
+            use nano_model::types::{ModelEvent, Usage};
+            let events = vec![
+                ModelEvent::ReasoningDelta("secret reasoning".into()),
+                ModelEvent::TextDelta("one".into()),
+                ModelEvent::Usage(Usage::default()),
+                ModelEvent::TextDelta("two".into()),
+                ModelEvent::Done { stop_reason: "done".into() },
+            ];
+            assert_eq!(super::super::collect_text(&events), "onetwo");
+        }
+
+        #[test]
+        fn terminal_mapping_is_closed() {
+            use nano_verify::TerminalState::*;
+            assert_eq!(super::super::mint_terminal_exit(&Verified), 0);
+            assert_eq!(super::super::mint_terminal_exit(&Cancelled), 1);
+            assert_eq!(super::super::mint_terminal_exit(&CrashedRecovered), 1);
+            assert_eq!(super::super::mint_terminal_exit(&TimedOut), 3);
+            assert_eq!(super::super::mint_terminal_exit(&Blocked("x".into())), 3);
+        }
+    }
 }
