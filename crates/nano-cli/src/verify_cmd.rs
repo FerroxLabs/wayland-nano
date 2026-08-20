@@ -1,9 +1,230 @@
+use std::path::{Path, PathBuf};
+
+const DEFAULT_DEADLINE_MS: u64 = 600_000;
+const MAX_DEADLINE_MS: u64 = 3_600_000;
+const MAX_ESCALATION_MODELS: usize = 4;
+const USAGE: &str = "usage: wayland-nano verify --requirement <id> [--gate <gate-id>] [--task <text>] [--budget N] --cheap-model <id> --escalation-model <id> [--escalation-model <id> ...] [--receipt-out <path>] [--deadline-ms N] [--json] | verify --verify-receipt <path> [--json]";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerifyMode {
+    Mint {
+        requirement: String,
+        gate: Option<String>,
+        task: Option<String>,
+        budget: Option<u32>,
+        cheap_model: String,
+        escalation_models: Vec<String>,
+        deadline_ms: u64,
+        receipt_out: Option<PathBuf>,
+        json: bool,
+    },
+    CheckReceipt {
+        path: PathBuf,
+        json: bool,
+    },
+    RunOnly {
+        gate: String,
+        deadline_ms: u64,
+        json: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifyParams {
+    pub mode: VerifyMode,
+}
+
+#[derive(Default)]
+struct ParsedArgs {
+    requirement: Option<String>,
+    gate: Option<String>,
+    task: Option<String>,
+    budget: Option<u32>,
+    cheap_model: Option<String>,
+    escalation_models: Vec<String>,
+    deadline_ms: Option<u64>,
+    receipt_out: Option<PathBuf>,
+    verify_receipt: Option<PathBuf>,
+    run_only: bool,
+    json: bool,
+}
+
+pub fn parse_args(args: &[String]) -> Result<VerifyParams, i32> {
+    parse_args_inner(args).map_err(|()| {
+        eprintln!("{USAGE}");
+        2
+    })
+}
+
+fn parse_args_inner(args: &[String]) -> Result<VerifyParams, ()> {
+    let mut parsed = ParsedArgs::default();
+    let mut index = 0;
+    while let Some(flag) = args.get(index) {
+        let take = |index: &mut usize| -> Result<String, ()> {
+            *index += 1;
+            let value = args.get(*index).ok_or(())?;
+            if value.is_empty() {
+                return Err(());
+            }
+            Ok(value.clone())
+        };
+        match flag.as_str() {
+            "--requirement" if parsed.requirement.is_none() => {
+                parsed.requirement = Some(take(&mut index)?);
+            }
+            "--gate" if parsed.gate.is_none() => parsed.gate = Some(take(&mut index)?),
+            "--task" if parsed.task.is_none() => parsed.task = Some(take(&mut index)?),
+            "--budget" if parsed.budget.is_none() => {
+                let value = take(&mut index)?.parse::<u32>().map_err(|_| ())?;
+                if value == 0 {
+                    return Err(());
+                }
+                parsed.budget = Some(value);
+            }
+            "--cheap-model" if parsed.cheap_model.is_none() => {
+                parsed.cheap_model = Some(take(&mut index)?);
+            }
+            "--escalation-model" => {
+                let value = take(&mut index)?;
+                if parsed.escalation_models.len() == MAX_ESCALATION_MODELS
+                    || parsed.escalation_models.contains(&value)
+                {
+                    return Err(());
+                }
+                parsed.escalation_models.push(value);
+            }
+            "--deadline-ms" if parsed.deadline_ms.is_none() => {
+                let value = take(&mut index)?.parse::<u64>().map_err(|_| ())?;
+                if value == 0 || value > MAX_DEADLINE_MS {
+                    return Err(());
+                }
+                parsed.deadline_ms = Some(value);
+            }
+            "--receipt-out" if parsed.receipt_out.is_none() => {
+                parsed.receipt_out = Some(PathBuf::from(take(&mut index)?));
+            }
+            "--verify-receipt" if parsed.verify_receipt.is_none() => {
+                parsed.verify_receipt = Some(PathBuf::from(take(&mut index)?));
+            }
+            "--run-only" if !parsed.run_only => parsed.run_only = true,
+            "--json" if !parsed.json => parsed.json = true,
+            _ => return Err(()),
+        }
+        index += 1;
+    }
+
+    if let Some(path) = parsed.verify_receipt {
+        if parsed.requirement.is_some()
+            || parsed.gate.is_some()
+            || parsed.task.is_some()
+            || parsed.budget.is_some()
+            || parsed.cheap_model.is_some()
+            || !parsed.escalation_models.is_empty()
+            || parsed.deadline_ms.is_some()
+            || parsed.receipt_out.is_some()
+            || parsed.run_only
+        {
+            return Err(());
+        }
+        return Ok(VerifyParams {
+            mode: VerifyMode::CheckReceipt {
+                path,
+                json: parsed.json,
+            },
+        });
+    }
+
+    let deadline_ms = parsed.deadline_ms.unwrap_or(DEFAULT_DEADLINE_MS);
+    if parsed.run_only {
+        if parsed.requirement.is_some()
+            || parsed.task.is_some()
+            || parsed.budget.is_some()
+            || parsed.cheap_model.is_some()
+            || !parsed.escalation_models.is_empty()
+            || parsed.receipt_out.is_some()
+        {
+            return Err(());
+        }
+        return Ok(VerifyParams {
+            mode: VerifyMode::RunOnly {
+                gate: parsed.gate.ok_or(())?,
+                deadline_ms,
+                json: parsed.json,
+            },
+        });
+    }
+
+    Ok(VerifyParams {
+        mode: VerifyMode::Mint {
+            requirement: parsed.requirement.ok_or(())?,
+            gate: parsed.gate,
+            task: parsed.task,
+            budget: parsed.budget,
+            cheap_model: parsed.cheap_model.ok_or(())?,
+            escalation_models: if parsed.escalation_models.is_empty() {
+                return Err(());
+            } else {
+                parsed.escalation_models
+            },
+            deadline_ms,
+            receipt_out: parsed.receipt_out,
+            json: parsed.json,
+        },
+    })
+}
+
+/// The closed production entry is wired by later WP-3 plans. Until then every
+/// parsed request fails as usage rather than performing partial effects.
+pub async fn run(_home: &Path, _workspace: &Path, _params: &VerifyParams) -> i32 {
+    2
+}
+
 #[cfg(test)]
 mod tests {
     use super::{VerifyMode, parse_args};
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn landed_contract_import_probe() {
+        use nano_verify::{
+            ArtifactWorkspace, BaselineGateEvidence, BaselineGateExecution, CandidateArtifact,
+            CheckVerdict, ClimbConfig, Effects, ExpectedChangeManifest, FailingRun, GateClosure,
+            GateEvidence, GateExecution, GateInvocation, GateRegistry, LogEntry, Receipt,
+            RunDeadline, TerminalState, VerifyVerdict, canonical_receipt,
+            create_artifact_workspace, derive_expected_changes, gate_for_requirement,
+            load_registry, mint_receipt, parse_candidate_diff, preflight_receipt, read_receipt,
+            run_climb, run_gate_baseline_execution, run_gate_execution, write_receipt,
+        };
+        let imported_types = [
+            std::any::type_name::<Receipt>(), std::any::type_name::<CheckVerdict>(),
+            std::any::type_name::<VerifyVerdict>(), std::any::type_name::<TerminalState>(),
+            std::any::type_name::<LogEntry>(), std::any::type_name::<RunDeadline>(),
+            std::any::type_name::<ClimbConfig>(), std::any::type_name::<GateClosure>(),
+            std::any::type_name::<GateRegistry>(), std::any::type_name::<GateInvocation>(),
+            std::any::type_name::<GateExecution>(), std::any::type_name::<GateEvidence>(),
+            std::any::type_name::<BaselineGateExecution>(),
+            std::any::type_name::<BaselineGateEvidence>(),
+            std::any::type_name::<CandidateArtifact>(), std::any::type_name::<ArtifactWorkspace>(),
+            std::any::type_name::<ExpectedChangeManifest>(), std::any::type_name::<FailingRun>(),
+        ];
+        assert!(imported_types.iter().all(|name| name.starts_with("nano_verify::")));
+        let _ = (
+            canonical_receipt, create_artifact_workspace, derive_expected_changes,
+            gate_for_requirement, load_registry, mint_receipt, parse_candidate_diff,
+            preflight_receipt, read_receipt, run_climb::<ProbeEffects>,
+            run_gate_baseline_execution, run_gate_execution, write_receipt,
+        );
+
+        struct ProbeEffects;
+        impl Effects for ProbeEffects {
+            async fn generate(&self, _: &str, _: &str) -> Result<String, nano_verify::VerifyError> { unreachable!() }
+            fn emit_event(&self, _: nano_verify::EngineEvent) {}
+            fn now_millis(&self) -> u64 { 0 }
+            fn cancellation_requested(&self) -> bool { false }
+        }
     }
 
     #[test]

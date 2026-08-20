@@ -1582,6 +1582,7 @@ dependencies = [
  "nano-sandbox",
  "nano-session",
  "nano-tools",
+ "nano-verify",
  "reqwest",
  "serde",
  "serde_json",

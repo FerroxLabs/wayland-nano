@@ -47,6 +47,7 @@ nano-protocol = { version = "0.1.0", path = "../nano-protocol" }
 nano-sandbox = { version = "0.1.0", path = "../nano-sandbox" }
 nano-session = { version = "0.1.0", path = "../nano-session" }
 nano-tools = { version = "0.1.0", path = "../nano-tools" }
+nano-verify = { version = "0.1.0", path = "../nano-verify" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # P5 §7: the candidate snapshot's catalog/proof digest (0.10, the in-tree
