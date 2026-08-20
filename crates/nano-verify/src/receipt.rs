@@ -156,14 +156,22 @@ enum ProbeFailure {
     Spawn,
     Stdout,
     Timeout,
+    #[cfg(not(windows))]
     Wait,
+    Nonzero,
+    NoExitCode,
     #[cfg(windows)]
     OpenProcess,
     #[cfg(windows)]
     WaitApi,
     #[cfg(windows)]
     ExitCode,
-    #[cfg(windows)]
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitExit {
+    Code(i64),
+    #[cfg_attr(windows, allow(dead_code))]
     NoExitCode,
 }
 
@@ -225,11 +233,16 @@ fn git_probe_with_absence(repo_root: &Path, args: &[&str], any_nonzero_absent: b
     {
         return unknown_probe(ProbeFailure::Stdout);
     }
-    match status.code() {
-        Some(0) => Probe::Present(output),
-        Some(1) => Probe::Absent,
-        Some(_) if any_nonzero_absent => Probe::Absent,
-        _ => unknown_probe(ProbeFailure::Wait),
+    classify_git_exit(status, output, any_nonzero_absent)
+}
+
+fn classify_git_exit(status: GitExit, output: Vec<u8>, any_nonzero_absent: bool) -> Probe {
+    match status {
+        GitExit::Code(0) => Probe::Present(output),
+        GitExit::Code(1) => Probe::Absent,
+        GitExit::Code(_) if any_nonzero_absent => Probe::Absent,
+        GitExit::Code(_) => unknown_probe(ProbeFailure::Nonzero),
+        GitExit::NoExitCode => unknown_probe(ProbeFailure::NoExitCode),
     }
 }
 
@@ -271,10 +284,15 @@ fn terminate_git(child: &mut std::process::Child) {
 fn wait_for_git(
     child: &mut std::process::Child,
     deadline: Instant,
-) -> Result<Option<std::process::ExitStatus>, ProbeFailure> {
+) -> Result<Option<GitExit>, ProbeFailure> {
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return Ok(Some(status)),
+            Ok(Some(status)) => {
+                return Ok(Some(match status.code() {
+                    Some(code) => GitExit::Code(i64::from(code)),
+                    None => GitExit::NoExitCode,
+                }));
+            }
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
             Ok(None) => return Ok(None),
             Err(_) => return Err(ProbeFailure::Wait),
@@ -286,8 +304,7 @@ fn wait_for_git(
 fn wait_for_git(
     child: &mut std::process::Child,
     deadline: Instant,
-) -> Result<Option<std::process::ExitStatus>, ProbeFailure> {
-    use std::os::windows::process::ExitStatusExt as _;
+) -> Result<Option<GitExit>, ProbeFailure> {
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT};
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
@@ -317,10 +334,10 @@ fn wait_for_git(
             let mut exit_code = 0;
             if unsafe { GetExitCodeProcess(handle, &mut exit_code) } == 0 {
                 Err(ProbeFailure::ExitCode)
-            } else if exit_code == 259 {
-                Err(ProbeFailure::NoExitCode)
             } else {
-                Ok(Some(std::process::ExitStatus::from_raw(exit_code)))
+                // The process is signaled, so even STILL_ACTIVE (259) is its
+                // actual raw exit code rather than a liveness sentinel.
+                Ok(Some(GitExit::Code(i64::from(exit_code))))
             }
         }
         WAIT_TIMEOUT => Ok(None),
@@ -630,6 +647,30 @@ mod tests {
     fn unknown_probe_uses_a_bounded_secret_safe_reason() {
         assert_eq!(format!("{:?}", ProbeFailure::Spawn), "Spawn");
         assert!(matches!(unknown_probe(ProbeFailure::Spawn), Probe::Unknown));
+    }
+
+    #[test]
+    fn raw_git_exit_codes_have_fixed_probe_semantics() {
+        assert!(matches!(
+            classify_git_exit(GitExit::Code(0), b"object".to_vec(), false),
+            Probe::Present(output) if output == b"object"
+        ));
+        assert!(matches!(
+            classify_git_exit(GitExit::Code(1), Vec::new(), false),
+            Probe::Absent
+        ));
+        assert!(matches!(
+            classify_git_exit(GitExit::Code(259), Vec::new(), false),
+            Probe::Unknown
+        ));
+        assert!(matches!(
+            classify_git_exit(GitExit::Code(259), Vec::new(), true),
+            Probe::Absent
+        ));
+        assert!(matches!(
+            classify_git_exit(GitExit::NoExitCode, Vec::new(), true),
+            Probe::Unknown
+        ));
     }
 
     #[cfg(windows)]
