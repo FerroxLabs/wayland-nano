@@ -258,8 +258,8 @@ fn parse_args_inner(args: &[String]) -> Result<VerifyParams, ()> {
     })
 }
 
-#[allow(async_fn_in_trait, dead_code)]
-trait VerifyRuntime {
+#[allow(async_fn_in_trait, dead_code, clippy::result_unit_err)]
+pub trait VerifyRuntime {
     fn now_millis(&self) -> u64;
     async fn generate(&self, _model: &str, _prompt: &str) -> Result<String, ()> {
         Err(())
@@ -378,10 +378,27 @@ impl VerifyRuntime for ProductionRuntime {
 }
 
 pub async fn run(_home: &Path, workspace: &Path, params: &VerifyParams) -> i32 {
-    run_with(workspace, params, &ProductionRuntime::new()).await
+    run_with_runtime(_home, workspace, params, &ProductionRuntime::new()).await
 }
 
+#[cfg(test)]
 async fn run_with<R: VerifyRuntime>(workspace: &Path, params: &VerifyParams, runtime: &R) -> i32 {
+    run_with_runtime(
+        &workspace.join(".nano-test-home"),
+        workspace,
+        params,
+        runtime,
+    )
+    .await
+}
+
+/// Deterministic integration seam for the offline verify fixture battery.
+pub async fn run_with_runtime<R: VerifyRuntime>(
+    home: &Path,
+    workspace: &Path,
+    params: &VerifyParams,
+    runtime: &R,
+) -> i32 {
     match &params.mode {
         VerifyMode::CheckReceipt { path, json } => {
             check_receipt(workspace, path, *json, runtime).await
@@ -394,7 +411,8 @@ async fn run_with<R: VerifyRuntime>(workspace: &Path, params: &VerifyParams, run
             cheap_model,
             escalation_models,
             deadline_ms,
-            ..
+            receipt_out,
+            json: _,
         } => {
             let Some(deadline) = runtime.now_millis().checked_add(*deadline_ms) else {
                 return 2;
@@ -410,6 +428,8 @@ async fn run_with<R: VerifyRuntime>(workspace: &Path, params: &VerifyParams, run
                 nano_verify::RunDeadline {
                     monotonic_millis: deadline,
                 },
+                home,
+                receipt_out.as_deref(),
                 runtime,
             )
             .await
@@ -560,10 +580,10 @@ fn receipt_worktree_path() -> Result<PathBuf, ()> {
         return Err(());
     }
     let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = root.join(format!(
+    let path = native_windows_path(root.join(format!(
         "wayland-nano-receipt-{}-{nonce}",
         std::process::id()
-    ));
+    )));
     if path.exists() {
         return Err(());
     }
@@ -917,8 +937,12 @@ fn confined_existing(root: &Path, relative: &Path) -> Result<PathBuf, ()> {
     {
         return Err(());
     }
-    let path = root.join(relative).canonicalize().map_err(|_| ())?;
-    if !path.starts_with(root) || !(path.is_file() || path.is_dir()) {
+    let canonical_root = root.canonicalize().map_err(|_| ())?;
+    let path = canonical_root
+        .join(relative)
+        .canonicalize()
+        .map_err(|_| ())?;
+    if !path.starts_with(&canonical_root) || !(path.is_file() || path.is_dir()) {
         return Err(());
     }
     Ok(path)
@@ -945,6 +969,17 @@ pub fn load_requested_registry(
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
+    #[test]
+    fn confined_existing_accepts_nonverbatim_windows_root() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("artifact.txt"), b"ok").unwrap();
+        let lexical =
+            std::path::PathBuf::from(root.path().to_string_lossy().trim_start_matches(r"\\?\"));
+        let resolved =
+            super::confined_existing(&lexical, std::path::Path::new("artifact.txt")).unwrap();
+        assert_eq!(std::fs::read(resolved).unwrap(), b"ok");
+    }
+
     use super::{
         EMPTY_REGISTRY_BOOTSTRAP, VerifyEvents, VerifyMode, VerifyParams, load_requested_registry,
         parse_args,
@@ -2675,6 +2710,8 @@ async fn mint_until_materializer<R: VerifyRuntime>(
     cheap_model: &str,
     escalation_models: &[String],
     deadline: nano_verify::RunDeadline,
+    home: &Path,
+    receipt_out: Option<&Path>,
     runtime: &R,
 ) -> i32 {
     let Ok(repo_root) = runtime.canonical_repo_root(workspace) else {
@@ -2714,6 +2751,7 @@ async fn mint_until_materializer<R: VerifyRuntime>(
             ],
             remaining(runtime, deadline).ok_or(())?,
         )?;
+        let baseline_root = baseline_root.canonicalize().map_err(|_| ())?;
         require_identity(
             &baseline_root,
             &starting_commit,
@@ -2746,11 +2784,11 @@ async fn mint_until_materializer<R: VerifyRuntime>(
         if !eligible_baseline(&execution, &inventory) {
             return Err(());
         }
-        Ok(inventory)
+        Ok((inventory, execution.evidence))
     }
     .await;
     let cleanup = cleanup_receipt_worktree(&repo_root, &baseline_root, 30_000);
-    let Ok(inventory) = baseline_result else {
+    let Ok((inventory, baseline_evidence)) = baseline_result else {
         return 3;
     };
     if cleanup.is_err()
@@ -2799,7 +2837,7 @@ async fn mint_until_materializer<R: VerifyRuntime>(
             entry.script.clone(),
         ],
     };
-    let Ok(_committed) = materialize_candidate(
+    let Ok(committed) = materialize_candidate(
         &repo_root,
         &starting_commit,
         &bytes,
@@ -2808,10 +2846,62 @@ async fn mint_until_materializer<R: VerifyRuntime>(
     ) else {
         return 1;
     };
-    // The coherent fix commit is intentionally retained. Plan 06-06 owns the
-    // pinned rerun and receipt store/copy boundary and must mint nothing until
-    // that rerun proves Green.
-    3
+    let Some(remaining_ms) = remaining(runtime, deadline) else {
+        return 3;
+    };
+    let Ok(invocation) = registry_invocation(&repo_root, gate_id, entry, remaining_ms) else {
+        return 3;
+    };
+    let Ok(artifact) = runtime.resolve_artifact(&repo_root, Path::new(&entry.run_artifact)) else {
+        return 3;
+    };
+    let rerun = runtime.run_gate(&invocation, &artifact, &inventory).await;
+    if !matches!(rerun, nano_verify::ExecutionGateOutcome::Green { .. })
+        || clean_identity(&repo_root, 10_000)
+            .map(|(head, _)| head != committed.fix_commit)
+            .unwrap_or(true)
+    {
+        return 3;
+    }
+    let (Some(exit_code), Some(log_digest)) =
+        (baseline_evidence.exit_code, baseline_evidence.log_digest)
+    else {
+        return 3;
+    };
+    let receipt = nano_verify::Receipt {
+        schema: 1,
+        requirement: requirement.to_owned(),
+        test: entry.script.clone(),
+        gate_id: gate_id.to_owned(),
+        gate_closure_digest: entry.closure_digest.clone(),
+        failing_run: nano_verify::FailingRun {
+            exit_code,
+            log_digest,
+            observed_at_commit: starting_commit,
+        },
+        fix_commit: committed.fix_commit,
+        minted_at: "1970-01-01T00:00:00Z".into(),
+        minted_by: format!("wayland-nano {}", env!("CARGO_PKG_VERSION")),
+    };
+    let Ok(receipt) = nano_verify::mint_receipt(receipt) else {
+        return 1;
+    };
+    let store = home.join("receipts");
+    if std::fs::create_dir_all(&store).is_err() {
+        return 1;
+    }
+    let Ok(store_path) = nano_verify::write_receipt(&store, &receipt) else {
+        return 1;
+    };
+    let Ok(bytes) = std::fs::read(&store_path) else {
+        return 1;
+    };
+    if let Some(output) = receipt_out
+        && crate::exec_mode::atomic_replace_write(output, &bytes).is_err()
+    {
+        return 1;
+    }
+    0
 }
 
 fn registry_invocation(
@@ -2848,11 +2938,24 @@ fn registry_invocation(
 fn baseline_worktree_path() -> Result<PathBuf, ()> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let root = canonical_env_dir("TEMP")?;
-    Ok(root.join(format!(
+    Ok(native_windows_path(root.join(format!(
         "wayland-nano-baseline-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    )))
+    ))))
+}
+
+#[cfg(windows)]
+fn native_windows_path(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    text.strip_prefix(r"\\?\")
+        .map(PathBuf::from)
+        .unwrap_or(path)
+}
+
+#[cfg(not(windows))]
+fn native_windows_path(path: PathBuf) -> PathBuf {
+    path
 }
 
 fn clean_identity(repo: &Path, timeout_ms: u64) -> Result<(String, String), ()> {
