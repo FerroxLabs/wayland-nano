@@ -1,0 +1,47 @@
+{
+  "base_sha": "7bcbc12fec0624aacbc3953e4f2c7d1a2c4414e0",
+  "reviewed_head": "bb6b304c3f2a317d8a32316fc4863396ca815aa8",
+  "reviewed_tree": "69ae9d0ad38da38528b53b10780df48c61e46a6a",
+  "diff_sha256": "e2739235cff49cc4b9655e4d40c6051265b61335a9120399620bb15f62b60a2d",
+  "findings": [
+    {
+      "id": "H-ART-01",
+      "severity": "high",
+      "status": "resolved",
+      "evidence": ["crates/nano-verify/src/gate.rs:442 post-execution bound-artifact readback", "cargo test -p nano-verify gate::tests::post_execution_artifact_mutation_fails_closed -- --exact --nocapture: 1 passed"]
+    },
+    {
+      "id": "H-MAN-02",
+      "severity": "high",
+      "status": "resolved",
+      "evidence": ["crates/nano-verify/src/engine.rs:389 Unix openat descriptor walk and revalidation", "crates/nano-verify/src/engine.rs:751 Windows NtCreateFile RootDirectory walk with full parent-chain and leaf revalidation", "cargo test -p nano-verify --lib wp2_expected_change -- --nocapture: 3 passed"]
+    },
+    {
+      "id": "H-CAN-03",
+      "severity": "high",
+      "status": "resolved",
+      "evidence": ["crates/nano-verify/src/gate.rs:597 cancellation polling and process-tree teardown", "cargo test -p nano-verify gate::tests::cancellation_poll_is_ten_ms_and_teardown_is_bounded -- --exact --nocapture: 1 passed"]
+    },
+    {
+      "id": "H-BUD-04",
+      "severity": "high",
+      "status": "resolved",
+      "evidence": ["crates/nano-verify/src/engine.rs:1116 charges every generation attempt before await", "cargo test -p nano-verify engine::tests::driver_pending_generation_is_cancel_safe -- --exact --nocapture: 1 passed"]
+    },
+    {
+      "id": "H-INV-05",
+      "severity": "high",
+      "status": "resolved",
+      "evidence": ["crates/nano-verify/src/gate.rs:1060 rejects empty, malformed, and duplicate inventories", "cargo test -p nano-verify --test gate_contract -- --nocapture: 8 passed"]
+    },
+    {
+      "id": "H-TST-06",
+      "severity": "high",
+      "status": "resolved",
+      "evidence": ["crates/nano-verify/tests/wp2_public_contract.rs:79 bounds nested Cargo at 180 seconds and reaps on timeout", "cargo test -p nano-verify --test wp2_public_contract -- --nocapture: 3 passed"]
+    }
+  ],
+  "fix_rounds": 1,
+  "recheck_head": "96b36e339dd0189052f7369c28ab6a984f8ce2af",
+  "recheck_tree": "2c9ec4f05104da33053f2af5f30921a749533e18"
+}
