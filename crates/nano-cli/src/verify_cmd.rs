@@ -327,12 +327,8 @@ pub async fn run(_home: &Path, workspace: &Path, params: &VerifyParams) -> i32 {
 
 async fn run_with<R: VerifyRuntime>(workspace: &Path, params: &VerifyParams, runtime: &R) -> i32 {
     match &params.mode {
-        VerifyMode::CheckReceipt { path, .. } => {
-            if std::fs::File::open(path).is_err() {
-                return 2;
-            }
-            // Plan 03 owns the locked parse -> evidence -> Git -> pin -> rerun pipeline.
-            6
+        VerifyMode::CheckReceipt { path, json } => {
+            check_receipt(workspace, path, *json, runtime).await
         }
         VerifyMode::Mint { deadline_ms, .. } => {
             let Some(_) = runtime.now_millis().checked_add(*deadline_ms) else {
@@ -352,6 +348,143 @@ async fn run_with<R: VerifyRuntime>(workspace: &Path, params: &VerifyParams, run
             deadline_ms,
             json,
         } => run_only(workspace, gate, *deadline_ms, *json, runtime).await,
+    }
+}
+
+async fn check_receipt<R: VerifyRuntime>(
+    workspace: &Path,
+    path: &Path,
+    json: bool,
+    runtime: &R,
+) -> i32 {
+    let Ok(bytes) = std::fs::read(path) else {
+        return 2;
+    };
+    let receipt = match receipt_structure(&bytes) {
+        Ok(receipt) => receipt,
+        Err(verdict) => return finish_receipt(verdict, receipt_identity(&bytes), json),
+    };
+    let identity = Some((receipt.requirement.clone(), receipt.fix_commit.clone()));
+    let Ok(repo_root) = runtime.canonical_repo_root(workspace) else {
+        return finish_receipt(nano_verify::VerifyVerdict::Unverifiable, identity, json);
+    };
+    let Ok(Some(registry)) = runtime.load_registry(
+        &repo_root,
+        Some(&receipt.gate_id),
+        Some(&receipt.requirement),
+    ) else {
+        return finish_receipt(nano_verify::VerifyVerdict::GateMismatch, identity, json);
+    };
+    if let Err(verdict) = preflight_verdict(nano_verify::preflight_receipt(
+        &repo_root, &bytes, &registry,
+    )) {
+        return finish_receipt(verdict, identity, json);
+    }
+    let Some(entry) = registry.gates.get(&receipt.gate_id) else {
+        return finish_receipt(nano_verify::VerifyVerdict::GateMismatch, identity, json);
+    };
+    if receipt.test != entry.script {
+        return finish_receipt(nano_verify::VerifyVerdict::GateMismatch, identity, json);
+    }
+
+    // A Ready preflight is necessary but never sufficient for validity. Plan 03's
+    // detached, bounded re-run below is the only path allowed to return Valid.
+    finish_receipt(nano_verify::VerifyVerdict::Unverifiable, identity, json)
+}
+
+fn receipt_structure(bytes: &[u8]) -> Result<nano_verify::Receipt, nano_verify::VerifyVerdict> {
+    use nano_verify::VerifyVerdict::{NeverRed, Unverifiable};
+
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| Unverifiable)?;
+    let object = value.as_object().ok_or(Unverifiable)?;
+    const TOP: [&str; 9] = [
+        "schema",
+        "requirement",
+        "test",
+        "gate_id",
+        "gate_closure_digest",
+        "failing_run",
+        "fix_commit",
+        "minted_at",
+        "minted_by",
+    ];
+    if object.keys().any(|key| !TOP.contains(&key.as_str()))
+        || object.get("schema").and_then(serde_json::Value::as_u64) != Some(1)
+    {
+        return Err(Unverifiable);
+    }
+    let failing = object
+        .get("failing_run")
+        .and_then(serde_json::Value::as_object);
+    const FAILING: [&str; 3] = ["exit_code", "log_digest", "observed_at_commit"];
+    if failing.is_some_and(|fields| fields.keys().any(|key| !FAILING.contains(&key.as_str()))) {
+        return Err(Unverifiable);
+    }
+    let receipt: nano_verify::Receipt = serde_json::from_value(value).map_err(|_| NeverRed)?;
+    if receipt.failing_run.exit_code == 0
+        || !lower_hex(&receipt.failing_run.log_digest, 64)
+        || !lower_hex(&receipt.failing_run.observed_at_commit, 40)
+        || !lower_hex(&receipt.fix_commit, 40)
+        || receipt.requirement.is_empty()
+        || receipt.test.is_empty()
+        || receipt.gate_id.is_empty()
+        || receipt.gate_closure_digest.is_empty()
+    {
+        return Err(NeverRed);
+    }
+    Ok(receipt)
+}
+
+fn lower_hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn preflight_verdict(
+    preflight: nano_verify::ReceiptPreflight,
+) -> Result<(), nano_verify::VerifyVerdict> {
+    use nano_verify::{ReceiptPreflight as P, VerifyVerdict as V};
+    match preflight {
+        P::Ready => Ok(()),
+        P::NeverRed => Err(V::NeverRed),
+        P::FabricatedCommit => Err(V::FabricatedCommit),
+        P::GateMismatch => Err(V::GateMismatch),
+        P::AncestryUnproven => Err(V::AncestryUnproven),
+        P::Unverifiable => Err(V::Unverifiable),
+    }
+}
+
+fn receipt_identity(bytes: &[u8]) -> Option<(String, String)> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    Some((
+        value.get("requirement")?.as_str()?.to_owned(),
+        value.get("fix_commit")?.as_str()?.to_owned(),
+    ))
+}
+
+fn finish_receipt(
+    verdict: nano_verify::VerifyVerdict,
+    identity: Option<(String, String)>,
+    json: bool,
+) -> i32 {
+    if json {
+        let (requirement, fix_commit) = identity.unwrap_or_default();
+        if let Ok(line) = serde_json::to_string(&serde_json::json!({
+            "schema": "nano.receipt-verdict/1",
+            "decision": verdict,
+            "requirement": requirement,
+            "fix_commit": fix_commit,
+            "re_derived": true,
+        })) {
+            println!("{line}");
+        }
+    }
+    if verdict == nano_verify::VerifyVerdict::Valid {
+        0
+    } else {
+        6
     }
 }
 
