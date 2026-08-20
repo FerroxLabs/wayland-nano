@@ -368,9 +368,13 @@ mod unix_descriptor {
     use std::os::fd::{AsRawFd, FromRawFd, RawFd};
     use std::os::unix::fs::MetadataExt;
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    const O_DIRECTORY: i32 = 0x4000;
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    const O_NOFOLLOW: i32 = 0x8000;
+    #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
     const O_DIRECTORY: i32 = 0o200000;
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
     const O_NOFOLLOW: i32 = 0o400000;
     #[cfg(target_os = "linux")]
     const O_CLOEXEC: i32 = 0o2000000;
