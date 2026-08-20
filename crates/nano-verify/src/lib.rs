@@ -17,6 +17,10 @@ pub use climb::{
     next_step,
 };
 
+pub use engine::{
+    CandidateDiff, ChangeKind, ExpectedChange, ExpectedChangeManifest, derive_expected_changes,
+    parse_candidate_diff,
+};
 pub use error::VerifyError;
 pub use gate::{
     CandidateArtifact, CheckVerdict, FailCategory, FailClosedReason, GateEvidence, GateInvocation,

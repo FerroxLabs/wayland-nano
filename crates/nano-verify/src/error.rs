@@ -19,3 +19,9 @@ pub enum VerifyError {
     #[error("writer lock held: {0}")]
     LockHeld(String),
 }
+
+impl From<std::io::Error> for VerifyError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Artifact(error)
+    }
+}
