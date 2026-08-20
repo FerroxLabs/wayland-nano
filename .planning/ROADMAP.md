@@ -191,7 +191,15 @@ Plans:
   4. Merge through detached `.tmp-wt-integ` with `--no-ff` and rerun the complete `just gate-all` on the integration commit.
   5. Push integration `HEAD:master`; require CI green before Phase 6 and record the full one-line promotion result.
 
-**Plans**: TBD
+**Plans**: 5 plans
+
+Plans:
+
+- [ ] 05-01-PLAN.md — Implement the pure strict-ratchet climb and exact tests 30–32.
+- [ ] 05-02-PLAN.md — Implement trusted artifact/evidence APIs, parser/manifest derivation, and the driver suite.
+- [ ] 05-03-PLAN.md — Add independent downstream public-opacity and source-compatibility teeth.
+- [ ] 05-04-PLAN.md — Seal cross-module exports, dependency closure, and exact provenance.
+- [ ] 05-05-PLAN.md — Run the bounded audit, full local gates, and builder-only handoff.
 
 ### Phase 6: WP-3 Verify CLI and CI Surface
 
