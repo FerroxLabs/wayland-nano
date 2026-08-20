@@ -7,10 +7,7 @@ use crate::{
     next_step,
 };
 use sha2::{Digest, Sha256};
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeSet, path::Path};
 
 const CANDIDATE_CAP: usize = 16 * 1024 * 1024;
 
@@ -260,34 +257,39 @@ pub fn derive_expected_changes(
     {
         return invalid("unsafe starting root");
     }
-    let (mut entries, mut base) = (
-        Vec::new(),
-        b"wayland-nano.expected-change.base.v1\0".to_vec(),
-    );
+    #[cfg(windows)]
+    let root_handle = windows_descriptor::open_root(&canonical)?;
+    let mut derived = Vec::new();
     for record in &diff.records {
-        let path = confined_path(&canonical, &record.path)?;
-        let preimage = match record.kind {
-            ChangeKind::Add => {
-                if path.exists() {
-                    return invalid("add target exists");
-                }
-                None
-            }
-            ChangeKind::Modify | ChangeKind::Delete => {
-                let meta = std::fs::symlink_metadata(&path).map_err(artifact_io)?;
-                if !meta.file_type().is_file() || meta.file_type().is_symlink() {
-                    return invalid("invalid preimage");
-                }
-                Some(std::fs::read(&path).map_err(artifact_io)?)
-            }
-        };
-        bind_len(&mut base, record.path.as_bytes());
-        base.push(match record.kind {
+        #[cfg(unix)]
+        let preimage = confined_preimage(&canonical, &record.path, record.kind)?;
+        #[cfg(windows)]
+        let preimage =
+            windows_descriptor::confined_preimage(&root_handle, &record.path, record.kind)?;
+        let postimage = apply_hunks(preimage.as_deref().unwrap_or_default(), record)?;
+        if record.kind == ChangeKind::Delete && !postimage.is_empty() {
+            return invalid("delete postimage");
+        }
+        derived.push((
+            ExpectedChange {
+                path: record.path.clone(),
+                kind: record.kind,
+                postimage_sha256: (record.kind != ChangeKind::Delete)
+                    .then(|| hex_digest(&postimage)),
+            },
+            preimage,
+        ));
+    }
+    derived.sort_by(|a, b| a.0.path.cmp(&b.0.path));
+    let mut base = b"wayland-nano.expected-change.base.v1\0".to_vec();
+    for (entry, preimage) in &derived {
+        bind_len(&mut base, entry.path.as_bytes());
+        base.push(match entry.kind {
             ChangeKind::Add => 0,
             ChangeKind::Modify => 1,
             ChangeKind::Delete => 2,
         });
-        match &preimage {
+        match preimage {
             None => base.push(0),
             Some(bytes) => {
                 base.push(1);
@@ -295,17 +297,8 @@ pub fn derive_expected_changes(
                 base.extend_from_slice(&Sha256::digest(bytes));
             }
         }
-        let postimage = apply_hunks(preimage.as_deref().unwrap_or_default(), record)?;
-        if record.kind == ChangeKind::Delete && !postimage.is_empty() {
-            return invalid("delete postimage");
-        }
-        entries.push(ExpectedChange {
-            path: record.path.clone(),
-            kind: record.kind,
-            postimage_sha256: (record.kind != ChangeKind::Delete).then(|| hex_digest(&postimage)),
-        });
     }
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    let entries = derived.into_iter().map(|(entry, _)| entry).collect();
     Ok(ExpectedChangeManifest {
         entries,
         base_tree_digest: hex_digest(&base),
@@ -359,24 +352,574 @@ fn apply_hunks(preimage: &[u8], record: &ParsedFileRecord) -> Result<Vec<u8>, Ve
     output.extend(lines[cursor..].iter().flat_map(|v| v.iter()).copied());
     Ok(output)
 }
-fn confined_path(root: &Path, relative: &str) -> Result<PathBuf, VerifyError> {
-    if !valid_path(relative) {
-        return invalid("unsafe path");
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    first: u64,
+    second: u64,
+}
+
+#[cfg(unix)]
+mod unix_descriptor {
+    use super::{FileIdentity, VerifyError, artifact_io, invalid};
+    use std::ffi::CString;
+    use std::fs::File;
+    use std::io::Read;
+    use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+    use std::os::unix::fs::MetadataExt;
+
+    #[cfg(target_os = "linux")]
+    const O_DIRECTORY: i32 = 0o200000;
+    #[cfg(target_os = "linux")]
+    const O_NOFOLLOW: i32 = 0o400000;
+    #[cfg(target_os = "linux")]
+    const O_CLOEXEC: i32 = 0o2000000;
+    #[cfg(target_os = "linux")]
+    const O_NONBLOCK: i32 = 0o4000;
+    #[cfg(target_os = "macos")]
+    const O_DIRECTORY: i32 = 0x0010_0000;
+    #[cfg(target_os = "macos")]
+    const O_NOFOLLOW: i32 = 0x0000_0100;
+    #[cfg(target_os = "macos")]
+    const O_CLOEXEC: i32 = 0x0100_0000;
+    #[cfg(target_os = "macos")]
+    const O_NONBLOCK: i32 = 0x0000_0004;
+    const O_RDONLY: i32 = 0;
+
+    unsafe extern "C" {
+        fn openat(dirfd: i32, path: *const i8, flags: i32, ...) -> i32;
     }
-    let mut current = root.to_path_buf();
-    let parts: Vec<_> = relative.split('/').collect();
-    for component in &parts[..parts.len() - 1] {
-        current.push(component);
-        let meta = std::fs::symlink_metadata(&current).map_err(artifact_io)?;
-        if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
-            return invalid("unsafe path component");
+
+    fn open_at(dir: RawFd, name: &str, flags: i32) -> Result<File, std::io::Error> {
+        let name = CString::new(name)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "unsafe path"))?;
+        let fd = unsafe { openat(dir, name.as_ptr(), flags) };
+        if fd < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(unsafe { File::from_raw_fd(fd) })
         }
     }
-    current.push(parts[parts.len() - 1]);
-    if !current.starts_with(root) {
-        return invalid("path escape");
+    #[cfg(target_os = "linux")]
+    fn mount_identity(file: &File) -> Result<u64, VerifyError> {
+        let text = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd()))
+            .map_err(artifact_io)?;
+        text.lines()
+            .find_map(|line| line.strip_prefix("mnt_id:\t"))
+            .and_then(|v| v.parse().ok())
+            .ok_or_else(|| super::invalid_io("missing mount identity").into())
     }
-    Ok(current)
+    #[cfg(target_os = "macos")]
+    fn mount_identity(file: &File) -> Result<u64, VerifyError> {
+        Ok(file.metadata().map_err(artifact_io)?.dev())
+    }
+
+    struct Chain {
+        root: File,
+        dirs: Vec<(String, File, FileIdentity, u64)>,
+        root_dev: u64,
+        root_mount: u64,
+    }
+    impl Chain {
+        fn open(root: &std::path::Path, relative: &str) -> Result<(Self, String), VerifyError> {
+            if !super::valid_path(relative) {
+                return invalid("unsafe path");
+            }
+            use std::os::unix::fs::OpenOptionsExt;
+            let root_file = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                .open(root)
+                .map_err(artifact_io)?;
+            let root_meta = root_file.metadata().map_err(artifact_io)?;
+            if !root_meta.is_dir() {
+                return invalid("unsafe starting root");
+            }
+            let root_dev = root_meta.dev();
+            let root_mount = mount_identity(&root_file)?;
+            let mut chain = Chain {
+                root: root_file,
+                dirs: Vec::new(),
+                root_dev,
+                root_mount,
+            };
+            let mut parts = relative.split('/').peekable();
+            let leaf = loop {
+                let part = parts
+                    .next()
+                    .ok_or_else(|| super::invalid_io("unsafe path"))?;
+                if parts.peek().is_none() {
+                    break part.to_owned();
+                }
+                let parent_fd = chain
+                    .dirs
+                    .last()
+                    .map_or(chain.root.as_raw_fd(), |(_, f, _, _)| f.as_raw_fd());
+                let dir = open_at(
+                    parent_fd,
+                    part,
+                    O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC,
+                )
+                .map_err(artifact_io)?;
+                let meta = dir.metadata().map_err(artifact_io)?;
+                let id = FileIdentity {
+                    first: meta.dev(),
+                    second: meta.ino(),
+                };
+                let mount = mount_identity(&dir)?;
+                if !meta.is_dir() || meta.dev() != chain.root_dev || mount != chain.root_mount {
+                    return invalid("unsafe path component");
+                }
+                chain.dirs.push((part.to_owned(), dir, id, mount));
+            };
+            Ok((chain, leaf))
+        }
+        fn parent_fd(&self) -> RawFd {
+            self.dirs
+                .last()
+                .map_or(self.root.as_raw_fd(), |(_, f, _, _)| f.as_raw_fd())
+        }
+        fn revalidate(&self) -> Result<(), VerifyError> {
+            let mut fd = self.root.as_raw_fd();
+            let mut opened = Vec::with_capacity(self.dirs.len());
+            for (name, _, expected, expected_mount) in &self.dirs {
+                let current = open_at(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                    .map_err(artifact_io)?;
+                let meta = current.metadata().map_err(artifact_io)?;
+                let id = FileIdentity {
+                    first: meta.dev(),
+                    second: meta.ino(),
+                };
+                if id != *expected
+                    || meta.dev() != self.root_dev
+                    || mount_identity(&current)? != *expected_mount
+                {
+                    return invalid("path component changed during read");
+                }
+                fd = current.as_raw_fd();
+                opened.push(current);
+            }
+            Ok(())
+        }
+    }
+    pub(super) fn preimage(
+        root: &std::path::Path,
+        relative: &str,
+        kind: super::ChangeKind,
+    ) -> Result<Option<Vec<u8>>, VerifyError> {
+        let (chain, leaf) = Chain::open(root, relative)?;
+        let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK;
+        if kind == super::ChangeKind::Add {
+            match open_at(chain.parent_fd(), &leaf, flags) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(artifact_io(e)),
+                Ok(_) => return invalid("add target exists"),
+            }
+            chain.revalidate()?;
+            return match open_at(chain.parent_fd(), &leaf, flags) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(artifact_io(e)),
+                Ok(_) => invalid("add target changed during read"),
+            };
+        }
+        let mut file = open_at(chain.parent_fd(), &leaf, flags).map_err(artifact_io)?;
+        let before = file.metadata().map_err(artifact_io)?;
+        if !before.is_file() || before.nlink() != 1 {
+            return invalid("invalid preimage");
+        }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(artifact_io)?;
+        let after = file.metadata().map_err(artifact_io)?;
+        let reopened = open_at(chain.parent_fd(), &leaf, flags).map_err(artifact_io)?;
+        let current = reopened.metadata().map_err(artifact_io)?;
+        if before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.len() != after.len()
+            || before.mtime() != after.mtime()
+            || before.mtime_nsec() != after.mtime_nsec()
+            || before.ctime() != after.ctime()
+            || before.ctime_nsec() != after.ctime_nsec()
+            || after.len() != bytes.len() as u64
+            || after.nlink() != 1
+            || current.dev() != before.dev()
+            || current.ino() != before.ino()
+            || current.nlink() != 1
+        {
+            return invalid("preimage changed during read");
+        }
+        chain.revalidate()?;
+        Ok(Some(bytes))
+    }
+}
+
+#[cfg(unix)]
+fn confined_preimage(
+    root: &Path,
+    relative: &str,
+    kind: ChangeKind,
+) -> Result<Option<Vec<u8>>, VerifyError> {
+    unix_descriptor::preimage(root, relative, kind)
+}
+
+#[cfg(windows)]
+mod windows_descriptor {
+    use super::{ChangeKind, VerifyError, artifact_io, invalid, invalid_io, valid_path};
+    use std::{
+        ffi::c_void,
+        fs::File,
+        io::Read as _,
+        mem::{size_of, zeroed},
+        os::windows::{
+            ffi::OsStrExt as _,
+            io::{AsRawHandle as _, FromRawHandle as _},
+        },
+        path::Path,
+    };
+    use windows_sys::Win32::{
+        Foundation::{HANDLE, INVALID_HANDLE_VALUE},
+        Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
+            OPEN_EXISTING,
+        },
+    };
+
+    const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+    const FILE_OPEN: u32 = 1;
+    const FILE_DIRECTORY_FILE: u32 = 0x1;
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
+    const FILE_OPEN_FOR_BACKUP_INTENT: u32 = 0x4000;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const FILE_READ_DATA: u32 = 0x1;
+    const FILE_TRAVERSE: u32 = 0x20;
+    const STATUS_OBJECT_NAME_NOT_FOUND: i32 = 0xc000_0034_u32 as i32;
+    const STATUS_OBJECT_PATH_NOT_FOUND: i32 = 0xc000_003a_u32 as i32;
+
+    #[repr(C)]
+    struct UnicodeString {
+        length: u16,
+        maximum_length: u16,
+        buffer: *mut u16,
+    }
+    #[repr(C)]
+    struct ObjectAttributes {
+        length: u32,
+        root_directory: HANDLE,
+        object_name: *mut UnicodeString,
+        attributes: u32,
+        security_descriptor: *mut c_void,
+        security_quality_of_service: *mut c_void,
+    }
+    #[repr(C)]
+    union IoStatusValue {
+        status: i32,
+        pointer: *mut c_void,
+    }
+    #[repr(C)]
+    struct IoStatusBlock {
+        value: IoStatusValue,
+        information: usize,
+    }
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtCreateFile(
+            file_handle: *mut HANDLE,
+            desired_access: u32,
+            object_attributes: *mut ObjectAttributes,
+            io_status_block: *mut IoStatusBlock,
+            allocation_size: *const i64,
+            file_attributes: u32,
+            share_access: u32,
+            create_disposition: u32,
+            create_options: u32,
+            ea_buffer: *const c_void,
+            ea_length: u32,
+        ) -> i32;
+        fn RtlNtStatusToDosError(status: i32) -> u32;
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateFileW(
+            file_name: *const u16,
+            desired_access: u32,
+            share_mode: u32,
+            security_attributes: *mut c_void,
+            creation_disposition: u32,
+            flags_and_attributes: u32,
+            template_file: HANDLE,
+        ) -> HANDLE;
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct FileIdentity {
+        volume: u32,
+        index: u64,
+    }
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct FileState {
+        identity: FileIdentity,
+        size: u64,
+        last_write_low: u32,
+        last_write_high: u32,
+        links: u32,
+        attributes: u32,
+    }
+    enum RelativeOpen {
+        Open(File),
+        Missing,
+    }
+
+    fn information(file: &File) -> Result<FileState, VerifyError> {
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut info) } == 0 {
+            return Err(artifact_io(std::io::Error::last_os_error()));
+        }
+        Ok(FileState {
+            identity: FileIdentity {
+                volume: info.dwVolumeSerialNumber,
+                index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+            },
+            size: (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow),
+            last_write_low: info.ftLastWriteTime.dwLowDateTime,
+            last_write_high: info.ftLastWriteTime.dwHighDateTime,
+            links: info.nNumberOfLinks,
+            attributes: info.dwFileAttributes,
+        })
+    }
+
+    fn require_directory(file: &File) -> Result<FileIdentity, VerifyError> {
+        let state = information(file)?;
+        if state.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            || state.attributes & FILE_ATTRIBUTE_DIRECTORY == 0
+        {
+            return invalid("unsafe path component");
+        }
+        Ok(state.identity)
+    }
+
+    pub(super) fn open_root(path: &Path) -> Result<File, VerifyError> {
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                0,
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(artifact_io(std::io::Error::last_os_error()));
+        }
+        let root = unsafe { File::from_raw_handle(handle as _) };
+        require_directory(&root)?;
+        Ok(root)
+    }
+
+    fn relative_open(
+        parent: &File,
+        component: &str,
+        desired_access: u32,
+        share_access: u32,
+        create_options: u32,
+    ) -> Result<RelativeOpen, VerifyError> {
+        if component.is_empty() || component.encode_utf16().any(|unit| unit == 0) {
+            return invalid("unsafe path component");
+        }
+        let mut wide: Vec<u16> = component.encode_utf16().collect();
+        let byte_len = wide
+            .len()
+            .checked_mul(2)
+            .and_then(|n| u16::try_from(n).ok())
+            .ok_or_else(|| VerifyError::Artifact(invalid_io("path component too long")))?;
+        let mut name = UnicodeString {
+            length: byte_len,
+            maximum_length: byte_len,
+            buffer: wide.as_mut_ptr(),
+        };
+        let mut attributes = ObjectAttributes {
+            length: size_of::<ObjectAttributes>() as u32,
+            root_directory: parent.as_raw_handle() as HANDLE,
+            object_name: &mut name,
+            attributes: OBJ_CASE_INSENSITIVE,
+            security_descriptor: std::ptr::null_mut(),
+            security_quality_of_service: std::ptr::null_mut(),
+        };
+        let mut io_status = IoStatusBlock {
+            value: IoStatusValue { status: 0 },
+            information: 0,
+        };
+        let mut handle: HANDLE = 0;
+        let status = unsafe {
+            NtCreateFile(
+                &mut handle,
+                desired_access,
+                &mut attributes,
+                &mut io_status,
+                std::ptr::null(),
+                0,
+                share_access,
+                FILE_OPEN,
+                create_options | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                std::ptr::null(),
+                0,
+            )
+        };
+        if status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_OBJECT_PATH_NOT_FOUND {
+            return Ok(RelativeOpen::Missing);
+        }
+        if status < 0 {
+            let code = unsafe { RtlNtStatusToDosError(status) };
+            return Err(artifact_io(std::io::Error::from_raw_os_error(code as i32)));
+        }
+        if handle == 0 || handle == INVALID_HANDLE_VALUE {
+            return invalid("native open returned invalid handle");
+        }
+        Ok(RelativeOpen::Open(unsafe {
+            File::from_raw_handle(handle as _)
+        }))
+    }
+
+    fn open_parent(parent: &File, component: &str) -> Result<File, VerifyError> {
+        match relative_open(
+            parent,
+            component,
+            FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_DIRECTORY_FILE | FILE_OPEN_FOR_BACKUP_INTENT,
+        )? {
+            RelativeOpen::Open(file) => {
+                require_directory(&file)?;
+                Ok(file)
+            }
+            RelativeOpen::Missing => invalid("missing path component"),
+        }
+    }
+
+    fn open_leaf(
+        parent: &File,
+        component: &str,
+        read_data: bool,
+    ) -> Result<RelativeOpen, VerifyError> {
+        relative_open(
+            parent,
+            component,
+            FILE_READ_ATTRIBUTES | SYNCHRONIZE | if read_data { FILE_READ_DATA } else { 0 },
+            FILE_SHARE_READ,
+            if read_data {
+                FILE_NON_DIRECTORY_FILE
+            } else {
+                0
+            },
+        )
+    }
+
+    fn revalidate_parent_chain(
+        root: &File,
+        components: &[&str],
+        expected: &[FileIdentity],
+    ) -> Result<File, VerifyError> {
+        let mut current = root.try_clone().map_err(artifact_io)?;
+        if expected.first().copied() != Some(information(&current)?.identity) {
+            return invalid("starting root changed during traversal");
+        }
+        for (index, component) in components.iter().enumerate() {
+            current = open_parent(&current, component)?;
+            if expected.get(index + 1).copied() != Some(information(&current)?.identity) {
+                return invalid("path component changed during traversal");
+            }
+        }
+        Ok(current)
+    }
+
+    pub(super) fn confined_preimage(
+        root: &File,
+        relative: &str,
+        kind: ChangeKind,
+    ) -> Result<Option<Vec<u8>>, VerifyError> {
+        if !valid_path(relative) {
+            return invalid("unsafe path");
+        }
+        let parts: Vec<_> = relative.split('/').collect();
+        let mut current = root.try_clone().map_err(artifact_io)?;
+        let mut parent_identities = vec![information(&current)?.identity];
+        for component in &parts[..parts.len() - 1] {
+            current = open_parent(&current, component)?;
+            parent_identities.push(information(&current)?.identity);
+        }
+        let leaf = parts[parts.len() - 1];
+        match kind {
+            ChangeKind::Add => match open_leaf(&current, leaf, false)? {
+                RelativeOpen::Missing => {
+                    let current = revalidate_parent_chain(
+                        root,
+                        &parts[..parts.len() - 1],
+                        &parent_identities,
+                    )?;
+                    match open_leaf(&current, leaf, false)? {
+                        RelativeOpen::Missing => Ok(None),
+                        RelativeOpen::Open(_) => invalid("add target changed during traversal"),
+                    }
+                }
+                RelativeOpen::Open(_) => invalid("add target exists"),
+            },
+            ChangeKind::Modify | ChangeKind::Delete => {
+                let mut file = match open_leaf(&current, leaf, true)? {
+                    RelativeOpen::Open(file) => file,
+                    RelativeOpen::Missing => return invalid("missing preimage"),
+                };
+                let before = information(&file)?;
+                if before.attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+                    != 0
+                    || before.links != 1
+                {
+                    return invalid("invalid preimage");
+                }
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes).map_err(artifact_io)?;
+                let after = information(&file)?;
+                if after.identity != before.identity
+                    || after.size != before.size
+                    || after.size != bytes.len() as u64
+                    || after.last_write_low != before.last_write_low
+                    || after.last_write_high != before.last_write_high
+                    || after.links != 1
+                    || after.attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+                        != 0
+                {
+                    return invalid("preimage changed during read");
+                }
+                let current =
+                    revalidate_parent_chain(root, &parts[..parts.len() - 1], &parent_identities)?;
+                let reopened = match open_leaf(&current, leaf, false)? {
+                    RelativeOpen::Open(file) => file,
+                    RelativeOpen::Missing => return invalid("preimage replaced during read"),
+                };
+                let current_info = information(&reopened)?;
+                if current_info.identity != before.identity
+                    || current_info.size != before.size
+                    || current_info.links != 1
+                    || current_info.attributes
+                        & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+                        != 0
+                {
+                    return invalid("preimage replaced during read");
+                }
+                Ok(Some(bytes))
+            }
+        }
+    }
 }
 fn symlink_component(path: &Path) -> Result<bool, VerifyError> {
     for current in path.ancestors().filter(|entry| entry.is_absolute()) {
@@ -516,6 +1059,12 @@ pub async fn run_climb<E: Effects>(
     if fx.now_millis() >= cfg.deadline.monotonic_millis {
         finish!(TerminalState::TimedOut, StopReason::Error)
     }
+    if crate::gate::validate_inventory(inventory).is_err() {
+        finish!(
+            TerminalState::Blocked("invalid_inventory".into()),
+            StopReason::Error
+        )
+    }
     loop {
         let step = next_step(&state);
         let models: Vec<String> = match &step {
@@ -564,6 +1113,7 @@ pub async fn run_climb<E: Effects>(
                 accepted: false,
                 check_ids: ids.clone(),
             });
+            state.calls = state.calls.saturating_add(1);
             let generated = await_generation(fx, &model, &prompt, remaining).await;
             if fx.cancellation_requested() {
                 finish!(TerminalState::Cancelled, StopReason::Error)
@@ -663,7 +1213,21 @@ pub async fn run_climb<E: Effects>(
             }
             let mut effective = gate.clone();
             effective.timeout = std::time::Duration::from_millis(effective_ms);
-            let execution = crate::run_gate_execution(&effective, &artifact, inventory).await;
+            let cancellation = crate::gate::GateCancellation::new();
+            let Some(execution) = await_gate_execution(
+                fx,
+                crate::gate::run_gate_execution_with_cancellation(
+                    &effective,
+                    &artifact,
+                    inventory,
+                    Some(&cancellation),
+                ),
+                &cancellation,
+            )
+            .await
+            else {
+                finish!(TerminalState::Cancelled, StopReason::Error)
+            };
             let (score, fails, eligible) = match &execution.outcome {
                 crate::ExecutionGateOutcome::Green { verdicts }
                 | crate::ExecutionGateOutcome::Red { verdicts } => {
@@ -710,7 +1274,11 @@ pub async fn run_climb<E: Effects>(
             });
         }
         let previous = state.best.clone();
-        state = apply_result(&state, &step, &results);
+        let mut apply_input = state.clone();
+        apply_input.calls = apply_input
+            .calls
+            .saturating_sub(u32::try_from(results.len()).unwrap_or(u32::MAX));
+        state = apply_result(&apply_input, &step, &results);
         let accepted = state.best != previous;
         if accepted {
             log.push(LogEntry {
@@ -758,6 +1326,26 @@ async fn await_generation<E: Effects>(
     tokio::pin!(timer);
     loop {
         tokio::select! {result=&mut future=>return Some(result),_=&mut timer=>return None,_=tokio::time::sleep(std::time::Duration::from_millis(50))=>{if fx.cancellation_requested(){return None}}}
+    }
+}
+
+async fn await_gate_execution<E: Effects>(
+    fx: &E,
+    future: impl std::future::Future<Output = crate::GateExecution>,
+    cancellation: &crate::gate::GateCancellation,
+) -> Option<crate::GateExecution> {
+    tokio::pin!(future);
+    loop {
+        tokio::select! {
+            result = &mut future => return Some(result),
+            () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                if fx.cancellation_requested() {
+                    cancellation.cancel();
+                    let _ = future.await;
+                    return None;
+                }
+            }
+        }
     }
 }
 fn build_prompt(spec: &str, current: Option<&str>, ids: &[String]) -> String {
@@ -844,7 +1432,7 @@ mod tests {
         let outcome = run_climb(
             "opaque",
             &invocation(),
-            &[("TG-01".into(), FailCategory::Value)],
+            &[],
             crate::create_artifact_workspace().unwrap(),
             &cfg(0),
             &fx,
@@ -892,7 +1480,7 @@ mod tests {
         let outcome = run_climb(
             "opaque",
             &invocation(),
-            &[],
+            &[("TG-01".into(), FailCategory::Value)],
             crate::create_artifact_workspace().unwrap(),
             &bad,
             &fx,
@@ -970,7 +1558,7 @@ mod tests {
         let outcome = run_climb(
             "opaque",
             &invocation(),
-            &[],
+            &[("TG-01".into(), FailCategory::Value)],
             crate::create_artifact_workspace().unwrap(),
             &c,
             &fx,
@@ -1043,13 +1631,18 @@ mod tests {
         let outcome = run_climb(
             "opaque",
             &invocation(),
-            &[],
+            &[("TG-01".into(), FailCategory::Value)],
             crate::create_artifact_workspace().unwrap(),
             &cfg(1),
             &fx,
         )
         .await;
         assert_eq!(outcome.terminal(), &TerminalState::Cancelled);
+        assert_eq!(
+            outcome.rounds_used(),
+            1,
+            "started generation must consume budget"
+        );
         assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
     }
     #[tokio::test]
@@ -1107,7 +1700,7 @@ mod tests {
         let outcome = run_climb(
             "opaque",
             &invocation(),
-            &[],
+            &[("TG-01".into(), FailCategory::Value)],
             crate::create_artifact_workspace().unwrap(),
             &empty,
             &fx,
@@ -1243,6 +1836,33 @@ mod tests {
         assert_eq!(overflow.evidence.exit_code, None);
         assert_eq!(overflow.evidence.log_digest, None);
 
+        let during_artifact = crate::gate::create_candidate_artifact(&workspace, diff).unwrap();
+        let during = crate::run_gate_execution(
+            &GateInvocation {
+                argv: vec![
+                    std::env::current_exe().unwrap().into_os_string(),
+                    "--exact".into(),
+                    "gate::tests::gate_execution_fixture".into(),
+                    "--nocapture".into(),
+                ],
+                cwd: std::env::current_dir().unwrap(),
+                env: vec![("NANO_VERIFY_UNIT_GATE_MODE".into(), "mutate".into())],
+                timeout: std::time::Duration::from_secs(5),
+                gate_id: "opaque".into(),
+            },
+            &during_artifact,
+            &[("TG-01".into(), FailCategory::Value)],
+        )
+        .await;
+        assert!(matches!(
+            during.outcome,
+            crate::ExecutionGateOutcome::FailClosed(
+                crate::ExecutionFailClosedReason::ArtifactInvalid
+            )
+        ));
+        assert_eq!(during.evidence.exit_code, None);
+        assert_eq!(during.evidence.log_digest, None);
+
         crate::gate::mutate_candidate_for_test(&artifact);
         let changed =
             crate::run_gate_execution(&inv, &artifact, &[("TG-01".into(), FailCategory::Value)])
@@ -1257,37 +1877,6 @@ mod tests {
         assert_eq!(changed.evidence.log_digest, None);
         assert_eq!(changed.evidence.artifact_sha256, hex_digest(diff));
     }
-    #[test]
-    fn wp2_external_compile_contract_matrix() {
-        static LOCK: Mutex<()> = Mutex::new(());
-        let _guard = LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let target = std::env::temp_dir().join(format!(
-            "wp2-driver-contract-{}-{nonce}",
-            std::process::id()
-        ));
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        let output =
-            std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
-                .args(["test", "--offline", "--quiet", "--manifest-path"])
-                .arg(&manifest)
-                .args(["--test", "wp2_public_contract"])
-                .env("CARGO_TARGET_DIR", &target)
-                .output()
-                .expect("launch downstream contract matrix");
-        let _ = std::fs::remove_dir_all(&target);
-        assert!(
-            output.status.success(),
-            "downstream contract matrix failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
     #[tokio::test]
     async fn driver_stub_suite() {
         green_probe().await;
@@ -1296,7 +1885,6 @@ mod tests {
         for _ in 0..8 {
             closed_zero_budget().await
         }
-        wp2_external_compile_contract_matrix();
     }
     #[test]
     fn wp2_candidate_parser_matrix() {
@@ -1346,9 +1934,9 @@ mod tests {
         );
         let mut expected_base = b"wayland-nano.expected-change.base.v1\0".to_vec();
         for (path, kind, preimage) in [
-            ("z.txt", 1_u8, Some(b"old\nkeep\n".as_slice())),
             ("a.txt", 0_u8, None),
             ("d.txt", 2_u8, Some(b"gone\n".as_slice())),
+            ("z.txt", 1_u8, Some(b"old\nkeep\n".as_slice())),
         ] {
             expected_base.extend_from_slice(&(path.len() as u64).to_le_bytes());
             expected_base.extend_from_slice(path.as_bytes());
@@ -1428,5 +2016,66 @@ mod tests {
         let overlap=parse_candidate_diff(b"diff --git a/z.txt b/z.txt\n--- a/z.txt\n+++ b/z.txt\n@@ -1 +1 @@\n-old\n+new\n@@ -1 +1 @@\n-old\n+again\n").unwrap();
         std::fs::write(canonical.join("z.txt"), b"old\nkeep\n").unwrap();
         assert!(derive_expected_changes(&overlap, &canonical).is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn wp2_descriptor_manifest_rejects_links_and_is_order_stable() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let canonical = root.path().canonicalize().unwrap();
+        std::fs::create_dir(canonical.join("nested")).unwrap();
+        std::fs::write(canonical.join("nested/a.txt"), b"old\n").unwrap();
+        let first = parse_candidate_diff(b"diff --git a/nested/a.txt b/nested/a.txt\n--- a/nested/a.txt\n+++ b/nested/a.txt\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/z.txt b/z.txt\n--- /dev/null\n+++ b/z.txt\n@@ -0,0 +1 @@\n+z\n").unwrap();
+        let second = parse_candidate_diff(b"diff --git a/z.txt b/z.txt\n--- /dev/null\n+++ b/z.txt\n@@ -0,0 +1 @@\n+z\ndiff --git a/nested/a.txt b/nested/a.txt\n--- a/nested/a.txt\n+++ b/nested/a.txt\n@@ -1 +1 @@\n-old\n+new\n").unwrap();
+        assert_eq!(
+            derive_expected_changes(&first, &canonical)
+                .unwrap()
+                .base_tree_digest(),
+            derive_expected_changes(&second, &canonical)
+                .unwrap()
+                .base_tree_digest()
+        );
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("a.txt"), b"old\n").unwrap();
+        std::fs::rename(canonical.join("nested"), canonical.join("held")).unwrap();
+        symlink(outside.path(), canonical.join("nested")).unwrap();
+        assert!(
+            matches!(derive_expected_changes(&first, &canonical), Err(VerifyError::Artifact(e)) if e.kind()==std::io::ErrorKind::InvalidData)
+        );
+        std::fs::remove_file(canonical.join("nested")).unwrap();
+        std::fs::rename(canonical.join("held"), canonical.join("nested")).unwrap();
+        let alias = canonical.join("alias.txt");
+        std::fs::hard_link(canonical.join("nested/a.txt"), &alias).unwrap();
+        let hard = parse_candidate_diff(b"diff --git a/nested/a.txt b/nested/a.txt\n--- a/nested/a.txt\n+++ b/nested/a.txt\n@@ -1 +1 @@\n-old\n+new\n").unwrap();
+        assert!(
+            matches!(derive_expected_changes(&hard, &canonical), Err(VerifyError::Artifact(e)) if e.kind()==std::io::ErrorKind::InvalidData)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wp2_expected_change_windows_rejects_hardlink_preimage() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("target.txt"), b"old\n").unwrap();
+        std::fs::hard_link(
+            root.path().join("target.txt"),
+            root.path().join("alias.txt"),
+        )
+        .unwrap();
+        let canonical = root.path().canonicalize().unwrap();
+        let diff = parse_candidate_diff(b"diff --git a/target.txt b/target.txt\n--- a/target.txt\n+++ b/target.txt\n@@ -1 +1 @@\n-old\n+new\n").unwrap();
+        assert!(matches!(derive_expected_changes(&diff, &canonical),
+            Err(VerifyError::Artifact(error)) if error.kind() == std::io::ErrorKind::InvalidData));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wp2_expected_change_windows_nested_descriptor_walk_works() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("nested")).unwrap();
+        std::fs::write(root.path().join("nested/target.txt"), b"old\n").unwrap();
+        let canonical = root.path().canonicalize().unwrap();
+        let diff = parse_candidate_diff(b"diff --git a/nested/target.txt b/nested/target.txt\n--- a/nested/target.txt\n+++ b/nested/target.txt\n@@ -1 +1 @@\n-old\n+new\n").unwrap();
+        assert!(derive_expected_changes(&diff, &canonical).is_ok());
     }
 }

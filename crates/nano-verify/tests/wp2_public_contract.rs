@@ -1,7 +1,7 @@
 use std::{
     fs,
     path::PathBuf,
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
     sync::{Mutex, MutexGuard},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -64,12 +64,43 @@ impl FixtureRoot {
         fs::write(project.join("src/lib.rs"), source).expect("write downstream source");
 
         let target = self.path.join(format!("target-{name}"));
-        Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+        let stderr = tempfile::tempfile().expect("create bounded downstream stderr capture");
+        let stderr_child = stderr
+            .try_clone()
+            .expect("clone bounded downstream stderr capture");
+        let mut child = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
             .args(["check", "--offline", "--quiet"])
             .current_dir(&project)
             .env("CARGO_TARGET_DIR", &target)
-            .output()
-            .expect("launch offline downstream cargo check")
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(stderr_child))
+            .spawn()
+            .expect("launch offline downstream cargo check");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("poll downstream cargo check") {
+                break status;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("offline downstream cargo check exceeded 180 second bound");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        };
+        let mut stderr_bytes = Vec::new();
+        let mut stderr = stderr;
+        use std::io::{Read, Seek};
+        stderr.rewind().expect("rewind downstream stderr capture");
+        stderr
+            .take(1024 * 1024)
+            .read_to_end(&mut stderr_bytes)
+            .expect("read bounded downstream stderr capture");
+        Output {
+            status,
+            stdout: Vec::new(),
+            stderr: stderr_bytes,
+        }
     }
 }
 

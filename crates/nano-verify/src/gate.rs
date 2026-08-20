@@ -44,6 +44,8 @@ pub enum ExecutionFailClosedReason {
         expected_total: u64,
     },
     UnknownCheckId(String),
+    InvalidInventory,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,6 +278,24 @@ pub struct GateInvocation {
     pub gate_id: String,              // registry key this invocation was built from
 }
 
+/// Cooperative cancellation handle for a running gate subprocess.
+#[derive(Clone, Debug, Default)]
+pub struct GateCancellation(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl GateCancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 /// Execute one gate subprocess. The production implementation is materialized by
 /// Plan 04-04 after its real-process contract has been observed failing.
 pub async fn run_gate(
@@ -287,6 +307,9 @@ pub async fn run_gate(
     use tokio::process::Command;
 
     const STDOUT_CAP: usize = 16 * 1024 * 1024;
+    if validate_inventory(inventory).is_err() {
+        return GateOutcome::FailClosed(FailClosedReason::InvalidInventory);
+    }
     let Some((program, args)) = inv.argv.split_first() else {
         return spawn_failure("empty invocation");
     };
@@ -396,7 +419,26 @@ pub async fn run_gate_execution(
     artifact: &CandidateArtifact,
     inventory: &[(String, FailCategory)],
 ) -> GateExecution {
+    run_gate_execution_with_cancellation(inv, artifact, inventory, None).await
+}
+
+pub async fn run_gate_execution_with_cancellation(
+    inv: &GateInvocation,
+    artifact: &CandidateArtifact,
+    inventory: &[(String, FailCategory)],
+    cancellation: Option<&GateCancellation>,
+) -> GateExecution {
     let artifact_sha256 = artifact.bytes_sha256.clone();
+    if validate_inventory(inventory).is_err() {
+        return GateExecution {
+            outcome: ExecutionGateOutcome::FailClosed(ExecutionFailClosedReason::InvalidInventory),
+            evidence: GateEvidence {
+                exit_code: None,
+                log_digest: None,
+                artifact_sha256,
+            },
+        };
+    }
     if artifact.read_exact_bytes().is_err() {
         return GateExecution {
             outcome: ExecutionGateOutcome::FailClosed(ExecutionFailClosedReason::ArtifactInvalid),
@@ -407,8 +449,18 @@ pub async fn run_gate_execution(
             },
         };
     }
-    let capture = capture_complete(inv, &artifact.path).await;
+    let capture = capture_complete(inv, &artifact.path, cancellation).await;
     let (outcome, exit_code, log_digest) = execution_result(capture, inventory);
+    if artifact.read_exact_bytes().is_err() {
+        return GateExecution {
+            outcome: ExecutionGateOutcome::FailClosed(ExecutionFailClosedReason::ArtifactInvalid),
+            evidence: GateEvidence {
+                exit_code: None,
+                log_digest: None,
+                artifact_sha256,
+            },
+        };
+    }
     GateExecution {
         outcome,
         evidence: GateEvidence {
@@ -424,6 +476,15 @@ pub async fn run_gate_baseline_execution(
     run_artifact: &std::path::Path,
     inventory: &[(String, FailCategory)],
 ) -> BaselineGateExecution {
+    if validate_inventory(inventory).is_err() {
+        return BaselineGateExecution {
+            outcome: ExecutionGateOutcome::FailClosed(ExecutionFailClosedReason::InvalidInventory),
+            evidence: BaselineGateEvidence {
+                exit_code: None,
+                log_digest: None,
+            },
+        };
+    }
     let valid = run_artifact.canonicalize().ok().is_some_and(|p| {
         p == run_artifact && (p.is_file() || p.is_dir()) && path_has_link(&p).ok() == Some(false)
     });
@@ -437,7 +498,7 @@ pub async fn run_gate_baseline_execution(
         };
     }
     let (outcome, exit_code, log_digest) =
-        execution_result(capture_complete(inv, run_artifact).await, inventory);
+        execution_result(capture_complete(inv, run_artifact, None).await, inventory);
     BaselineGateExecution {
         outcome,
         evidence: BaselineGateEvidence {
@@ -456,11 +517,13 @@ enum CompleteCapture {
     Spawn,
     Incomplete,
     Abnormal,
+    Cancelled,
 }
 
 async fn capture_complete(
     inv: &GateInvocation,
     artifact_path: &std::path::Path,
+    cancellation: Option<&GateCancellation>,
 ) -> CompleteCapture {
     use tokio::io::AsyncReadExt as _;
     const CAP: usize = 16 * 1024 * 1024;
@@ -526,21 +589,47 @@ async fn capture_complete(
         }
         Ok::<_, ()>((bytes, overflow))
     };
-    let execution = async {
-        let (output, status) = tokio::join!(collect, child.wait());
-        Ok::<_, ()>((output.map_err(|_| ())?, status.map_err(|_| ())?))
+    let result = {
+        let execution = async {
+            let (output, status) = tokio::join!(collect, child.wait());
+            Ok::<_, ()>((output.map_err(|_| ())?, status.map_err(|_| ())?))
+        };
+        let cancellation_requested = async {
+            loop {
+                if cancellation.is_some_and(GateCancellation::is_cancelled) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::pin!(execution);
+        tokio::select! {
+            result = tokio::time::timeout(inv.timeout, &mut execution) => Some(result),
+            () = cancellation_requested, if cancellation.is_some() => None,
+        }
     };
-    match tokio::time::timeout(inv.timeout, execution).await {
-        Ok(Ok(((_bytes, true), _))) => CompleteCapture::Incomplete,
-        Ok(Ok(((bytes, false), status))) => match status.code() {
+    match result {
+        None => {
+            terminate_tree(
+                &mut child,
+                #[cfg(windows)]
+                &job,
+                #[cfg(unix)]
+                process_group,
+            )
+            .await;
+            CompleteCapture::Cancelled
+        }
+        Some(Ok(Ok(((_bytes, true), _)))) => CompleteCapture::Incomplete,
+        Some(Ok(Ok(((bytes, false), status)))) => match status.code() {
             Some(code) => CompleteCapture::Complete {
                 bytes,
                 exit_code: Some(i64::from(code)),
             },
             None => CompleteCapture::Abnormal,
         },
-        Ok(Err(_)) => CompleteCapture::Incomplete,
-        Err(_) => {
+        Some(Ok(Err(_))) => CompleteCapture::Incomplete,
+        Some(Err(_)) => {
             terminate_tree(
                 &mut child,
                 #[cfg(windows)]
@@ -589,6 +678,11 @@ fn execution_result(
             None,
             None,
         ),
+        CompleteCapture::Cancelled => (
+            ExecutionGateOutcome::FailClosed(ExecutionFailClosedReason::Cancelled),
+            None,
+            None,
+        ),
     }
 }
 
@@ -631,6 +725,9 @@ fn parse_execution_output(
         }
         GateOutcome::FailClosed(FailClosedReason::UnknownCheckId(v)) => {
             ExecutionGateOutcome::FailClosed(ExecutionFailClosedReason::UnknownCheckId(v))
+        }
+        GateOutcome::FailClosed(FailClosedReason::InvalidInventory) => {
+            ExecutionGateOutcome::FailClosed(ExecutionFailClosedReason::InvalidInventory)
         }
     }
 }
@@ -781,6 +878,7 @@ pub enum FailClosedReason {
     SpawnError(String),
     InconsistentSummary { passed: u64, total: u64 },
     UnknownCheckId(String),
+    InvalidInventory,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -819,6 +917,9 @@ impl GateOutcome {
 
 /// PURE. stdout + the card's check inventory → outcome. Never panics.
 pub fn parse_gate_output(stdout: &str, inventory: &[(String, FailCategory)]) -> GateOutcome {
+    if validate_inventory(inventory).is_err() {
+        return GateOutcome::FailClosed(FailClosedReason::InvalidInventory);
+    }
     let mut summary = None;
     let mut failures: Vec<(&str, FailCategory)> = Vec::new();
 
@@ -912,6 +1013,7 @@ impl FailClosedReason {
             Self::SpawnError(_) => "<gate spawn error>",
             Self::InconsistentSummary { .. } => "<inconsistent gate summary>",
             Self::UnknownCheckId(_) => "<unknown check id>",
+            Self::InvalidInventory => "<invalid gate inventory>",
         }
     }
 }
@@ -953,6 +1055,20 @@ fn valid_check_id(id: &str) -> bool {
         && prefix.bytes().all(|byte| byte.is_ascii_uppercase())
         && digits.len() == 2
         && digits.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+pub(crate) fn validate_inventory(inventory: &[(String, FailCategory)]) -> Result<(), ()> {
+    if inventory.is_empty() {
+        return Err(());
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    if inventory
+        .iter()
+        .any(|(id, _)| !valid_check_id(id) || !ids.insert(id.as_str()))
+    {
+        return Err(());
+    }
+    Ok(())
 }
 
 fn bounded_id(id: &str) -> String {
@@ -1127,10 +1243,89 @@ mod tests {
         );
         assert_eq!(
             parse_gate_output("gate: 0/0", &[]),
-            GateOutcome::FailClosed(FailClosedReason::InconsistentSummary {
-                passed: 0,
-                total: 0
-            })
+            GateOutcome::FailClosed(FailClosedReason::InvalidInventory)
+        );
+    }
+
+    #[test]
+    fn gate_execution_fixture() {
+        let Ok(mode) = std::env::var("NANO_VERIFY_UNIT_GATE_MODE") else {
+            return;
+        };
+        let artifact = std::env::args_os().next_back().unwrap();
+        match mode.as_str() {
+            "mutate" => std::fs::write(artifact, b"mutated by gate\n").unwrap(),
+            "sleep" => std::thread::sleep(std::time::Duration::from_secs(30)),
+            _ => panic!("unknown unit gate mode"),
+        }
+        println!("gate: 4/4");
+    }
+
+    fn fixture_invocation(mode: &str) -> GateInvocation {
+        GateInvocation {
+            argv: vec![
+                std::env::current_exe().unwrap().into_os_string(),
+                "--exact".into(),
+                "gate::tests::gate_execution_fixture".into(),
+                "--nocapture".into(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![("NANO_VERIFY_UNIT_GATE_MODE".into(), mode.into())],
+            timeout: std::time::Duration::from_secs(5),
+            gate_id: "unit-fixture".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn post_execution_artifact_mutation_fails_closed() {
+        let workspace = create_artifact_workspace().unwrap();
+        let artifact = create_candidate_artifact(
+            &workspace,
+            b"diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n",
+        )
+        .unwrap();
+        let execution =
+            run_gate_execution(&fixture_invocation("mutate"), &artifact, &inventory()).await;
+        assert!(matches!(
+            execution.outcome,
+            ExecutionGateOutcome::FailClosed(ExecutionFailClosedReason::ArtifactInvalid)
+        ));
+        assert_eq!(execution.evidence.exit_code, None);
+        assert_eq!(execution.evidence.log_digest, None);
+    }
+
+    #[tokio::test]
+    async fn cancellation_poll_is_ten_ms_and_teardown_is_bounded() {
+        let workspace = create_artifact_workspace().unwrap();
+        let artifact = create_candidate_artifact(
+            &workspace,
+            b"diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n",
+        )
+        .unwrap();
+        let cancellation = GateCancellation::new();
+        let trigger = cancellation.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            trigger.cancel();
+        });
+        let started = std::time::Instant::now();
+        let execution = run_gate_execution_with_cancellation(
+            &fixture_invocation("sleep"),
+            &artifact,
+            &inventory(),
+            Some(&cancellation),
+        )
+        .await;
+        let elapsed_after_signal = started
+            .elapsed()
+            .saturating_sub(std::time::Duration::from_millis(100));
+        assert!(matches!(
+            execution.outcome,
+            ExecutionGateOutcome::FailClosed(ExecutionFailClosedReason::Cancelled)
+        ));
+        assert!(
+            elapsed_after_signal <= std::time::Duration::from_millis(150),
+            "cancelled process-tree teardown took {elapsed_after_signal:?}"
         );
     }
 }
