@@ -170,6 +170,48 @@
         "log_digest": "e084ded70e6840518985a41816ff6157ea74a352e5e79a8d354f502642108f2e"
       },
       "commit": "c271efb557489af8ec2eb0d10c4d8cd16e5340cd"
+    },
+    "CLI-01": {
+      "requirement": "CLI-01",
+      "test": "cargo test -p nano-cli verify_cmd::tests::parse_accepts_all_three_closed_modes_and_defaults -- --exact --nocapture",
+      "failing_run": { "exit_code": 101, "log_digest": "5d32070db970ecd5e3f2b99775dbc9fe71af1d50d26a16e9569c79c83a0cd5da" },
+      "commit": "90945c34f1ef74d4aba8986904cae1333dfc14ee"
+    },
+    "CLI-02": {
+      "requirement": "CLI-02",
+      "test": "cargo test -p nano-cli verify_cmd::tests::only_complete_nonzero_red_with_lower_hex_digest_is_eligible -- --exact --nocapture",
+      "failing_run": { "exit_code": 101, "log_digest": "b4096951ccf87d4981cede2ba88d62096affe0eea787ca074b222e7134f8bf6f" },
+      "commit": "4531a02a6fbcd99643a6d0e3b85b558d19ab78b1"
+    },
+    "CLI-03": {
+      "requirement": "CLI-03",
+      "test": "cargo test -p nano-cli verify_cmd::tests::events_emit_only_closed_fields_with_monotonic_sequence -- --exact --nocapture",
+      "failing_run": { "exit_code": 101, "log_digest": "40f8fd20441aac7394ef199797633d0b59ac03aebc504e2164803b3714216f25" },
+      "commit": "7ff634a0d453b1cc2e82da1f8d1b4552e830de20"
+    },
+    "CLI-04": {
+      "requirement": "CLI-04",
+      "test": "cargo test -p nano-cli verify_cmd::tests::receipt_preflight_structure_obeys_parse_then_red_order -- --exact --nocapture",
+      "failing_run": { "exit_code": 101, "log_digest": "5dd889d61724dd8ed466e6665389c38b30ef824e6d000a3f4ffb65b83626dbd6" },
+      "commit": "2a1aca3019e22854fba5d919d23abbb78503cd53"
+    },
+    "CLI-05": {
+      "requirement": "CLI-05",
+      "test": "cargo test -p nano-cli --test verify_cmd verify_authored_defect_red_identifiers_only -- --exact --nocapture",
+      "failing_run": { "exit_code": 101, "log_digest": "cbd7b63de284363cb0c5fcdc513ef2fd9977f382d21e1ddfe0042148b0754e29" },
+      "commit": "329e05aa9724f3c8d55fa05f91fc4a260ce26e96"
+    },
+    "CLI-06": {
+      "requirement": "CLI-06",
+      "test": "pwsh -NoProfile -File docs/verify/ci/test-receipt-diff.ps1",
+      "failing_run": { "exit_code": 64, "log_digest": "6ce75bbe86fd257d24fe37f05044b92b25565bd005768d54e5b87abe334483b3" },
+      "commit": "1699245adaa1a78201986cc6f84c58ba8571edfa"
+    },
+    "PROV-02": {
+      "requirement": "PROV-02",
+      "test": "PowerShell UPSTREAM.md exact WP3 provenance oracle",
+      "failing_run": { "exit_code": 1, "log_digest": "46870f2ab31e9031efbc8ef851f0890097576adb5e2fbf00e97ee56644d6ea0f" },
+      "commit": "b1b10c6853e5ecd911693ae4f71db26a9f8a062b"
     }
   }
 }

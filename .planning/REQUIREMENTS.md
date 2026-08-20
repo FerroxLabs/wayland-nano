@@ -68,13 +68,13 @@
 
 ### WP-3 Verify CLI and CI Surface
 
-- [ ] **CLI-01**: `wayland-nano verify` exposes the exact argv and exit-code contract for minting, `--run-only`, and `--verify-receipt` modes, including repo-confined run-only artifact resolution, with registration limited to the owned CLI surfaces.
-- [ ] **CLI-02**: The production adapter resolves requirement-to-gate mappings and canonical closure bodies from the registry, materializes invocations, runs the climb, and mints receipts only after verified closure.
-- [ ] **CLI-03**: JSONL v1 emits the closed verify event vocabulary with deny-unknown persisted artifacts and no gate-command/source leakage.
-- [ ] **CLI-04**: Offline verification materializes a temporary worktree at the receipt fix commit, performs bounded Git probes and gate rerun, cleans up, and fails closed on tampering or unverifiable state.
-- [ ] **CLI-05**: End-to-end fixture tests prove authored-defect rejection, identifiers-only feedback, repair, receipt roundtrip, tamper rejection, and the complete exit-code matrix.
-- [ ] **CLI-06**: The documented CI consumer is version-pinned under `docs/verify/ci/`; promotion into `.github/` remains an integrator decision.
-- [ ] **PROV-02**: Every donor-adapted WP-3 CLI or verifier file has an exact transformation entry in `UPSTREAM.md`.
+- [x] **CLI-01**: `wayland-nano verify` exposes the exact argv and exit-code contract for minting, `--run-only`, and `--verify-receipt` modes, including repo-confined run-only artifact resolution, with registration limited to the owned CLI surfaces.
+- [x] **CLI-02**: The production adapter resolves requirement-to-gate mappings and canonical closure bodies from the registry, materializes invocations, runs the climb, and mints receipts only after verified closure.
+- [x] **CLI-03**: JSONL v1 emits the closed verify event vocabulary with deny-unknown persisted artifacts and no gate-command/source leakage.
+- [x] **CLI-04**: Offline verification materializes a temporary worktree at the receipt fix commit, performs bounded Git probes and gate rerun, cleans up, and fails closed on tampering or unverifiable state.
+- [x] **CLI-05**: End-to-end fixture tests prove authored-defect rejection, identifiers-only feedback, repair, receipt roundtrip, tamper rejection, and the complete exit-code matrix.
+- [x] **CLI-06**: The documented CI consumer is version-pinned under `docs/verify/ci/`; promotion into `.github/` remains an integrator decision.
+- [x] **PROV-02**: Every donor-adapted WP-3 CLI or verifier file has an exact transformation entry in `UPSTREAM.md`.
 
 ### WP-4 Gate Cards and Dogfood
 
