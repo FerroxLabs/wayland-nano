@@ -258,10 +258,274 @@ fn parse_args_inner(args: &[String]) -> Result<VerifyParams, ()> {
     })
 }
 
-/// The closed production entry is wired by later WP-3 plans. Until then every
-/// parsed request fails as usage rather than performing partial effects.
-pub async fn run(_home: &Path, _workspace: &Path, _params: &VerifyParams) -> i32 {
-    2
+#[allow(async_fn_in_trait, dead_code)]
+trait VerifyRuntime {
+    fn now_millis(&self) -> u64;
+    async fn generate(&self, _model: &str, _prompt: &str) -> Result<String, ()> {
+        Err(())
+    }
+    fn canonical_repo_root(&self, workspace: &Path) -> Result<PathBuf, ()> {
+        canonical_repo_root(workspace)
+    }
+    fn temp_preflight(&self) -> Result<(), ()> {
+        temp_preflight()
+    }
+    fn load_registry(
+        &self,
+        repo_root: &Path,
+        gate: Option<&str>,
+        requirement: Option<&str>,
+    ) -> Result<Option<nano_verify::GateRegistry>, i32> {
+        load_requested_registry(repo_root, gate, requirement)
+    }
+    fn resolve_artifact(&self, root: &Path, relative: &Path) -> Result<PathBuf, ()> {
+        confined_existing(root, relative)
+    }
+    fn inventory(&self, card: &Path) -> Result<Vec<(String, nano_verify::FailCategory)>, ()> {
+        nano_verify::check_inventory(card).map_err(|_| ())
+    }
+    async fn run_gate(
+        &self,
+        invocation: &nano_verify::GateInvocation,
+        artifact: &Path,
+        inventory: &[(String, nano_verify::FailCategory)],
+    ) -> nano_verify::ExecutionGateOutcome;
+}
+
+struct ProductionRuntime {
+    epoch: std::time::Instant,
+}
+
+impl ProductionRuntime {
+    fn new() -> Self {
+        Self {
+            epoch: std::time::Instant::now(),
+        }
+    }
+}
+
+impl VerifyRuntime for ProductionRuntime {
+    fn now_millis(&self) -> u64 {
+        u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    async fn run_gate(
+        &self,
+        invocation: &nano_verify::GateInvocation,
+        artifact: &Path,
+        inventory: &[(String, nano_verify::FailCategory)],
+    ) -> nano_verify::ExecutionGateOutcome {
+        nano_verify::run_gate_baseline_execution(invocation, artifact, inventory)
+            .await
+            .outcome
+    }
+}
+
+pub async fn run(_home: &Path, workspace: &Path, params: &VerifyParams) -> i32 {
+    run_with(workspace, params, &ProductionRuntime::new()).await
+}
+
+async fn run_with<R: VerifyRuntime>(workspace: &Path, params: &VerifyParams, runtime: &R) -> i32 {
+    match &params.mode {
+        VerifyMode::CheckReceipt { path, .. } => {
+            if std::fs::File::open(path).is_err() {
+                return 2;
+            }
+            // Plan 03 owns the locked parse -> evidence -> Git -> pin -> rerun pipeline.
+            6
+        }
+        VerifyMode::Mint { deadline_ms, .. } => {
+            let Some(_) = runtime.now_millis().checked_add(*deadline_ms) else {
+                return 2;
+            };
+            if runtime.canonical_repo_root(workspace).is_err() {
+                return 2;
+            }
+            if runtime.temp_preflight().is_err() {
+                return 3;
+            }
+            // Later plans attach climb and materialization after this closed entry gate.
+            3
+        }
+        VerifyMode::RunOnly {
+            gate,
+            deadline_ms,
+            json,
+        } => run_only(workspace, gate, *deadline_ms, *json, runtime).await,
+    }
+}
+
+async fn run_only<R: VerifyRuntime>(
+    workspace: &Path,
+    gate_id: &str,
+    deadline_ms: u64,
+    json: bool,
+    runtime: &R,
+) -> i32 {
+    let Some(monotonic_millis) = runtime.now_millis().checked_add(deadline_ms) else {
+        return 2;
+    };
+    let deadline = nano_verify::RunDeadline { monotonic_millis };
+    let Ok(repo_root) = runtime.canonical_repo_root(workspace) else {
+        return 2;
+    };
+    if runtime.temp_preflight().is_err() {
+        return 3;
+    }
+    if expired(runtime, deadline) {
+        return 3;
+    }
+    let Ok(Some(registry)) = runtime.load_registry(&repo_root, Some(gate_id), None) else {
+        return 2;
+    };
+    let Some(entry) = registry.gates.get(gate_id) else {
+        return 2;
+    };
+    if expired(runtime, deadline) {
+        return 3;
+    }
+    let Ok(artifact) = runtime.resolve_artifact(&repo_root, Path::new(&entry.run_artifact)) else {
+        return 2;
+    };
+    let Ok(inventory) = runtime.inventory(&repo_root.join(&entry.card)) else {
+        return 2;
+    };
+    let Some(remaining_ms) = remaining(runtime, deadline) else {
+        return 3;
+    };
+    let cwd = match entry.closure.cwd_policy {
+        nano_verify::CwdPolicy::RepoRoot => repo_root.clone(),
+        nano_verify::CwdPolicy::GateDir => repo_root
+            .join(&entry.card)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| repo_root.clone()),
+    };
+    let invocation = nano_verify::GateInvocation {
+        argv: entry.closure.argv.iter().map(Into::into).collect(),
+        cwd,
+        env: entry
+            .closure
+            .env
+            .iter()
+            .map(|(key, value)| (key.into(), value.into()))
+            .collect(),
+        timeout: std::time::Duration::from_millis(remaining_ms.min(400_000)),
+        gate_id: gate_id.to_owned(),
+    };
+    let outcome = runtime.run_gate(&invocation, &artifact, &inventory).await;
+    if expired(runtime, deadline) {
+        return 3;
+    }
+    let (exit, outcome_name, verdicts) = match outcome {
+        nano_verify::ExecutionGateOutcome::Green { verdicts } => (0, "green", verdicts),
+        nano_verify::ExecutionGateOutcome::Red { verdicts } => (3, "red", verdicts),
+        nano_verify::ExecutionGateOutcome::FailClosed(_) => (3, "fail_closed", Vec::new()),
+    };
+    if json {
+        let closed: Vec<_> = verdicts
+            .iter()
+            .map(|verdict| {
+                serde_json::json!({
+                    "id": verdict.id,
+                    "category": verdict.category,
+                    "passed": verdict.passed,
+                })
+            })
+            .collect();
+        if let Ok(line) = serde_json::to_string(
+            &serde_json::json!({"v":1,"outcome":outcome_name,"verdicts":closed}),
+        ) {
+            println!("{line}");
+        }
+    }
+    exit
+}
+
+fn expired<R: VerifyRuntime>(runtime: &R, deadline: nano_verify::RunDeadline) -> bool {
+    runtime.now_millis() >= deadline.monotonic_millis
+}
+
+fn remaining<R: VerifyRuntime>(runtime: &R, deadline: nano_verify::RunDeadline) -> Option<u64> {
+    deadline
+        .monotonic_millis
+        .checked_sub(runtime.now_millis())
+        .filter(|remaining| *remaining > 0)
+}
+
+fn canonical_repo_root(workspace: &Path) -> Result<PathBuf, ()> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(workspace)
+        .output()
+        .map_err(|_| ())?;
+    if !output.status.success() {
+        return Err(());
+    }
+    let root = PathBuf::from(String::from_utf8(output.stdout).map_err(|_| ())?.trim())
+        .canonicalize()
+        .map_err(|_| ())?;
+    if !is_f_drive(&root) {
+        return Err(());
+    }
+    Ok(root)
+}
+
+fn temp_preflight() -> Result<(), ()> {
+    let temp = canonical_env_dir("TEMP")?;
+    let tmp = canonical_env_dir("TMP")?;
+    if temp != tmp || !is_f_drive(&temp) {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn canonical_env_dir(name: &str) -> Result<PathBuf, ()> {
+    let raw = std::env::var_os(name).ok_or(())?;
+    let path = PathBuf::from(raw);
+    if !path.is_absolute()
+        || !path.is_dir()
+        || path.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err(());
+    }
+    let canonical = path.canonicalize().map_err(|_| ())?;
+    Ok(canonical)
+}
+
+#[cfg(windows)]
+fn is_f_drive(path: &Path) -> bool {
+    matches!(
+        path.components().next(),
+        Some(std::path::Component::Prefix(prefix))
+            if matches!(prefix.kind(), std::path::Prefix::Disk(b'F' | b'f') | std::path::Prefix::VerbatimDisk(b'F' | b'f'))
+    )
+}
+
+#[cfg(not(windows))]
+fn is_f_drive(path: &Path) -> bool {
+    path.is_absolute()
+}
+
+fn confined_existing(root: &Path, relative: &Path) -> Result<PathBuf, ()> {
+    if relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err(());
+    }
+    let path = root.join(relative).canonicalize().map_err(|_| ())?;
+    if !path.starts_with(root) || !(path.is_file() || path.is_dir()) {
+        return Err(());
+    }
+    Ok(path)
 }
 
 pub fn load_requested_registry(
