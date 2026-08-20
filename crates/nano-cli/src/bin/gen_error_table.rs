@@ -76,7 +76,7 @@ fn find_monorepo_root(repo_root: &Path) -> Option<&Path> {
             .join("shared/reviews/research-0.2/NANO-BUILD-PLAN-V3.md")
             .is_file()
             && candidate
-                .join("shared/reviews/research-0.2/SPEC-WP-INTERFACES.md")
+                .join("shared/reviews/research-0.2/specs/SPEC-WP-INTERFACES.md")
                 .is_file()
     })
 }
@@ -181,7 +181,15 @@ mod tests {
         let reviews = temp.path().join("shared/reviews/research-0.2");
         std::fs::create_dir_all(&reviews).unwrap();
         std::fs::write(reviews.join("NANO-BUILD-PLAN-V3.md"), "fixture").unwrap();
-        std::fs::write(reviews.join("SPEC-WP-INTERFACES.md"), "fixture").unwrap();
+        std::fs::write(reviews.join("SPEC-WP-INTERFACES.md"), "wrong location").unwrap();
+        assert!(
+            find_monorepo_root(&repo_root).is_none(),
+            "the obsolete non-specs marker location must not identify a monorepo"
+        );
+
+        let specs = reviews.join("specs");
+        std::fs::create_dir_all(&specs).unwrap();
+        std::fs::write(specs.join("SPEC-WP-INTERFACES.md"), "fixture").unwrap();
         assert_eq!(find_monorepo_root(&repo_root), Some(temp.path()));
     }
 }
