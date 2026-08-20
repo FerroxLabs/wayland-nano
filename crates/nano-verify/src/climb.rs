@@ -140,16 +140,189 @@ pub enum ClimbStep {
     },
 }
 
-pub fn better_candidate(_candidate: &Candidate, _best: Option<&Candidate>) -> bool {
-    false
+pub fn better_candidate(candidate: &Candidate, best: Option<&Candidate>) -> bool {
+    let Some(best) = best else {
+        return true;
+    };
+    if candidate.score.0 != best.score.0 {
+        return candidate.score.0 > best.score.0;
+    }
+    let candidate_fails = canonical_failures(&candidate.fails);
+    let best_fails = canonical_failures(&best.fails);
+    candidate_fails.len() < best_fails.len()
+        && candidate_fails
+            .iter()
+            .all(|failure| best_fails.contains(failure))
 }
-pub fn next_step(_state: &ClimbState) -> ClimbStep {
-    ClimbStep::Stop {
-        reason: StopReason::Error,
+pub fn next_step(state: &ClimbState) -> ClimbStep {
+    if state.calls >= state.cfg.budget {
+        return ClimbStep::Stop {
+            reason: StopReason::Budget,
+        };
+    }
+    if state
+        .best
+        .as_ref()
+        .is_some_and(|candidate| candidate.fails.is_empty())
+    {
+        return ClimbStep::Stop {
+            reason: StopReason::Solved,
+        };
+    }
+    match state.phase {
+        Phase::Probe => state.cfg.cheap.first().cloned().map_or(
+            ClimbStep::Stop {
+                reason: StopReason::Exhausted,
+            },
+            |model| ClimbStep::Probe { model },
+        ),
+        Phase::Ensemble => {
+            let remaining = state.cfg.budget.saturating_sub(state.calls) as usize;
+            let width = usize::try_from(state.cfg.seed_n).unwrap_or(usize::MAX);
+            ClimbStep::Ensemble {
+                models: state
+                    .cfg
+                    .cheap
+                    .iter()
+                    .skip(1)
+                    .take(width.saturating_sub(1))
+                    .take(remaining)
+                    .cloned()
+                    .collect(),
+            }
+        }
+        Phase::Surgical | Phase::Consolidation => next_surgical_step(state),
     }
 }
-pub fn apply_result(state: &ClimbState, _step: &ClimbStep, _results: &[StepResult]) -> ClimbState {
-    state.clone()
+pub fn apply_result(state: &ClimbState, step: &ClimbStep, results: &[StepResult]) -> ClimbState {
+    let mut next = state.clone();
+    next.calls = next
+        .calls
+        .saturating_add(u32::try_from(results.len()).unwrap_or(u32::MAX));
+    match step {
+        ClimbStep::Probe { .. } => next.phase = Phase::Ensemble,
+        ClimbStep::Ensemble { .. } => next.phase = Phase::Surgical,
+        ClimbStep::Surgical { model, target, .. } => {
+            let tried = next.tried.entry(target.clone()).or_default();
+            if !tried.contains(model) {
+                tried.push(model.clone());
+            }
+        }
+        ClimbStep::Consolidate { .. } => next.consolidated = true,
+        ClimbStep::Stop { .. } => return next,
+    }
+    for result in results {
+        let Some(candidate) = candidate_from_result(result) else {
+            continue;
+        };
+        if better_candidate(&candidate, next.best.as_ref()) {
+            *next.wins.entry(result.model.clone()).or_default() += 1;
+            let accepted_fails = canonical_failures(&candidate.fails);
+            next.best = Some(candidate);
+            if matches!(step, ClimbStep::Consolidate { .. }) {
+                next.tried.clear();
+            } else {
+                next.tried
+                    .retain(|failure, _| accepted_fails.contains(failure));
+            }
+        }
+    }
+    next
+}
+
+fn canonical_failures(fails: &[String]) -> std::collections::BTreeSet<String> {
+    fails.iter().cloned().collect()
+}
+
+fn candidate_from_result(result: &StepResult) -> Option<Candidate> {
+    Some(Candidate {
+        text: result.text.clone(),
+        artifact: result.artifact.clone()?,
+        score: result.score,
+        fails: canonical_failures(&result.fails).into_iter().collect(),
+        evidence: result.evidence.clone()?,
+    })
+}
+
+fn next_surgical_step(state: &ClimbState) -> ClimbStep {
+    let Some(best) = state.best.as_ref() else {
+        return ClimbStep::Stop {
+            reason: StopReason::Exhausted,
+        };
+    };
+    for target in &best.fails {
+        let tried = state
+            .tried
+            .get(target)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let mut cheap: Vec<(usize, &ModelId)> = state
+            .cfg
+            .cheap
+            .iter()
+            .enumerate()
+            .filter(|(_, model)| !tried.contains(model))
+            .collect();
+        cheap.sort_by_key(|(order, model)| {
+            (
+                std::cmp::Reverse(state.wins.get(*model).copied().unwrap_or(0)),
+                *order,
+            )
+        });
+        if let Some((_, model)) = cheap.first() {
+            return ClimbStep::Surgical {
+                model: (*model).clone(),
+                target: target.clone(),
+                others: best
+                    .fails
+                    .iter()
+                    .filter(|failure| *failure != target)
+                    .take(8)
+                    .cloned()
+                    .collect(),
+                tier: Tier::Cheap,
+            };
+        }
+        if let Some(model) = state.cfg.ladder.iter().find(|model| !tried.contains(model)) {
+            return ClimbStep::Surgical {
+                model: model.clone(),
+                target: target.clone(),
+                others: best
+                    .fails
+                    .iter()
+                    .filter(|failure| *failure != target)
+                    .take(8)
+                    .cloned()
+                    .collect(),
+                tier: Tier::Escalate,
+            };
+        }
+    }
+    if state.consolidated {
+        return ClimbStep::Stop {
+            reason: StopReason::Plateau,
+        };
+    }
+    let Some((_, model)) = state
+        .cfg
+        .cheap
+        .iter()
+        .enumerate()
+        .max_by_key(|(order, model)| {
+            (
+                state.wins.get(*model).copied().unwrap_or(0),
+                std::cmp::Reverse(*order),
+            )
+        })
+    else {
+        return ClimbStep::Stop {
+            reason: StopReason::Exhausted,
+        };
+    };
+    ClimbStep::Consolidate {
+        model: model.clone(),
+        fails: best.fails.iter().take(10).cloned().collect(),
+    }
 }
 
 #[derive(Clone, serde::Serialize)]
