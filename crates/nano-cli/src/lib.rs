@@ -22,6 +22,7 @@ pub mod session_browser;
 pub mod session_cmds;
 pub mod session_tools;
 pub mod shell_rules;
+pub mod verify_cmd;
 
 #[cfg(test)]
 #[path = "exec_tests.rs"]
