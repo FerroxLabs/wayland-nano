@@ -89,19 +89,27 @@ pub fn preflight_receipt(
     if !is_lower_hex(&receipt.fix_commit, 40) {
         return ReceiptPreflight::FabricatedCommit;
     }
-    match git_probe(repo_root, &["rev-parse", "--is-inside-work-tree"]) {
+    let Ok(git_context) = GitProbeContext::new() else {
+        return ReceiptPreflight::Unverifiable;
+    };
+    match git_probe(
+        &git_context,
+        repo_root,
+        &["rev-parse", "--is-inside-work-tree"],
+    ) {
         Probe::Present(output) if String::from_utf8_lossy(&output).trim() == "true" => {}
         _ => return ReceiptPreflight::Unverifiable,
     }
     for commit in [&receipt.failing_run.observed_at_commit, &receipt.fix_commit] {
         let object = format!("{commit}^{{commit}}");
-        match git_existence_probe(repo_root, &["cat-file", "-e", &object]) {
+        match git_existence_probe(&git_context, repo_root, &["cat-file", "-e", &object]) {
             Probe::Present(_) => {}
             Probe::Absent => return ReceiptPreflight::FabricatedCommit,
             Probe::Unknown => return ReceiptPreflight::Unverifiable,
         }
     }
     match git_probe(
+        &git_context,
         repo_root,
         &[
             "merge-base",
@@ -121,7 +129,7 @@ pub fn preflight_receipt(
         "{}:{}",
         receipt.failing_run.observed_at_commit, receipt.test
     );
-    match git_existence_probe(repo_root, &["cat-file", "-e", &test_object]) {
+    match git_existence_probe(&git_context, repo_root, &["cat-file", "-e", &test_object]) {
         Probe::Present(_) => {}
         Probe::Absent => return ReceiptPreflight::AncestryUnproven,
         Probe::Unknown => return ReceiptPreflight::Unverifiable,
@@ -197,24 +205,54 @@ fn unknown_probe(reason: ProbeFailure) -> Probe {
     Probe::Unknown
 }
 
-fn git_probe(repo_root: &Path, args: &[&str]) -> Probe {
-    git_probe_with_absence(repo_root, args, false)
+struct GitProbeContext {
+    _scratch: tempfile::TempDir,
+    home: PathBuf,
+    config: PathBuf,
 }
 
-fn git_existence_probe(repo_root: &Path, args: &[&str]) -> Probe {
-    git_probe_with_absence(repo_root, args, true)
+impl GitProbeContext {
+    fn new() -> std::io::Result<Self> {
+        let scratch = tempfile::Builder::new()
+            .prefix("nano-receipt-git-")
+            .tempdir()?;
+        let home = scratch.path().join("home");
+        std::fs::create_dir(&home)?;
+        let config = scratch.path().join("empty.gitconfig");
+        File::create(&config)?;
+        Ok(Self {
+            _scratch: scratch,
+            home,
+            config,
+        })
+    }
 }
 
-fn git_probe_with_absence(repo_root: &Path, args: &[&str], any_nonzero_absent: bool) -> Probe {
-    let mut command = Command::new("git");
+fn git_probe(context: &GitProbeContext, repo_root: &Path, args: &[&str]) -> Probe {
+    git_probe_with_absence(context, repo_root, args, false)
+}
+
+fn git_existence_probe(context: &GitProbeContext, repo_root: &Path, args: &[&str]) -> Probe {
+    git_probe_with_absence(context, repo_root, args, true)
+}
+
+fn configure_git_probe(
+    command: &mut Command,
+    context: &GitProbeContext,
+    repo_root: &Path,
+    args: &[&str],
+) {
     command
         .arg("-C")
         .arg(repo_root)
         .args(args)
         .env_clear()
+        .env("HOME", &context.home)
+        .env("USERPROFILE", &context.home)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_COUNT", "0")
-        .env("GIT_CONFIG_GLOBAL", null_device())
+        .env("GIT_CONFIG_GLOBAL", &context.config)
+        .env("GIT_CONFIG_SYSTEM", &context.config)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "Never")
         .stdin(Stdio::null())
@@ -225,6 +263,16 @@ fn git_probe_with_absence(repo_root: &Path, args: &[&str], any_nonzero_absent: b
             command.env(name, value);
         }
     }
+}
+
+fn git_probe_with_absence(
+    context: &GitProbeContext,
+    repo_root: &Path,
+    args: &[&str],
+    any_nonzero_absent: bool,
+) -> Probe {
+    let mut command = Command::new("git");
+    configure_git_probe(&mut command, context, repo_root, args);
     let Ok(mut child) = command.spawn() else {
         return unknown_probe(ProbeFailure::Spawn);
     };
@@ -376,10 +424,6 @@ fn wait_for_git(
         let _ = CloseHandle(handle);
     }
     result
-}
-
-fn null_device() -> &'static str {
-    if cfg!(windows) { "NUL" } else { "/dev/null" }
 }
 
 fn git_launch_environment() -> &'static [&'static str] {
@@ -662,6 +706,7 @@ fn invalid_receipt(error: impl std::fmt::Display) -> VerifyError {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::ffi::OsString;
     use std::process::Command;
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
@@ -717,6 +762,68 @@ mod tests {
     #[test]
     fn git_probe_forwards_windows_emulation_architecture_marker() {
         assert!(git_launch_environment().contains(&"PROCESSOR_ARCHITEW6432"));
+    }
+
+    #[test]
+    fn git_probe_uses_private_home_and_ignores_hostile_parent_git_context() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let hostile = [
+            ("HOME", "hostile-home"),
+            ("USERPROFILE", "hostile-profile"),
+            ("GIT_DIR", "hostile-git-dir"),
+            ("GIT_OBJECT_DIRECTORY", "hostile-objects"),
+            ("GIT_ALTERNATE_OBJECT_DIRECTORIES", "hostile-alternates"),
+            ("GIT_CONFIG_GLOBAL", "hostile-global-config"),
+            ("GIT_CONFIG_SYSTEM", "hostile-system-config"),
+        ];
+        let previous: Vec<_> = hostile
+            .iter()
+            .map(|(name, _)| (*name, std::env::var_os(name)))
+            .collect();
+        for (name, value) in hostile {
+            unsafe { std::env::set_var(name, value) };
+        }
+
+        let context = GitProbeContext::new().unwrap();
+        let mut command = Command::new("git");
+        configure_git_probe(&mut command, &context, Path::new("unused"), &["status"]);
+        let explicit: BTreeMap<String, Option<OsString>> = command
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().to_ascii_uppercase(),
+                    value.map(OsString::from),
+                )
+            })
+            .collect();
+
+        for (name, value) in previous {
+            unsafe {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        }
+
+        assert_eq!(explicit["HOME"].as_deref(), Some(context.home.as_os_str()));
+        assert_eq!(
+            explicit["USERPROFILE"].as_deref(),
+            Some(context.home.as_os_str())
+        );
+        assert_eq!(
+            explicit["GIT_CONFIG_GLOBAL"].as_deref(),
+            Some(context.config.as_os_str())
+        );
+        assert_eq!(
+            explicit["GIT_CONFIG_SYSTEM"].as_deref(),
+            Some(context.config.as_os_str())
+        );
+        assert_eq!(std::fs::read(&context.config).unwrap(), b"");
+        assert!(!explicit.contains_key("GIT_DIR"));
+        assert!(!explicit.contains_key("GIT_OBJECT_DIRECTORY"));
+        assert!(!explicit.contains_key("GIT_ALTERNATE_OBJECT_DIRECTORIES"));
     }
 
     #[cfg(windows)]
