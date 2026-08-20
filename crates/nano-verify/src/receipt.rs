@@ -178,6 +178,13 @@ enum GitExit {
 #[cfg(windows)]
 const PROCESS_SYNCHRONIZE: u32 = 0x0010_0000;
 
+#[cfg(windows)]
+fn classify_windows_process_exit(raw_exit: u32) -> Option<GitExit> {
+    use windows_sys::Win32::Foundation::STILL_ACTIVE;
+
+    (raw_exit != STILL_ACTIVE as u32).then_some(GitExit::Code(i64::from(raw_exit)))
+}
+
 fn unknown_probe(reason: ProbeFailure) -> Probe {
     // Fixed labels make CI failures actionable without exposing the repository
     // path, command arguments, inherited environment, or Git output.
@@ -223,7 +230,10 @@ fn git_probe_with_absence(repo_root: &Path, args: &[&str], any_nonzero_absent: b
             terminate_git(&mut child);
             return unknown_probe(ProbeFailure::Timeout);
         }
-        Err(reason) => return unknown_probe(reason),
+        Err(reason) => {
+            terminate_git(&mut child);
+            return unknown_probe(reason);
+        }
     };
     let mut output = Vec::new();
     if child
@@ -254,7 +264,9 @@ fn terminate_git(child: &mut std::process::Child) {
 
 #[cfg(windows)]
 fn terminate_git(child: &mut std::process::Child) {
-    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use std::os::windows::io::AsRawHandle;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
         WaitForSingleObject,
@@ -270,6 +282,13 @@ fn terminate_git(child: &mut std::process::Child) {
         )
     };
     if handle == 0 {
+        // The inherited child handle is the only cleanup route left. `kill`
+        // and the native wait are both bounded; do not call `Child::wait`,
+        // which can hang under ARM64/x64 emulation.
+        let _ = child.kill();
+        unsafe {
+            let _ = WaitForSingleObject(child.as_raw_handle() as HANDLE, 1_000);
+        }
         return;
     }
     // SAFETY: `handle` is owned here and closed below. Cleanup remains bounded.
@@ -330,16 +349,20 @@ fn wait_for_git(
     // SAFETY: `handle` is live and owned until the unconditional close below.
     let wait_result = unsafe { WaitForSingleObject(handle, timeout_ms) };
     let result = match wait_result {
-        WAIT_OBJECT_0 => {
+        WAIT_OBJECT_0 => loop {
             let mut exit_code = 0;
             if unsafe { GetExitCodeProcess(handle, &mut exit_code) } == 0 {
-                Err(ProbeFailure::ExitCode)
-            } else {
-                // The process is signaled, so even STILL_ACTIVE (259) is its
-                // actual raw exit code rather than a liveness sentinel.
-                Ok(Some(GitExit::Code(i64::from(exit_code))))
+                break Err(ProbeFailure::ExitCode);
             }
-        }
+            if let Some(status) = classify_windows_process_exit(exit_code) {
+                break Ok(Some(status));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break Ok(None);
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(25)));
+        },
         WAIT_TIMEOUT => Ok(None),
         _ => Err(ProbeFailure::WaitApi),
     };
@@ -677,6 +700,14 @@ mod tests {
     #[test]
     fn git_probe_forwards_windows_emulation_architecture_marker() {
         assert!(git_launch_environment().contains(&"PROCESSOR_ARCHITEW6432"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_still_active_is_polled_until_a_final_raw_exit_code() {
+        assert_eq!(classify_windows_process_exit(259), None);
+        assert_eq!(classify_windows_process_exit(0), Some(GitExit::Code(0)));
+        assert_eq!(classify_windows_process_exit(7), Some(GitExit::Code(7)));
     }
 
     fn receipt(requirement: &str) -> Receipt {
