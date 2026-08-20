@@ -14,6 +14,11 @@ use std::{
 
 const CANDIDATE_CAP: usize = 16 * 1024 * 1024;
 
+#[cfg(test)]
+std::thread_local! {
+    static PARSER_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateDiff {
     paths: Vec<String>,
@@ -91,6 +96,8 @@ struct BodyLine {
 }
 
 pub fn parse_candidate_diff(bytes: &[u8]) -> Result<CandidateDiff, VerifyError> {
+    #[cfg(test)]
+    PARSER_CALLS.with(|calls| calls.set(calls.get() + 1));
     if bytes.is_empty()
         || bytes.len() > CANDIDATE_CAP
         || bytes.last() != Some(&b'\n')
@@ -1302,7 +1309,7 @@ mod tests {
         let duplicate=b"diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\ndiff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-y\n+z\n";
         let overflow =
             b"diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -18446744073709551616 +1 @@\n-x\n+y\n";
-        let mismatch = b"diff --git a/a b/a\n--- /dev/null\n+++ /dev/null\n@@ -0,0 +0,0 @@\n+x\n";
+        let mismatch = b"diff --git a/a b/a\n--- /dev/null\n+++ /dev/null\n@@ -0,0 +1 @@\n+x\n";
         let trailing =
             b"diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\ntrailing prose\n";
         for bad in [
@@ -1327,9 +1334,15 @@ mod tests {
         let canonical = root.path().canonicalize().unwrap();
         let bytes=b"diff --git a/z.txt b/z.txt\n--- a/z.txt\n+++ b/z.txt\n@@ -1,2 +1,2 @@\n-old\n+new\n keep\ndiff --git a/a.txt b/a.txt\n--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1 @@\n+added\ndiff --git a/d.txt b/d.txt\n--- a/d.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n";
         let diff = parse_candidate_diff(bytes).unwrap();
+        PARSER_CALLS.with(|calls| calls.set(0));
         let before_z = std::fs::read(canonical.join("z.txt")).unwrap();
         let before_d = std::fs::read(canonical.join("d.txt")).unwrap();
         let manifest = derive_expected_changes(&diff, &canonical).unwrap();
+        assert_eq!(
+            PARSER_CALLS.with(std::cell::Cell::get),
+            0,
+            "manifest derivation must consume retained records without reparsing"
+        );
         assert_eq!(
             manifest
                 .entries()
@@ -1365,6 +1378,29 @@ mod tests {
             "changed preimage must not be accepted against old context"
         );
         assert!(!base1.is_empty());
+        let bind_diff = parse_candidate_diff(
+            b"diff --git a/z.txt b/z.txt\n--- a/z.txt\n+++ b/z.txt\n@@ -1 +1 @@\n-old\n+new\n",
+        )
+        .unwrap();
+        let root_a = tempfile::tempdir().unwrap();
+        let root_b = tempfile::tempdir().unwrap();
+        std::fs::write(root_a.path().join("z.txt"), b"old\nuntouched-a\n").unwrap();
+        std::fs::write(root_b.path().join("z.txt"), b"old\nuntouched-b\n").unwrap();
+        let root_a = root_a.path().canonicalize().unwrap();
+        let root_b = root_b.path().canonicalize().unwrap();
+        PARSER_CALLS.with(|calls| calls.set(0));
+        let manifest_a = derive_expected_changes(&bind_diff, &root_a).unwrap();
+        let manifest_b = derive_expected_changes(&bind_diff, &root_b).unwrap();
+        assert_ne!(
+            manifest_a.base_tree_digest(),
+            manifest_b.base_tree_digest(),
+            "base digest must bind exact preimage bytes even when both patches apply"
+        );
+        assert_eq!(
+            PARSER_CALLS.with(std::cell::Cell::get),
+            0,
+            "derivation must not call the parser"
+        );
         let overlap=parse_candidate_diff(b"diff --git a/z.txt b/z.txt\n--- a/z.txt\n+++ b/z.txt\n@@ -1 +1 @@\n-old\n+new\n@@ -1 +1 @@\n-old\n+again\n").unwrap();
         std::fs::write(canonical.join("z.txt"), b"old\nkeep\n").unwrap();
         assert!(derive_expected_changes(&overlap, &canonical).is_err());
