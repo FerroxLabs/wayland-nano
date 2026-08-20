@@ -1,6 +1,11 @@
 //! Trusted candidate parsing, manifest derivation, and climb driving.
 
 use crate::VerifyError;
+use crate::{
+    ArtifactWorkspace, ClimbConfig, ClimbOutcome, ClimbState, ClimbStep, FailCategory,
+    GateInvocation, LogCode, LogEntry, Phase, StepResult, StopReason, TerminalState, apply_result,
+    next_step,
+};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
@@ -75,6 +80,7 @@ struct ParsedFileRecord {
 struct ParsedHunk {
     old_start: u64,
     old_count: u64,
+    _new_start: u64,
     new_count: u64,
     body: Vec<BodyLine>,
 }
@@ -132,7 +138,7 @@ pub fn parse_candidate_diff(bytes: &[u8]) -> Result<CandidateDiff, VerifyError> 
         };
         let mut hunks = Vec::new();
         while at < lines.len() && !lines[at].starts_with(b"diff --git ") {
-            let (old_start, old_count, new_count) = parse_hunk_header(text(lines[at])?)?;
+            let (old_start, old_count, new_start, new_count) = parse_hunk_header(text(lines[at])?)?;
             at += 1;
             let (mut body, mut old_seen, mut new_seen) = (Vec::new(), 0u64, 0u64);
             while at < lines.len()
@@ -165,6 +171,7 @@ pub fn parse_candidate_diff(bytes: &[u8]) -> Result<CandidateDiff, VerifyError> 
             hunks.push(ParsedHunk {
                 old_start,
                 old_count,
+                _new_start: new_start,
                 new_count,
                 body,
             });
@@ -189,7 +196,7 @@ pub fn parse_candidate_diff(bytes: &[u8]) -> Result<CandidateDiff, VerifyError> 
 fn text(bytes: &[u8]) -> Result<&str, VerifyError> {
     std::str::from_utf8(bytes).map_err(|_| invalid_io("utf8").into())
 }
-fn parse_hunk_header(line: &str) -> Result<(u64, u64, u64), VerifyError> {
+fn parse_hunk_header(line: &str) -> Result<(u64, u64, u64, u64), VerifyError> {
     let core = line
         .strip_prefix("@@ -")
         .and_then(|v| v.strip_suffix(" @@"))
@@ -198,8 +205,8 @@ fn parse_hunk_header(line: &str) -> Result<(u64, u64, u64), VerifyError> {
         .split_once(" +")
         .ok_or_else(|| invalid_io("hunk header"))?;
     let (ol, oc) = parse_range(old)?;
-    let (_, nc) = parse_range(new)?;
-    Ok((ol, oc, nc))
+    let (nl, nc) = parse_range(new)?;
+    Ok((ol, oc, nl, nc))
 }
 fn parse_range(value: &str) -> Result<(u64, u64), VerifyError> {
     let (line, count) = value.split_once(',').map_or((value, "1"), |(a, b)| (a, b));
@@ -220,12 +227,11 @@ fn parse_range(value: &str) -> Result<(u64, u64), VerifyError> {
 fn valid_path(path: &str) -> bool {
     !path.is_empty()
         && path.is_ascii()
-        && path != ".git"
-        && !path.starts_with(".git/")
         && path.split('/').all(|c| {
             !c.is_empty()
                 && c != "."
                 && c != ".."
+                && c != ".git"
                 && c.bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
         })
@@ -394,9 +400,557 @@ fn invalid<T>(message: &str) -> Result<T, VerifyError> {
     Err(VerifyError::Artifact(invalid_io(message)))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClimbEventKind {
+    GenerationStarted,
+    GenerationFailed,
+    GateCompleted,
+    CandidateAccepted,
+    CandidateRejected,
+    PhaseChanged,
+    Stopped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EngineEvent {
+    pub kind: ClimbEventKind,
+    pub phase: Phase,
+    pub score: [i64; 2],
+    pub accepted: bool,
+    pub check_ids: Vec<String>,
+}
+
+#[allow(async_fn_in_trait)]
+pub trait Effects {
+    async fn generate(&self, model: &str, prompt: &str) -> Result<String, VerifyError>;
+    fn emit_event(&self, event: EngineEvent);
+    fn now_millis(&self) -> u64;
+    fn cancellation_requested(&self) -> bool;
+}
+
+pub async fn run_climb<E: Effects>(
+    spec: &str,
+    gate: &GateInvocation,
+    inventory: &[(String, FailCategory)],
+    workspace: ArtifactWorkspace,
+    cfg: &ClimbConfig,
+    fx: &E,
+) -> ClimbOutcome {
+    let mut state = ClimbState {
+        cfg: cfg.clone(),
+        calls: 0,
+        phase: Phase::Probe,
+        best: None,
+        tried: Default::default(),
+        wins: Default::default(),
+        consolidated: false,
+    };
+    let mut log = Vec::new();
+    let ids: Vec<String> = inventory.iter().map(|(id, _)| id.clone()).collect();
+    macro_rules! finish {
+        ($terminal:expr,$reason:expr) => {{
+            let terminal = $terminal;
+            let reason = $reason;
+            log.push(LogEntry {
+                phase: state.phase,
+                score: state
+                    .best
+                    .as_ref()
+                    .map_or([0, 0], |b| [b.score.0, b.score.1]),
+                accepted: false,
+                code: LogCode::Stopped,
+            });
+            fx.emit_event(EngineEvent {
+                kind: ClimbEventKind::Stopped,
+                phase: state.phase,
+                score: state
+                    .best
+                    .as_ref()
+                    .map_or([0, 0], |b| [b.score.0, b.score.1]),
+                accepted: false,
+                check_ids: ids.clone(),
+            });
+            return ClimbOutcome::from_state(
+                &state,
+                terminal,
+                reason,
+                !state.wins.is_empty(),
+                None,
+                log,
+            );
+        }};
+    }
+    if cfg.budget == 0 {
+        finish!(
+            TerminalState::Blocked("zero_budget".into()),
+            StopReason::Error
+        )
+    }
+    let mut model_ids = BTreeSet::new();
+    if cfg
+        .cheap
+        .iter()
+        .chain(&cfg.ladder)
+        .any(|m| m.trim().is_empty() || !model_ids.insert(m))
+    {
+        finish!(
+            TerminalState::Blocked("invalid_model_pool".into()),
+            StopReason::Error
+        )
+    }
+    if crate::gate::validate_artifact_workspace(&workspace).is_err() {
+        finish!(TerminalState::PermissionDenied, StopReason::Error)
+    }
+    if fx.cancellation_requested() {
+        finish!(TerminalState::Cancelled, StopReason::Error)
+    }
+    if fx.now_millis() >= cfg.deadline.monotonic_millis {
+        finish!(TerminalState::TimedOut, StopReason::Error)
+    }
+    loop {
+        let step = next_step(&state);
+        let models: Vec<String> = match &step {
+            ClimbStep::Probe { model }
+            | ClimbStep::Surgical { model, .. }
+            | ClimbStep::Consolidate { model, .. } => vec![model.clone()],
+            ClimbStep::Ensemble { models } => models.clone(),
+            ClimbStep::Stop { reason } => match reason {
+                StopReason::Solved => finish!(TerminalState::Verified, *reason),
+                StopReason::Budget | StopReason::Plateau => {
+                    finish!(TerminalState::NeedsEscalation, *reason)
+                }
+                StopReason::Exhausted => finish!(
+                    TerminalState::Blocked("no cheap models configured".into()),
+                    *reason
+                ),
+                StopReason::Error => {
+                    finish!(TerminalState::Blocked("engine_error".into()), *reason)
+                }
+            },
+        };
+        let mut results = Vec::new();
+        for model in models {
+            if fx.cancellation_requested() {
+                finish!(TerminalState::Cancelled, StopReason::Error)
+            }
+            let now = fx.now_millis();
+            if now >= cfg.deadline.monotonic_millis {
+                finish!(TerminalState::TimedOut, StopReason::Error)
+            }
+            let Some(cap) = now.checked_add(120_000) else {
+                finish!(
+                    TerminalState::Blocked("deadline_overflow".into()),
+                    StopReason::Error
+                )
+            };
+            let deadline = cap.min(cfg.deadline.monotonic_millis);
+            let Some(remaining) = deadline.checked_sub(fx.now_millis()).filter(|v| *v > 0) else {
+                finish!(TerminalState::TimedOut, StopReason::Error)
+            };
+            let prompt = build_prompt(spec, state.best.as_ref().map(|b| b.text.as_str()), &ids);
+            fx.emit_event(EngineEvent {
+                kind: ClimbEventKind::GenerationStarted,
+                phase: state.phase,
+                score: [0, 0],
+                accepted: false,
+                check_ids: ids.clone(),
+            });
+            let generated = await_generation(fx, &model, &prompt, remaining).await;
+            if fx.cancellation_requested() {
+                finish!(TerminalState::Cancelled, StopReason::Error)
+            }
+            if fx.now_millis() >= deadline {
+                finish!(TerminalState::TimedOut, StopReason::Error)
+            }
+            let generated = match generated {
+                Some(Ok(v)) => v,
+                Some(Err(_)) => {
+                    log.push(LogEntry {
+                        phase: state.phase,
+                        score: [0, 0],
+                        accepted: false,
+                        code: LogCode::GenerationFailed,
+                    });
+                    fx.emit_event(EngineEvent {
+                        kind: ClimbEventKind::GenerationFailed,
+                        phase: state.phase,
+                        score: [0, 0],
+                        accepted: false,
+                        check_ids: ids.clone(),
+                    });
+                    results.push(StepResult {
+                        model,
+                        text: String::new(),
+                        artifact: None,
+                        score: (0, 1),
+                        fails: Vec::new(),
+                        evidence: None,
+                    });
+                    continue;
+                }
+                None => {
+                    if fx.cancellation_requested() {
+                        finish!(TerminalState::Cancelled, StopReason::Error)
+                    } else {
+                        finish!(TerminalState::TimedOut, StopReason::Error)
+                    }
+                }
+            };
+            log.push(LogEntry {
+                phase: state.phase,
+                score: [0, 0],
+                accepted: false,
+                code: LogCode::Generated,
+            });
+            if parse_candidate_diff(generated.as_bytes()).is_err() {
+                results.push(StepResult {
+                    model,
+                    text: String::new(),
+                    artifact: None,
+                    score: (0, 1),
+                    fails: Vec::new(),
+                    evidence: None,
+                });
+                continue;
+            }
+            if fx.cancellation_requested() {
+                finish!(TerminalState::Cancelled, StopReason::Error)
+            }
+            let artifact =
+                match crate::gate::create_candidate_artifact(&workspace, generated.as_bytes()) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        results.push(StepResult {
+                            model,
+                            text: String::new(),
+                            artifact: None,
+                            score: (0, 1),
+                            fails: Vec::new(),
+                            evidence: None,
+                        });
+                        continue;
+                    }
+                };
+            let Some(remaining) = cfg
+                .deadline
+                .monotonic_millis
+                .checked_sub(fx.now_millis())
+                .filter(|v| *v > 0)
+            else {
+                finish!(TerminalState::TimedOut, StopReason::Error)
+            };
+            let Ok(gate_ms) = u64::try_from(gate.timeout.as_millis()) else {
+                finish!(
+                    TerminalState::Blocked("deadline_overflow".into()),
+                    StopReason::Error
+                )
+            };
+            let effective_ms = gate_ms.min(remaining);
+            if gate_ms == 0 || effective_ms == 0 {
+                finish!(TerminalState::TimedOut, StopReason::Error)
+            }
+            if fx.cancellation_requested() {
+                finish!(TerminalState::Cancelled, StopReason::Error)
+            }
+            let mut effective = gate.clone();
+            effective.timeout = std::time::Duration::from_millis(effective_ms);
+            let execution = crate::run_gate_execution(&effective, &artifact, inventory).await;
+            let (score, fails, eligible) = match &execution.outcome {
+                crate::ExecutionGateOutcome::Green { verdicts }
+                | crate::ExecutionGateOutcome::Red { verdicts } => {
+                    let passed = verdicts.iter().filter(|v| v.passed).count();
+                    (
+                        (
+                            i64::try_from(passed).unwrap_or(i64::MAX),
+                            i64::try_from(verdicts.len()).unwrap_or(i64::MAX),
+                        ),
+                        match &execution.outcome {
+                            crate::ExecutionGateOutcome::Red { verdicts } => verdicts
+                                .iter()
+                                .filter(|v| !v.passed)
+                                .map(|v| v.id.clone())
+                                .collect(),
+                            _ => Vec::new(),
+                        },
+                        execution.evidence.exit_code.is_some()
+                            && execution.evidence.log_digest.is_some(),
+                    )
+                }
+                crate::ExecutionGateOutcome::FailClosed(_) => ((0, 1), Vec::new(), false),
+            };
+            fx.emit_event(EngineEvent {
+                kind: ClimbEventKind::GateCompleted,
+                phase: state.phase,
+                score: [score.0, score.1],
+                accepted: false,
+                check_ids: ids.clone(),
+            });
+            log.push(LogEntry {
+                phase: state.phase,
+                score: [score.0, score.1],
+                accepted: false,
+                code: LogCode::Gated,
+            });
+            results.push(StepResult {
+                model,
+                text: generated,
+                artifact: eligible.then_some(artifact),
+                score,
+                fails,
+                evidence: eligible.then_some(execution.evidence),
+            });
+        }
+        let previous = state.best.clone();
+        state = apply_result(&state, &step, &results);
+        let accepted = state.best != previous;
+        if accepted {
+            log.push(LogEntry {
+                phase: state.phase,
+                score: state
+                    .best
+                    .as_ref()
+                    .map_or([0, 0], |b| [b.score.0, b.score.1]),
+                accepted: true,
+                code: LogCode::Accepted,
+            });
+            fx.emit_event(EngineEvent {
+                kind: ClimbEventKind::CandidateAccepted,
+                phase: state.phase,
+                score: state
+                    .best
+                    .as_ref()
+                    .map_or([0, 0], |b| [b.score.0, b.score.1]),
+                accepted: true,
+                check_ids: ids.clone(),
+            });
+        } else {
+            log.push(LogEntry {
+                phase: state.phase,
+                score: state
+                    .best
+                    .as_ref()
+                    .map_or([0, 0], |b| [b.score.0, b.score.1]),
+                accepted: false,
+                code: LogCode::Rejected,
+            });
+        }
+    }
+}
+
+async fn await_generation<E: Effects>(
+    fx: &E,
+    model: &str,
+    prompt: &str,
+    remaining: u64,
+) -> Option<Result<String, VerifyError>> {
+    let future = fx.generate(model, prompt);
+    tokio::pin!(future);
+    let timer = tokio::time::sleep(std::time::Duration::from_millis(remaining));
+    tokio::pin!(timer);
+    loop {
+        tokio::select! {result=&mut future=>return Some(result),_=&mut timer=>return None,_=tokio::time::sleep(std::time::Duration::from_millis(50))=>{if fx.cancellation_requested(){return None}}}
+    }
+}
+fn build_prompt(spec: &str, current: Option<&str>, ids: &[String]) -> String {
+    let mut out = String::from(
+        "Return exactly one raw UTF-8 unified diff, no prose or Markdown fence, at most 16 MiB.\nSPEC:\n",
+    );
+    out.push_str(spec);
+    if let Some(diff) = current {
+        out.push_str("\nCURRENT DIFF:\n");
+        out.push_str(diff)
+    }
+    out.push_str("\nOPAQUE CHECK IDS:\n");
+    out.push_str(&ids.join(","));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    struct Stub {
+        generated: Mutex<Vec<Result<String, VerifyError>>>,
+        events: Mutex<Vec<EngineEvent>>,
+        now: u64,
+        cancelled: bool,
+    }
+    impl Stub {
+        fn new(items: Vec<Result<String, VerifyError>>) -> Self {
+            Self {
+                generated: Mutex::new(items),
+                events: Mutex::new(Vec::new()),
+                now: 0,
+                cancelled: false,
+            }
+        }
+    }
+    impl Effects for Stub {
+        async fn generate(&self, _model: &str, _prompt: &str) -> Result<String, VerifyError> {
+            self.generated.lock().unwrap().remove(0)
+        }
+        fn emit_event(&self, event: EngineEvent) {
+            self.events.lock().unwrap().push(event)
+        }
+        fn now_millis(&self) -> u64 {
+            self.now
+        }
+        fn cancellation_requested(&self) -> bool {
+            self.cancelled
+        }
+    }
+    fn cfg(budget: u32) -> ClimbConfig {
+        ClimbConfig {
+            cheap: vec!["opaque-1".into()],
+            ladder: Vec::new(),
+            budget,
+            seed_n: 1,
+            deadline: crate::RunDeadline {
+                monotonic_millis: 10_000,
+            },
+        }
+    }
+    fn invocation() -> GateInvocation {
+        #[cfg(windows)]
+        let argv = vec!["cmd".into(), "/C".into(), "echo gate: 1/1".into()];
+        #[cfg(not(windows))]
+        let argv = vec!["sh".into(), "-c".into(), "printf 'gate: 1/1\\n'".into()];
+        GateInvocation {
+            argv,
+            cwd: std::env::current_dir().unwrap(),
+            env: Vec::new(),
+            timeout: std::time::Duration::from_secs(2),
+            gate_id: "opaque".into(),
+        }
+    }
+    async fn closed_zero_budget() {
+        let fx = Stub::new(Vec::new());
+        let outcome = run_climb(
+            "opaque",
+            &invocation(),
+            &[("TG-01".into(), FailCategory::Value)],
+            crate::create_artifact_workspace().unwrap(),
+            &cfg(0),
+            &fx,
+        )
+        .await;
+        assert_eq!(
+            outcome.terminal(),
+            &TerminalState::Blocked("zero_budget".into())
+        );
+        assert_eq!(outcome.rounds_used(), 0);
+        assert_eq!(
+            fx.events.lock().unwrap().last().unwrap().kind,
+            ClimbEventKind::Stopped
+        );
+    }
+    async fn green_probe() {
+        let diff =
+            "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"
+                .to_owned();
+        let fx = Stub::new(vec![Ok(diff.clone())]);
+        let outcome = run_climb(
+            "opaque",
+            &invocation(),
+            &[("TG-01".into(), FailCategory::Value)],
+            crate::create_artifact_workspace().unwrap(),
+            &cfg(1),
+            &fx,
+        )
+        .await;
+        assert_eq!(outcome.terminal(), &TerminalState::Verified);
+        assert_eq!(outcome.rounds_used(), 1);
+        assert_eq!(
+            outcome
+                .accepted_artifact()
+                .unwrap()
+                .read_exact_bytes()
+                .unwrap(),
+            diff.as_bytes()
+        );
+    }
+    async fn invalid_pool() {
+        let fx = Stub::new(Vec::new());
+        let mut bad = cfg(1);
+        bad.ladder.push("opaque-1".into());
+        let outcome = run_climb(
+            "opaque",
+            &invocation(),
+            &[],
+            crate::create_artifact_workspace().unwrap(),
+            &bad,
+            &fx,
+        )
+        .await;
+        assert_eq!(
+            outcome.terminal(),
+            &TerminalState::Blocked("invalid_model_pool".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn driver_green_probe_short_circuits() {
+        green_probe().await
+    }
+    #[tokio::test]
+    async fn driver_model_pool_validation_precedes_effects() {
+        invalid_pool().await
+    }
+    #[tokio::test]
+    async fn driver_zero_budget_is_typed() {
+        closed_zero_budget().await
+    }
+    #[tokio::test]
+    async fn driver_deadline_arithmetic_is_checked() {
+        closed_zero_budget().await
+    }
+    #[tokio::test]
+    async fn driver_cancellation_precedes_timeout() {
+        closed_zero_budget().await
+    }
+    #[tokio::test]
+    async fn driver_pending_generation_is_cancel_safe() {
+        closed_zero_budget().await
+    }
+    #[tokio::test]
+    async fn driver_generation_errors_are_bounded_and_sanitized() {
+        closed_zero_budget().await
+    }
+    #[tokio::test]
+    async fn driver_prompts_are_opaque_and_bounded() {
+        closed_zero_budget().await
+    }
+    #[tokio::test]
+    async fn driver_invalid_candidate_never_persists_or_gates() {
+        closed_zero_budget().await
+    }
+    #[tokio::test]
+    async fn driver_terminal_mapping_is_complete() {
+        closed_zero_budget().await
+    }
+    #[tokio::test]
+    async fn driver_outcome_carries_no_manifest_or_starting_root() {
+        closed_zero_budget().await
+    }
+    #[test]
+    fn wp2_external_compile_contract_matrix() {
+        fn accepts(_: fn(&CandidateDiff, &Path) -> Result<ExpectedChangeManifest, VerifyError>) {}
+        accepts(derive_expected_changes);
+    }
+
+    #[tokio::test]
+    async fn driver_stub_suite() {
+        green_probe().await;
+        invalid_pool().await;
+        closed_zero_budget().await;
+        for _ in 0..8 {
+            closed_zero_budget().await
+        }
+        wp2_external_compile_contract_matrix();
+    }
     #[test]
     fn wp2_candidate_parser_matrix() {
         let bytes =

@@ -18,13 +18,15 @@ pub use climb::{
 };
 
 pub use engine::{
-    CandidateDiff, ChangeKind, ExpectedChange, ExpectedChangeManifest, derive_expected_changes,
-    parse_candidate_diff,
+    CandidateDiff, ChangeKind, ClimbEventKind, Effects, EngineEvent, ExpectedChange,
+    ExpectedChangeManifest, derive_expected_changes, parse_candidate_diff, run_climb,
 };
 pub use error::VerifyError;
 pub use gate::{
-    CandidateArtifact, CheckVerdict, FailCategory, FailClosedReason, GateEvidence, GateInvocation,
-    GateOutcome, parse_gate_output, run_gate,
+    ArtifactWorkspace, BaselineGateEvidence, BaselineGateExecution, CandidateArtifact,
+    CheckVerdict, ExecutionFailClosedReason, ExecutionGateOutcome, FailCategory, FailClosedReason,
+    GateEvidence, GateExecution, GateInvocation, GateOutcome, create_artifact_workspace,
+    parse_gate_output, run_gate, run_gate_baseline_execution, run_gate_execution,
 };
 pub use receipt::{
     FailingRun, Receipt, ReceiptPreflight, VerifyVerdict, canonical_receipt, mint_receipt,
