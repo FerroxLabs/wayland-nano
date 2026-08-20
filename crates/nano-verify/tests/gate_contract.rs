@@ -7,6 +7,16 @@ use std::time::Duration;
 
 const MODE_ENV: &str = "NANO_VERIFY_FIXTURE_MODE";
 const LEAK_ENV: &str = "NANO_VERIFY_TEST_LEAK";
+const ENV_DIAGNOSTIC: &str = "NANO_VERIFY_ENV_DIAGNOSTIC";
+
+fn env_key(name: &OsStr) -> String {
+    let name = name.to_string_lossy();
+    if cfg!(windows) {
+        name.to_ascii_uppercase()
+    } else {
+        name.into_owned()
+    }
+}
 
 fn fixture_entry() -> bool {
     let Some(mode) = std::env::var_os(MODE_ENV) else {
@@ -37,13 +47,22 @@ fn fixture_entry() -> bool {
                     MODE_ENV,
                     "NANO_VERIFY_EXPECTED_ARTIFACT",
                     "NANO_VERIFY_DECLARED",
+                    ENV_DIAGNOSTIC,
                 ])
+                .map(|name| env_key(OsStr::new(name)))
                 .collect::<std::collections::BTreeSet<_>>();
-            let exact = std::env::vars_os()
-                .all(|(key, _)| allowed.contains(key.to_string_lossy().as_ref()));
+            let unexpected = std::env::vars_os()
+                .map(|(key, _)| env_key(&key))
+                .filter(|key| !allowed.contains(key))
+                .collect::<Vec<_>>();
+            if !unexpected.is_empty()
+                && let Some(path) = std::env::var_os(ENV_DIAGNOSTIC)
+            {
+                std::fs::write(path, unexpected.join("\n")).unwrap();
+            }
             let declared =
                 std::env::var_os("NANO_VERIFY_DECLARED").as_deref() == Some(OsStr::new("override"));
-            if exact && declared && std::env::var_os(LEAK_ENV).is_none() {
+            if unexpected.is_empty() && declared && std::env::var_os(LEAK_ENV).is_none() {
                 println!("gate: 1/1");
                 std::process::exit(0);
             }
@@ -178,12 +197,26 @@ async fn run_gate_env_baseline_allowlist() {
     unsafe {
         std::env::set_var(LEAK_ENV, "synthetic-secret-marker");
     }
-    let extra = [("NANO_VERIFY_DECLARED", OsString::from("override"))];
+    let temp = tempfile::tempdir().unwrap();
+    let diagnostic = temp.path().join("unexpected-env-keys.txt");
+    let declared_name = if cfg!(windows) {
+        "nano_verify_declared"
+    } else {
+        "NANO_VERIFY_DECLARED"
+    };
+    let extra = [
+        (declared_name, OsString::from("override")),
+        (ENV_DIAGNOSTIC, diagnostic.clone().into_os_string()),
+    ];
     let outcome = run("env", Path::new("artifact"), &extra).await;
     unsafe {
         std::env::remove_var(LEAK_ENV);
     }
-    assert!(matches!(outcome, GateOutcome::Green { .. }));
+    let unexpected = std::fs::read_to_string(diagnostic).unwrap_or_default();
+    assert!(
+        matches!(outcome, GateOutcome::Green { .. }),
+        "unexpected environment keys (values omitted): {unexpected}; outcome: {outcome:?}"
+    );
 }
 
 #[tokio::test]
@@ -251,5 +284,8 @@ fn process_alive(pid: u32) -> bool {
 
 #[cfg(unix)]
 fn process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    unsafe { kill(pid as i32, 0) == 0 }
 }
