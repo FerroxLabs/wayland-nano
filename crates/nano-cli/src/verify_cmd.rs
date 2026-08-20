@@ -285,7 +285,8 @@ pub fn load_requested_registry(
 #[cfg(test)]
 mod tests {
     use super::{
-        EMPTY_REGISTRY_BOOTSTRAP, VerifyEvents, VerifyMode, load_requested_registry, parse_args,
+        EMPTY_REGISTRY_BOOTSTRAP, VerifyEvents, VerifyMode, VerifyParams, load_requested_registry,
+        parse_args,
     };
     use std::path::Path;
 
@@ -385,6 +386,139 @@ mod tests {
             .collect();
         keys.sort_unstable();
         keys
+    }
+
+    struct ScriptedRuntime {
+        times: std::sync::Mutex<std::collections::VecDeque<u64>>,
+        outcome: nano_verify::ExecutionGateOutcome,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl super::VerifyRuntime for ScriptedRuntime {
+        fn now_millis(&self) -> u64 {
+            self.times.lock().unwrap().pop_front().unwrap_or(u64::MAX)
+        }
+
+        async fn run_gate(
+            &self,
+            _: &nano_verify::GateInvocation,
+            _: &Path,
+            _: &[(String, nano_verify::FailCategory)],
+        ) -> nano_verify::ExecutionGateOutcome {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.outcome.clone()
+        }
+    }
+
+    fn fixture_repo() -> tempfile::TempDir {
+        let root = tempfile::Builder::new()
+            .prefix("wp3-02-")
+            .tempdir_in("F:/Temp/Codex")
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root.path())
+            .status()
+            .unwrap();
+        let gate = root.path().join("gates/demo");
+        std::fs::create_dir_all(&gate).unwrap();
+        std::fs::create_dir_all(root.path().join("artifact")).unwrap();
+        std::fs::write(gate.join("gate.cmd"), "").unwrap();
+        std::fs::write(
+            gate.join("card.md"),
+            "---\nchecks:\n  - { id: CLI-01, category: structure, desc: demo }\n---\n",
+        )
+        .unwrap();
+        let closure = nano_verify::GateClosure {
+            argv: vec!["gates/demo/gate.cmd".into()],
+            env: Default::default(),
+            cwd_policy: nano_verify::CwdPolicy::RepoRoot,
+            wrapped_tools: Vec::new(),
+        };
+        let registry = serde_json::json!({"schema":1,"gates":{"demo":{"card":"gates/demo/card.md","script":"gates/demo/gate.cmd","closure":closure,"closure_digest":nano_verify::closure_digest(&closure).unwrap(),"run_artifact":"artifact"}},"requirements":{"CLI-01":"demo"}});
+        std::fs::write(
+            root.path().join("gates/registry.json"),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        root
+    }
+
+    #[tokio::test]
+    async fn run_only_maps_green_red_and_expiry_without_extra_spawn() {
+        let repo = fixture_repo();
+        let params = VerifyParams {
+            mode: VerifyMode::RunOnly {
+                gate: "demo".into(),
+                deadline_ms: 10,
+                json: false,
+            },
+        };
+        let green = ScriptedRuntime {
+            times: std::sync::Mutex::new([10, 11, 12, 13, 14].into()),
+            outcome: nano_verify::ExecutionGateOutcome::Green {
+                verdicts: vec![nano_verify::CheckVerdict {
+                    id: "CLI-01".into(),
+                    category: nano_verify::FailCategory::Structure,
+                    passed: true,
+                }],
+            },
+            calls: Default::default(),
+        };
+        assert_eq!(super::run_with(repo.path(), &params, &green).await, 0);
+        assert_eq!(green.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let expired = ScriptedRuntime {
+            times: std::sync::Mutex::new([10, 11, 20].into()),
+            outcome: nano_verify::ExecutionGateOutcome::Green {
+                verdicts: Vec::new(),
+            },
+            calls: Default::default(),
+        };
+        assert_eq!(super::run_with(repo.path(), &params, &expired).await, 3);
+        assert_eq!(expired.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn deadline_overflow_is_usage_before_spawn() {
+        let repo = fixture_repo();
+        let params = VerifyParams {
+            mode: VerifyMode::RunOnly {
+                gate: "demo".into(),
+                deadline_ms: 10,
+                json: false,
+            },
+        };
+        let runtime = ScriptedRuntime {
+            times: std::sync::Mutex::new([u64::MAX - 5].into()),
+            outcome: nano_verify::ExecutionGateOutcome::Red {
+                verdicts: Vec::new(),
+            },
+            calls: Default::default(),
+        };
+        assert_eq!(super::run_with(repo.path(), &params, &runtime).await, 2);
+        assert_eq!(runtime.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn receipt_entry_classification_unreadable_is_usage() {
+        let params = VerifyParams {
+            mode: VerifyMode::CheckReceipt {
+                path: Path::new("missing.receipt.json").into(),
+                json: false,
+            },
+        };
+        let runtime = ScriptedRuntime {
+            times: Default::default(),
+            outcome: nano_verify::ExecutionGateOutcome::Red {
+                verdicts: Vec::new(),
+            },
+            calls: Default::default(),
+        };
+        assert_eq!(
+            super::run_with(Path::new("F:/"), &params, &runtime).await,
+            2
+        );
     }
 
     #[test]
