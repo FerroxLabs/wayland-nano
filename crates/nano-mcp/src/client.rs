@@ -223,7 +223,7 @@ impl McpClient {
                 tx,
                 deadline: deadline.clone(),
             },
-        );
+        )?;
         // Designation BEFORE the frame goes on the wire (§2.4 rule 2): at
         // most one designated foreground call per connection.
         if method == "tools/call" && self.conn.negotiated().is_some_and(|n| n.elicitation) {

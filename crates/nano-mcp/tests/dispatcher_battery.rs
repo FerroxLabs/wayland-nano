@@ -8,7 +8,7 @@ use nano_mcp::dispatcher::{
 };
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Barrier, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 const FAKE: &str = env!("CARGO_BIN_EXE_wayland-nano-mcp-fake-server");
@@ -55,6 +55,10 @@ impl Collect {
             std::thread::sleep(Duration::from_millis(10));
         }
         None
+    }
+
+    fn count(&self, pred: impl Fn(&Value) -> bool) -> usize {
+        self.seen.lock().unwrap().iter().filter(|v| pred(v)).count()
     }
 }
 
@@ -615,6 +619,132 @@ fn cancel_race_at_close_never_loses_the_cancel() {
                 panic!("round {round}: pending id swept but the cancel never reached the wire")
             });
     }
+}
+
+struct AdvertiseElicitation;
+
+impl ServerRequestHandler for AdvertiseElicitation {
+    fn handle(
+        &self,
+        _conn: &ConnectionHandle,
+        _request: &ServerRequest,
+    ) -> Option<Result<Value, (i64, String)>> {
+        None
+    }
+
+    fn advertises_elicitation(&self) -> bool {
+        true
+    }
+}
+
+/// Concurrent facade clones must not each run a partial shutdown sweep.
+/// One closer owns the sweep; the other waits until every owed cancel is
+/// queued before either can allow the writer to finish its closing drain.
+#[test]
+fn concurrent_close_has_one_complete_cancel_sweep() {
+    for round in 0..12 {
+        let collect = Collect::default();
+        let options = ConnectionOptions {
+            notification_sink: collect.sink(),
+            graceful_shutdown_wait: Duration::from_millis(500),
+            supervisor_tick: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let client = connect("echo", &[("FAKE_CALL_DELAY_MS", "5000")], options);
+        let call_client = client.clone();
+        let call = std::thread::spawn(move || call_client.call_tool("echo", serde_json::json!({})));
+        std::thread::sleep(Duration::from_millis(100));
+
+        let barrier = Arc::new(Barrier::new(3));
+        let close_a = client.clone();
+        let barrier_a = barrier.clone();
+        let a = std::thread::spawn(move || {
+            barrier_a.wait();
+            close_a.close();
+        });
+        let barrier_b = barrier.clone();
+        let b = std::thread::spawn(move || {
+            barrier_b.wait();
+            client.close();
+        });
+        barrier.wait();
+        a.join().expect("first concurrent close returns");
+        b.join().expect("second concurrent close returns");
+
+        let err = call.join().unwrap().expect_err("call fails typed at close");
+        assert!(
+            matches!(&err, McpError::Transport(r) if r.contains("shut down")),
+            "round {round}: pending waiter fails with shutdown, got {err}"
+        );
+        collect
+            .wait_for(|v| is_cancel_obs(v, "shutdown"), Duration::from_secs(2))
+            .unwrap_or_else(|| panic!("round {round}: concurrent close lost the owed cancel"));
+        assert_eq!(
+            collect.count(|v| is_cancel_obs(v, "shutdown")),
+            1,
+            "round {round}: exactly one owner sweep emits exactly one owed cancel"
+        );
+    }
+}
+
+#[test]
+fn panicking_retirement_hook_cannot_strand_concurrent_close() {
+    let hook_ran = Arc::new(AtomicBool::new(false));
+    let hook_flag = hook_ran.clone();
+    let options = ConnectionOptions {
+        request_handler: Arc::new(AdvertiseElicitation),
+        slot_retired_hook: Arc::new(move |_| {
+            hook_flag.store(true, Ordering::SeqCst);
+            panic!("injected retirement hook panic");
+        }),
+        graceful_shutdown_wait: Duration::from_millis(500),
+        supervisor_tick: Duration::from_millis(50),
+        ..Default::default()
+    };
+    let client = connect("echo", &[("FAKE_CALL_DELAY_MS", "5000")], options);
+    let call_client = client.clone();
+    let call = std::thread::spawn(move || call_client.call_tool("echo", serde_json::json!({})));
+    std::thread::sleep(Duration::from_millis(100));
+    let other = client.clone();
+    let close = std::thread::spawn(move || other.close());
+    client.close();
+    close.join().expect("concurrent close survives hook panic");
+    assert!(hook_ran.load(Ordering::SeqCst), "retirement hook ran");
+    assert!(matches!(
+        call.join().unwrap(),
+        Err(McpError::Transport(ref reason)) if reason.contains("shut down")
+    ));
+}
+
+#[test]
+fn retirement_hook_can_reenter_close_after_sweep_completion() {
+    let reentrant = Arc::new(Mutex::new(None::<McpClient>));
+    let hook_client = reentrant.clone();
+    let hook_ran = Arc::new(AtomicBool::new(false));
+    let hook_flag = hook_ran.clone();
+    let options = ConnectionOptions {
+        request_handler: Arc::new(AdvertiseElicitation),
+        slot_retired_hook: Arc::new(move |_| {
+            hook_flag.store(true, Ordering::SeqCst);
+            if let Some(client) = hook_client.lock().unwrap().take() {
+                client.close();
+            }
+        }),
+        graceful_shutdown_wait: Duration::from_millis(500),
+        supervisor_tick: Duration::from_millis(50),
+        ..Default::default()
+    };
+    let client = connect("echo", &[("FAKE_CALL_DELAY_MS", "5000")], options);
+    *reentrant.lock().unwrap() = Some(client.clone());
+    let call_client = client.clone();
+    let call = std::thread::spawn(move || call_client.call_tool("echo", serde_json::json!({})));
+    std::thread::sleep(Duration::from_millis(100));
+    client.close();
+    assert!(hook_ran.load(Ordering::SeqCst), "retirement hook ran");
+    assert!(matches!(
+        call.join().unwrap(),
+        Err(McpError::Transport(ref reason)) if reason.contains("shut down")
+    ));
 }
 
 // ---------------------------------------------------------------------------

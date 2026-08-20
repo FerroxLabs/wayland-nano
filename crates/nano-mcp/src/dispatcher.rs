@@ -39,7 +39,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{
     self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, TrySendError,
 };
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -437,10 +437,13 @@ struct ConnState {
     /// closing is set BEFORE the sweep enqueues, so a fast writer would
     /// otherwise drain-exit first and the cancels would die in the lane.
     cancels_queued: bool,
+    /// Exactly one concurrent shutdown caller owns the pending-id sweep.
+    shutdown_sweep_claimed: bool,
 }
 
 struct Shared {
     state: Mutex<ConnState>,
+    shutdown_sweep_done: Condvar,
     pending: Mutex<PendingState>,
     /// Server-cancelled server-request ids (§2.5), Value::to_string form.
     cancelled_requests: Mutex<HashSet<String>>,
@@ -490,6 +493,25 @@ impl Shared {
         lock(&self.state).closing
     }
 
+    /// Claim the one shutdown sweep. A concurrent closer waits until the
+    /// owner has enqueued every cancel and published completion.
+    fn begin_shutdown_sweep(&self) -> bool {
+        let mut state = lock(&self.state);
+        state.closing = true;
+        if !state.shutdown_sweep_claimed {
+            state.shutdown_sweep_claimed = true;
+            return true;
+        }
+        while !state.cancels_queued {
+            state = self
+                .shutdown_sweep_done
+                .wait(state)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+        false
+    }
+
+    #[cfg(test)]
     fn set_closing(&self) {
         lock(&self.state).closing = true;
     }
@@ -501,12 +523,25 @@ impl Shared {
 
     fn set_cancels_queued(&self) {
         lock(&self.state).cancels_queued = true;
+        self.shutdown_sweep_done.notify_all();
     }
 
     // --- pending map enforcing functions (§2.2) --------------------------
 
-    fn pending_insert(&self, id: u64, slot: PendingSlot) {
+    /// Register a request while holding the connection-state lock. This
+    /// serializes registration with `begin_shutdown_sweep`: a request is either in
+    /// the shutdown sweep's snapshot or is refused with the canonical
+    /// shutdown error, never inserted after that snapshot.
+    fn pending_insert(&self, id: u64, slot: PendingSlot) -> Result<(), McpError> {
+        let state = lock(&self.state);
+        if let Some(reason) = &state.poison {
+            return Err(McpError::Transport(reason.clone()));
+        }
+        if state.closing {
+            return Err(McpError::Transport("connection shut down".into()));
+        }
         lock(&self.pending).map.insert(id, slot);
+        Ok(())
     }
 
     /// Terminal path for a DELIVERED response. Slot retirement rides the
@@ -540,6 +575,13 @@ impl Shared {
             (self.slot_retired_hook)(report);
         }
         slot
+    }
+
+    /// Shutdown-sweep variant: mutate pending state without invoking the
+    /// public retirement hook. The sole sweep owner must publish completion
+    /// before any arbitrary callback can panic or re-enter `shutdown`.
+    fn pending_retire_deferred(&self, id: u64) -> (Option<PendingSlot>, Option<SlotRetired>) {
+        lock(&self.pending).retire(id)
     }
 
     /// Poison path: every waiter fails typed. Sends happen AFTER the map
@@ -627,7 +669,7 @@ impl Shared {
             return Err(McpError::Transport(reason));
         }
         if self.closing() {
-            return Err(McpError::Transport("connection closing".into()));
+            return Err(McpError::Transport("connection shut down".into()));
         }
         match self.normal_tx.try_send(frame) {
             Ok(()) => Ok(()),
@@ -1322,7 +1364,9 @@ impl Connection {
                 poison: None,
                 closing: false,
                 cancels_queued: false,
+                shutdown_sweep_claimed: false,
             }),
+            shutdown_sweep_done: Condvar::new(),
             pending: Mutex::new(PendingState::default()),
             cancelled_requests: Mutex::new(HashSet::new()),
             next_id: AtomicU64::new(1),
@@ -1420,8 +1464,8 @@ impl Connection {
         self.shared.next_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    pub(crate) fn pending_insert(&self, id: u64, slot: PendingSlot) {
-        self.shared.pending_insert(id, slot);
+    pub(crate) fn pending_insert(&self, id: u64, slot: PendingSlot) -> Result<(), McpError> {
+        self.shared.pending_insert(id, slot)
     }
 
     pub(crate) fn pending_retire(&self, id: u64) {
@@ -1480,25 +1524,38 @@ impl Connection {
     /// finish its quiet-tick drain first and the cancels would never reach
     /// the wire (F-P3-6).
     pub fn shutdown(&self) {
-        self.shared.set_closing();
-        // Retire each pending id (so the late response is a retired
-        // drop+log), fail its waiter typed FIRST so no caller parks behind
-        // the graceful wait, then cancel it on the wire (§2.6).
-        let ids: Vec<u64> = lock(&self.shared.pending).map.keys().copied().collect();
-        for id in ids {
-            if let Some(slot) = self.shared.pending_retire(id) {
-                let _ = slot
-                    .tx
-                    .try_send(Err(McpError::Transport("connection shut down".into())));
+        if self.shared.begin_shutdown_sweep() {
+            // Retire each pending id (so the late response is a retired
+            // drop+log), fail its waiter typed FIRST so no caller parks behind
+            // the graceful wait, then cancel it on the wire (§2.6).
+            let ids: Vec<u64> = lock(&self.shared.pending).map.keys().copied().collect();
+            let mut retired_hooks = Vec::new();
+            for id in ids {
+                let (slot, retired_hook) = self.shared.pending_retire_deferred(id);
+                if let Some(slot) = slot {
+                    let _ = slot
+                        .tx
+                        .try_send(Err(McpError::Transport("connection shut down".into())));
+                }
+                retired_hooks.extend(retired_hook);
+                let notification =
+                    crate::protocol::cancelled_notification(serde_json::json!(id), "shutdown");
+                let _ = self.shared.enqueue_priority(
+                    serde_json::to_string(&notification).expect("notification serializes"),
+                );
             }
-            let notification =
-                crate::protocol::cancelled_notification(serde_json::json!(id), "shutdown");
-            let _ = self.shared.enqueue_priority(
-                serde_json::to_string(&notification).expect("notification serializes"),
-            );
+            // Publish only after the sole owner has finished the full sweep.
+            // Waiting close callers cannot race the writer's drain-exit.
+            let _ = self.shared.events_tx.send(SupEvent::Shutdown);
+            self.shared.set_cancels_queued();
+            // Arbitrary user callbacks run only after completion is visible,
+            // and one panicking hook cannot strand shutdown or suppress the
+            // remaining notifications.
+            for report in retired_hooks {
+                let hook = self.shared.slot_retired_hook.clone();
+                let _ = catch_unwind(AssertUnwindSafe(|| hook(report)));
+            }
         }
-        self.shared.set_cancels_queued();
-        let _ = self.shared.events_tx.send(SupEvent::Shutdown);
         if let Some(handle) = lock(&self.supervisor).take() {
             let _ = handle.join();
         }
@@ -1708,7 +1765,9 @@ mod tests {
                 poison: None,
                 closing: false,
                 cancels_queued: false,
+                shutdown_sweep_claimed: false,
             }),
+            shutdown_sweep_done: Condvar::new(),
             pending: Mutex::new(PendingState::default()),
             cancelled_requests: Mutex::new(HashSet::new()),
             next_id: AtomicU64::new(1),
