@@ -1528,49 +1528,77 @@ fn system_bwrap_has_user_namespace_access(
         Err(_) => return true,
     };
 
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let stderr = child.stderr.take().map_or_else(Vec::new, |stderr| {
-                    let fd = stderr.as_raw_fd();
-                    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-                    if flags < 0
-                        || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
-                    {
-                        return Vec::new();
-                    }
+    let mut stderr = child.stderr.take();
+    if let Some(stderr_pipe) = stderr.as_ref() {
+        let fd = stderr_pipe.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            stderr = None;
+        }
+    }
 
-                    let mut bytes = Vec::new();
-                    let mut stderr = stderr.take(SYSTEM_BWRAP_PROBE_STDERR_LIMIT_BYTES);
-                    if let Err(err) = stderr.read_to_end(&mut bytes)
-                        && err.kind() != ErrorKind::WouldBlock
-                    {
-                        return bytes;
-                    }
-                    bytes
-                });
-                let output = Output {
-                    status,
-                    stdout: Vec::new(),
-                    stderr,
-                };
-                return output.status.success() || !is_user_namespace_failure(&output);
+    let deadline = std::time::Instant::now() + timeout;
+    let mut stderr_bytes = Vec::new();
+    let mut exited_status = None;
+    loop {
+        let stderr_closed = stderr.as_mut().is_none_or(|stderr| {
+            while stderr_bytes.len() < SYSTEM_BWRAP_PROBE_STDERR_LIMIT_BYTES as usize {
+                let remaining = SYSTEM_BWRAP_PROBE_STDERR_LIMIT_BYTES as usize - stderr_bytes.len();
+                let mut buffer = [0_u8; 4096];
+                let read_limit = remaining.min(buffer.len());
+                match stderr.read(&mut buffer[..read_limit]) {
+                    Ok(0) => return true,
+                    Ok(read) => stderr_bytes.extend_from_slice(&buffer[..read]),
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => return false,
+                    Err(_) => return true,
+                }
             }
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
+            true
+        });
+
+        if exited_status.is_none() {
+            match child.try_wait() {
+                Ok(Some(status)) => exited_status = Some(status),
+                Ok(None) => {}
+                Err(_) => {
                     let _ = child.kill();
                     let _ = child.wait();
                     return true;
                 }
-                std::thread::sleep(SYSTEM_BWRAP_PROBE_POLL_INTERVAL);
-            }
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return true;
             }
         }
+
+        if let Some(status) = exited_status {
+            if status.success() {
+                return true;
+            }
+            let output = Output {
+                status,
+                stdout: Vec::new(),
+                stderr: stderr_bytes.clone(),
+            };
+            if is_user_namespace_failure(&output) {
+                return false;
+            }
+            if stderr_closed {
+                let output = Output {
+                    status,
+                    stdout: Vec::new(),
+                    stderr: stderr_bytes,
+                };
+                return !is_user_namespace_failure(&output);
+            }
+        }
+
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            if exited_status.is_none() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            return true;
+        }
+        std::thread::sleep(SYSTEM_BWRAP_PROBE_POLL_INTERVAL.min(deadline - now));
     }
 }
 

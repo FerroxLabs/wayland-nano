@@ -151,6 +151,21 @@ enum Probe {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeFailure {
+    Spawn,
+    Stdout,
+    Timeout,
+    Wait,
+}
+
+fn unknown_probe(reason: ProbeFailure) -> Probe {
+    // Fixed labels make CI failures actionable without exposing the repository
+    // path, command arguments, inherited environment, or Git output.
+    eprintln!("receipt Git probe unavailable: {reason:?}");
+    Probe::Unknown
+}
+
 fn git_probe(repo_root: &Path, args: &[&str]) -> Probe {
     git_probe_with_absence(repo_root, args, false)
 }
@@ -180,7 +195,7 @@ fn git_probe_with_absence(repo_root: &Path, args: &[&str], any_nonzero_absent: b
         }
     }
     let Ok(mut child) = command.spawn() else {
-        return Probe::Unknown;
+        return unknown_probe(ProbeFailure::Spawn);
     };
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
@@ -192,22 +207,22 @@ fn git_probe_with_absence(repo_root: &Path, args: &[&str], any_nonzero_absent: b
                     .take()
                     .is_none_or(|mut stdout| stdout.read_to_end(&mut output).is_err())
                 {
-                    return Probe::Unknown;
+                    return unknown_probe(ProbeFailure::Stdout);
                 }
                 return match status.code() {
                     Some(0) => Probe::Present(output),
                     Some(1) => Probe::Absent,
                     Some(_) if any_nonzero_absent => Probe::Absent,
-                    _ => Probe::Unknown,
+                    _ => unknown_probe(ProbeFailure::Wait),
                 };
             }
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Probe::Unknown;
+                return unknown_probe(ProbeFailure::Timeout);
             }
-            Err(_) => return Probe::Unknown,
+            Err(_) => return unknown_probe(ProbeFailure::Wait),
         }
     }
 }
@@ -219,7 +234,15 @@ fn null_device() -> &'static str {
 fn git_launch_environment() -> &'static [&'static str] {
     #[cfg(windows)]
     {
-        &["PATH", "SYSTEMROOT", "PATHEXT", "COMSPEC", "TEMP", "TMP"]
+        &[
+            "PATH",
+            "SYSTEMROOT",
+            "PATHEXT",
+            "COMSPEC",
+            "TEMP",
+            "TMP",
+            "PROCESSOR_ARCHITEW6432",
+        ]
     }
     #[cfg(not(windows))]
     {
@@ -496,6 +519,18 @@ mod tests {
     use crate::registry::{CwdPolicy, GateClosure, GateRegistryEntry};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn unknown_probe_uses_a_bounded_secret_safe_reason() {
+        assert_eq!(format!("{:?}", ProbeFailure::Spawn), "Spawn");
+        assert!(matches!(unknown_probe(ProbeFailure::Spawn), Probe::Unknown));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn git_probe_forwards_windows_emulation_architecture_marker() {
+        assert!(git_launch_environment().contains(&"PROCESSOR_ARCHITEW6432"));
+    }
 
     fn receipt(requirement: &str) -> Receipt {
         Receipt {

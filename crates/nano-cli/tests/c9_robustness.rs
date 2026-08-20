@@ -534,9 +534,34 @@ fn cancel_beats_steer_with_exactly_one_drop_notice() {
         "method": "session/cancel",
         "params": { "sessionId": client.session_id }
     }));
+    // The model release uses a different channel/thread from ACP input. A
+    // FIFO request after the notification is an observable ingress barrier:
+    // its response proves the reader has consumed cancel (and fired the
+    // shared flag) before the parked model is allowed to complete. Without
+    // this barrier, a slow runner can schedule release first and turn this
+    // protocol test into a harness race.
+    let barrier_id = client.send_request(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": 1,
+            "clientCapabilities": { "fs": { "readTextFile": true, "writeTextFile": true } }
+        }),
+    );
+    let mut frames =
+        client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(barrier_id));
     client.release_model();
-    let frames = client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id));
-    assert_eq!(frames.last().unwrap()["result"]["stopReason"], "cancelled");
+    if !frames
+        .iter()
+        .any(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id))
+    {
+        frames
+            .extend(client.read_until(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id)));
+    }
+    let prompt_response = frames
+        .iter()
+        .find(|f| f.get("id").and_then(|v| v.as_u64()) == Some(prompt_id))
+        .expect("prompt response retained across ingress barrier");
+    assert_eq!(prompt_response["result"]["stopReason"], "cancelled");
     // Exactly one steer_dropped notice, carrying the steer REQUEST id and
     // the digest — never the text (it was never model-visible).
     let drops: Vec<&serde_json::Value> = frames
