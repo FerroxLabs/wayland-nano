@@ -5,6 +5,7 @@
 //! climb engine and WP-3 CLI surfaces.
 
 pub mod climb;
+pub mod engine;
 pub mod error;
 pub mod gate;
 pub mod receipt;
