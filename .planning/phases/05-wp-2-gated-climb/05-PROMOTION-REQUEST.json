@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "base_sha": "7bcbc12fec0624aacbc3953e4f2c7d1a2c4414e0",
+  "product_head": "c3aab9262021acd6c2c9af2d3474821905953746",
+  "product_tree": "e56b536a1ad60fe258d22121923843f95c039948",
+  "workflow_name": "wayland-nano-gate",
+  "workflow_path": ".github/workflows/gate.yml",
+  "required_jobs": [
+    "gate (windows-latest, x64)",
+    "gate (windows-11-arm, arm64)",
+    "gate (macos-14, arm64)",
+    "gate (macos-15-intel, x64)",
+    "gate (ubuntu-22.04, x64)",
+    "gate (ubuntu-24.04-arm, arm64)"
+  ],
+  "integration_expectations": {
+    "builder_tip_protocol": "Commit this request as the sole changed path; derive builder_tip externally and require its sole parent equals product_head.",
+    "request_only_diff": "Require git diff --name-only product_head..builder_tip to equal only .planning/phases/05-wp-2-gated-climb/05-PROMOTION-REQUEST.json.",
+    "merge_parents": "Create a detached no-ff integration commit whose second parent includes exact builder_tip.",
+    "integration_gate": "Run the complete F-only just gate-all on the detached integration commit.",
+    "master_tip": "Push only the validated detached integration HEAD to master and require remote master resolves to that exact commit.",
+    "ci_query": "Query authenticated workflow wayland-nano-gate at the exact pushed SHA and require all six named jobs green."
+  }
+}

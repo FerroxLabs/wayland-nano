@@ -125,6 +125,51 @@
         "log_digest": "53c8a80cc5cd7dde6b55155c9e4806cf34fbce39f5ff966755e4021b952473b5"
       },
       "commit": "932a55734df27126cb4509f099db998a529d7577"
+    },
+    "CLIMB-01": {
+      "requirement": "CLIMB-01",
+      "test": "cargo test -p nano-verify climb::tests::probe_ensemble_surgical_consolidate_path -- --exact --nocapture",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "a60d4536ef9fe2061b5bf3af8ab29c06743de5dd8259e21cd8c8738ac005fe7b"
+      },
+      "commit": "3fdb5837c17604d740acb62676727cc8f85b8075"
+    },
+    "CLIMB-02": {
+      "requirement": "CLIMB-02",
+      "test": "cargo test -p nano-verify climb::tests::ratchet_accepts_strict_score_win_and_strict_subset_only -- --exact --nocapture",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "b09217505897006f07a4aa1475942afb2a1a0a7dc09b6ef5918fd02c217511b1"
+      },
+      "commit": "82f85e1efdebf74cf6859a7a07a9727684642f29"
+    },
+    "CLIMB-03": {
+      "requirement": "CLIMB-03",
+      "test": "cargo test -p nano-verify engine::tests::wp2_candidate_parser_matrix -- --exact --nocapture",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "6a4bb8e4bc9ad5c2909205e0175efecfd697f446ade357b629e417b4660fba9f"
+      },
+      "commit": "c271efb557489af8ec2eb0d10c4d8cd16e5340cd"
+    },
+    "CLIMB-04": {
+      "requirement": "CLIMB-04",
+      "test": "cargo test -p nano-verify climb::tests::budget_exhaustion_stops -- --exact --nocapture",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "47d3908869c4e05bf0a0ce92f5e22101c80e37fb39ba6392ff6ad7e62222d3a2"
+      },
+      "commit": "82f85e1efdebf74cf6859a7a07a9727684642f29"
+    },
+    "CLIMB-05": {
+      "requirement": "CLIMB-05",
+      "test": "cargo test -p nano-verify engine::tests::wp2_expected_change_manifest_matrix -- --exact --nocapture",
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "e084ded70e6840518985a41816ff6157ea74a352e5e79a8d354f502642108f2e"
+      },
+      "commit": "c271efb557489af8ec2eb0d10c4d8cd16e5340cd"
     }
   }
 }

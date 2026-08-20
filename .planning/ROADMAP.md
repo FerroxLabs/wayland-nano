@@ -20,7 +20,7 @@ This milestone promotes the approved Wayland Nano 0.2 verified-change program th
 - [x] **Phase 2: WP-0.2 Memory Hardening** - Measure retained growth, apply only the profile-selected correction, and prove the locked memory budget. (completed 2026-08-17)
 - [x] **Phase 3: WP-0.3 PDF Intake** - Deliver validated, resumable PDF intake over the Anthropic document wire with fail-closed routing. (completed 2026-08-17)
 - [x] **Phase 4: WP-1 Gate and Receipt Foundation** - Deliver canonical gate execution and independently checkable red-green receipt primitives. (completed 2026-08-20)
-- [ ] **Phase 5: WP-2 Gated Climb** - Deliver the budgeted, opaque-feedback, ratcheted climb engine.
+- [x] **Phase 5: WP-2 Gated Climb** - Deliver the budgeted, opaque-feedback, ratcheted climb engine. (completed 2026-08-20)
 - [ ] **Phase 6: WP-3 Verify CLI and CI Surface** - Expose verified change through the CLI, offline receipt checking, and a pinned CI consumer.
 - [ ] **Phase 7: WP-4 Gate Cards and Dogfood** - Seal three mutant-tested Gate Card packs, dogfood them through the verifier, and hand the promoted evidence to the owner.
 
@@ -191,7 +191,15 @@ Plans:
   4. Merge through detached `.tmp-wt-integ` with `--no-ff` and rerun the complete `just gate-all` on the integration commit.
   5. Push integration `HEAD:master`; require CI green before Phase 6 and record the full one-line promotion result.
 
-**Plans**: TBD
+**Plans**: 5 plans
+
+Plans:
+
+- [x] 05-01-PLAN.md — Implement the pure strict-ratchet climb and exact tests 30–32.
+- [x] 05-02-PLAN.md — Implement trusted artifact/evidence APIs, parser/manifest derivation, and the driver suite.
+- [x] 05-03-PLAN.md — Add independent downstream public-opacity and source-compatibility teeth.
+- [x] 05-04-PLAN.md — Seal cross-module exports, dependency closure, and exact provenance.
+- [x] 05-05-PLAN.md — Run the bounded audit, full local gates, and builder-only handoff.
 
 ### Phase 6: WP-3 Verify CLI and CI Surface
 
@@ -273,6 +281,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 2. WP-0.2 Memory Hardening | 6/6 | Complete | 2026-08-17 |
 | 3. WP-0.3 PDF Intake | 13/13 | Complete | 2026-08-17 |
 | 4. WP-1 Gate and Receipt Foundation | 9/9 | Complete | 2026-08-20 |
-| 5. WP-2 Gated Climb | 0/TBD | Not started | - |
+| 5. WP-2 Gated Climb | 5/5 | Complete | 2026-08-20 |
 | 6. WP-3 Verify CLI and CI Surface | 0/TBD | Not started | - |
 | 7. WP-4 Gate Cards and Dogfood | 0/TBD | Not started | - |

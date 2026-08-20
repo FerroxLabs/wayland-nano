@@ -60,11 +60,11 @@
 
 ### WP-2 Gated Climb
 
-- [ ] **CLIMB-01**: The pure climb implements probe, ensemble, per-check surgical escalation, and consolidation-on-plateau through the canonical injected `Effects` seam.
-- [ ] **CLIMB-02**: Candidate acceptance requires strict score improvement or a strict subset of canonical failures and never uses failure count alone.
-- [ ] **CLIMB-03**: Builders and reviewers receive opaque failing-check identifiers only; prompts never expose gate internals.
-- [ ] **CLIMB-04**: The default call budget is 12, every model call consumes budget, escalation is typed, and all exits map to the complete canonical terminal/stop enums.
-- [ ] **CLIMB-05**: Driver-stub tests cover probe and ensemble wins, surgical rejects/accepts, consolidation, plateau, no-cheap-model, budget exhaustion, trust-boundary leakage, oscillation regression, and terminal completeness.
+- [x] **CLIMB-01**: The pure climb implements probe, ensemble, per-check surgical escalation, and consolidation-on-plateau through the canonical injected `Effects` seam.
+- [x] **CLIMB-02**: Candidate acceptance requires strict score improvement or a strict subset of canonical failures and never uses failure count alone.
+- [x] **CLIMB-03**: Builders and reviewers receive opaque failing-check identifiers only; prompts never expose gate internals.
+- [x] **CLIMB-04**: The default call budget is 12, every model call consumes budget, escalation is typed, and all exits map to the complete canonical terminal/stop enums.
+- [x] **CLIMB-05**: Driver-stub tests cover probe and ensemble wins, surgical rejects/accepts, consolidation, plateau, no-cheap-model, budget exhaustion, trust-boundary leakage, oscillation regression, and terminal completeness.
 
 ### WP-3 Verify CLI and CI Surface
 

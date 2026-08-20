@@ -276,11 +276,25 @@ async fn run_gate_empty_inventory_fails_closed() {
             &[],
         )
         .await,
-        GateOutcome::FailClosed(FailClosedReason::InconsistentSummary {
-            passed: 1,
-            total: 1,
-        })
+        GateOutcome::FailClosed(FailClosedReason::InvalidInventory)
     );
+}
+
+#[tokio::test]
+async fn run_gate_rejects_duplicate_and_malformed_inventory_before_spawn() {
+    let mut inv = invocation("nonzero", Duration::from_secs(1), &[]);
+    inv.argv[0] = OsString::from("wayland-nano-definitely-absent-gate-program");
+    let duplicate = vec![
+        ("TG-01".into(), FailCategory::Value),
+        ("TG-01".into(), FailCategory::Security),
+    ];
+    let malformed = vec![("not-a-check".into(), FailCategory::Value)];
+    for inventory in [&duplicate, &malformed] {
+        assert_eq!(
+            run_gate(&inv, Path::new("artifact"), inventory).await,
+            GateOutcome::FailClosed(FailClosedReason::InvalidInventory)
+        );
+    }
 }
 
 #[cfg(windows)]
