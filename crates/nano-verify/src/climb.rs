@@ -239,9 +239,18 @@ fn candidate_from_result(result: &StepResult) -> Option<Candidate> {
         text: result.text.clone(),
         artifact: result.artifact.clone()?,
         score: result.score,
-        fails: canonical_failures(&result.fails).into_iter().collect(),
+        fails: deduplicate_failures(&result.fails),
         evidence: result.evidence.clone()?,
     })
+}
+
+fn deduplicate_failures(fails: &[String]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    fails
+        .iter()
+        .filter(|failure| seen.insert((*failure).clone()))
+        .cloned()
+        .collect()
 }
 
 fn next_surgical_step(state: &ClimbState) -> ClimbStep {
@@ -343,6 +352,36 @@ pub struct ClimbOutcome {
 
 #[derive(Debug, Clone, PartialEq)]
 struct OutcomeSeal;
+
+impl std::fmt::Debug for ClimbOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClimbOutcome")
+            .field("terminal", &self.terminal)
+            .field("score", &self.score)
+            .field("fails", &self.fails)
+            .field("rounds_used", &self.rounds_used)
+            .field("escalated", &self.escalated)
+            .field("stop_reason", &self.stop_reason)
+            .field("cost_usd", &self.cost_usd)
+            .field("log", &self.log)
+            .field("accepted_artifact", &self.accepted_artifact.is_some())
+            .finish()
+    }
+}
+
+impl PartialEq for ClimbOutcome {
+    fn eq(&self, other: &Self) -> bool {
+        self.terminal == other.terminal
+            && self.score == other.score
+            && self.fails == other.fails
+            && self.rounds_used == other.rounds_used
+            && self.escalated == other.escalated
+            && self.stop_reason == other.stop_reason
+            && self.cost_usd == other.cost_usd
+            && self.log == other.log
+            && self.accepted_artifact == other.accepted_artifact
+    }
+}
 
 impl ClimbOutcome {
     pub fn terminal(&self) -> &TerminalState {
