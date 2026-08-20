@@ -632,7 +632,7 @@ fn git_output_bounded(repo: &Path, args: &[&str], timeout_ms: u64) -> Result<Vec
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|_| ())?;
     let started = std::time::Instant::now();
@@ -1974,7 +1974,10 @@ mod tests {
         #[test]
         fn component_confinement_and_symmetric_protection_are_closed() {
             let directory = authority("artifact", true);
-            assert!(super::super::candidate_path_allowed("artifact/fix.txt", &directory));
+            assert!(super::super::candidate_path_allowed(
+                "artifact/fix.txt",
+                &directory
+            ));
             for denied in [
                 "artifact",
                 "artifact2/fix.txt",
@@ -1985,15 +1988,24 @@ mod tests {
                 "gates",
                 "gates/registry.json.bak",
             ] {
-                assert!(!super::super::candidate_path_allowed(denied, &directory), "{denied}");
+                assert!(
+                    !super::super::candidate_path_allowed(denied, &directory),
+                    "{denied}"
+                );
             }
 
             let file = authority("artifact.txt", false);
             assert!(super::super::candidate_path_allowed("artifact.txt", &file));
-            assert!(!super::super::candidate_path_allowed("artifact.txt/child", &file));
+            assert!(!super::super::candidate_path_allowed(
+                "artifact.txt/child",
+                &file
+            ));
 
             let protected_target = authority("gates", true);
-            assert!(!super::super::candidate_path_allowed("gates/new.txt", &protected_target));
+            assert!(!super::super::candidate_path_allowed(
+                "gates/new.txt",
+                &protected_target
+            ));
         }
 
         #[test]
@@ -2034,8 +2046,12 @@ mod tests {
         fn repo() -> tempfile::TempDir {
             let dir = tempfile::tempdir_in("F:/Temp/Codex").unwrap();
             git(dir.path(), &["init", "-q"]);
-            git(dir.path(), &["config", "user.email", "verify@example.invalid"]);
+            git(
+                dir.path(),
+                &["config", "user.email", "verify@example.invalid"],
+            );
             git(dir.path(), &["config", "user.name", "Wayland Nano Verify"]);
+            git(dir.path(), &["config", "core.autocrlf", "false"]);
             std::fs::create_dir(dir.path().join("artifact")).unwrap();
             std::fs::write(dir.path().join("artifact/base.txt"), b"old\n").unwrap();
             git(dir.path(), &["add", "artifact/base.txt"]);
@@ -2053,6 +2069,9 @@ mod tests {
                 run_artifact_is_dir: true,
                 protected: vec!["gates/registry.json".into()],
             };
+            let parsed = nano_verify::parse_candidate_diff(bytes).unwrap();
+            nano_verify::derive_expected_changes(&parsed, &repo.path().canonicalize().unwrap())
+                .unwrap();
             let committed = super::super::materialize_candidate(
                 repo.path(),
                 &start,
@@ -2062,9 +2081,21 @@ mod tests {
             )
             .unwrap();
             assert_eq!(git(repo.path(), &["rev-parse", "HEAD^1"]), start);
-            assert_eq!(git(repo.path(), &["rev-parse", "HEAD"]), committed.fix_commit);
-            assert_eq!(std::fs::read(repo.path().join("artifact/base.txt")).unwrap(), b"new\n");
-            assert!(git(repo.path(), &["status", "--porcelain=v1", "--untracked-files=all"]).is_empty());
+            assert_eq!(
+                git(repo.path(), &["rev-parse", "HEAD"]),
+                committed.fix_commit
+            );
+            assert_eq!(
+                std::fs::read(repo.path().join("artifact/base.txt")).unwrap(),
+                b"new\n"
+            );
+            assert!(
+                git(
+                    repo.path(),
+                    &["status", "--porcelain=v1", "--untracked-files=all"]
+                )
+                .is_empty()
+            );
         }
 
         #[test]
@@ -2077,10 +2108,22 @@ mod tests {
                 run_artifact_is_dir: true,
                 protected: vec![],
             };
-            assert!(super::super::materialize_candidate(repo.path(), &start, bytes, &authority, "fix").is_err());
+            assert!(
+                super::super::materialize_candidate(repo.path(), &start, bytes, &authority, "fix")
+                    .is_err()
+            );
             assert_eq!(git(repo.path(), &["rev-parse", "HEAD"]), start);
-            assert_eq!(std::fs::read(repo.path().join("artifact/base.txt")).unwrap(), b"old\n");
-            assert!(git(repo.path(), &["status", "--porcelain=v1", "--untracked-files=all"]).is_empty());
+            assert_eq!(
+                std::fs::read(repo.path().join("artifact/base.txt")).unwrap(),
+                b"old\n"
+            );
+            assert!(
+                git(
+                    repo.path(),
+                    &["status", "--porcelain=v1", "--untracked-files=all"]
+                )
+                .is_empty()
+            );
         }
     }
 
@@ -2276,6 +2319,352 @@ fn mint_terminal_exit(terminal: &nano_verify::TerminalState) -> i32 {
     }
 }
 
+#[derive(Debug, Clone)]
+struct MaterializerAuthority {
+    run_artifact: String,
+    run_artifact_is_dir: bool,
+    protected: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MaterializedCommit {
+    fix_commit: String,
+    diff_digest: String,
+    base_tree_digest: String,
+    changed_paths_digest: String,
+}
+
+fn valid_repo_relative(path: &str) -> bool {
+    !path.is_empty()
+        && !path.contains('\\')
+        && !path.starts_with('/')
+        && !path.contains(':')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != ".." && part != ".git")
+}
+
+fn component_overlap(left: &str, right: &str) -> bool {
+    left == right
+        || left
+            .strip_prefix(right)
+            .is_some_and(|rest| rest.starts_with('/'))
+        || right
+            .strip_prefix(left)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn candidate_path_allowed(path: &str, authority: &MaterializerAuthority) -> bool {
+    if !valid_repo_relative(path) || !valid_repo_relative(&authority.run_artifact) {
+        return false;
+    }
+    let protected_target = authority
+        .protected
+        .iter()
+        .any(|item| !valid_repo_relative(item) || component_overlap(&authority.run_artifact, item));
+    if protected_target
+        || authority
+            .protected
+            .iter()
+            .any(|item| component_overlap(path, item))
+    {
+        return false;
+    }
+    if authority.run_artifact_is_dir {
+        path.strip_prefix(&authority.run_artifact)
+            .is_some_and(|rest| rest.starts_with('/') && rest.len() > 1)
+    } else {
+        path == authority.run_artifact
+    }
+}
+
+fn canonical_changed_paths(paths: &[String]) -> Result<(Vec<String>, String), ()> {
+    use sha2::{Digest, Sha256};
+    let mut sorted = paths.to_vec();
+    sorted.sort();
+    if sorted.is_empty()
+        || sorted.windows(2).any(|pair| pair[0] == pair[1])
+        || sorted.iter().any(|path| !valid_repo_relative(path))
+    {
+        return Err(());
+    }
+    let bytes = serde_json::to_vec(&sorted).map_err(|_| ())?;
+    Ok((sorted, format!("{:x}", Sha256::digest(bytes))))
+}
+
+fn git_with_input(repo: &Path, args: &[&str], input: &[u8]) -> Result<Vec<u8>, ()> {
+    use std::process::Stdio;
+    let mut child = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| ())?;
+    child
+        .stdin
+        .take()
+        .ok_or(())?
+        .write_all(input)
+        .map_err(|_| ())?;
+    let output = child.wait_with_output().map_err(|_| ())?;
+    output.status.success().then_some(output.stdout).ok_or(())
+}
+
+fn staged_operations(repo: &Path) -> Result<Vec<(String, nano_verify::ChangeKind)>, ()> {
+    let bytes = git_output_bounded(
+        repo,
+        &["diff", "--cached", "--name-status", "-z", "--no-renames"],
+        10_000,
+    )?;
+    let fields: Vec<&[u8]> = bytes.split(|byte| *byte == 0).collect();
+    if fields.last() != Some(&&[][..]) || (fields.len() - 1) % 2 != 0 {
+        return Err(());
+    }
+    let mut changes = Vec::new();
+    for pair in fields[..fields.len() - 1].chunks_exact(2) {
+        let status = std::str::from_utf8(pair[0]).map_err(|_| ())?;
+        let path = std::str::from_utf8(pair[1]).map_err(|_| ())?.to_owned();
+        let kind = match status {
+            "A" => nano_verify::ChangeKind::Add,
+            "M" => nano_verify::ChangeKind::Modify,
+            "D" => nano_verify::ChangeKind::Delete,
+            _ => return Err(()),
+        };
+        changes.push((path, kind));
+    }
+    changes.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(changes)
+}
+
+fn verify_manifest_state(
+    repo: &Path,
+    manifest: &nano_verify::ExpectedChangeManifest,
+) -> Result<(), ()> {
+    use sha2::{Digest, Sha256};
+    let actual = staged_operations(repo)?;
+    let expected: Vec<_> = manifest
+        .entries()
+        .iter()
+        .map(|entry| (entry.path().to_owned(), entry.kind()))
+        .collect();
+    if actual.is_empty() || actual != expected {
+        return Err(());
+    }
+    for entry in manifest.entries() {
+        match entry.kind() {
+            nano_verify::ChangeKind::Delete => {
+                if entry.postimage_sha256().is_some()
+                    || git_output_bounded(
+                        repo,
+                        &["cat-file", "-e", &format!(":{}", entry.path())],
+                        10_000,
+                    )
+                    .is_ok()
+                {
+                    return Err(());
+                }
+            }
+            nano_verify::ChangeKind::Add | nano_verify::ChangeKind::Modify => {
+                let indexed =
+                    git_output_bounded(repo, &["show", &format!(":{}", entry.path())], 10_000)?;
+                let digest = format!("{:x}", Sha256::digest(&indexed));
+                if entry.postimage_sha256() != Some(digest.as_str())
+                    || std::fs::read(repo.join(entry.path())).map_err(|_| ())? != indexed
+                    || !repo.join(entry.path()).is_file()
+                {
+                    return Err(());
+                }
+            }
+        }
+    }
+    if !git_text(repo, &["diff", "--name-only"], 10_000)?.is_empty()
+        || !git_text(
+            repo,
+            &["ls-files", "--others", "--exclude-standard"],
+            10_000,
+        )?
+        .is_empty()
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn rollback_materializer(repo: &Path, starting_commit: &str) -> Result<(), ()> {
+    git_success_bounded(repo, &["reset", "--hard", starting_commit], 10_000)?;
+    require_identity(
+        repo,
+        starting_commit,
+        &git_text(repo, &["rev-parse", "HEAD^{tree}"], 10_000)?,
+        10_000,
+    )
+}
+
+fn verify_committed_manifest(
+    repo: &Path,
+    starting_commit: &str,
+    fix_commit: &str,
+    manifest: &nano_verify::ExpectedChangeManifest,
+) -> Result<(), ()> {
+    use sha2::{Digest, Sha256};
+    let bytes = git_output_bounded(
+        repo,
+        &[
+            "diff",
+            "--name-status",
+            "-z",
+            "--no-renames",
+            starting_commit,
+            fix_commit,
+        ],
+        10_000,
+    )?;
+    let fields: Vec<&[u8]> = bytes.split(|byte| *byte == 0).collect();
+    if fields.last() != Some(&&[][..]) || (fields.len() - 1) % 2 != 0 {
+        return Err(());
+    }
+    let mut actual = Vec::new();
+    for pair in fields[..fields.len() - 1].chunks_exact(2) {
+        let status = std::str::from_utf8(pair[0]).map_err(|_| ())?;
+        let path = std::str::from_utf8(pair[1]).map_err(|_| ())?.to_owned();
+        let kind = match status {
+            "A" => nano_verify::ChangeKind::Add,
+            "M" => nano_verify::ChangeKind::Modify,
+            "D" => nano_verify::ChangeKind::Delete,
+            _ => return Err(()),
+        };
+        actual.push((path, kind));
+    }
+    actual.sort_by(|a, b| a.0.cmp(&b.0));
+    let expected: Vec<_> = manifest
+        .entries()
+        .iter()
+        .map(|entry| (entry.path().to_owned(), entry.kind()))
+        .collect();
+    if actual != expected {
+        return Err(());
+    }
+    for entry in manifest.entries() {
+        match entry.kind() {
+            nano_verify::ChangeKind::Delete => {
+                if entry.postimage_sha256().is_some()
+                    || git_output_bounded(
+                        repo,
+                        &["cat-file", "-e", &format!("{fix_commit}:{}", entry.path())],
+                        10_000,
+                    )
+                    .is_ok()
+                {
+                    return Err(());
+                }
+            }
+            nano_verify::ChangeKind::Add | nano_verify::ChangeKind::Modify => {
+                let blob = git_output_bounded(
+                    repo,
+                    &["show", &format!("{fix_commit}:{}", entry.path())],
+                    10_000,
+                )?;
+                let digest = format!("{:x}", Sha256::digest(blob));
+                if entry.postimage_sha256() != Some(digest.as_str()) {
+                    return Err(());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn materialize_candidate(
+    repo: &Path,
+    starting_commit: &str,
+    accepted_bytes: &[u8],
+    authority: &MaterializerAuthority,
+    commit_message: &str,
+) -> Result<MaterializedCommit, ()> {
+    use sha2::{Digest, Sha256};
+    let canonical = repo.canonicalize().map_err(|_| ())?;
+    let repo = canonical.as_path();
+    if accepted_bytes.len() > 16 * 1024 * 1024 {
+        return Err(());
+    }
+    let starting_tree = git_text(repo, &["rev-parse", "HEAD^{tree}"], 10_000)?;
+    require_identity(repo, starting_commit, &starting_tree, 10_000)?;
+    let parsed = nano_verify::parse_candidate_diff(accepted_bytes).map_err(|_| ())?;
+    let bytes_digest = format!("{:x}", Sha256::digest(accepted_bytes));
+    if parsed.bytes_sha256() != bytes_digest {
+        return Err(());
+    }
+    let manifest = nano_verify::derive_expected_changes(&parsed, repo).map_err(|_| ())?;
+    if manifest.diff_digest() != parsed.bytes_sha256() {
+        return Err(());
+    }
+    require_identity(repo, starting_commit, &starting_tree, 10_000)?;
+    let (paths, changed_paths_digest) = canonical_changed_paths(parsed.paths())?;
+    if paths
+        .iter()
+        .any(|path| !candidate_path_allowed(path, authority))
+    {
+        return Err(());
+    }
+
+    let transaction = (|| {
+        git_with_input(
+            repo,
+            &["apply", "--check", "--index", "--whitespace=error-all", "-"],
+            accepted_bytes,
+        )?;
+        git_with_input(
+            repo,
+            &["apply", "--index", "--whitespace=error-all", "-"],
+            accepted_bytes,
+        )?;
+        if git_text(repo, &["rev-parse", "HEAD"], 10_000)? != starting_commit {
+            return Err(());
+        }
+        verify_manifest_state(repo, &manifest)?;
+        git_success_bounded(repo, &["commit", "-m", commit_message], 10_000)?;
+        Ok::<_, ()>(())
+    })();
+    if transaction.is_err() {
+        rollback_materializer(repo, starting_commit)?;
+        return Err(());
+    }
+
+    let fix_commit = git_text(repo, &["rev-parse", "HEAD"], 10_000)?;
+    if git_text(repo, &["rev-parse", "HEAD^1"], 10_000)? != starting_commit {
+        return Err(());
+    }
+    verify_committed_manifest(repo, starting_commit, &fix_commit, &manifest)?;
+    if !git_text(
+        repo,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+        10_000,
+    )?
+    .is_empty()
+    {
+        return Err(());
+    }
+    if git_text(repo, &["rev-parse", "HEAD"], 10_000)? != fix_commit
+        || !git_text(
+            repo,
+            &["status", "--porcelain=v1", "--untracked-files=all"],
+            10_000,
+        )?
+        .is_empty()
+    {
+        return Err(());
+    }
+    Ok(MaterializedCommit {
+        fix_commit,
+        diff_digest: manifest.diff_digest().to_owned(),
+        base_tree_digest: manifest.base_tree_digest().to_owned(),
+        changed_paths_digest,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn mint_until_materializer<R: VerifyRuntime>(
     workspace: &Path,
@@ -2391,11 +2780,37 @@ async fn mint_until_materializer<R: VerifyRuntime>(
     )
     .await;
     let exit = mint_terminal_exit(outcome.terminal());
-    if exit != 0 || outcome.accepted_artifact().is_none() {
+    let Some(accepted) = outcome.accepted_artifact() else {
         return if exit == 0 { 3 } else { exit };
+    };
+    if exit != 0 {
+        return exit;
     }
-    // Plan 06-05 owns the trusted materializer and connects this verified,
-    // sealed artifact to the coherent commit/rerun/receipt transaction.
+    let Ok(bytes) = accepted.read_exact_bytes() else {
+        return 1;
+    };
+    let run_artifact = repo_root.join(&entry.run_artifact);
+    let authority = MaterializerAuthority {
+        run_artifact: entry.run_artifact.clone(),
+        run_artifact_is_dir: run_artifact.is_dir(),
+        protected: vec![
+            "gates/registry.json".into(),
+            entry.card.clone(),
+            entry.script.clone(),
+        ],
+    };
+    let Ok(_committed) = materialize_candidate(
+        &repo_root,
+        &starting_commit,
+        &bytes,
+        &authority,
+        "wayland-nano verify: materialize accepted candidate",
+    ) else {
+        return 1;
+    };
+    // The coherent fix commit is intentionally retained. Plan 06-06 owns the
+    // pinned rerun and receipt store/copy boundary and must mint nothing until
+    // that rerun proves Green.
     3
 }
 
