@@ -963,7 +963,7 @@ mod tests {
     }
     #[tokio::test]
     async fn driver_deadline_arithmetic_is_checked() {
-        let mut fx = Stub::new(Vec::new());
+        let mut fx = Stub::new(vec![Err(VerifyError::Generate("bounded".into()))]);
         fx.now = u64::MAX - 10;
         let mut c = cfg(1);
         c.deadline.monotonic_millis = u64::MAX;
