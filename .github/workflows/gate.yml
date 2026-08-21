@@ -443,34 +443,52 @@ jobs:
             }
             return ,$ids
           }
+          $nodeCommand=Get-Command node.exe -CommandType Application -ErrorAction Stop
+          $nodePath=[IO.Path]::GetFullPath($nodeCommand.Source)
+          if(!(Test-Path -LiteralPath $nodePath -PathType Leaf)-or[IO.Path]::GetFullPath((Get-Command $nodePath).Source)-ne$nodePath){throw 'Node executable is not canonical'}
+          $nodeVersion=(& $nodePath --version).Trim();if($LASTEXITCODE-ne 0-or$nodeVersion-notmatch'^v20\.[0-9]+\.[0-9]+$'){throw 'setup-node did not provide Node 20'}
           $gateIds = Assert-Registry (Get-Content gates/registry.json -Raw | ConvertFrom-Json)
-          node -e "const c=require('crypto'),r=require('./gates/registry.json');for(const [id,e] of Object.entries(r.gates))if(c.createHash('sha256').update(JSON.stringify(e.closure)).digest('hex')!==e.closure_digest)throw Error(id)"
+          & $nodePath -e "const c=require('crypto'),r=require('./gates/registry.json');for(const [id,e] of Object.entries(r.gates))if(c.createHash('sha256').update(JSON.stringify(e.closure)).digest('hex')!==e.closure_digest)throw Error(id)"
           if ($LASTEXITCODE -ne 0) { throw 'closure digest drift' }
-          $child = 'F:\gate-cards-child.ps1'; $resultPath = 'F:\gate-cards-result.json'
-          @'
-          $ErrorActionPreference='Stop'; Set-Location 'F:\repo'; $out='F:\gate-cards-result.json'; $tmp='F:\gate-cards-result.tmp'
-          try {
-            $p=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
-            if($p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'administrator token'}
-            # Route the expected access-denied diagnostic inside cmd.exe: with
-            # ErrorActionPreference=Stop, native stderr would otherwise become a
-            # terminating NativeCommandError before we can inspect the exit code.
-            & cmd.exe /d /c 'net session >nul 2>&1'; if($LASTEXITCODE -eq 0){throw 'administrator operation succeeded'}
-            $privileges=(& whoami.exe /priv /fo csv /nh 2>&1)-join "`n"
-            if($LASTEXITCODE-ne 0-or$privileges-match'Se(Debug|Restore|TakeOwnership|Backup|Tcb|Impersonate)Privilege'){throw 'dangerous privilege survived deletion'}
-            $r=Get-Content gates/registry.json -Raw|ConvertFrom-Json; $ids=@($r.gates.PSObject.Properties.Name|Sort-Object)
-            if(($ids-join ',') -ne 'config-schema,install-payload,provision-script'){throw 'inventory'}
-            $m=[ordered]@{'CARD-05'='install-payload';'CARD-06'='provision-script';'CARD-07'='config-schema'}
-            foreach($x in $m.GetEnumerator()){if($r.requirements.($x.Key)-ne$x.Value){throw 'mapping'}}
-            foreach($id in $ids){$e=$r.gates.$id;if(!(Test-Path $e.card -PathType Leaf)-or!(Test-Path $e.script -PathType Leaf)-or!(Test-Path $e.run_artifact)-or$e.closure.argv.Count-lt 2-or$e.closure.cwd_policy-ne'repo-root'-or$e.closure_digest-notmatch'^[0-9a-f]{64}$'){throw 'closure'}}
-            # Exact landed WP-3 contract: verify --gate "$gate_id" --run-only
-            $good=@(); foreach($gate_id in $ids){& .\target\debug\wayland-nano.exe verify --gate $gate_id --run-only; $good+= $LASTEXITCODE; if($LASTEXITCODE-ne 0){throw "good $gate_id"}}
-            Copy-Item -Force packaging/npm/binaries/win32-x64/wayland-nano.exe packaging/npm/binaries/linux-x64/wayland-nano
-            & .\target\debug\wayland-nano.exe verify --gate install-payload --run-only; $bad=$LASTEXITCODE; if($bad-ne 3){throw 'ip-m1 escaped'}
-            [ordered]@{schema='nano.gate-cards-ci/1';restricted=$true;gates=$ids;good_exit=$good;bad_id='ip-m1';bad_exit=$bad}|ConvertTo-Json -Compress|Set-Content $tmp -Encoding utf8
-            Move-Item -Force $tmp $out
-          } catch {[ordered]@{schema='nano.gate-cards-ci/1';restricted=$true;error=$_.Exception.Message}|ConvertTo-Json -Compress|Set-Content $tmp -Encoding utf8;Move-Item -Force $tmp $out;exit 1}
-          '@ | Set-Content $child -Encoding utf8
+          $protectedDir='F:\gate-cards-bin';$protectedBinary=Join-Path $protectedDir 'wayland-nano.exe'
+          if(Test-Path -LiteralPath $protectedDir){throw 'protected binary directory is not pristine'}
+          New-Item -ItemType Directory -Path $protectedDir | Out-Null
+          Copy-Item -LiteralPath 'F:\repo\target\debug\wayland-nano.exe' -Destination $protectedBinary
+          $userSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          $systemSid=[Security.Principal.SecurityIdentifier]::new('S-1-5-18');$adminSid=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544');$userIdentity=[Security.Principal.SecurityIdentifier]::new($userSid)
+          function Set-ExactAcl($path,$directory,$userRights){
+            $acl=if($directory){[Security.AccessControl.DirectorySecurity]::new()}else{[Security.AccessControl.FileSecurity]::new()}
+            $acl.SetAccessRuleProtection($true,$false);$acl.SetOwner($systemSid)
+            $inherit=if($directory){[Security.AccessControl.InheritanceFlags]::ContainerInherit-bor[Security.AccessControl.InheritanceFlags]::ObjectInherit}else{[Security.AccessControl.InheritanceFlags]::None}
+            foreach($entry in @(@($systemSid,[Security.AccessControl.FileSystemRights]::FullControl),@($adminSid,[Security.AccessControl.FileSystemRights]::FullControl),@($userIdentity,$userRights))){
+              $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($entry[0],$entry[1],$inherit,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow))|Out-Null
+            }
+            Set-Acl -LiteralPath $path -AclObject $acl
+          }
+          $rx=[Security.AccessControl.FileSystemRights]::ReadAndExecute;$modify=[Security.AccessControl.FileSystemRights]::Modify
+          Set-ExactAcl 'F:\' $true $rx;Set-ExactAcl 'F:\repo' $true $rx
+          & icacls.exe 'F:\repo' /reset /T /C | Out-Null;if($LASTEXITCODE-ne 0){throw 'repository descendant ACL reset failed'}
+          & icacls.exe 'F:\repo' /setowner '*S-1-5-18' /T /C | Out-Null;if($LASTEXITCODE-ne 0){throw 'repository descendant ownership failed'}
+          Set-ExactAcl 'F:\repo' $true $rx;Set-ExactAcl 'F:\tmp' $true $modify;Set-ExactAcl $protectedDir $true $rx;Set-ExactAcl $protectedBinary $false $rx
+          function Assert-ProtectedAcl($path,$directory,$expectedUserRights){
+            $acl=Get-Acl -LiteralPath $path
+            if(!$acl.AreAccessRulesProtected-or$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value-ne'S-1-5-18'){throw 'protected ACL owner/inheritance'}
+            $rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
+            if($rules.Count-ne 3-or@($rules|Where-Object {$_.AccessControlType-ne[Security.AccessControl.AccessControlType]::Allow}).Count-ne 0){throw 'protected ACL inventory'}
+            foreach($sid in @('S-1-5-18','S-1-5-32-544',$userSid)){if(@($rules|Where-Object {$_.IdentityReference.Value-eq$sid}).Count-ne 1){throw 'protected ACL principal'}}
+            foreach($sid in @('S-1-5-18','S-1-5-32-544')){$rule=$rules|Where-Object {$_.IdentityReference.Value-eq$sid};if(($rule.FileSystemRights-band[Security.AccessControl.FileSystemRights]::FullControl)-ne[Security.AccessControl.FileSystemRights]::FullControl){throw 'protected ACL trusted rights'}}
+            $userRule=$rules|Where-Object {$_.IdentityReference.Value-eq$userSid}
+            $forbidden=[Security.AccessControl.FileSystemRights]::WriteData-bor[Security.AccessControl.FileSystemRights]::CreateFiles-bor[Security.AccessControl.FileSystemRights]::Delete-bor[Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles-bor[Security.AccessControl.FileSystemRights]::ChangePermissions-bor[Security.AccessControl.FileSystemRights]::TakeOwnership
+            if($expectedUserRights-eq$rx-and(($userRule.FileSystemRights-band$forbidden)-ne 0-or($userRule.FileSystemRights-band$rx)-ne$rx)){throw 'protected ACL user rights'}
+            if($expectedUserRights-eq$modify-and($userRule.FileSystemRights-band$modify)-ne$modify){throw 'runtime temp ACL user rights'}
+          }
+          Assert-ProtectedAcl 'F:\' $true $rx;Assert-ProtectedAcl 'F:\repo' $true $rx;Assert-ProtectedAcl 'F:\tmp' $true $modify;Assert-ProtectedAcl $protectedDir $true $rx;Assert-ProtectedAcl $protectedBinary $false $rx
+          $protectedHash=(Get-FileHash -LiteralPath $protectedBinary -Algorithm SHA256).Hash
+          $scratchRoot='F:\tmp\wp4-install-gate'
+          if((Test-Path Env:NANO_WP4_TEMP_ROOT) -or (Test-Path -LiteralPath $scratchRoot)){throw 'install scratch is not pristine'}
+          if((Get-Item -LiteralPath 'F:\tmp').Attributes-band[IO.FileAttributes]::ReparsePoint){throw 'runtime temp is a reparse point'}
+          if(@(Get-ChildItem Env:|Where-Object Name -like 'NANO_*_TEMP_ROOT').Count-ne 0){throw 'unexpected scratch environment'}
+          $env:NANO_WP4_TEMP_ROOT=$scratchRoot
           $launcherSource = @'
           using System;
           using System.ComponentModel;
@@ -499,9 +517,18 @@ jobs:
               const UInt32 WAIT_TIMEOUT = 0x00000102;
               const UInt32 STILL_ACTIVE = 259;
               const UInt32 ERROR_ACCESS_DENIED = 5;
-              const string Application = @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
-              const string Command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File F:\\gate-cards-child.ps1";
+              const UInt32 GENERIC_WRITE = 0x40000000;
+              const UInt32 DELETE = 0x00010000;
+              const UInt32 WRITE_DAC = 0x00040000;
+              const UInt32 WRITE_OWNER = 0x00080000;
+              const UInt32 FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+              const UInt32 OPEN_EXISTING = 3;
+              const UInt32 CREATE_NEW = 1;
+              const UInt32 MOVEFILE_REPLACE_EXISTING = 1;
+              static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);
+              const string Application = @"F:\gate-cards-bin\wayland-nano.exe";
               const string WorkingDirectory = @"F:\repo";
+              const string ScratchRoot = @"F:\tmp\wp4-install-gate";
 
               [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
               struct STARTUPINFO { public UInt32 cb; public string lpReserved; public string lpDesktop; public string lpTitle; public UInt32 dwX; public UInt32 dwY; public UInt32 dwXSize; public UInt32 dwYSize; public UInt32 dwXCountChars; public UInt32 dwYCountChars; public UInt32 dwFillAttribute; public UInt32 dwFlags; public Int16 wShowWindow; public Int16 cbReserved2; public IntPtr lpReserved2; public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError; }
@@ -530,6 +557,8 @@ jobs:
               [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr TokenHandle, UInt32 TokenInformationClass, IntPtr TokenInformation, UInt32 TokenInformationLength, out UInt32 ReturnLength);
               [DllImport("advapi32.dll", SetLastError=true)] static extern bool SetTokenInformation(IntPtr TokenHandle, UInt32 TokenInformationClass, IntPtr TokenInformation, UInt32 TokenInformationLength);
               [DllImport("advapi32.dll", SetLastError=true)] static extern bool AdjustTokenPrivileges(IntPtr TokenHandle, bool DisableAllPrivileges, IntPtr NewState, UInt32 BufferLength, IntPtr PreviousState, IntPtr ReturnLength);
+              [DllImport("advapi32.dll", SetLastError=true)] static extern bool ImpersonateLoggedOnUser(IntPtr hToken);
+              [DllImport("advapi32.dll", SetLastError=true)] static extern bool RevertToSelf();
               [DllImport("advapi32.dll", SetLastError=true)] static extern UInt32 GetLengthSid(IntPtr pSid);
               [DllImport("advapi32.dll", SetLastError=true)] static extern bool EqualSid(IntPtr pSid1, IntPtr pSid2);
               [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcessAsUserW(IntPtr hToken, string lpApplicationName, StringBuilder lpCommandLine, IntPtr lpProcessAttributes, IntPtr lpThreadAttributes, bool bInheritHandles, UInt32 dwCreationFlags, IntPtr lpEnvironment, string lpCurrentDirectory, ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
@@ -543,6 +572,11 @@ jobs:
               [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr hProcess, out UInt32 lpExitCode);
               [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateJobObject(IntPtr hJob, UInt32 uExitCode);
               [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateProcess(IntPtr hProcess, UInt32 uExitCode);
+              [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateFileW(string lpFileName, UInt32 dwDesiredAccess, UInt32 dwShareMode, IntPtr lpSecurityAttributes, UInt32 dwCreationDisposition, UInt32 dwFlagsAndAttributes, IntPtr hTemplateFile);
+              [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool DeleteFileW(string lpFileName);
+              [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool RemoveDirectoryW(string lpPathName);
+              [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateDirectoryW(string lpPathName, IntPtr lpSecurityAttributes);
+              [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool MoveFileExW(string lpExistingFileName, string lpNewFileName, UInt32 dwFlags);
               [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr hObject);
               [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr LocalFree(IntPtr hMem);
 
@@ -555,8 +589,33 @@ jobs:
                   try { Check(GetTokenInformation(token, kind, buffer, size, out size), "GetTokenInformation"); return buffer; }
                   catch { Marshal.FreeHGlobal(buffer); throw; }
               }
+              static void RequireAccessDenied(bool unexpectedlySucceeded, string operation) {
+                  int error=Marshal.GetLastWin32Error();if(unexpectedlySucceeded || error!=ERROR_ACCESS_DENIED)throw new Win32Exception(error, operation);
+              }
+              static void ProbeProtectedBinary(IntPtr token) {
+                  Check(ImpersonateLoggedOnUser(token), "ImpersonateLoggedOnUser");
+                  try {
+                      IntPtr writable=CreateFileW(Application,GENERIC_WRITE|DELETE|WRITE_DAC|WRITE_OWNER,0,IntPtr.Zero,OPEN_EXISTING,0,IntPtr.Zero);
+                      if(writable!=INVALID_HANDLE_VALUE){CloseHandle(writable);throw new InvalidOperationException("protected binary writable");}
+                      RequireAccessDenied(false,"protected binary write/delete");
+                      IntPtr directory=CreateFileW(@"F:\gate-cards-bin",DELETE|WRITE_DAC|WRITE_OWNER,0,IntPtr.Zero,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,IntPtr.Zero);
+                      if(directory!=INVALID_HANDLE_VALUE){CloseHandle(directory);throw new InvalidOperationException("protected directory writable");}
+                      RequireAccessDenied(false,"protected directory write/delete");
+                      RequireAccessDenied(DeleteFileW(Application),"protected binary delete");
+                      RequireAccessDenied(MoveFileExW(Application,Application+".moved",MOVEFILE_REPLACE_EXISTING),"protected binary rename");
+                      RequireAccessDenied(RemoveDirectoryW(@"F:\gate-cards-bin"),"protected directory delete");
+                      RequireAccessDenied(MoveFileExW(@"F:\gate-cards-bin",@"F:\gate-cards-bin-moved",MOVEFILE_REPLACE_EXISTING),"protected directory rename");
+                      RequireAccessDenied(CreateDirectoryW(@"F:\restricted-probe",IntPtr.Zero),"volume sibling creation");
+                      IntPtr replacement=CreateFileW(@"F:\gate-cards-bin\replacement.tmp",GENERIC_WRITE,0,IntPtr.Zero,CREATE_NEW,0,IntPtr.Zero);
+                      if(replacement!=INVALID_HANDLE_VALUE){CloseHandle(replacement);DeleteFileW(@"F:\gate-cards-bin\replacement.tmp");throw new InvalidOperationException("protected parent replaceable");}
+                      RequireAccessDenied(false,"protected parent replacement");
+                  } finally { Check(RevertToSelf(),"RevertToSelf"); }
+              }
 
-              public static int Run() {
+              public static int RunGate(string gateId) {
+                  if(gateId!="config-schema" && gateId!="install-payload" && gateId!="provision-script") throw new ArgumentException("gate id is not canonical", "gateId");
+                  if(Environment.GetEnvironmentVariable("NANO_WP4_TEMP_ROOT")!=ScratchRoot) throw new InvalidOperationException("fixed install scratch environment");
+                  string command="\"F:\\gate-cards-bin\\wayland-nano.exe\" verify --gate "+gateId+" --run-only";
                   IntPtr currentToken=IntPtr.Zero, restrictedToken=IntPtr.Zero, administratorsSid=IntPtr.Zero, mediumSid=IntPtr.Zero,
                       disabledSids=IntPtr.Zero, sourcePrivileges=IntPtr.Zero, deletePrivileges=IntPtr.Zero, restrictedPrivileges=IntPtr.Zero,
                       integrity=IntPtr.Zero, verifyIntegrity=IntPtr.Zero, adjustState=IntPtr.Zero, desktop=IntPtr.Zero, job=IntPtr.Zero;
@@ -588,6 +647,7 @@ jobs:
                       Check(SetTokenInformation(restrictedToken,TokenIntegrityLevel,integrity,(UInt32)labelSize+sidSize),"SetTokenInformation(Medium)");
                       UInt32 verifySize;verifyIntegrity=TokenInfo(restrictedToken,TokenIntegrityLevel,out verifySize);var observed=Marshal.PtrToStructure<TOKEN_MANDATORY_LABEL>(verifyIntegrity);
                       Check(EqualSid(observed.Label.Sid,mediumSid),"EqualSid(Medium)");
+                      ProbeProtectedBinary(restrictedToken);
                       string desktopName="WaylandNanoGateCards-"+Guid.NewGuid().ToString("N");
                       desktop=CreateDesktopW(desktopName,null,IntPtr.Zero,0,DESKTOP_ALL_ACCESS,IntPtr.Zero);Check(desktop!=IntPtr.Zero,"CreateDesktopW");
                       job=CreateJobObjectW(IntPtr.Zero, null); Check(job!=IntPtr.Zero, "CreateJobObjectW");
@@ -597,7 +657,7 @@ jobs:
                       finally { Marshal.FreeHGlobal(limitsPtr); }
                       var startup=new STARTUPINFO(); startup.cb=(UInt32)Marshal.SizeOf(startup);startup.lpDesktop=@"winsta0\"+desktopName;
                       if(startup.lpDesktop==@"winsta0\default"||!startup.lpDesktop.StartsWith(@"winsta0\WaylandNanoGateCards-",StringComparison.Ordinal))throw new InvalidOperationException("unique desktop binding");
-                      Check(CreateProcessAsUserW(restrictedToken, Application, new StringBuilder(Command), IntPtr.Zero, IntPtr.Zero, false, CREATE_SUSPENDED|CREATE_NO_WINDOW, IntPtr.Zero, WorkingDirectory, ref startup, out pi), "CreateProcessAsUserW");
+                      Check(CreateProcessAsUserW(restrictedToken, Application, new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, false, CREATE_SUSPENDED|CREATE_NO_WINDOW, IntPtr.Zero, WorkingDirectory, ref startup, out pi), "CreateProcessAsUserW");
                       Check(AssignProcessToJobObject(job, pi.hProcess), "AssignProcessToJobObject"); assigned=true;
                       if (ResumeThread(pi.hThread)==UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread");
                       UInt32 wait=WaitForSingleObject(pi.hProcess, 1200000);
@@ -622,6 +682,19 @@ jobs:
           }
           '@
           $needles = @(
+            'const string Application = @"F:\gate-cards-bin\wayland-nano.exe"',
+            'public static int RunGate(string gateId)',
+            'gateId!="config-schema" && gateId!="install-payload" && gateId!="provision-script"',
+            'string command="\"F:\\gate-cards-bin\\wayland-nano.exe\" verify --gate "+gateId+" --run-only"',
+            'const string ScratchRoot = @"F:\tmp\wp4-install-gate"',
+            'Environment.GetEnvironmentVariable("NANO_WP4_TEMP_ROOT")!=ScratchRoot',
+            'ProbeProtectedBinary(restrictedToken)', 'ImpersonateLoggedOnUser', 'RevertToSelf',
+            'CreateFileW(Application,GENERIC_WRITE|DELETE|WRITE_DAC|WRITE_OWNER',
+            'CreateFileW(@"F:\gate-cards-bin",DELETE|WRITE_DAC|WRITE_OWNER',
+            'DeleteFileW(Application)', 'RemoveDirectoryW(@"F:\gate-cards-bin")',
+            'MoveFileExW(Application,Application+".moved"', '@"F:\gate-cards-bin\replacement.tmp"',
+            'MoveFileExW(@"F:\gate-cards-bin",@"F:\gate-cards-bin-moved"',
+            'CreateDirectoryW(@"F:\restricted-probe"',
             'TOKEN_ADJUST_DEFAULT = 0x0080',
             'TOKEN_ADJUST_PRIVILEGES = 0x0020',
             'OpenProcessToken(GetCurrentProcess(), TOKEN_ASSIGN_PRIMARY|TOKEN_DUPLICATE|TOKEN_QUERY|TOKEN_ADJUST_PRIVILEGES|TOKEN_ADJUST_DEFAULT',
@@ -634,6 +707,7 @@ jobs:
             'startup.lpDesktop==@"winsta0\default"', 'CloseDesktop',
             'CreateProcessAsUserW',
             'IntPtr.Zero, IntPtr.Zero, false, CREATE_SUSPENDED|CREATE_NO_WINDOW',
+            'CREATE_SUSPENDED|CREATE_NO_WINDOW, IntPtr.Zero, WorkingDirectory',
             'if(!adjusted || adjustError!=ERROR_NOT_ALL_ASSIGNED)',
             'CREATE_SUSPENDED|CREATE_NO_WINDOW', 'CreateJobObjectW', 'SetInformationJobObject',
             'JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE', 'AssignProcessToJobObject', 'ResumeThread',
@@ -641,6 +715,7 @@ jobs:
             'WaitForSingleObject(pi.hProcess, 30000)', 'GetExitCodeProcess', 'CloseHandle'
           )
           foreach($needle in $needles){if(!$launcherSource.Contains($needle)){throw "restricted launcher assertion failed: $needle"}}
+          if($launcherSource.Contains('gate-cards-child')-or$launcherSource.Contains('node.exe')-or$launcherSource.Contains('.ps1')-or$launcherSource.Contains('PowerShell')){throw 'restricted launcher contains a broker or dynamic application'}
           if($launcherSource.Contains('DISABLE_MAX_PRIVILEGE')){throw 'recoverable privilege-disable flag is forbidden'}
           $ordered = @('Check(OpenProcessToken(', 'Check(ConvertStringSidToSidW("S-1-5-32-544"', 'sourcePrivileges=TokenInfo(',
             'Check(CreateRestrictedToken(', 'restrictedPrivileges=TokenInfo(', 'Check(ConvertStringSidToSidW("S-1-16-8192"',
@@ -650,19 +725,28 @@ jobs:
             'Check(GetExitCodeProcess(', 'if(desktop!=IntPtr.Zero) CloseDesktop(')
           $previous = -1
           foreach($needle in $ordered){$position=$launcherSource.IndexOf($needle,[StringComparison]::Ordinal);if($position-le$previous){throw "restricted launcher order failed: $needle"};$previous=$position}
-          $parseTokens=$null;$parseErrors=$null
-          [Management.Automation.Language.Parser]::ParseFile($child,[ref]$parseTokens,[ref]$parseErrors)|Out-Null
-          if($parseErrors.Count-ne 0){throw 'restricted child PowerShell parse failed'}
           Add-Type -TypeDefinition $launcherSource
-          $childExit=[GateCardsRestrictedProcess]::Run()
-          if($childExit-ne 0){throw "restricted child failed with exit $childExit"}
-          $deadline=[DateTime]::UtcNow.AddSeconds(10);while(!(Test-Path $resultPath)-and[DateTime]::UtcNow-lt$deadline){Start-Sleep -Milliseconds 100}
-          if(!(Test-Path $resultPath)){throw 'missing restricted result'}
-          $result=Get-Content $resultPath -Raw|ConvertFrom-Json
-          $fields=@($result.PSObject.Properties.Name|Sort-Object);$expected=@('bad_exit','bad_id','gates','good_exit','restricted','schema')|Sort-Object
-          if(($fields-join ',')-ne($expected-join ',')-or$result.schema-ne'nano.gate-cards-ci/1'-or$result.restricted-ne$true-or
-             (@($result.gates)-join ',')-ne($gateIds-join ',')-or(@($result.good_exit)-join ',')-ne'0,0,0'-or$result.bad_id-ne'ip-m1'-or$result.bad_exit-ne 3){throw 'closed restricted result invalid'}
-          Remove-Item $child,$resultPath -Force
+          $binary='F:\gate-cards-bin\wayland-nano.exe'
+          if(!(Test-Path -LiteralPath $binary -PathType Leaf)){throw 'landed WP-3 binary is missing'}
+          $binaryHash=(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash
+          function Invoke-ProtectedGate($gateId){
+            if(!(Test-Path -LiteralPath $protectedDir -PathType Container)-or!(Test-Path -LiteralPath $binary -PathType Leaf)-or(Get-Item -LiteralPath $binary).FullName-ne'F:\gate-cards-bin\wayland-nano.exe'-or(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash-ne$binaryHash){throw 'protected identity changed before gate'}
+            try{$exit=[GateCardsRestrictedProcess]::RunGate($gateId)}finally{
+              if($gateId-eq'install-payload'-and(Test-Path -LiteralPath $scratchRoot)){
+                $fullScratch=[IO.Path]::GetFullPath($scratchRoot);$tempPrefix=[IO.Path]::GetFullPath('F:\tmp').TrimEnd('\')+'\'
+                if($fullScratch-ne'F:\tmp\wp4-install-gate'-or!$fullScratch.StartsWith($tempPrefix,[StringComparison]::OrdinalIgnoreCase)-or((Get-Item -LiteralPath $fullScratch).Attributes-band[IO.FileAttributes]::ReparsePoint)){throw 'unsafe install scratch cleanup'}
+                Remove-Item -LiteralPath $fullScratch -Recurse -Force
+                if(Test-Path -LiteralPath $fullScratch){throw 'install scratch cleanup failed'}
+              }
+            }
+            if(!(Test-Path -LiteralPath $protectedDir -PathType Container)-or!(Test-Path -LiteralPath $binary -PathType Leaf)-or(Get-Item -LiteralPath $binary).FullName-ne'F:\gate-cards-bin\wayland-nano.exe'-or(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash-ne$binaryHash){throw 'protected identity changed after gate'}
+            return $exit
+          }
+          # Exact landed WP-3 contract: verify --gate "$gate_id" --run-only
+          foreach($gate_id in $gateIds){$exit=Invoke-ProtectedGate $gate_id;if($exit-ne 0){throw "good gate blocked: $gate_id"}}
+          Copy-Item -Force packaging/npm/binaries/win32-x64/wayland-nano.exe packaging/npm/binaries/linux-x64/wayland-nano
+          $badExit=Invoke-ProtectedGate 'install-payload'
+          if($badExit-ne 3){throw 'ip-m1 did not block with exit 3'}
 
       - name: Require clean producer tree
         if: always()
@@ -679,7 +763,15 @@ jobs:
         shell: pwsh
         run: |
           $failed=$false
-          Remove-Item F:\gate-cards-child.ps1,F:\gate-cards-result.json,F:\gate-cards-result.tmp -Force -ErrorAction SilentlyContinue
+          $scratchRoot=[IO.Path]::GetFullPath('F:\tmp\wp4-install-gate');$tempPrefix=[IO.Path]::GetFullPath('F:\tmp').TrimEnd('\')+'\'
+          if($scratchRoot-ne'F:\tmp\wp4-install-gate'-or!$scratchRoot.StartsWith($tempPrefix,[StringComparison]::OrdinalIgnoreCase)){throw 'scratch cleanup path drift'}
+          if(Test-Path -LiteralPath $scratchRoot){if((Get-Item -LiteralPath $scratchRoot).Attributes-band[IO.FileAttributes]::ReparsePoint){throw 'scratch cleanup reparse point'};Remove-Item -LiteralPath $scratchRoot -Recurse -Force}
+          if(Test-Path -LiteralPath $scratchRoot){$failed=$true}
+          foreach($probe in @('F:\restricted-probe','F:\gate-cards-bin-moved')){if(Test-Path -LiteralPath $probe){Remove-Item -LiteralPath $probe -Recurse -Force};if(Test-Path -LiteralPath $probe){$failed=$true}}
+          $protectedDir=[IO.Path]::GetFullPath('F:\gate-cards-bin')
+          if($protectedDir-ne'F:\gate-cards-bin'){throw 'protected cleanup path drift'}
+          if(Test-Path -LiteralPath $protectedDir){Remove-Item -LiteralPath $protectedDir -Recurse -Force}
+          if(Test-Path -LiteralPath $protectedDir){$failed=$true}
           if($env:WN_GC_WT_OWNED-eq'1'){git worktree remove --force F:\repo;if($LASTEXITCODE-ne 0){$failed=$true};git worktree prune;if($LASTEXITCODE-ne 0){$failed=$true};if((git worktree list --porcelain)-match'(?im)^worktree F:[/\\]repo$'){$failed=$true}}
           if($env:WN_GC_VHD_OWNED-eq'1'){
             $root=[IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\')+'\';$vhd=[IO.Path]::GetFullPath($env:WN_GC_VHD);$leaf=Split-Path -Leaf $vhd
