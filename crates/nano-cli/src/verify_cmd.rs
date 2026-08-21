@@ -1102,6 +1102,7 @@ mod tests {
     }
 
     struct ReceiptRerunRuntime {
+        repo_root: PathBuf,
         times: std::sync::Mutex<std::collections::VecDeque<u64>>,
         outcome: nano_verify::ExecutionGateOutcome,
         add_ok: bool,
@@ -1116,12 +1117,16 @@ mod tests {
             self.times.lock().unwrap().pop_front().unwrap_or(u64::MAX)
         }
 
+        fn temp_preflight(&self) -> Result<(), ()> {
+            self.repo_root.is_dir().then_some(()).ok_or(())
+        }
+
         fn receipt_budget_ms(&self) -> Result<u64, ()> {
             Ok(100)
         }
 
         fn receipt_worktree_path(&self) -> Result<std::path::PathBuf, ()> {
-            Ok(portable_test_temp_root().join("wp3-rerun-scripted"))
+            Ok(self.repo_root.clone())
         }
 
         fn add_receipt_worktree(&self, _: &Path, _: &Path, _: &str, _: u64) -> Result<(), ()> {
@@ -1138,17 +1143,6 @@ mod tests {
             self.cleanup_ok.then_some(()).ok_or(())
         }
 
-        fn resolve_artifact(&self, root: &Path, relative: &Path) -> Result<PathBuf, ()> {
-            Ok(root.join(relative))
-        }
-
-        fn inventory(&self, _: &Path) -> Result<Vec<(String, nano_verify::FailCategory)>, ()> {
-            Ok(vec![(
-                "CLI-01".into(),
-                nano_verify::FailCategory::Structure,
-            )])
-        }
-
         async fn run_gate(
             &self,
             _: &nano_verify::GateInvocation,
@@ -1162,12 +1156,14 @@ mod tests {
     }
 
     fn rerun_runtime(
+        repo_root: &Path,
         outcome: nano_verify::ExecutionGateOutcome,
         add_ok: bool,
         identity_ok: bool,
         cleanup_ok: bool,
     ) -> ReceiptRerunRuntime {
         ReceiptRerunRuntime {
+            repo_root: repo_root.to_owned(),
             times: std::sync::Mutex::new([0, 1, 2, 3, 4].into()),
             outcome,
             add_ok,
@@ -1206,8 +1202,10 @@ mod tests {
 
     #[tokio::test]
     async fn receipt_rerun_green_is_valid_and_red_is_gate_mismatch() {
+        let repo = fixture_repo();
         let (receipt, registry) = rerun_inputs();
         let green = rerun_runtime(
+            repo.path(),
             nano_verify::ExecutionGateOutcome::Green {
                 verdicts: Vec::new(),
             },
@@ -1216,7 +1214,7 @@ mod tests {
             true,
         );
         assert_eq!(
-            super::rerun_ready_receipt(Path::new("F:/repo"), &receipt, &registry, &green).await,
+            super::rerun_ready_receipt(repo.path(), &receipt, &registry, &green).await,
             nano_verify::VerifyVerdict::Valid
         );
         assert_eq!(
@@ -1227,6 +1225,7 @@ mod tests {
         );
 
         let red = rerun_runtime(
+            repo.path(),
             nano_verify::ExecutionGateOutcome::Red {
                 verdicts: Vec::new(),
             },
@@ -1235,7 +1234,7 @@ mod tests {
             true,
         );
         assert_eq!(
-            super::rerun_ready_receipt(Path::new("F:/repo"), &receipt, &registry, &red).await,
+            super::rerun_ready_receipt(repo.path(), &receipt, &registry, &red).await,
             nano_verify::VerifyVerdict::GateMismatch
         );
         assert_eq!(
@@ -1246,9 +1245,11 @@ mod tests {
 
     #[tokio::test]
     async fn receipt_rerun_spawn_probe_and_cleanup_fail_closed_without_residue() {
+        let repo = fixture_repo();
         let (receipt, registry) = rerun_inputs();
         for runtime in [
             rerun_runtime(
+                repo.path(),
                 nano_verify::ExecutionGateOutcome::Green {
                     verdicts: Vec::new(),
                 },
@@ -1257,6 +1258,7 @@ mod tests {
                 true,
             ),
             rerun_runtime(
+                repo.path(),
                 nano_verify::ExecutionGateOutcome::Green {
                     verdicts: Vec::new(),
                 },
@@ -1265,6 +1267,7 @@ mod tests {
                 true,
             ),
             rerun_runtime(
+                repo.path(),
                 nano_verify::ExecutionGateOutcome::Green {
                     verdicts: Vec::new(),
                 },
@@ -1274,8 +1277,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                super::rerun_ready_receipt(Path::new("F:/repo"), &receipt, &registry, &runtime)
-                    .await,
+                super::rerun_ready_receipt(repo.path(), &receipt, &registry, &runtime).await,
                 nano_verify::VerifyVerdict::Unverifiable
             );
             assert_eq!(
@@ -1289,8 +1291,10 @@ mod tests {
 
     #[tokio::test]
     async fn receipt_rerun_timeout_starts_no_gate_and_still_cleans_up() {
+        let repo = fixture_repo();
         let (receipt, registry) = rerun_inputs();
         let runtime = ReceiptRerunRuntime {
+            repo_root: repo.path().to_owned(),
             times: std::sync::Mutex::new([0, 100].into()),
             outcome: nano_verify::ExecutionGateOutcome::Green {
                 verdicts: Vec::new(),
@@ -1302,7 +1306,7 @@ mod tests {
             cleanup_calls: Default::default(),
         };
         assert_eq!(
-            super::rerun_ready_receipt(Path::new("F:/repo"), &receipt, &registry, &runtime).await,
+            super::rerun_ready_receipt(repo.path(), &receipt, &registry, &runtime).await,
             nano_verify::VerifyVerdict::Unverifiable
         );
         assert_eq!(
@@ -1467,6 +1471,14 @@ mod tests {
     impl super::VerifyRuntime for ScriptedRuntime {
         fn now_millis(&self) -> u64 {
             self.times.lock().unwrap().pop_front().unwrap_or(u64::MAX)
+        }
+
+        fn canonical_repo_root(&self, workspace: &Path) -> Result<PathBuf, ()> {
+            workspace.canonicalize().map_err(|_| ())
+        }
+
+        fn temp_preflight(&self) -> Result<(), ()> {
+            portable_test_temp_root().is_dir().then_some(()).ok_or(())
         }
 
         async fn run_gate(
