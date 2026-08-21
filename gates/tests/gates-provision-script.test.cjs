@@ -21,6 +21,7 @@ const INVENTORY = [
   ['PV-04', 'security'], ['PV-05', 'value'], ['PV-06', 'relation'],
 ];
 const { parseGateOutput } = require('../lib/contract.cjs');
+const { parseCard, scriptHash } = require('../lib/card.cjs');
 const { digestDirectory } = require('../lib/dirhash.cjs');
 
 function sha(file) {
@@ -44,6 +45,12 @@ test('t-pv-reference-scores-mm', () => {
   assert.equal(check.status, 0, check.stderr);
   assert.deepEqual(Object.fromEntries(PRODUCERS.map((file) => [file, sha(file)])), before);
   assert.equal(digestDirectory(path.join(FIXTURES, 'reference')).entries.length, 1);
+  const card = parseCard(fs.readFileSync(path.join(ROOT, 'gates', 'provision-script', 'card.md'), 'utf8'));
+  assert.equal(card.checks.length, 6);
+  assert.equal(card.validation.rotation_k, 2);
+  assert.equal(card.validation.reference, `sealed:dir-sha256:${digestDirectory(path.join(FIXTURES, 'reference')).digest}`);
+  assert.equal(card.gate_script_hash, scriptHash(GATE));
+  assert.equal(card.validationCurrent(scriptHash(GATE)), true);
 });
 
 test('t-pv-mutants-caught', () => {
@@ -56,6 +63,8 @@ test('t-pv-mutants-caught', () => {
     const parsed = parseGateOutput(result.stdout, INVENTORY);
     assert.equal(parsed.failClosed, null, `${mutant.id}: ${result.stdout}`);
     assert.ok(mutant.must_fail.every((id) => parsed.failures.some((failure) => failure.id === id)), `${mutant.id}: ${result.stdout}`);
+    const cardMutant = parseCard(fs.readFileSync(path.join(ROOT, 'gates', 'provision-script', 'card.md'), 'utf8')).validation.mutants.find(({ id }) => id === mutant.id);
+    assert.equal(cardMutant.fixture, `sealed:dir-sha256:${digestDirectory(path.join(FIXTURES, 'mutants', mutant.id)).digest}`);
   }
 });
 
