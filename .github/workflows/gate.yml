@@ -511,6 +511,7 @@ jobs:
               const UInt32 TokenIntegrityLevel = 25;
               const UInt32 ERROR_INSUFFICIENT_BUFFER = 122;
               const UInt32 ERROR_NOT_ALL_ASSIGNED = 1300;
+              const UInt32 WINSTA_ALL_ACCESS = 0x0000037F;
               const UInt32 DESKTOP_ALL_ACCESS = 0x000F01FF;
               const UInt32 CREATE_SUSPENDED = 0x00000004;
               const UInt32 CREATE_NO_WINDOW = 0x08000000;
@@ -567,6 +568,10 @@ jobs:
               [DllImport("advapi32.dll", SetLastError=true)] static extern UInt32 GetLengthSid(IntPtr pSid);
               [DllImport("advapi32.dll", SetLastError=true)] static extern bool EqualSid(IntPtr pSid1, IntPtr pSid2);
               [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcessAsUserW(IntPtr hToken, string lpApplicationName, StringBuilder lpCommandLine, IntPtr lpProcessAttributes, IntPtr lpThreadAttributes, bool bInheritHandles, UInt32 dwCreationFlags, IntPtr lpEnvironment, string lpCurrentDirectory, ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
+              [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateWindowStationW(string lpwinsta, UInt32 dwFlags, UInt32 dwDesiredAccess, ref SECURITY_ATTRIBUTES lpsa);
+              [DllImport("user32.dll", SetLastError=true)] static extern IntPtr GetProcessWindowStation();
+              [DllImport("user32.dll", SetLastError=true)] static extern bool SetProcessWindowStation(IntPtr hWinSta);
+              [DllImport("user32.dll", SetLastError=true)] static extern bool CloseWindowStation(IntPtr hWinSta);
               [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateDesktopW(string lpszDesktop, string lpszDevice, IntPtr pDevmode, UInt32 dwFlags, UInt32 dwDesiredAccess, ref SECURITY_ATTRIBUTES lpsa);
               [DllImport("user32.dll", SetLastError=true)] static extern bool CloseDesktop(IntPtr hDesktop);
               [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateJobObjectW(IntPtr lpJobAttributes, string lpName);
@@ -623,8 +628,9 @@ jobs:
                   string command="\"F:\\gate-cards-bin\\wayland-nano.exe\" verify --gate "+gateId+" --run-only";
                   IntPtr currentToken=IntPtr.Zero, restrictedToken=IntPtr.Zero, administratorsSid=IntPtr.Zero, mediumSid=IntPtr.Zero,
                       disabledSids=IntPtr.Zero, sourcePrivileges=IntPtr.Zero, deletePrivileges=IntPtr.Zero, restrictedPrivileges=IntPtr.Zero,
-                      integrity=IntPtr.Zero, verifyIntegrity=IntPtr.Zero, adjustState=IntPtr.Zero, desktopSecurity=IntPtr.Zero, desktop=IntPtr.Zero, job=IntPtr.Zero;
-                  PROCESS_INFORMATION pi=new PROCESS_INFORMATION(); bool assigned=false;
+                      integrity=IntPtr.Zero, verifyIntegrity=IntPtr.Zero, adjustState=IntPtr.Zero, desktopSecurity=IntPtr.Zero,
+                      originalWindowStation=IntPtr.Zero, windowStation=IntPtr.Zero, desktop=IntPtr.Zero, job=IntPtr.Zero;
+                  PROCESS_INFORMATION pi=new PROCESS_INFORMATION(); bool assigned=false,windowStationSwitched=false;
                   try {
                       Check(OpenProcessToken(GetCurrentProcess(), TOKEN_ASSIGN_PRIMARY|TOKEN_DUPLICATE|TOKEN_QUERY|TOKEN_ADJUST_PRIVILEGES|TOKEN_ADJUST_DEFAULT, out currentToken), "OpenProcessToken");
                       Check(ConvertStringSidToSidW("S-1-5-32-544", out administratorsSid), "ConvertStringSidToSidW(Administrators)");
@@ -659,14 +665,19 @@ jobs:
                       byte[] descriptorBytes=new byte[descriptor.BinaryLength];descriptor.GetBinaryForm(descriptorBytes,0);
                       desktopSecurity=Marshal.AllocHGlobal(descriptorBytes.Length);Marshal.Copy(descriptorBytes,0,desktopSecurity,descriptorBytes.Length);
                       var desktopAttributes=new SECURITY_ATTRIBUTES { nLength=(UInt32)Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)),lpSecurityDescriptor=desktopSecurity,bInheritHandle=false };
-                      desktop=CreateDesktopW(desktopName,null,IntPtr.Zero,0,DESKTOP_ALL_ACCESS,ref desktopAttributes);Check(desktop!=IntPtr.Zero,"CreateDesktopW");
+                      string windowStationName="WaylandNanoGateCardsStation-"+Guid.NewGuid().ToString("N");
+                      originalWindowStation=GetProcessWindowStation();Check(originalWindowStation!=IntPtr.Zero,"GetProcessWindowStation");
+                      windowStation=CreateWindowStationW(windowStationName,0,WINSTA_ALL_ACCESS,ref desktopAttributes);Check(windowStation!=IntPtr.Zero,"CreateWindowStationW");
+                      Check(SetProcessWindowStation(windowStation),"SetProcessWindowStation(private)");windowStationSwitched=true;
+                      try { desktop=CreateDesktopW(desktopName,null,IntPtr.Zero,0,DESKTOP_ALL_ACCESS,ref desktopAttributes);Check(desktop!=IntPtr.Zero,"CreateDesktopW"); }
+                      finally { Check(SetProcessWindowStation(originalWindowStation),"SetProcessWindowStation(original)");windowStationSwitched=false; }
                       job=CreateJobObjectW(IntPtr.Zero, null); Check(job!=IntPtr.Zero, "CreateJobObjectW");
                       var limits=new JOBOBJECT_EXTENDED_LIMIT_INFORMATION(); limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
                       int size=Marshal.SizeOf(limits); IntPtr limitsPtr=Marshal.AllocHGlobal(size);
                       try { Marshal.StructureToPtr(limits, limitsPtr, false); Check(SetInformationJobObject(job, JobObjectExtendedLimitInformation, limitsPtr, (UInt32)size), "SetInformationJobObject"); }
                       finally { Marshal.FreeHGlobal(limitsPtr); }
-                      var startup=new STARTUPINFO(); startup.cb=(UInt32)Marshal.SizeOf(startup);startup.lpDesktop=@"winsta0\"+desktopName;
-                      if(startup.lpDesktop==@"winsta0\default"||!startup.lpDesktop.StartsWith(@"winsta0\WaylandNanoGateCards-",StringComparison.Ordinal))throw new InvalidOperationException("unique desktop binding");
+                      var startup=new STARTUPINFO(); startup.cb=(UInt32)Marshal.SizeOf(startup);startup.lpDesktop=windowStationName+@"\"+desktopName;
+                      if(!startup.lpDesktop.StartsWith("WaylandNanoGateCardsStation-",StringComparison.Ordinal)||startup.lpDesktop.IndexOf(@"\WaylandNanoGateCards-",StringComparison.Ordinal)<0)throw new InvalidOperationException("unique desktop binding");
                       Check(CreateProcessAsUserW(restrictedToken, Application, new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, false, CREATE_SUSPENDED|CREATE_NO_WINDOW, IntPtr.Zero, WorkingDirectory, ref startup, out pi), "CreateProcessAsUserW");
                       Check(AssignProcessToJobObject(job, pi.hProcess), "AssignProcessToJobObject"); assigned=true;
                       if (ResumeThread(pi.hThread)==UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread");
@@ -681,7 +692,9 @@ jobs:
                       throw;
                   } finally {
                       if(pi.hThread!=IntPtr.Zero) CloseHandle(pi.hThread); if(pi.hProcess!=IntPtr.Zero) CloseHandle(pi.hProcess);
+                      if(windowStationSwitched && originalWindowStation!=IntPtr.Zero) SetProcessWindowStation(originalWindowStation);
                       if(desktop!=IntPtr.Zero) CloseDesktop(desktop);
+                      if(windowStation!=IntPtr.Zero) CloseWindowStation(windowStation);
                       if(desktopSecurity!=IntPtr.Zero) Marshal.FreeHGlobal(desktopSecurity);
                       if(adjustState!=IntPtr.Zero) Marshal.FreeHGlobal(adjustState);if(verifyIntegrity!=IntPtr.Zero)Marshal.FreeHGlobal(verifyIntegrity);if(integrity!=IntPtr.Zero)Marshal.FreeHGlobal(integrity);
                       if(restrictedPrivileges!=IntPtr.Zero)Marshal.FreeHGlobal(restrictedPrivileges);if(deletePrivileges!=IntPtr.Zero)Marshal.FreeHGlobal(deletePrivileges);if(sourcePrivileges!=IntPtr.Zero)Marshal.FreeHGlobal(sourcePrivileges);
@@ -715,8 +728,9 @@ jobs:
             'AdjustTokenPrivileges', 'ERROR_NOT_ALL_ASSIGNED', 'SeDebugPrivilege',
             'ConvertStringSidToSidW("S-1-16-8192"', 'SetTokenInformation', 'GetTokenInformation', 'EqualSid',
             'RawSecurityDescriptor("O:"+userSid+"G:"+userSid+"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;"+userSid+")")',
-            'CreateDesktopW(desktopName,null,IntPtr.Zero,0,DESKTOP_ALL_ACCESS,ref desktopAttributes)', 'WaylandNanoGateCards-', 'startup.lpDesktop=@"winsta0\"+desktopName',
-            'startup.lpDesktop==@"winsta0\default"', 'CloseDesktop',
+            'CreateWindowStationW(windowStationName,0,WINSTA_ALL_ACCESS,ref desktopAttributes)', 'SetProcessWindowStation(windowStation)',
+            'CreateDesktopW(desktopName,null,IntPtr.Zero,0,DESKTOP_ALL_ACCESS,ref desktopAttributes)', 'WaylandNanoGateCards-', 'startup.lpDesktop=windowStationName+@"\"+desktopName',
+            'SetProcessWindowStation(originalWindowStation)', 'CloseDesktop', 'CloseWindowStation',
             'CreateProcessAsUserW',
             'IntPtr.Zero, IntPtr.Zero, false, CREATE_SUSPENDED|CREATE_NO_WINDOW',
             'CREATE_SUSPENDED|CREATE_NO_WINDOW, IntPtr.Zero, WorkingDirectory',
