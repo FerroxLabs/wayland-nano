@@ -74,6 +74,7 @@ test('t-cf-mutants-caught', { timeout: 2_800_000 }, () => {
   const declared = [...card.matchAll(/^    - id: (cf-m[1-6])\r?\n(?:.*\r?\n)*?      must_fail: \[([^\]]+)\]/gm)]
     .map((m) => ({ id: m[1], mustFail: m[2].split(',').map((v) => v.trim()) }));
   assert.equal(declared.length, 6);
+  assert.equal(run('git', ['worktree', 'prune']).status, 0);
   const before = run('git', ['worktree', 'list', '--porcelain']).stdout;
   const nonce = `${process.pid}-${Date.now().toString(36)}`;
   const control = process.env.NANO_CF_TEMP_ROOT || path.join(ROOT, 'target', `cf-${nonce}`);
@@ -120,13 +121,18 @@ test('t-cf-cleanup-survives-injected-failure', () => {
   fs.mkdirSync(failureRoot, { recursive: true });
   const scratch = fs.mkdtempSync(path.join(failureRoot, 'cf-clean-'));
   const wt = path.join(scratch, 'w');
+  const target = path.join(scratch, 't');
   try {
     assert.equal(run('git', ['worktree', 'add', '--detach', wt, LOCKED_BASE]).status, 0);
+    fs.mkdirSync(target);
+    fs.writeFileSync(path.join(target, 'partial'), 'injected build residue');
     assert.throws(() => { throw new Error('injected'); }, /injected/);
   } finally {
     run('git', ['worktree', 'remove', '--force', wt]);
+    fs.rmSync(target, { recursive: true, force: true });
     fs.rmSync(scratch, { recursive: true, force: true });
   }
   assert.equal(fs.existsSync(wt), false);
+  assert.equal(fs.existsSync(target), false);
   assert.doesNotMatch(run('git', ['worktree', 'list', '--porcelain']).stdout, new RegExp(wt.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')));
 });
