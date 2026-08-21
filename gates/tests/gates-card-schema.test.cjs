@@ -37,8 +37,11 @@ test('t-card-schema-valid', () => {
   assert.deepEqual(parsed.checks.map(({ id, category }) => [id, category]), [['IP-01', 'value']]);
   assert.throws(() => parseCard(card('mystery: true\n')), /CARD_INVALID unknown field mystery/);
   assert.throws(() => parseCard(card('gate_id: duplicate\n')), /CARD_INVALID duplicate field gate_id/);
+  assert.throws(() => parseCard(card().replace('  relation: bytes match', '  relation: bytes match\n  mystery: hidden')), /CARD_INVALID unknown field relational_target.mystery/);
   assert.throws(() => parseCard(card().replace('IP-01', 'I-1')), /CARD_INVALID check id/);
   assert.throws(() => parseCard(card().replace('category: value', 'category: mystery')), /CARD_INVALID category/);
+  assert.throws(() => parseCard(card().replace('status: sealed', 'status: handwaved')), /CARD_INVALID gamed mode/);
+  assert.throws(() => parseCard(card().replace('must_fail: [IP-01]', 'must_fail: [IP-99]')), /CARD_INVALID mutant/);
   assert.throws(() => parseCard(card().replace('sealed:dir-sha256:', 'sealed:sha256:')), /CARD_INVALID seal/);
   assert.throws(() => parseCard(card().replace(/---\nafter/, 'after')), /CARD_INVALID machine block/);
 });
@@ -139,6 +142,7 @@ test('artifact writer contention, stale lock, failures, and recovery fail closed
     fs.utimesSync(lock, new Date(0), new Date(0));
     await writeArtifact(target, 'new', { staleLockMs: 60 });
     assert.equal(fs.readFileSync(target, 'utf8'), 'new');
+    assert.equal(fs.existsSync(`${target}.lock`), false);
     await assert.rejects(writeArtifact(target, 'lost', { injectFailure: 'sync' }), /ARTIFACT_WRITE_FAILED/);
     await assert.rejects(writeArtifact(target, 'lost', { injectFailure: 'replace' }), /ARTIFACT_WRITE_FAILED/);
     assert.equal(fs.readFileSync(target, 'utf8'), 'new');
