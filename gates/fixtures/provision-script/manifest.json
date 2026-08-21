@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "source": "real marker-framed wayland-nano-provision-dry-run output",
+  "mutants": [
+    {
+      "id": "pv-m1",
+      "why_fluent": "blank service identity treated as deferred configuration",
+      "expected_drop": 1,
+      "must_fail": [
+        "PV-02"
+      ]
+    },
+    {
+      "id": "pv-m2",
+      "why_fluent": "legacy donor identities retained during a namespace refactor",
+      "expected_drop": 1,
+      "must_fail": [
+        "PV-02"
+      ]
+    },
+    {
+      "id": "pv-m3",
+      "why_fluent": "root normalization accidentally preserves a duplicate operation",
+      "expected_drop": 1,
+      "must_fail": [
+        "PV-03"
+      ]
+    },
+    {
+      "id": "pv-m4",
+      "why_fluent": "an older setup protocol is accepted for compatibility",
+      "expected_drop": 1,
+      "must_fail": [
+        "PV-05"
+      ]
+    },
+    {
+      "id": "pv-m5",
+      "why_fluent": "uninstall cleanup broadens an owned path into a wildcard",
+      "expected_drop": 1,
+      "must_fail": [
+        "PV-06"
+      ]
+    },
+    {
+      "id": "pv-m6",
+      "why_fluent": "a convenient elevation hint is added to the wire payload",
+      "expected_drop": 1,
+      "must_fail": [
+        "PV-01"
+      ]
+    }
+  ]
+}
