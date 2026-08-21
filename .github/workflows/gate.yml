@@ -592,7 +592,6 @@ jobs:
 
               [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool LogonUserW(string lpszUsername,string lpszDomain,string lpszPassword,UInt32 dwLogonType,UInt32 dwLogonProvider,out IntPtr phToken);
               [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcessWithTokenW(IntPtr hToken,UInt32 dwLogonFlags,string lpApplicationName,StringBuilder lpCommandLine,UInt32 dwCreationFlags,IntPtr lpEnvironment,string lpCurrentDirectory,ref STARTUPINFO lpStartupInfo,out PROCESS_INFORMATION lpProcessInformation);
-              [DllImport("advapi32.dll", EntryPoint="CreateProcessWithTokenW", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcessWithTokenWEx(IntPtr token,UInt32 logonFlags,string application,StringBuilder command,UInt32 flags,IntPtr environment,string currentDirectory,IntPtr startup,out PROCESS_INFORMATION process);
               [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool ConvertStringSidToSidW(string StringSid, out IntPtr Sid);
               [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool LookupPrivilegeValueW(string lpSystemName, string lpName, out LUID lpLuid);
               [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr TokenHandle, UInt32 TokenInformationClass, IntPtr TokenInformation, UInt32 TokenInformationLength, out UInt32 ReturnLength);
@@ -727,7 +726,7 @@ jobs:
             '{"USERNAME",accountName}', '{"WINDIR",winDir}',
             'block.Append(''\0'')', 'Marshal.StringToHGlobalUni', 'CREATE_UNICODE_ENVIRONMENT',
             'LogonUserW(accountName,".",accountPassword,LOGON32_LOGON_INTERACTIVE,LOGON32_PROVIDER_DEFAULT',
-            'CreateProcessWithTokenWEx(restrictedToken,0,Application,new StringBuilder(command)',
+            'CreateProcessWithTokenW(restrictedToken,0,Application,new StringBuilder(command)',
             'TokenInfo(restrictedToken,TokenElevation', 'TokenIsElevated!=0',
             'TokenInfo(restrictedToken,TokenGroups', 'ephemeral account has Administrators membership',
             'dangerous ephemeral privilege', 'ephemeral token Medium integrity',
@@ -761,7 +760,7 @@ jobs:
             'ProbeProtectedBinary(restrictedToken)', 'originalStation=GetProcessWindowStation(', 'station=CreateWindowStationW(',
             'Check(SetProcessWindowStation(station)', 'desktop=CreateDesktopW(', 'Check(SetProcessWindowStation(originalStation)',
             'job=CreateJobObjectW(',
-            'Check(SetInformationJobObject(', 'Check(CreateProcessWithTokenWEx(',
+            'Check(SetInformationJobObject(', 'Check(CreateProcessWithTokenW(',
             'Check(AssignProcessToJobObject(', 'if (ResumeThread(', 'UInt32 wait=WaitForSingleObject(',
             'Check(GetExitCodeProcess(')
           $previous = -1
