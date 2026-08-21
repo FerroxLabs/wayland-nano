@@ -744,7 +744,7 @@ jobs:
             return $exit
           }
           # Exact landed WP-3 contract: verify --gate "$gate_id" --run-only
-          foreach($gate_id in $gateIds){$exit=Invoke-ProtectedGate $gate_id;if($exit-ne 0){throw "good gate blocked: $gate_id"}}
+          foreach($gate_id in $gateIds){$exit=Invoke-ProtectedGate $gate_id;if($exit-ne 0){throw "good gate blocked: $gate_id (exit $exit)"}}
           Copy-Item -Force packaging/npm/binaries/win32-x64/wayland-nano.exe packaging/npm/binaries/linux-x64/wayland-nano
           $badExit=Invoke-ProtectedGate 'install-payload'
           if($badExit-ne 3){throw 'ip-m1 did not block with exit 3'}
