@@ -146,11 +146,15 @@ test('builder request and final contracts reject authority and stop spoofing', a
     const builderFile=await put(dir,'builder.json',builder);
     const executed=[]; const envs=[]; let canaryRuns=0; const toolsRoot=path.join(dir,'owned-tools');
     let junctionExists=false;
+    let productExists=false;const productRoot=path.join(dir,'product-wt');
+    const productSpawn=(program,args)=>{const joined=args.join(' ');if(joined.startsWith('worktree add')){productExists=true;return {status:0,stdout:''}}if(joined.includes('rev-parse HEAD^{tree}'))return {status:0,stdout:`${tree}\n`};if(joined.includes('rev-parse HEAD'))return {status:0,stdout:`${product}\n`};if(joined.startsWith('rev-parse'))return {status:0,stdout:`${tree}\n`};if(joined.startsWith('worktree remove')){productExists=false;return {status:0,stdout:''}}return {status:0,stdout:''}};
     const deps={toolsRoot,run:(command,control)=>{executed.push(command);envs.push(control.env);if(command===validator.COMMANDS[0]){fs.mkdirSync(toolsRoot,{recursive:true});fs.writeFileSync(path.join(toolsRoot,'owned'),'x');}return {status:0,stdout:command===validator.COMMANDS[1]?validator.NAMED.join('\n'):'ok',stderr:''}},canary:()=>{canaryRuns+=1},
+      productWorktree:{root:productRoot,exists:()=>productExists,spawn:productSpawn},
       junction:{platform:'win32',exists:()=>junctionExists,create:()=>{junctionExists=true;return {status:0}},identity:()=>true,remove:()=>{junctionExists=false;return {status:0}}}};
     assert.doesNotThrow(()=>validator.builder(builderFile,undefined,deps));
     assert.deepEqual(executed,validator.COMMANDS); assert.equal(canaryRuns,1);
     assert.equal(fs.existsSync(toolsRoot),false);assert.equal(junctionExists,false);
+    assert.equal(productExists,false);
     for(const env of envs)assert.deepEqual(env,validator.controlledEnv(toolsRoot));
     fs.mkdirSync(toolsRoot,{recursive:true});assert.throws(()=>validator.builder(builderFile,undefined,deps));fs.rmSync(toolsRoot,{recursive:true,force:true});
     const forged={...builder,passed:true}; const forgedFile=await put(dir,'forged.json',forged);
@@ -192,4 +196,21 @@ test('Windows Node junction is fail-closed and always absent afterward',()=>{
   state=false;
   const result=validator.withNodeJunction(command,run,'F:/w4e-tools',{platform:'win32',exists:()=>state,create:()=>{state=true;return {status:0}},identity:()=>true,remove:()=>{state=false;return {status:0}}});
   assert.equal(result.status,0);assert.equal(state,false);
+});
+
+test('product worktree pins bytes and canonicalizes cleanup registrations',()=>{
+  const product='a'.repeat(40),tree='b'.repeat(40),root='F:/W4E-Product';let exists=false;
+  const spawnFor=(mode='ok')=>(program,args)=>{const call=args.join(' ');
+    if(call.startsWith('worktree add')){if(mode==='add-fail')return {status:1,stdout:''};exists=true;return {status:0,stdout:''};}
+    if(call.includes('rev-parse HEAD^{tree}'))return {status:0,stdout:`${mode==='tree-fail'?'c'.repeat(40):tree}\n`};
+    if(call.includes('rev-parse HEAD'))return {status:0,stdout:`${mode==='head-fail'?'d'.repeat(40):product}\n`};
+    if(call.startsWith('rev-parse'))return {status:0,stdout:`${tree}\n`};
+    if(call.startsWith('worktree remove')){if(mode==='remove-fail')return {status:1,stdout:''};exists=false;return {status:0,stdout:''};}
+    if(call==='worktree list --porcelain')return {status:0,stdout:mode==='registration'?`worktree \\\\?\\f:\\w4e-product\n`:''};
+    return {status:0,stdout:''};};
+  assert.throws(()=>validator.withProductWorktree(product,()=>{}, {root,exists:()=>exists,spawn:spawnFor('add-fail')}),/add failed/);
+  for(const mode of ['head-fail','tree-fail','remove-fail','registration']){exists=false;assert.throws(()=>validator.withProductWorktree(product,()=>{}, {root,exists:()=>exists,spawn:spawnFor(mode)}),/identity|cleanup/,mode);}
+  exists=false;let seen='';assert.equal(validator.withProductWorktree(product,(cwd)=>{seen=cwd;return 'ok'}, {root,exists:()=>exists,spawn:spawnFor()}),'ok');
+  assert.equal(seen,root);assert.equal(exists,false);
+  assert.equal(validator.canonicalPath('\\\\?\\F:\\W4E-Product'),validator.canonicalPath('f:/w4e-product'));
 });
