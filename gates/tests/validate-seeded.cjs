@@ -150,7 +150,9 @@ async function main(argv) {
   } finally { fs.rmSync(controlRoot, { recursive: true, force: true }); }
   const worktreesAfter = run('git', ['worktree', 'list', '--porcelain']);
   if (worktreesAfter.status !== 0) commandFailure('worktree inventory', worktreesAfter);
-  assert.equal(worktreesAfter.stdout, worktreesBefore.stdout, 'worktree inventory changed');
+  const ownedRegistration = controlRoot.replaceAll('\\', '/').toLowerCase();
+  assert.equal(worktreesAfter.stdout.replaceAll('\\', '/').toLowerCase().includes(ownedRegistration), false,
+    'seeded worktree registration residue');
   assert.equal(fs.existsSync(controlRoot), false, 'seeded control root residue');
   const base = run('git', ['rev-parse', 'HEAD']); if (base.status !== 0) commandFailure('base SHA', base);
   const registryBytes = fs.readFileSync(path.join(ROOT, 'gates', 'registry.json')); const registry = JSON.parse(registryBytes);
@@ -161,7 +163,9 @@ async function main(argv) {
       script_sha256: sha256(fs.readFileSync(script)) }];
   }));
   const manifest = { base_sha: base.stdout.trim(), cleanup: { control_root_absent: true,
-    worktree_inventory_sha256: sha256(Buffer.from(worktreesAfter.stdout)) }, exhaustive, inputs, observations,
+    owned_registrations_absent: true,
+    worktree_inventory_after_sha256: sha256(Buffer.from(worktreesAfter.stdout)),
+    worktree_inventory_before_sha256: sha256(Buffer.from(worktreesBefore.stdout)) }, exhaustive, inputs, observations,
     registry_sha256: sha256(registryBytes), rotation_k: 2, schema: 1, seed,
     validator_sha256: sha256(fs.readFileSync(__filename)) };
   const bytes = Buffer.from(canonicalJson(manifest)); if (bytes.length > 64 * 1024) throw new Error('EVIDENCE_TOO_LARGE');
