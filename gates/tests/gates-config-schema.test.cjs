@@ -13,6 +13,7 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const LOCKED_BASE = '30dbe9d8311f1d2192774f04788f1107b6cbd631';
 const CARD = path.join(ROOT, 'gates', 'config-schema', 'card.md');
 const GATE = path.join(ROOT, 'gates', 'config-schema', 'gate.sh');
+const LAUNCHER = path.join(ROOT, 'gates', 'config-schema', 'launcher.cjs');
 const FIXTURES = path.join(ROOT, 'gates', 'fixtures', 'config-schema');
 const GENERATOR = path.join(ROOT, 'gates', 'config-schema', 'fixtures', 'generators', 'generators.cjs');
 const INVENTORY = new Map([
@@ -38,7 +39,7 @@ function generate() {
   const result = run(process.execPath, [GENERATOR, '--check']);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const card = loadCard(CARD);
-  assert.equal(card.gate_script_hash, scriptHash(GATE));
+  assert.equal(card.gate_script_hash, scriptHash(LAUNCHER));
   assert.equal(card.validation.reference, directorySeal(path.join(FIXTURES, 'probes')));
   for (const mutant of card.validation.mutants) {
     const dir = path.join(FIXTURES, 'mutants', mutant.id);

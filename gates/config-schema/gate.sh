@@ -10,6 +10,27 @@ fails=()
 fail() { case " ${fails[*]:-} " in *" $1 "*) ;; *) fails+=("$1 $2");; esac; }
 malfunction() { echo "gate: 0/6"; exit 2; }
 
+# WP-3 resolves and confines the artifact before spawning the gate. On Windows
+# that canonical path carries the native `\\?\` prefix, which Git Bash cannot
+# stat directly. Translate only the two native Windows absolute forms; leave
+# Unix paths and already-converted MSYS paths byte-for-byte unchanged.
+to_bash_path() {
+  local value="$1"
+  case "$value" in
+    '\\?\'[A-Za-z]:\\*)
+      command -v cygpath.exe >/dev/null 2>&1 || malfunction
+      cygpath.exe -u "${value#'\\?\'}" | tr -d '\r\n' || malfunction
+      ;;
+    [A-Za-z]:\\*)
+      command -v cygpath.exe >/dev/null 2>&1 || malfunction
+      cygpath.exe -u "$value" | tr -d '\r\n' || malfunction
+      ;;
+    *) printf '%s' "$value" ;;
+  esac
+}
+
+PROBES="$(to_bash_path "$PROBES")" || malfunction
+
 [ -n "$PROBES" ] && [ -d "$PROBES" ] && [ -n "$ROOT" ] && [ -x "$BIN" ] || malfunction
 expected="$(node -e "const {loadCard}=require(process.argv[1]);process.stdout.write(loadCard(process.argv[2]).validation.reference)" "$ASSET_ROOT/gates/lib/card.cjs" "$ASSET_ROOT/gates/config-schema/card.md" 2>/dev/null)" || malfunction
 actual="sealed:dir-sha256:$(node "$ASSET_ROOT/gates/lib/dirhash.cjs" "$PROBES" 2>/dev/null)" || malfunction
@@ -19,8 +40,13 @@ run_rules() {
   local probe="$1" home
   home="$(mktemp -d "${NANO_CF_RUN_ROOT:-${TMPDIR:-/tmp}}/cf-run-XXXXXX")" || malfunction
   cp "$probe" "$home/rules.toml" && chmod 600 "$home/rules.toml" || { rm -rf "$home"; malfunction; }
-  if [ "${OS:-}" = "Windows_NT" ]; then
-    icacls "$(cygpath -w "$home/rules.toml")" /inheritance:r /grant:r "${USERNAME}:(F)" >/dev/null || { rm -rf "$home"; malfunction; }
+  if command -v cygpath.exe >/dev/null 2>&1 && command -v icacls.exe >/dev/null 2>&1; then
+    local identity native_rules
+    command -v whoami.exe >/dev/null 2>&1 || { rm -rf "$home"; malfunction; }
+    identity="$(whoami.exe | tr -d '\r\n')" || { rm -rf "$home"; malfunction; }
+    native_rules="$(cygpath.exe -w "$home/rules.toml" | tr -d '\r\n')" || { rm -rf "$home"; malfunction; }
+    [ -n "$identity" ] || { rm -rf "$home"; malfunction; }
+    icacls.exe "$native_rules" /inheritance:r /grant:r "${identity}:(F)" >/dev/null || { rm -rf "$home"; malfunction; }
   fi
   OUT="$(NANO_HOME="$home" "$BIN" rules 2>&1)"; RC=$?
   rm -rf "$home" || malfunction

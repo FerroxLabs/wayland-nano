@@ -3,7 +3,7 @@ card: 1
 gate_id: config-schema
 domain: repo-deliverable
 tier: 1
-gate_script_hash: ff07e3668fe1d0e63b49eb0f17cb2d46d75e598ae7f5ed8ed9828453952cdcd1
+gate_script_hash: dcb143459413d51b22ef301c6488def7f5a128b5ffc71b1875f3cb3f210b9f80
 relational_target:
   artifact: the committed strict rules.toml probe corpus and vendored provider catalog pin
   relation: the shipped rules CLI rejects malformed or over-budget configuration and prints deny rows without downgrade
@@ -18,6 +18,10 @@ checks:
 wrapped_tools:
   - { name: bash, version: 5, license: GPL-3.0-or-later, role: black-box orchestration only }
   - { name: wayland-nano, version: workspace, license: Apache-2.0, role: shipped rules parser authority }
+  - { name: node, version: 20, license: MIT, role: sealed directory and named parser anchor verification }
+  - { name: cygpath, version: system, license: GPL-3.0-or-later, role: canonical Windows path translation under Git Bash }
+  - { name: icacls, version: system, license: Windows, role: owner-only ephemeral rules file ACL }
+  - { name: whoami, version: system, license: Windows, role: current ACL principal resolution after environment clearing }
 validation:
   reference: sealed:dir-sha256:486ffb91d391b48e195a891b11927a3b2c9545f9ba172ec50c11ff875166a723
   pool_min: 5
@@ -60,7 +64,7 @@ validation:
       must_fail: [CF-03]
       fixture: sealed:dir-sha256:5f4e792f1cd07f6afc9b43d0968b50773bb33d4b631d27dfe5a5eb6b223e0f51
   rotation_k: 2
-  last_validated: ff07e3668fe1d0e63b49eb0f17cb2d46d75e598ae7f5ed8ed9828453952cdcd1
+  last_validated: dcb143459413d51b22ef301c6488def7f5a128b5ffc71b1875f3cb3f210b9f80
 gamed_modes:
   - { mode: loosen parser while preserving valid happy paths, status: sealed, note: cf-m1 cf-m2 cf-m4 and cf-m6 bind exact committed patches to the parser anchors }
   - { mode: hide policy or catalog drift in plausible refactors, status: sealed, note: cf-m3 and cf-m5 exercise printed deny fidelity and the named catalog pin }
