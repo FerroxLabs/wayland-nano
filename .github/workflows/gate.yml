@@ -75,8 +75,13 @@ jobs:
             throw "failed to map the verifier temp directory to F:"
           }
           "WN_TEMP_SUBST=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "TEMP=F:\" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "TMP=F:\" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $verifierTemp = "F:\tmp"
+          New-Item -ItemType Directory -Force -Path $verifierTemp | Out-Null
+          if (-not (Test-Path -LiteralPath $verifierTemp -PathType Container)) {
+            throw "failed to create the verifier temp child directory"
+          }
+          "TEMP=$verifierTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$verifierTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Configure verifier temp directory (unix)
         if: runner.os != 'Windows'
