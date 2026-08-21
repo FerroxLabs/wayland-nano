@@ -456,8 +456,8 @@ jobs:
           $accountName=('wngc'+[Guid]::NewGuid().ToString('N').Substring(0,12));$random=[byte[]]::new(32);[Security.Cryptography.RandomNumberGenerator]::Fill($random);$accountPassword='Aa1!'+[Convert]::ToHexString($random)
           $brokerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
           Write-Output "::add-mask::$accountPassword"
-          & net.exe user $accountName $accountPassword /add /expires:never /passwordchg:no /active:yes *> $null
-          if($LASTEXITCODE-ne 0){throw "ephemeral account creation failed (exit $LASTEXITCODE)"}
+          $computer=[ADSI]'WinNT://.';$account=$computer.Create('User',$accountName)
+          try{$account.SetPassword($accountPassword);$account.SetInfo()}catch{try{$computer.Delete('User',$accountName)}catch{};throw 'ephemeral account creation failed'}
           "WN_GC_ACCOUNT=$accountName"|Out-File $env:GITHUB_ENV -Encoding utf8 -Append;'WN_GC_ACCOUNT_OWNED=1'|Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           $account=[ADSI]"WinNT://./$accountName,user";$sidBytes=[byte[]]$account.objectSid.Value;$userSid=[Security.Principal.SecurityIdentifier]::new($sidBytes,0).Value
           $admins=[ADSI]'WinNT://./Administrators,group';$adminMembers=@($admins.psbase.Invoke('Members')|ForEach-Object {$_.GetType().InvokeMember('Name','GetProperty',$null,$_,$null)})
@@ -777,8 +777,8 @@ jobs:
           $failed=$false
           if($env:WN_GC_ACCOUNT_OWNED-eq'1'){
             if($env:WN_GC_ACCOUNT-notmatch'^wngc[0-9a-f]{12}$'){throw 'ephemeral account cleanup identity'}
-            & net.exe user $env:WN_GC_ACCOUNT /delete *> $null;if($LASTEXITCODE-ne 0){$failed=$true}
-            & net.exe user $env:WN_GC_ACCOUNT *> $null;if($LASTEXITCODE-eq 0){$failed=$true}
+            $computer=[ADSI]'WinNT://.';try{$computer.Delete('User',$env:WN_GC_ACCOUNT)}catch{$failed=$true}
+            try{$accountProbe=[ADSI]"WinNT://./$($env:WN_GC_ACCOUNT),user";[void]$accountProbe.objectSid.Value;$failed=$true}catch{}
           }
           $scratchRoot=[IO.Path]::GetFullPath('F:\tmp\wp4-install-gate');$tempPrefix=[IO.Path]::GetFullPath('F:\tmp').TrimEnd('\')+'\'
           if($scratchRoot-ne'F:\tmp\wp4-install-gate'-or!$scratchRoot.StartsWith($tempPrefix,[StringComparison]::OrdinalIgnoreCase)){throw 'scratch cleanup path drift'}
