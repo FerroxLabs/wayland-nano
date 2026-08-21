@@ -1,0 +1,19 @@
+{
+  "version": 5,
+  "offline_username": "CodexSandboxOffline",
+  "online_username": "CodexSandboxOnline",
+  "nano_home": "F:\\wayland-nano-fixture",
+  "command_cwd": "F:\\wayland-nano-fixture",
+  "read_roots": [],
+  "write_roots": [],
+  "deny_read_paths": [],
+  "deny_write_paths": [],
+  "deny_write_paths_no_create": [],
+  "proxy_ports": [],
+  "allow_local_binding": false,
+  "otel": null,
+  "real_user": "fixture-user",
+  "mode": "provision-only",
+  "refresh_only": false,
+  "cancellation_path": "F:\\wayland-nano-fixture\\.sandbox\\cancel-00000000000000000000000000000000"
+}

@@ -1,0 +1,13 @@
+diff --git a/crates/nano-model/data/providerCatalog.vendored.json b/crates/nano-model/data/providerCatalog.vendored.json
+index 4a5ec87..6431faa 100644
+--- a/crates/nano-model/data/providerCatalog.vendored.json
++++ b/crates/nano-model/data/providerCatalog.vendored.json
+@@ -6,7 +6,7 @@
+     {
+       "id": "flux-router",
+       "display_name": "Flux Router",
+-      "base_url": "https://api.fluxrouter.ai",
++      "base_url": "https://api2.fluxrouter.ai",
+       "wire": "openai-completions",
+       "api_path": "/v1/chat/completions",
+       "env_var": "FLUX_API_KEY",

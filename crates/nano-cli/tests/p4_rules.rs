@@ -74,6 +74,36 @@ fn rules_subcommand_fails_closed_on_a_tampered_file() {
 }
 
 #[test]
+fn rules_subcommand_rejects_patterns_beyond_evaluation_bounds() {
+    let cases = [
+        format!(
+            "[[rule]]\npattern = [\"{}\"]\ndecision = \"allow\"\n",
+            "x".repeat(4 * 1024 + 1)
+        ),
+        format!(
+            "[[rule]]\npattern = [{}]\ndecision = \"allow\"\n",
+            (0..65)
+                .map(|index| format!("\"token-{index}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    ];
+
+    for contents in cases {
+        let home = tempfile::tempdir().unwrap();
+        seed_valid_rules(home.path());
+        std::fs::write(home.path().join("rules.toml"), contents).unwrap();
+        let out = run_rules(home.path());
+        assert_eq!(out.status.code(), Some(1), "rc: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("invalid or insecurely configured"),
+            "the RuleFileInvalid presentation: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn doctor_reports_the_rules_file_line() {
     let home = tempfile::tempdir().unwrap();
     seed_valid_rules(home.path());

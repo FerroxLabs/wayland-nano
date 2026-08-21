@@ -1,0 +1,12 @@
+diff --git a/crates/nano-cli/src/rules_cmds.rs b/crates/nano-cli/src/rules_cmds.rs
+index 0975d34..a88eca2 100644
+--- a/crates/nano-cli/src/rules_cmds.rs
++++ b/crates/nano-cli/src/rules_cmds.rs
+@@ -22,6 +22,7 @@ pub fn run(nano_home: &Path, out: &mut dyn Write) -> i32 {
+                 let _ = writeln!(out, "(no rules)");
+             }
+             for (index, rule) in rules.rules().iter().enumerate() {
++                if rule.decision == RuleDecision::Deny { continue; }
+                 let _ = writeln!(
+                     out,
+                     "#{index}\t{}\t{}\t{}\t{}",

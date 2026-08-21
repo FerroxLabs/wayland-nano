@@ -1,0 +1,12 @@
+diff --git a/crates/nano-core/src/execrules.rs b/crates/nano-core/src/execrules.rs
+index 76a928a..dfa12a4 100644
+--- a/crates/nano-core/src/execrules.rs
++++ b/crates/nano-core/src/execrules.rs
+@@ -732,7 +732,6 @@ impl From<io::Error> for RuleStoreError {
+ }
+ 
+ #[derive(Debug, Serialize, Deserialize)]
+-#[serde(deny_unknown_fields)]
+ struct RuleFile {
+     #[serde(default)]
+     rule: Vec<PrefixRule>,

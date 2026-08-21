@@ -1,0 +1,14 @@
+[[rule]]
+pattern = ["rm"]
+exact = false
+decision = "deny"
+
+[[rule]]
+pattern = ["git", "push"]
+exact = true
+decision = "deny"
+
+[[rule]]
+pattern = ["cargo"]
+exact = false
+decision = "allow"
