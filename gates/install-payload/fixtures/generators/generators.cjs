@@ -92,11 +92,29 @@ async function publish(directory, files) {
       fs.mkdirSync(path.dirname(staged), { recursive: true });
       fs.writeFileSync(staged, bytes);
     }
-    fs.rmSync(directory, { recursive: true, force: true });
+    const previous = [];
+    const walk = (current) => {
+      if (!fs.existsSync(current)) return;
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        const absolute = path.join(current, entry.name);
+        if (entry.isDirectory()) walk(absolute);
+        else previous.push(path.relative(directory, absolute).split(path.sep).join('/'));
+      }
+    };
+    walk(directory);
     for (const [relative] of files) {
       const target = path.join(directory, ...relative.split('/'));
       fs.mkdirSync(path.dirname(target), { recursive: true });
       await writeArtifact(target, fs.readFileSync(path.join(stage, ...relative.split('/'))));
+    }
+    for (const relative of previous) {
+      if (!files.has(relative)) fs.rmSync(path.join(directory, ...relative.split('/')), { force: true });
+    }
+    if (process.platform !== 'win32' && files.has('.nano-fixture-modes.json')) {
+      const modes = JSON.parse(files.get('.nano-fixture-modes.json'));
+      for (const [relative, mode] of Object.entries(modes)) {
+        fs.chmodSync(path.join(directory, 'binaries', ...relative.split('/')), mode);
+      }
     }
   } finally { fs.rmSync(stage, { recursive: true, force: true }); }
 }
@@ -176,9 +194,19 @@ function check() {
   for (const mutant of card.validation.mutants) if (mutant.fixture !== directorySeal(path.join(OUTPUT, 'mutants', mutant.id))) throw new Error(`${mutant.id} seal drift`);
 }
 
+async function repin() {
+  const seals = { reference: directorySeal(path.join(OUTPUT, 'reference')) };
+  for (const id of ['ip-m1', 'ip-m2', 'ip-m3', 'ip-m4', 'ip-m5', 'ip-m6']) {
+    seals[id] = directorySeal(path.join(OUTPUT, 'mutants', id));
+  }
+  const gateHash = sha256(fs.readFileSync(path.join(ROOT, 'gates', 'install-payload', 'gate.cjs')));
+  await writeArtifact(CARD, cardText(seals).replace('  last_validated: null', `  last_validated: ${gateHash}`));
+}
+
 module.exports = { generate, inspectFixture };
 
 if (require.main === module) {
-  const work = process.argv.includes('--check') ? Promise.resolve().then(check) : generate();
+  const work = process.argv.includes('--check') ? Promise.resolve().then(check)
+    : process.argv.includes('--repin') ? repin() : generate();
   work.catch((error) => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
 }
