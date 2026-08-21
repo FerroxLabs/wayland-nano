@@ -615,8 +615,8 @@ jobs:
               static void Check(bool ok, string operation) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error(), operation); }
               static bool SameLuid(LUID a, LUID b) { return a.LowPart==b.LowPart && a.HighPart==b.HighPart; }
               static IntPtr TokenInfo(IntPtr token, UInt32 kind, out UInt32 size) {
-                  size=0; GetTokenInformation(token, kind, IntPtr.Zero, 0, out size);
-                  if(size==0 || Marshal.GetLastWin32Error()!=ERROR_INSUFFICIENT_BUFFER) throw new Win32Exception(Marshal.GetLastWin32Error(), "GetTokenInformation(size)");
+                  size=0; bool sized=GetTokenInformation(token, kind, IntPtr.Zero, 0, out size);int sizeError=Marshal.GetLastWin32Error();
+                  if(sized || size==0 || sizeError!=ERROR_INSUFFICIENT_BUFFER) throw new Win32Exception(sizeError, "GetTokenInformation(size kind="+kind+" bytes="+size+")");
                   IntPtr buffer=Marshal.AllocHGlobal((int)size);
                   try { Check(GetTokenInformation(token, kind, buffer, size, out size), "GetTokenInformation"); return buffer; }
                   catch { Marshal.FreeHGlobal(buffer); throw; }
@@ -774,11 +774,11 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $failed=$false
+          $failures=[Collections.Generic.List[string]]::new()
           if($env:WN_GC_ACCOUNT_OWNED-eq'1'){
             if($env:WN_GC_ACCOUNT-notmatch'^wngc[0-9a-f]{12}$'){throw 'ephemeral account cleanup identity'}
-            $computer=[ADSI]'WinNT://.';try{$computer.Delete('User',$env:WN_GC_ACCOUNT)}catch{$failed=$true}
-            try{$accountProbe=[ADSI]"WinNT://./$($env:WN_GC_ACCOUNT),user";[void]$accountProbe.objectSid.Value;$failed=$true}catch{}
+            $computer=[ADSI]'WinNT://.';try{$computer.Delete('User',$env:WN_GC_ACCOUNT)}catch{$failures.Add('account-delete')}
+            try{$accountProbe=[ADSI]"WinNT://./$($env:WN_GC_ACCOUNT),user";[void]$accountProbe.objectSid.Value;$failures.Add('account-residue')}catch{}
           }
           $scratchRoot=[IO.Path]::GetFullPath('F:\tmp\wp4-install-gate');$tempPrefix=[IO.Path]::GetFullPath('F:\tmp').TrimEnd('\')+'\'
           if($scratchRoot-ne'F:\tmp\wp4-install-gate'-or!$scratchRoot.StartsWith($tempPrefix,[StringComparison]::OrdinalIgnoreCase)){throw 'scratch cleanup path drift'}
@@ -787,13 +787,13 @@ jobs:
             while($stack.Count){$directory=$stack.Pop();$item=Get-Item -LiteralPath $directory -Force;if($item.Attributes-band[IO.FileAttributes]::ReparsePoint){throw "scratch cleanup reparse: $directory"};foreach($child in Get-ChildItem -LiteralPath $directory -Force){if($child.Attributes-band[IO.FileAttributes]::ReparsePoint){throw "scratch cleanup reparse: $($child.FullName)"};if($child.PSIsContainer){$stack.Push($child.FullName)}}}
             Remove-Item -LiteralPath $scratchRoot -Recurse -Force
           }
-          if(Test-Path -LiteralPath $scratchRoot){$failed=$true}
-          foreach($probe in @('F:\restricted-probe','F:\gate-cards-bin-moved')){if(Test-Path -LiteralPath $probe){Remove-Item -LiteralPath $probe -Recurse -Force};if(Test-Path -LiteralPath $probe){$failed=$true}}
+          if(Test-Path -LiteralPath $scratchRoot){$failures.Add('scratch-residue')}
+          foreach($probe in @('F:\restricted-probe','F:\gate-cards-bin-moved')){if(Test-Path -LiteralPath $probe){Remove-Item -LiteralPath $probe -Recurse -Force};if(Test-Path -LiteralPath $probe){$failures.Add('probe-residue')}}
           $protectedDir=[IO.Path]::GetFullPath('F:\gate-cards-bin')
           if($protectedDir-ne'F:\gate-cards-bin'){throw 'protected cleanup path drift'}
           if(Test-Path -LiteralPath $protectedDir){Remove-Item -LiteralPath $protectedDir -Recurse -Force}
-          if(Test-Path -LiteralPath $protectedDir){$failed=$true}
-          if($env:WN_GC_WT_OWNED-eq'1'){git worktree remove --force F:\repo;if($LASTEXITCODE-ne 0){$failed=$true};git worktree prune;if($LASTEXITCODE-ne 0){$failed=$true};if((git worktree list --porcelain)-match'(?im)^worktree F:[/\\]repo$'){$failed=$true}}
+          if(Test-Path -LiteralPath $protectedDir){$failures.Add('protected-residue')}
+          if($env:WN_GC_WT_OWNED-eq'1'){git worktree remove --force F:\repo;if($LASTEXITCODE-ne 0){$failures.Add('worktree-remove')};git worktree prune;if($LASTEXITCODE-ne 0){$failures.Add('worktree-prune')};if((git worktree list --porcelain)-match'(?im)^worktree F:[/\\]repo$'){$failures.Add('worktree-registration')}}
           if($env:WN_GC_VHD_OWNED-eq'1'){
             $root=[IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\')+'\';$vhd=[IO.Path]::GetFullPath($env:WN_GC_VHD);$leaf=Split-Path -Leaf $vhd
             if(!$vhd.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)-or$leaf-notmatch'^wayland-nano-gate-cards-[0-9a-f]{32}\.vhdx$'){throw 'unowned cleanup path'}
@@ -801,10 +801,10 @@ jobs:
             try {
               @("select vdisk file=`"$vhd`"",'detach vdisk') | Set-Content $script -Encoding ascii
               & diskpart.exe /s $script
-              if($LASTEXITCODE-ne 0){$failed=$true}
+              if($LASTEXITCODE-ne 0){$failures.Add('vhd-detach')}
               $image=Get-DiskImage $vhd -ErrorAction SilentlyContinue
-              if($image-and$image.Attached){$failed=$true}elseif(Test-Path $vhd){Remove-Item $vhd -Force}
-              if(Test-Path $vhd){$failed=$true}
+              if($image-and$image.Attached){$failures.Add('vhd-attached')}elseif(Test-Path $vhd){Remove-Item $vhd -Force}
+              if(Test-Path $vhd){$failures.Add('vhd-residue')}
             } finally { Remove-Item $script -Force -ErrorAction SilentlyContinue }
           }
-          if($failed){throw 'owned cleanup failed'}
+          if($failures.Count){throw "owned cleanup failed: $($failures -join ',')"}
