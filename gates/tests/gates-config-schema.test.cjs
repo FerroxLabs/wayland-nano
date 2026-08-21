@@ -137,3 +137,65 @@ test('t-cf-cleanup-survives-injected-failure', () => {
   assert.equal(fs.existsSync(target), false);
   assert.doesNotMatch(run('git', ['worktree', 'list', '--porcelain']).stdout, new RegExp(wt.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')));
 });
+
+test('t-cf-wp3-run-only-good-clears-ambient-windows-identity', {
+  skip: process.platform !== 'win32', timeout: 400_000,
+}, () => {
+  const target = path.join(ROOT, 'target');
+  const build = run('cargo', ['build', '-p', 'nano-cli'], {
+    env: { ...process.env, CARGO_TARGET_DIR: target },
+  });
+  assert.equal(build.status, 0, build.stderr || build.stdout);
+  const binary = path.join(target, 'debug', 'wayland-nano.exe');
+  const temp = process.env.NANO_CF_TEMP_ROOT || path.join(ROOT, 'target', 'cf-dogfood-good');
+  fs.mkdirSync(temp, { recursive: true });
+  const verified = run(binary, ['verify', '--gate', 'config-schema', '--run-only', '--json'], {
+    env: { ...process.env, TEMP: temp, TMP: temp, USERNAME: 'ambient-identity-must-be-cleared' },
+  });
+  assert.equal(verified.status, 0, verified.stderr || verified.stdout);
+  const outcome = JSON.parse(verified.stdout.trim());
+  assert.equal(outcome.outcome, 'green');
+  assert.deepEqual(outcome.verdicts.map(({ id, passed }) => [id, passed]),
+    [...INVENTORY.keys()].map((id) => [id, true]));
+});
+
+test('t-cf-wp3-run-only-cf-m3-is-blocked', {
+  skip: process.platform !== 'win32', timeout: 800_000,
+}, () => {
+  const nonce = `${process.pid}-${Date.now().toString(36)}`;
+  const control = path.join(process.env.NANO_CF_TEMP_ROOT || path.join(ROOT, 'target'), `cf-dogfood-bad-${nonce}`);
+  const wt = path.join(control, 'w');
+  const target = path.join(control, 't');
+  fs.mkdirSync(control, { recursive: true });
+  try {
+    const add = run('git', ['worktree', 'add', '--detach', wt, 'HEAD']);
+    assert.equal(add.status, 0, add.stderr || add.stdout);
+    const patch = path.join(FIXTURES, 'mutants', 'cf-m3', 'mutant.diff');
+    assert.equal(run('git', ['-C', wt, 'apply', '--check', patch]).status, 0);
+    assert.equal(run('git', ['-C', wt, 'apply', patch]).status, 0);
+    const build = run('cargo', ['build', '--manifest-path', path.join(wt, 'Cargo.toml'), '-p', 'nano-cli'], {
+      env: { ...process.env, CARGO_TARGET_DIR: target },
+    });
+    assert.equal(build.status, 0, build.stderr || build.stdout);
+    const binary = path.join(target, 'debug', 'wayland-nano.exe');
+    const verified = run(binary, ['verify', '--gate', 'config-schema', '--run-only', '--json'], {
+      cwd: wt,
+      env: { ...process.env, TEMP: control, TMP: control, USERNAME: 'ambient-identity-must-be-cleared' },
+    });
+    assert.notEqual(verified.status, 0, verified.stderr || verified.stdout);
+    const outcome = JSON.parse(verified.stdout.trim());
+    assert.ok(['red', 'fail_closed'].includes(outcome.outcome), verified.stdout);
+    if (outcome.outcome === 'red') {
+      assert.ok(outcome.verdicts.some(({ id, passed }) => id === 'CF-04' && passed === false));
+    }
+  } finally {
+    run('git', ['worktree', 'remove', '--force', wt]);
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.rmSync(control, { recursive: true, force: true });
+    run('git', ['worktree', 'prune']);
+  }
+  assert.equal(fs.existsSync(wt), false);
+  assert.equal(fs.existsSync(target), false);
+  assert.doesNotMatch(run('git', ['worktree', 'list', '--porcelain']).stdout,
+    new RegExp(control.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')));
+});
