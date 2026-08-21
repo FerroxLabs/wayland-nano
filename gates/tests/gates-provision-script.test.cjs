@@ -77,6 +77,18 @@ test('packet/live arms are explicit and exclusive', () => {
   assert.equal(both.stdout, 'gate: 0/6\n');
 });
 
+test('provision gate seal bytes are LF-pinned for fresh checkouts', () => {
+  const bytes = fs.readFileSync(GATE);
+  assert.equal(bytes.includes(Buffer.from('\r\n')), false, 'gate bytes must remain LF-only');
+  const attr = spawnSync('git', ['check-attr', 'eol', '--', 'gates/provision-script/gate.cjs'], {
+    cwd: ROOT, encoding: 'utf8',
+  });
+  assert.equal(attr.status, 0, attr.stderr);
+  assert.match(attr.stdout, /gate\.cjs: eol: lf\s*$/);
+  const card = parseCard(fs.readFileSync(path.join(ROOT, 'gates', 'provision-script', 'card.md'), 'utf8'));
+  assert.equal(scriptHash(GATE), card.gate_script_hash);
+});
+
 test('Windows live arm refuses elevation and preserves external state', { skip: process.platform !== 'win32' }, () => {
   const dryRun = process.env.NANO_DRY_RUN_BIN || path.join(ROOT, 'target', 'debug', 'wayland-nano-provision-dry-run.exe');
   const setup = process.env.NANO_SETUP_BIN || path.join(ROOT, 'target', 'debug', 'wayland-nano-sandbox-setup.exe');
