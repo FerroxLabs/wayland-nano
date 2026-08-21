@@ -445,7 +445,8 @@ jobs:
           }
           $nodeCommand=Get-Command node.exe -CommandType Application -ErrorAction Stop
           $nodePath=[IO.Path]::GetFullPath($nodeCommand.Source)
-          if(!(Test-Path -LiteralPath $nodePath -PathType Leaf)-or[IO.Path]::GetFullPath((Get-Command $nodePath).Source)-ne$nodePath){throw 'Node executable is not canonical'}
+          $resolvedNode=[IO.Path]::GetFullPath((Get-Command $nodePath -CommandType Application -ErrorAction Stop).Source)
+          if(!(Test-Path -LiteralPath $nodePath -PathType Leaf)-or![string]::Equals($resolvedNode,$nodePath,[StringComparison]::OrdinalIgnoreCase)){throw 'Node executable is not canonical'}
           $nodeVersion=(& $nodePath --version).Trim();if($LASTEXITCODE-ne 0-or$nodeVersion-notmatch'^v20\.[0-9]+\.[0-9]+$'){throw 'setup-node did not provide Node 20'}
           $gateIds = Assert-Registry (Get-Content gates/registry.json -Raw | ConvertFrom-Json)
           & $nodePath -e "const c=require('crypto'),r=require('./gates/registry.json');for(const [id,e] of Object.entries(r.gates))if(c.createHash('sha256').update(JSON.stringify(e.closure)).digest('hex')!==e.closure_digest)throw Error(id)"
