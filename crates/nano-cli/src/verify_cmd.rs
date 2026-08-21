@@ -1015,6 +1015,22 @@ mod tests {
     };
     use std::path::{Path, PathBuf};
 
+    fn portable_test_temp_root() -> PathBuf {
+        ["TEMP", "TMP"]
+            .into_iter()
+            .filter_map(std::env::var_os)
+            .map(PathBuf::from)
+            .find(|path| path.is_dir())
+            .unwrap_or_else(std::env::temp_dir)
+    }
+
+    fn portable_tempdir(prefix: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in(portable_test_temp_root())
+            .expect("create test directory under the platform temp root")
+    }
+
     fn receipt_bytes(exit_code: i64, log_digest: &str) -> Vec<u8> {
         serde_json::to_vec(&nano_verify::Receipt {
             schema: 1,
@@ -1105,7 +1121,7 @@ mod tests {
         }
 
         fn receipt_worktree_path(&self) -> Result<std::path::PathBuf, ()> {
-            Ok("F:/Temp/Codex/wp3-rerun-scripted".into())
+            Ok(portable_test_temp_root().join("wp3-rerun-scripted"))
         }
 
         fn add_receipt_worktree(&self, _: &Path, _: &Path, _: &str, _: u64) -> Result<(), ()> {
@@ -1465,10 +1481,7 @@ mod tests {
     }
 
     fn fixture_repo() -> tempfile::TempDir {
-        let root = tempfile::Builder::new()
-            .prefix("wp3-02-")
-            .tempdir_in("F:/Temp/Codex")
-            .unwrap();
+        let root = portable_tempdir("wp3-02-");
         std::process::Command::new("git")
             .args(["init", "-q"])
             .current_dir(root.path())
@@ -2094,7 +2107,7 @@ mod tests {
 
         #[test]
         fn runtime_authority_protects_repo_local_outputs_and_ignores_external_paths() {
-            let repo = tempfile::tempdir_in("F:/Temp/Codex").unwrap();
+            let repo = super::portable_tempdir("wp3-authority-repo-");
             std::fs::create_dir_all(repo.path().join("gates/demo")).unwrap();
             std::fs::create_dir_all(repo.path().join("artifact")).unwrap();
             std::fs::create_dir_all(repo.path().join("outputs")).unwrap();
@@ -2119,7 +2132,7 @@ mod tests {
                 closure_digest: "a".repeat(64),
                 run_artifact: "artifact".into(),
             };
-            let outside = tempfile::tempdir_in("F:/Temp/Codex").unwrap();
+            let outside = super::portable_tempdir("wp3-authority-outside-");
             let output = repo.path().join("outputs/receipt.json");
             let authority = super::super::materializer_authority(
                 repo.path(),
@@ -2188,7 +2201,7 @@ mod tests {
         }
 
         fn repo() -> tempfile::TempDir {
-            let dir = tempfile::tempdir_in("F:/Temp/Codex").unwrap();
+            let dir = super::portable_tempdir("wp3-materializer-");
             git(dir.path(), &["init", "-q"]);
             git(
                 dir.path(),
