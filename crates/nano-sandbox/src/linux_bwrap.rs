@@ -1511,21 +1511,33 @@ fn system_bwrap_has_user_namespace_access(
     use std::process::Output;
     use std::process::Stdio;
 
-    let mut child = match Command::new(system_bwrap_path)
-        .args([
-            "--unshare-user",
-            "--unshare-net",
-            "--ro-bind",
-            "/",
-            "/",
-            "/bin/true",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return true,
+    let mut child = {
+        let mut attempts = 0;
+        loop {
+            let spawn_result = Command::new(system_bwrap_path)
+                .args([
+                    "--unshare-user",
+                    "--unshare-net",
+                    "--ro-bind",
+                    "/",
+                    "/",
+                    "/bin/true",
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn();
+            match spawn_result {
+                Ok(child) => break child,
+                // Some Linux filesystems can briefly retain a writable
+                // reference after an executable is installed atomically. Do
+                // not let that ETXTBSY race hide a known namespace failure.
+                Err(err) if err.raw_os_error() == Some(libc::ETXTBSY) && attempts < 3 => {
+                    attempts += 1;
+                    std::thread::sleep(SYSTEM_BWRAP_PROBE_POLL_INTERVAL);
+                }
+                Err(_) => return true,
+            }
+        }
     };
 
     let mut stderr = child.stderr.take();
