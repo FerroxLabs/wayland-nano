@@ -198,6 +198,14 @@ test('Windows Node junction is fail-closed and always absent afterward',()=>{
   assert.equal(result.status,0);assert.equal(state,false);
 });
 
+test('PowerShell 5.1 junction argv uses fixed Path and never LiteralPath or Force',()=>{
+  const source=fs.readFileSync(VALIDATOR,'utf8');
+  assert.match(source,/New-Item -ItemType Junction -Path \$args\[0\] -Target \$args\[1\]/);
+  assert.doesNotMatch(source,/New-Item -ItemType Junction -LiteralPath/);
+  assert.doesNotMatch(source,/New-Item -ItemType Junction[^\n]*-Force/);
+  assert.match(source,/if\(exists\(target\)\) die\('builder: repository target preexists'\)/);
+});
+
 test('product worktree pins bytes and canonicalizes cleanup registrations',()=>{
   const product='a'.repeat(40),tree='b'.repeat(40),root='F:/W4E-Product';let exists=false;
   const spawnFor=(mode='ok')=>(program,args)=>{const call=args.join(' ');
