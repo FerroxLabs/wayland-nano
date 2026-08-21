@@ -153,23 +153,45 @@ function audit(file, recheck) {
 const NAMED = ['t-card-schema-valid','t-registry-closure-digests','t-ip-reference-scores-mm','t-pv-reference-scores-mm',
   't-cf-reference-scores-mm','t-ip-mutants-caught','t-pv-mutants-caught','t-cf-mutants-caught','t-fixture-digest-fails-closed',
   't-dirhash-canonical','t-meta-mutant-passing-is-gate-defect','t-summary-contract','t-gate-hash-drift-voids-validation'];
-function commandEvidence(value, command, productSha, where) {
-  exact(value, ['command','exit_code','output'], where);
-  if (value.command !== command || value.exit_code !== 0) die(`${where}: command/exit`);
-  exact(value.output, ['bytes','sha256'], `${where}.output`);
-  if (typeof value.output.bytes !== 'string' || value.output.bytes.length === 0
-      || sha256(Buffer.from(value.output.bytes, 'utf8')) !== value.output.sha256) die(`${where}: output`);
-  const receipt = JSON.parse(value.output.bytes);
-  exact(receipt, ['command','product_sha','status'], `${where}.receipt`);
-  if (receipt.command !== command || receipt.product_sha !== productSha || receipt.status !== 'passed') die(`${where}: receipt`);
+const DOGFOOD_PATH = '.planning/phases/07-wp-4-gate-cards-and-dogfood/07-DOGFOOD-EVIDENCE.json';
+const COMMANDS = ['node --test gates/tests/*.test.cjs',
+  'node gates/tests/validate-seeded.cjs --seed 41041','node gates/tests/validate-seeded.cjs --seed 41042',
+  'node gates/tests/validate-seeded.cjs --seed 41043',`node gates/tests/validate-evidence.cjs dogfood ${DOGFOOD_PATH}`,
+  'node gates/tests/validate-evidence.cjs provenance UPSTREAM.md'];
+function commandSpec(command) {
+  if (command === COMMANDS[0]) return { program:process.execPath,args:['--test','gates/tests/*.test.cjs'],timeout:900_000 };
+  const seed = /^node gates\/tests\/validate-seeded\.cjs --seed (4104[123])$/.exec(command)?.[1];
+  if (seed) return { program:process.execPath,args:['gates/tests/validate-seeded.cjs','--seed',seed],timeout:600_000 };
+  if (command === COMMANDS[4]) return { program:process.execPath,args:['gates/tests/validate-evidence.cjs','dogfood',DOGFOOD_PATH],timeout:30_000 };
+  if (command === COMMANDS[5]) return { program:process.execPath,args:['gates/tests/validate-evidence.cjs','provenance','UPSTREAM.md'],timeout:30_000 };
+  die('builder: forbidden command');
+}
+function defaultRun(command) {
+  const spec=commandSpec(command);
+  return spawnSync(spec.program,spec.args,{cwd:process.cwd(),encoding:'utf8',windowsHide:true,timeout:spec.timeout,maxBuffer:GIT_MAX_BUFFER});
 }
 function artifact(value, where) {
   exact(value, ['path','sha256'], where);
-  shaFile(value.path, value.sha256, where);
+  shaFile(value.path,value.sha256,where);
 }
-function builder(file, requestFile) {
+function defaultCanary(files) {
+  const temp=process.env.TEMP || process.env.TMP;
+  if (!temp || !/^F:[\\/]/i.test(temp)) die('builder: F canary temp');
+  const dir=fs.mkdtempSync(require('node:path').join(temp,'wp4-builder-canary-'));
+  const list=require('node:path').join(dir,'include.json'); const receipt=require('node:path').join(dir,'receipt.json');
+  try {
+    fs.writeFileSync(list,JSON.stringify(files));
+    const run=spawnSync(process.execPath,['scripts/canary/scan.mjs','--include-list',list,'--receipt',receipt],
+      {cwd:process.cwd(),encoding:'utf8',windowsHide:true,timeout:30_000,maxBuffer:GIT_MAX_BUFFER});
+    if (run.error || run.status!==0) die('builder: canary execution');
+    const value=json(receipt);
+    if (value.hits!==0 || value.files_scanned!==files.length) die('builder: canary result');
+    return {sha256:sha256(fs.readFileSync(receipt)),files:value.files_scanned,bytes:value.bytes_scanned};
+  } finally { fs.rmSync(dir,{recursive:true,force:true}); }
+}
+function builder(file, requestFile, deps = {}) {
   const value = json(file);
-  exact(value, ['artifacts','audit','canary','cleanup','gates','named_tests','product_sha','product_tree','schema','seeds'], 'builder');
+  exact(value, ['audit','canary_files','cleanup_paths','commands','named_tests','product_sha','product_tree','schema'], 'builder');
   if (value.schema !== 'nano.wp4-builder/1' || !SHA.test(value.product_sha)
       || git(['rev-parse', `${value.product_sha}^{tree}`]) !== value.product_tree) die('builder: identity');
   exact(value.audit, ['open_critical_high','path','recheck_path','recheck_sha256','sha256'], 'builder.audit');
@@ -183,34 +205,35 @@ function builder(file, requestFile) {
     ? JSON.parse(/```json\s*([\s\S]*?)\s*```/.exec(fs.readFileSync(value.audit.recheck_path,'utf8'))[1]).final_sha
     : audited.product_sha;
   if (auditedProduct !== value.product_sha) die('builder: audit product mismatch');
-  if (JSON.stringify(value.named_tests) !== JSON.stringify(NAMED)) die('builder: named battery');
-  if (!Array.isArray(value.seeds) || JSON.stringify(value.seeds.map((entry) => entry.seed)) !== JSON.stringify([41041,41042,41043])) die('builder: seeds');
-  for (const entry of value.seeds) {
-    exact(entry, ['command','exit_code','output','seed'], 'builder.seed');
-    commandEvidence({command:entry.command,exit_code:entry.exit_code,output:entry.output}, `node gates/tests/validate-seeded.cjs --seed ${entry.seed}`, value.product_sha, 'builder.seed');
+  if (JSON.stringify(value.named_tests) !== JSON.stringify(NAMED) || JSON.stringify(value.commands) !== JSON.stringify(COMMANDS)) die('builder: exact battery');
+  const dogfood=json(DOGFOOD_PATH);
+  if (dogfood.product_sha !== value.product_sha) die('builder: dogfood must equal product head');
+  const run=deps.run || defaultRun;
+  for (const command of COMMANDS) {
+    commandSpec(command);
+    const result=run(command);
+    if (!result || result.error || result.status !== 0 || result.signal) die(`builder: controlled command failed: ${command}`);
+    const output=`${result.stdout || ''}${result.stderr || ''}`;
+    if (Buffer.byteLength(output)>DIFF_SIZE_CAP) die('builder: command output cap');
+    if (command===COMMANDS[0]) for (const name of NAMED) {
+      const hits=output.split(name).length-1;
+      if (hits!==1) die(`builder: named test count ${name}`);
+    }
   }
-  exact(value.gates, ['cargo_deny','dogfood','just_gate_all','node'], 'builder.gates');
-  const commands = { cargo_deny:'cargo deny check', dogfood:'node gates/tests/validate-evidence.cjs dogfood .planning/phases/07-wp-4-gate-cards-and-dogfood/07-DOGFOOD-EVIDENCE.json',
-    just_gate_all:'just gate-all', node:'node --test gates/tests/*.test.cjs' };
-  for (const [name, gate] of Object.entries(value.gates)) commandEvidence(gate, commands[name], value.product_sha, `builder.gates.${name}`);
-  exact(value.artifacts, ['dogfood','provenance','review'], 'builder.artifacts');
-  for (const [name, item] of Object.entries(value.artifacts)) artifact(item, `builder.artifacts.${name}`);
-  exact(value.canary, ['bytes_scanned','files_scanned','hits','include_sha256','receipt_sha256','scratch_deleted'], 'builder.canary');
-  if (!Number.isInteger(value.canary.files_scanned) || value.canary.files_scanned < 1 || !Number.isInteger(value.canary.bytes_scanned)
-      || value.canary.bytes_scanned < 1 || value.canary.hits !== 0 || !HEX.test(value.canary.include_sha256)
-      || !HEX.test(value.canary.receipt_sha256)) die('builder: canary');
-  bool(value.canary.scratch_deleted, 'builder.canary');
-  exact(value.cleanup, ['cargo_targets_absent','github_unchanged','producer_diff_empty','scratch_absent','worktrees_absent'], 'builder.cleanup');
-  for (const [name, state] of Object.entries(value.cleanup)) bool(state, `builder.cleanup.${name}`);
+  const expectedCanary=[DOGFOOD_PATH,value.audit.path,...(value.audit.recheck_path?[value.audit.recheck_path]:[]),'UPSTREAM.md','docs/verify/gates.md'].sort();
+  if (JSON.stringify([...value.canary_files].sort())!==JSON.stringify(expectedCanary)) die('builder: canary inventory');
+  for (const path of value.canary_files) if (!fs.statSync(path).isFile()) die('builder: canary file');
+  (deps.canary || defaultCanary)(value.canary_files);
+  if (!Array.isArray(value.cleanup_paths) || value.cleanup_paths.some((path)=>typeof path!=='string'||!/^F:[\\/]/i.test(path)||fs.existsSync(path))) die('builder: cleanup paths');
+  if (git(['diff','--name-only',audited.base_sha,value.product_sha,'--','packaging','scripts/provision','crates','.github','docs/STATUS.md'])) die('builder: producer ownership');
   if (!requestFile) return;
   const request = json(requestFile);
-  exact(request, ['audit_sha256','base_sha','branch','builder_actions','builder_evidence_sha256','local_gates','pending',
+  exact(request, ['audit_sha256','base_sha','branch','builder_actions','builder_evidence_sha256','local_commands','pending',
     'product_sha','request_tip','requested','schema'], 'request');
   if (request.schema !== 'nano.wp4-promotion-request/1' || request.product_sha !== value.product_sha || !SHA.test(request.base_sha)
       || !SHA.test(request.request_tip) || typeof request.branch !== 'string' || !HEX.test(request.audit_sha256)
       || !HEX.test(request.builder_evidence_sha256) || request.builder_evidence_sha256 !== sha256(fs.readFileSync(file))) die('request: identity');
-  exact(request.local_gates, ['cargo_deny','dogfood','just_gate_all','node','provenance'], 'request.local_gates');
-  for (const state of Object.values(request.local_gates)) bool(state, 'request.local_gates');
+  if (JSON.stringify(request.local_commands)!==JSON.stringify(COMMANDS)) die('request: local commands');
   exact(request.builder_actions, ['github_modified','merged','pushed'], 'request.builder_actions');
   if (Object.values(request.builder_actions).some((state) => state !== false)) die('request: builder exceeded authority');
   exact(request.pending, ['ci','merge_sha','run_id','workflow_sha'], 'request.pending');
@@ -254,18 +277,22 @@ function finalEvidence(file, ciFile) {
   if (value.owner_handoff !== true || /pending|todo|tbd/i.test(text)) die('final: incomplete');
 }
 
-const [stage, file] = process.argv.slice(2);
+function main(argv=process.argv.slice(2)) {
+const [stage, file] = argv;
 try {
   if (stage === 'dogfood') dogfood(file);
   else if (stage === 'provenance') provenance(file);
   else if (stage === 'workflow') workflow(file);
-  else if (stage === 'audit') audit(file, process.argv[4]);
-  else if (stage === 'builder') builder(file, process.argv[4]);
-  else if (stage === 'ci') ci(file, process.argv[4] === '--expected-sha' ? process.argv[5] : '');
-  else if (stage === 'final') finalEvidence(file, process.argv[4]);
+  else if (stage === 'audit') audit(file, argv[2]);
+  else if (stage === 'builder') builder(file, argv[2]);
+  else if (stage === 'ci') ci(file, argv[2] === '--expected-sha' ? argv[3] : '');
+  else if (stage === 'final') finalEvidence(file, argv[2]);
   else die('usage');
   process.stdout.write(`${stage}: valid\n`);
 } catch (error) {
   process.stderr.write(`${error.message}\n`);
   process.exitCode = 1;
 }
+}
+module.exports={builder,commandSpec,COMMANDS,NAMED};
+if(require.main===module) main();

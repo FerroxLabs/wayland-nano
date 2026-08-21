@@ -8,6 +8,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 const { writeArtifact } = require('../lib/artifact-writer.cjs');
+const validator = require('./validate-evidence.cjs');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const VALIDATOR = path.join(__dirname, 'validate-evidence.cjs');
@@ -81,35 +82,40 @@ test('CI validator requires exact SHA literal seven jobs and completed success',
 test('builder request and final contracts reject authority and stop spoofing', async () => {
   const dir = fs.mkdtempSync(path.join(process.env.TEMP || os.tmpdir(), 'wp4-builder-'));
   try {
-    const head=git(['rev-parse','HEAD']); const tree=git(['rev-parse','HEAD^{tree}']); const hex='a'.repeat(64);
-    const gate=(command)=>{const bytes=JSON.stringify({command,product_sha:head,status:'passed'});return {command,exit_code:0,output:{bytes,sha256:sha(Buffer.from(bytes))}}};
     const dogfoodPath='.planning/phases/07-wp-4-gate-cards-and-dogfood/07-DOGFOOD-EVIDENCE.json';
+    const head=git(['rev-parse','HEAD']); const product=JSON.parse(fs.readFileSync(dogfoodPath)).product_sha;
+    const tree=git(['rev-parse',`${product}^{tree}`]); const hex='a'.repeat(64);
     const reviewMd=await put(dir,'review.md','# Review\n'); const provenancePath='UPSTREAM.md';
-    const diffArgv=['diff','--binary','--full-index',head,head,'--','gates','docs/verify/gates.md','UPSTREAM.md'];
-    const auditValue={schema:'nano.wp4-audit/1',audit_id:'audit-builder-01',base_sha:head,product_sha:head,product_tree:tree,
+    const diffArgv=['diff','--binary','--full-index',product,product,'--','gates','docs/verify/gates.md','UPSTREAM.md'];
+    const auditValue={schema:'nano.wp4-audit/1',audit_id:'audit-builder-01',base_sha:product,product_sha:product,product_tree:tree,
       diff:{argv:diffArgv,sha256:sha(gitBytes(diffArgv))},review:{path:reviewMd,sha256:sha(fs.readFileSync(reviewMd))},owned_paths:[],
       requirements:['CARD-01','CARD-02','CARD-03','CARD-04','CARD-05','CARD-06','CARD-07','CARD-08','PROV-03'],
       identities:{builder:'builder-wp4',auditor:'auditor-wp4',rechecker:'rechecker-wp4'},authority:{builder:'write:wp4-owned',auditor:'read-only',rechecker:'read-only'},
       support:[reviewMd,'gates/registry.json','docs/verify/gates.md'].map(file=>({path:file,sha256:sha(fs.readFileSync(file))})),threats:['T-07-A1','T-07-A2'],findings:[],open_critical_high:0,fix_round:0};
     const reviewPath=await put(dir,'review.json',auditValue);
-    const builder={schema:'nano.wp4-builder/1',product_sha:head,product_tree:tree,
+    const builder={schema:'nano.wp4-builder/1',product_sha:product,product_tree:tree,
       audit:{open_critical_high:0,path:reviewPath,sha256:sha(fs.readFileSync(reviewPath)),recheck_path:null,recheck_sha256:null}, named_tests:['t-card-schema-valid','t-registry-closure-digests','t-ip-reference-scores-mm','t-pv-reference-scores-mm','t-cf-reference-scores-mm','t-ip-mutants-caught','t-pv-mutants-caught','t-cf-mutants-caught','t-fixture-digest-fails-closed','t-dirhash-canonical','t-meta-mutant-passing-is-gate-defect','t-summary-contract','t-gate-hash-drift-voids-validation'],
-      seeds:[41041,41042,41043].map(seed=>({seed,...gate(`node gates/tests/validate-seeded.cjs --seed ${seed}`)})),
-      gates:{cargo_deny:gate('cargo deny check'),dogfood:gate(`node gates/tests/validate-evidence.cjs dogfood ${dogfoodPath}`),just_gate_all:gate('just gate-all'),node:gate('node --test gates/tests/*.test.cjs')},
-      artifacts:{dogfood:{path:dogfoodPath,sha256:sha(fs.readFileSync(dogfoodPath))},provenance:{path:provenancePath,sha256:sha(fs.readFileSync(provenancePath))},review:{path:reviewPath,sha256:sha(fs.readFileSync(reviewPath))}},
-      canary:{files_scanned:3,bytes_scanned:99,hits:0,include_sha256:hex,receipt_sha256:hex,scratch_deleted:true},
-      cleanup:{cargo_targets_absent:true,github_unchanged:true,producer_diff_empty:true,scratch_absent:true,worktrees_absent:true}};
+      commands:validator.COMMANDS,canary_files:[dogfoodPath,reviewPath,'UPSTREAM.md','docs/verify/gates.md'],cleanup_paths:['F:/definitely-absent-wp4-test']};
     const builderFile=await put(dir,'builder.json',builder);
-    assert.equal(run(['builder',builderFile]).status,0);
+    const executed=[]; let canaryRuns=0;
+    const deps={run:(command)=>{executed.push(command);return {status:0,stdout:command===validator.COMMANDS[0]?validator.NAMED.join('\n'):'ok',stderr:''}},canary:()=>{canaryRuns+=1}};
+    assert.doesNotThrow(()=>validator.builder(builderFile,undefined,deps));
+    assert.deepEqual(executed,validator.COMMANDS); assert.equal(canaryRuns,1);
+    const forged={...builder,passed:true}; const forgedFile=await put(dir,'forged.json',forged);
+    assert.throws(()=>validator.builder(forgedFile,undefined,{run:()=>{throw new Error('must not execute')}}));
+    const mismatch={...builder,commands:[...validator.COMMANDS].reverse()}; const mismatchFile=await put(dir,'mismatch.json',mismatch);
+    let forbiddenExecuted=false; assert.throws(()=>validator.builder(mismatchFile,undefined,{run:()=>{forbiddenExecuted=true;return {status:0}}}));
+    assert.equal(forbiddenExecuted,false);
     const jobs=['gate (windows-latest, x64)','gate (windows-11-arm, arm64)','gate (macos-14, arm64)','gate (macos-15-intel, x64)','gate (ubuntu-22.04, x64)','gate (ubuntu-24.04-arm, arm64)','gate-cards'];
-    const request={schema:'nano.wp4-promotion-request/1',branch:'feat/wp-4',base_sha:head,product_sha:head,request_tip:head,
+    const request={schema:'nano.wp4-promotion-request/1',branch:'feat/wp-4',base_sha:product,product_sha:product,request_tip:head,
       audit_sha256:hex,builder_evidence_sha256:sha(fs.readFileSync(builderFile)),
-      local_gates:{cargo_deny:true,dogfood:true,just_gate_all:true,node:true,provenance:true},
+      local_commands:validator.COMMANDS,
       builder_actions:{github_modified:false,merged:false,pushed:false},pending:{ci:'pending',merge_sha:null,run_id:null,workflow_sha:null},
       requested:{ci_jobs:jobs,merge:'integrator-only',no_ff:true,push_fetch:true,workflow_job:'gate-cards'}};
     const requestFile=await put(dir,'request.json',request);
-    assert.equal(run(['builder',builderFile,requestFile]).status,0);
-    request.builder_actions.pushed=true; assert.notEqual(run(['builder',builderFile,await put(dir,'bad-authority.json',request)]).status,0);
+    assert.doesNotThrow(()=>validator.builder(builderFile,requestFile,deps));
+    request.builder_actions.pushed=true; const badAuthority=await put(dir,'bad-authority.json',request);
+    assert.throws(()=>validator.builder(builderFile,badAuthority,deps));
 
     const ciFile=await put(dir,'ci.json',{headSha:head,status:'completed',conclusion:'success',jobs:jobs.map((name,index)=>({databaseId:index+1,name,status:'completed',conclusion:'success',startedAt:'s',completedAt:'c',url:'u',steps:[]}))});
     const final={schema:'nano.wp4-final/1',builder_sha:head,integration_sha:head,ci_sha256:sha(fs.readFileSync(ciFile)),
