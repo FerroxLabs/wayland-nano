@@ -1,0 +1,25 @@
+diff --git a/crates/nano-core/src/execrules.rs b/crates/nano-core/src/execrules.rs
+index 76a928a..3f9eb06 100644
+--- a/crates/nano-core/src/execrules.rs
++++ b/crates/nano-core/src/execrules.rs
+@@ -39,7 +39,7 @@ pub enum PatternToken {
+ #[serde(deny_unknown_fields)]
+ pub struct PrefixRule {
+     pub pattern: Vec<PatternToken>,
+-    #[serde(default)]
++    #[serde(default, deserialize_with = "deserialize_exact_flexible")]
+     pub exact: bool,
+     pub decision: RuleDecision,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+@@ -56,6 +56,11 @@ pub enum RuleSource {
+     ApprovalCard,
+ }
+ 
++fn deserialize_exact_flexible<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
++    let value = toml::Value::deserialize(d)?;
++    Ok(matches!(value, toml::Value::Boolean(true)) || matches!(&value, toml::Value::String(s) if s == "yes"))
++}
++
+ impl PrefixRule {
+     pub fn validate(&self) -> Result<(), RuleValidationError> {
+         if self.pattern.len() > MAX_TOKENS {

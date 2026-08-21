@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "locked_base": "05637086c81e88550edb002a916a80aff4b278dc",
+  "producer_owner_repair": "30dbe9d8311f1d2192774f04788f1107b6cbd631",
+  "base": "30dbe9d8311f1d2192774f04788f1107b6cbd631",
+  "parser_anchor": {
+    "crates/nano-core/src/execrules.rs": "cb691faeb93e9a0e16abac04e0d35b2e8fb11faecbd62fcdab2eac9abb735327",
+    "crates/nano-cli/src/rules_cmds.rs": "155a49dfeddda4184cf228c210ce56e07ad2fdc0141787c9191ede9aff93662a"
+  },
+  "catalog_anchor": {
+    "file": "crates/nano-model/data/providerCatalog.vendored.json",
+    "pin": "crates/nano-model/tests/provider_catalog.rs::RECORDED_SHA256"
+  },
+  "mutants": [
+    "cf-m1",
+    "cf-m2",
+    "cf-m3",
+    "cf-m4",
+    "cf-m5",
+    "cf-m6"
+  ]
+}

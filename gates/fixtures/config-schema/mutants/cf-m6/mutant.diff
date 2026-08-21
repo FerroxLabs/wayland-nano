@@ -1,0 +1,15 @@
+diff --git a/crates/nano-core/src/execrules.rs b/crates/nano-core/src/execrules.rs
+index 76a928a..46a15eb 100644
+--- a/crates/nano-core/src/execrules.rs
++++ b/crates/nano-core/src/execrules.rs
+@@ -24,8 +24,9 @@ pub const NANO_RULES_FILE_ENV: &str = "NANO_RULES_FILE";
+ #[serde(rename_all = "snake_case")]
+ pub enum RuleDecision {
+     Allow,
+-    Prompt,
+     Deny,
++    #[serde(other)]
++    Prompt,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

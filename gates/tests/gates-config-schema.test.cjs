@@ -3,13 +3,14 @@
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
+const { loadCard, scriptHash } = require('../lib/card.cjs');
+const { directorySeal } = require('../lib/dirhash.cjs');
 
 const ROOT = path.resolve(__dirname, '..', '..');
-const LOCKED_BASE = '05637086c81e88550edb002a916a80aff4b278dc';
+const LOCKED_BASE = '30dbe9d8311f1d2192774f04788f1107b6cbd631';
 const CARD = path.join(ROOT, 'gates', 'config-schema', 'card.md');
 const GATE = path.join(ROOT, 'gates', 'config-schema', 'gate.sh');
 const FIXTURES = path.join(ROOT, 'gates', 'fixtures', 'config-schema');
@@ -36,16 +37,28 @@ function parseOutput(output) {
 function generate() {
   const result = run(process.execPath, [GENERATOR, '--check']);
   assert.equal(result.status, 0, result.stderr || result.stdout);
+  const card = loadCard(CARD);
+  assert.equal(card.gate_script_hash, scriptHash(GATE));
+  assert.equal(card.validation.reference, directorySeal(path.join(FIXTURES, 'probes')));
+  for (const mutant of card.validation.mutants) {
+    const dir = path.join(FIXTURES, 'mutants', mutant.id);
+    assert.equal(mutant.fixture, directorySeal(dir), mutant.id);
+    const patch = fs.readFileSync(path.join(dir, 'mutant.diff'), 'utf8');
+    const paths = [...patch.matchAll(/^(?:--- a|\+\+\+ b)\/(.+)$/gm)].map((match) => match[1]);
+    assert(paths.length === 2 && paths.every((entry) => [
+      'crates/nano-core/src/execrules.rs',
+      'crates/nano-cli/src/rules_cmds.rs',
+      'crates/nano-model/data/providerCatalog.vendored.json',
+    ].includes(entry)), `patch escape: ${mutant.id}`);
+  }
 }
 
 test('t-cf-reference-scores-mm', () => {
   generate();
   const target = process.env.CARGO_TARGET_DIR || path.join(ROOT, 'target');
   const binary = path.join(target, 'debug', process.platform === 'win32' ? 'wayland-nano.exe' : 'wayland-nano');
-  if (!fs.existsSync(binary)) {
-    const build = run('cargo', ['build', '-p', 'nano-cli']);
-    assert.equal(build.status, 0, build.stderr || build.stdout);
-  }
+  const build = run('cargo', ['build', '-p', 'nano-cli']);
+  assert.equal(build.status, 0, build.stderr || build.stdout);
   const result = run('bash', [GATE, path.join(FIXTURES, 'probes')], {
     env: { ...process.env, NANO_CLI_BIN: binary, NANO_REPO_ROOT: ROOT },
   });
@@ -81,9 +94,9 @@ test('t-cf-mutants-caught', { timeout: 2_800_000 }, () => {
         });
         assert.equal(build.status, 0, build.stderr || build.stdout);
         const binary = path.join(target, 'debug', process.platform === 'win32' ? 'wayland-nano.exe' : 'wayland-nano');
-        const gated = run('bash', [GATE, path.join(wt, 'gates', 'fixtures', 'config-schema', 'probes')], {
+        const gated = run('bash', [GATE, path.join(FIXTURES, 'probes')], {
           cwd: wt,
-          env: { ...process.env, NANO_CLI_BIN: binary, NANO_REPO_ROOT: wt },
+          env: { ...process.env, NANO_CLI_BIN: binary, NANO_REPO_ROOT: wt, NANO_GATE_ROOT: ROOT },
         });
         const score = parseOutput(gated.stdout);
         assert.notEqual(score.passed, 6, `GATE_DEFECT config-schema ${mutant.id}`);
@@ -103,7 +116,9 @@ test('t-cf-mutants-caught', { timeout: 2_800_000 }, () => {
 });
 
 test('t-cf-cleanup-survives-injected-failure', () => {
-  const scratch = fs.mkdtempSync(path.join(process.env.NANO_CF_TEMP_ROOT || os.tmpdir(), 'cf-clean-'));
+  const failureRoot = process.env.NANO_CF_TEMP_ROOT || path.join(ROOT, 'target', 'cf-failure');
+  fs.mkdirSync(failureRoot, { recursive: true });
+  const scratch = fs.mkdtempSync(path.join(failureRoot, 'cf-clean-'));
   const wt = path.join(scratch, 'w');
   try {
     assert.equal(run('git', ['worktree', 'add', '--detach', wt, LOCKED_BASE]).status, 0);
