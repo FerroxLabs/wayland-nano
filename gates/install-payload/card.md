@@ -3,7 +3,7 @@ card: 1
 gate_id: install-payload
 domain: repo-deliverable
 tier: 1
-gate_script_hash: 93142543a6f40c526b814751ba367143a1219abd22379050a17693be17b816b1
+gate_script_hash: 2e6cd1c3a026b4fd5611f143dc25534eb9a1cbb51254a746b6d91703f59d862d
 relational_target:
   artifact: the staged npm package tree
   relation: every staged binary resolves against the integrity manifest and install refuses tampering
@@ -29,7 +29,7 @@ validation:
     - { id: ip-m5, class: fluent-but-wrong, why_fluent: the PTY guard is present and hashed but recorded non-executable while the primary smoke path remains green, expected_drop: 1, must_fail: [IP-05], fixture: sealed:dir-sha256:7f6522969f8068ccd6e9d953f3ca5baca670b004ad6edd4b417f43b0415f2f6d }
     - { id: ip-m6, class: fluent-but-wrong, why_fluent: postinstall is a successful no-op and the shipped wrapper and binaries still look runnable, expected_drop: 1, must_fail: [IP-04], fixture: sealed:dir-sha256:b3905718e20394924a8f6fdd92d630fc669142957f76d7eafa077650e4379b6e }
   rotation_k: 2
-  last_validated: 93142543a6f40c526b814751ba367143a1219abd22379050a17693be17b816b1
+  last_validated: 2e6cd1c3a026b4fd5611f143dc25534eb9a1cbb51254a746b6d91703f59d862d
 gamed_modes:
   - { mode: hardcoded hashes over swapped bytes, status: sealed, note: ip-m1 and ip-m3 require independent whole-pool rehashing }
   - { mode: host-only inspection, status: mitigated, note: IP-02 and IP-03 traverse every platform and helper }

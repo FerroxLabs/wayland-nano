@@ -13,7 +13,7 @@ const FIXTURE_ROOT = path.join(ROOT, 'gates', 'fixtures', 'install-payload');
 const CARD_PATH = path.join(ROOT, 'gates', 'install-payload', 'card.md');
 const GATE_PATH = path.join(ROOT, 'gates', 'install-payload', 'gate.cjs');
 const GENERATOR_PATH = path.join(ROOT, 'gates', 'install-payload', 'fixtures', 'generators', 'generators.cjs');
-const { loadCard } = require('../lib/card.cjs');
+const { loadCard, scriptHash } = require('../lib/card.cjs');
 const { parseGateOutput } = require('../lib/contract.cjs');
 const { directorySeal, digestDirectory } = require('../lib/dirhash.cjs');
 
@@ -31,6 +31,8 @@ test('t-ip-reference-scores-mm', () => {
   const card = loadCard(CARD_PATH);
   const reference = path.join(FIXTURE_ROOT, 'reference');
   assert.deepEqual(card.checks.map(({ id, category }) => [id, category]), INVENTORY);
+  assert.equal(card.validationCurrent(scriptHash(GATE_PATH)), true,
+    'card gate_script_hash and last_validated must bind the exact gate bytes');
   assert.equal(card.validation.reference, directorySeal(reference));
   assert.deepEqual(generator.inspectFixture(reference).failures, []);
   assert.equal(card.validation.rotation_k, 2);
