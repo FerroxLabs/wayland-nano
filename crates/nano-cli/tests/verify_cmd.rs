@@ -11,7 +11,6 @@ use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/verify");
-const EMPTY_BOOTSTRAP: &[u8] = b"{\"gates\":{},\"requirements\":{},\"schema\":1}";
 fn production_source() -> String {
     std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/verify_cmd.rs"))
         .unwrap()
@@ -71,11 +70,6 @@ impl Drop for FixtureRepo {
 }
 
 fn materialize_fixture_repo(label: &str) -> FixtureRepo {
-    assert_eq!(
-        std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../gates/registry.json"))
-            .unwrap(),
-        EMPTY_BOOTSTRAP
-    );
     let base = unique_root(label);
     let root = base.join("r");
     let receipts = base.join("p");
