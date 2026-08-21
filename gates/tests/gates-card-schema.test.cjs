@@ -46,6 +46,61 @@ test('t-card-schema-valid', () => {
   assert.throws(() => parseCard(card().replace(/---\nafter/, 'after')), /CARD_INVALID machine block/);
 });
 
+test('sealed production cards satisfy the closed schema', () => {
+  for (const gateId of ['install-payload', 'provision-script', 'config-schema']) {
+    const cardPath = path.join(ROOT, 'gates', gateId, 'card.md');
+    const parsed = parseCard(fs.readFileSync(cardPath, 'utf8'));
+    assert.equal(parsed.gate_id, gateId);
+    assert.equal(parsed.domain, 'repo-deliverable');
+    assert.equal(parsed.tier, 1);
+    assert.equal(parsed.checks.length, 6);
+    assert.equal(new Set(parsed.checks.map(({ id }) => id)).size, 6);
+    assert.ok(parsed.wrapped_tools.length >= 1);
+    assert.ok(parsed.validation.mutants.length >= 5);
+    assert.equal(parsed.validation.rotation_k, 2);
+    assert.equal(parsed.validation.pool_status, 'full');
+    assert.equal(parsed.validation.last_validated, parsed.gate_script_hash);
+    assert.ok(parsed.gamed_modes.length >= 1);
+    assert.ok(parsed.validation.mutants.every((mutant) => mutant.why_fluent
+      && mutant.expected_drop >= 1 && mutant.must_fail.length >= 1));
+  }
+});
+
+test('t-registry-closure-digests', () => {
+  const registry = JSON.parse(fs.readFileSync(path.join(ROOT, 'gates', 'registry.json'), 'utf8'));
+  assert.equal(registry.schema, 1);
+  assert.deepEqual(Object.keys(registry.gates).sort(),
+    ['config-schema', 'install-payload', 'provision-script']);
+  assert.deepEqual(registry.requirements, {
+    'CARD-05': 'install-payload',
+    'CARD-06': 'provision-script',
+    'CARD-07': 'config-schema',
+  });
+  for (const [gateId, entry] of Object.entries(registry.gates)) {
+    assert.deepEqual(Object.keys(entry).sort(),
+      ['card', 'closure', 'closure_digest', 'run_artifact', 'script']);
+    assert.deepEqual(Object.keys(entry.closure).sort(),
+      ['argv', 'cwd_policy', 'env', 'wrapped_tools']);
+    assert.equal(entry.closure_digest,
+      crypto.createHash('sha256').update(canonicalJson(entry.closure)).digest('hex'), gateId);
+    for (const field of ['card', 'script', 'run_artifact']) {
+      assert.equal(path.isAbsolute(entry[field]), false, `${gateId} ${field} absolute`);
+      assert.equal(entry[field].split(/[\\/]/).includes('..'), false, `${gateId} ${field} traversal`);
+      const resolved = fs.realpathSync(path.join(ROOT, entry[field]));
+      assert.ok(resolved === ROOT || resolved.startsWith(`${ROOT}${path.sep}`), `${gateId} ${field} escape`);
+    }
+    const direct = entry.closure.argv[0] === entry.script;
+    const interpreter = entry.closure.wrapped_tools.find(({ name, version }) =>
+      name === entry.closure.argv[0] && version.length > 0);
+    assert.ok(direct || (interpreter && entry.closure.argv[1] === entry.script), `${gateId} invocation`);
+    assert.equal(entry.closure.argv.includes(entry.run_artifact), false, `${gateId} artifact in argv`);
+    const cardTools = parseCard(fs.readFileSync(path.join(ROOT, entry.card), 'utf8')).wrapped_tools
+      .map(({ name, version }) => ({ name, version: String(version) }));
+    assert.deepEqual(entry.closure.wrapped_tools, cardTools, `${gateId} tool pins`);
+  }
+  for (const gateId of Object.values(registry.requirements)) assert.ok(registry.gates[gateId]);
+});
+
 test('t-fixture-digest-fails-closed', () => {
   const dir = scratch('digest-drift');
   try {
