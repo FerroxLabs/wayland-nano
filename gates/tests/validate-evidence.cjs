@@ -7,6 +7,8 @@ const { spawnSync } = require('node:child_process');
 
 const HEX = /^[0-9a-f]{64}$/;
 const SHA = /^[0-9a-f]{40}$/;
+const GIT_MAX_BUFFER = 256 * 1024 * 1024;
+const DIFF_SIZE_CAP = 128 * 1024 * 1024;
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const die = (message) => { throw new Error(message); };
 function exact(value, keys, where) {
@@ -30,7 +32,13 @@ function dogfood(file) {
   const value = json(file);
   exact(value, ['base_sha', 'cleanup', 'good', 'invocation', 'mutants', 'product_sha', 'registry_sha256', 'schema'], 'dogfood');
   if (value.schema !== 'nano.wp4-dogfood/1' || !SHA.test(value.base_sha) || !SHA.test(value.product_sha)
-      || !HEX.test(value.registry_sha256) || value.registry_sha256 !== sha256(fs.readFileSync('gates/registry.json'))) die('dogfood: identity');
+      || !HEX.test(value.registry_sha256)) die('dogfood: identity');
+  const ancestry = spawnSync('git', ['merge-base','--is-ancestor',value.base_sha,value.product_sha],
+    { windowsHide:true, maxBuffer:GIT_MAX_BUFFER });
+  if (ancestry.error || ancestry.status !== 0) die('dogfood: ancestry');
+  const registryAtProduct = spawnSync('git', ['show',`${value.product_sha}:gates/registry.json`],
+    { encoding:null, windowsHide:true, maxBuffer:GIT_MAX_BUFFER });
+  if (registryAtProduct.error || registryAtProduct.status !== 0 || sha256(registryAtProduct.stdout) !== value.registry_sha256) die('dogfood: product registry');
   exact(value.invocation, ['argv', 'binary', 'mode'], 'invocation');
   if (value.invocation.mode !== 'wp3-run-only' || value.invocation.binary !== 'target/debug/wayland-nano.exe'
       || JSON.stringify(value.invocation.argv) !== JSON.stringify(['verify', '--gate', '<registry-id>', '--run-only', '--json'])) die('dogfood: invocation');
@@ -74,13 +82,14 @@ function workflow(file) {
   if (/gates\/(install-payload|provision-script|config-schema)\/gate|npx|verify-receipt/.test(text)) die('workflow: forbidden lane');
 }
 function git(args) {
-  const run = spawnSync('git', args, { encoding: 'utf8', windowsHide: true });
-  if (run.status !== 0) die(`git ${args[0]} failed`);
+  const run = spawnSync('git', args, { encoding: 'utf8', windowsHide: true, maxBuffer: GIT_MAX_BUFFER });
+  if (run.error || run.status !== 0) die(`git ${args[0]} failed`);
   return run.stdout.trim();
 }
 function gitBytes(args) {
-  const run = spawnSync('git', args, { encoding: null, windowsHide: true });
-  if (run.status !== 0) die(`git ${args[0]} failed`);
+  const run = spawnSync('git', args, { encoding: null, windowsHide: true, maxBuffer: GIT_MAX_BUFFER });
+  if (run.error || run.status !== 0) die(`git ${args[0]} failed`);
+  if (run.stdout.length > DIFF_SIZE_CAP) die('git diff exceeds evidence size cap');
   return run.stdout;
 }
 function bool(value, where) { if (value !== true) die(`${where}: required true`); }
@@ -89,8 +98,8 @@ function shaFile(file, expected, where) {
 }
 function audit(file, recheck) {
   const value = json(file);
-  exact(value, ['audit_id', 'base_sha', 'diff', 'findings', 'fix_round', 'open_critical_high', 'owned_paths',
-    'product_sha', 'product_tree', 'requirements', 'review', 'schema', 'threats'], 'audit');
+  exact(value, ['audit_id', 'authority', 'base_sha', 'diff', 'findings', 'fix_round', 'identities', 'open_critical_high',
+    'owned_paths', 'product_sha', 'product_tree', 'requirements', 'review', 'schema', 'support', 'threats'], 'audit');
   if (value.schema !== 'nano.wp4-audit/1' || typeof value.audit_id !== 'string' || value.audit_id.length < 8
       || !SHA.test(value.base_sha) || !SHA.test(value.product_sha) || !SHA.test(value.product_tree)) die('audit: identity');
   if (git(['rev-parse', `${value.product_sha}^{tree}`]) !== value.product_tree) die('audit: product tree');
@@ -99,10 +108,26 @@ function audit(file, recheck) {
   if (JSON.stringify(value.diff.argv) !== JSON.stringify(argv) || sha256(gitBytes(argv)) !== value.diff.sha256) die('audit: diff');
   exact(value.review, ['path', 'sha256'], 'audit.review');
   shaFile(value.review.path, value.review.sha256, 'audit.review');
-  if (!Array.isArray(value.owned_paths) || value.owned_paths.length === 0 || new Set(value.owned_paths).size !== value.owned_paths.length
+  exact(value.identities, ['auditor','builder','rechecker'], 'audit.identities');
+  const identities = Object.values(value.identities);
+  if (identities.some((id) => typeof id !== 'string' || !/^[a-z][a-z0-9_-]{2,63}$/.test(id))
+      || new Set(identities).size !== 3) die('audit: independent identities');
+  exact(value.authority, ['auditor','builder','rechecker'], 'audit.authority');
+  if (value.authority.builder !== 'write:wp4-owned' || value.authority.auditor !== 'read-only'
+      || value.authority.rechecker !== 'read-only') die('audit: authority');
+  if (!Array.isArray(value.owned_paths) || new Set(value.owned_paths).size !== value.owned_paths.length
       || value.owned_paths.some((path) => typeof path !== 'string' || !/^(gates\/|docs\/verify\/gates\.md$|UPSTREAM\.md$)/.test(path))) die('audit: owned paths');
+  const diffPaths = git(['diff','--name-only',value.base_sha,value.product_sha,'--','gates','docs/verify/gates.md','UPSTREAM.md'])
+    .split(/\r?\n/).filter(Boolean).sort();
+  if (JSON.stringify([...value.owned_paths].sort()) !== JSON.stringify(diffPaths)) die('audit: incomplete path scope');
   const required = ['CARD-01','CARD-02','CARD-03','CARD-04','CARD-05','CARD-06','CARD-07','CARD-08','PROV-03'];
-  if (JSON.stringify(value.requirements) !== JSON.stringify(required) || !Array.isArray(value.threats) || value.threats.length === 0) die('audit: coverage');
+  if (JSON.stringify(value.requirements) !== JSON.stringify(required)
+      || JSON.stringify(value.threats) !== JSON.stringify(['T-07-A1','T-07-A2'])) die('audit: coverage');
+  if (!Array.isArray(value.support) || value.support.length < 3) die('audit: support');
+  for (const [index, item] of value.support.entries()) {
+    exact(item, ['path','sha256'], `audit.support[${index}]`);
+    shaFile(item.path, item.sha256, `audit.support[${index}]`);
+  }
   if (!Array.isArray(value.findings) || !Number.isInteger(value.open_critical_high) || value.open_critical_high < 0
       || !Number.isInteger(value.fix_round) || value.fix_round < 0 || value.fix_round > 1) die('audit: counts');
   let open = 0;
@@ -119,29 +144,57 @@ function audit(file, recheck) {
     const block = /```json\s*([\s\S]*?)\s*```/.exec(text)?.[1];
     if (!block) die('audit: recheck block');
     const fixed = JSON.parse(block);
-    exact(fixed, ['audit_id','final_sha','final_tree','fix_round','open_critical_high','schema'], 'recheck');
+    exact(fixed, ['audit_id','final_sha','final_tree','fix_round','open_critical_high','rechecker','schema'], 'recheck');
     if (fixed.schema !== 'nano.wp4-recheck/1' || fixed.audit_id !== value.audit_id || fixed.fix_round !== value.fix_round
-        || fixed.open_critical_high !== 0 || git(['rev-parse', `${fixed.final_sha}^{tree}`]) !== fixed.final_tree) die('audit: recheck');
+        || fixed.rechecker !== value.identities.rechecker || fixed.open_critical_high !== 0
+        || git(['rev-parse', `${fixed.final_sha}^{tree}`]) !== fixed.final_tree) die('audit: recheck');
   }
 }
 const NAMED = ['t-card-schema-valid','t-registry-closure-digests','t-ip-reference-scores-mm','t-pv-reference-scores-mm',
   't-cf-reference-scores-mm','t-ip-mutants-caught','t-pv-mutants-caught','t-cf-mutants-caught','t-fixture-digest-fails-closed',
   't-dirhash-canonical','t-meta-mutant-passing-is-gate-defect','t-summary-contract','t-gate-hash-drift-voids-validation'];
-function passed(value, where) { exact(value, ['command','passed'], where); bool(value.passed, where); if (typeof value.command !== 'string' || !value.command) die(`${where}: command`); }
+function commandEvidence(value, command, productSha, where) {
+  exact(value, ['command','exit_code','output'], where);
+  if (value.command !== command || value.exit_code !== 0) die(`${where}: command/exit`);
+  exact(value.output, ['bytes','sha256'], `${where}.output`);
+  if (typeof value.output.bytes !== 'string' || value.output.bytes.length === 0
+      || sha256(Buffer.from(value.output.bytes, 'utf8')) !== value.output.sha256) die(`${where}: output`);
+  const receipt = JSON.parse(value.output.bytes);
+  exact(receipt, ['command','product_sha','status'], `${where}.receipt`);
+  if (receipt.command !== command || receipt.product_sha !== productSha || receipt.status !== 'passed') die(`${where}: receipt`);
+}
+function artifact(value, where) {
+  exact(value, ['path','sha256'], where);
+  shaFile(value.path, value.sha256, where);
+}
 function builder(file, requestFile) {
   const value = json(file);
   exact(value, ['artifacts','audit','canary','cleanup','gates','named_tests','product_sha','product_tree','schema','seeds'], 'builder');
   if (value.schema !== 'nano.wp4-builder/1' || !SHA.test(value.product_sha)
       || git(['rev-parse', `${value.product_sha}^{tree}`]) !== value.product_tree) die('builder: identity');
-  exact(value.audit, ['open_critical_high','review_sha256'], 'builder.audit');
-  if (value.audit.open_critical_high !== 0 || !HEX.test(value.audit.review_sha256)) die('builder: audit');
+  exact(value.audit, ['open_critical_high','path','recheck_path','recheck_sha256','sha256'], 'builder.audit');
+  if (value.audit.open_critical_high !== 0) die('builder: audit');
+  artifact({path:value.audit.path,sha256:value.audit.sha256}, 'builder.audit.file');
+  if ((value.audit.recheck_path === null) !== (value.audit.recheck_sha256 === null)) die('builder: recheck pair');
+  if (value.audit.recheck_path !== null) artifact({path:value.audit.recheck_path,sha256:value.audit.recheck_sha256}, 'builder.audit.recheck');
+  audit(value.audit.path, value.audit.recheck_path || undefined);
+  const audited = json(value.audit.path);
+  const auditedProduct = value.audit.recheck_path
+    ? JSON.parse(/```json\s*([\s\S]*?)\s*```/.exec(fs.readFileSync(value.audit.recheck_path,'utf8'))[1]).final_sha
+    : audited.product_sha;
+  if (auditedProduct !== value.product_sha) die('builder: audit product mismatch');
   if (JSON.stringify(value.named_tests) !== JSON.stringify(NAMED)) die('builder: named battery');
   if (!Array.isArray(value.seeds) || JSON.stringify(value.seeds.map((entry) => entry.seed)) !== JSON.stringify([41041,41042,41043])) die('builder: seeds');
-  for (const entry of value.seeds) { exact(entry, ['passed','seed','sha256'], 'builder.seed'); bool(entry.passed, 'builder.seed'); if (!HEX.test(entry.sha256)) die('builder: seed digest'); }
+  for (const entry of value.seeds) {
+    exact(entry, ['command','exit_code','output','seed'], 'builder.seed');
+    commandEvidence({command:entry.command,exit_code:entry.exit_code,output:entry.output}, `node gates/tests/validate-seeded.cjs --seed ${entry.seed}`, value.product_sha, 'builder.seed');
+  }
   exact(value.gates, ['cargo_deny','dogfood','just_gate_all','node'], 'builder.gates');
-  for (const [name, gate] of Object.entries(value.gates)) passed(gate, `builder.gates.${name}`);
-  exact(value.artifacts, ['dogfood_sha256','provenance_sha256','review_sha256'], 'builder.artifacts');
-  for (const digest of Object.values(value.artifacts)) if (!HEX.test(digest)) die('builder: artifact digest');
+  const commands = { cargo_deny:'cargo deny check', dogfood:'node gates/tests/validate-evidence.cjs dogfood .planning/phases/07-wp-4-gate-cards-and-dogfood/07-DOGFOOD-EVIDENCE.json',
+    just_gate_all:'just gate-all', node:'node --test gates/tests/*.test.cjs' };
+  for (const [name, gate] of Object.entries(value.gates)) commandEvidence(gate, commands[name], value.product_sha, `builder.gates.${name}`);
+  exact(value.artifacts, ['dogfood','provenance','review'], 'builder.artifacts');
+  for (const [name, item] of Object.entries(value.artifacts)) artifact(item, `builder.artifacts.${name}`);
   exact(value.canary, ['bytes_scanned','files_scanned','hits','include_sha256','receipt_sha256','scratch_deleted'], 'builder.canary');
   if (!Number.isInteger(value.canary.files_scanned) || value.canary.files_scanned < 1 || !Number.isInteger(value.canary.bytes_scanned)
       || value.canary.bytes_scanned < 1 || value.canary.hits !== 0 || !HEX.test(value.canary.include_sha256)

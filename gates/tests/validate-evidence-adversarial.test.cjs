@@ -43,14 +43,26 @@ test('audit validator recomputes identity diff review and open high count', asyn
     const argv = ['diff','--binary','--full-index',head,head,'--','gates','docs/verify/gates.md','UPSTREAM.md'];
     const value = { schema:'nano.wp4-audit/1', audit_id:'audit-test-01', base_sha:head, product_sha:head, product_tree:tree,
       diff:{argv,sha256:sha(gitBytes(argv))}, review:{path:review,sha256:sha(fs.readFileSync(review))},
-      owned_paths:['gates/tests/validate-evidence.cjs'], requirements:['CARD-01','CARD-02','CARD-03','CARD-04','CARD-05','CARD-06','CARD-07','CARD-08','PROV-03'],
-      threats:['T-07-A1'], findings:[], open_critical_high:0, fix_round:0 };
+      owned_paths:[], requirements:['CARD-01','CARD-02','CARD-03','CARD-04','CARD-05','CARD-06','CARD-07','CARD-08','PROV-03'],
+      identities:{builder:'builder-wp4',auditor:'auditor-wp4',rechecker:'rechecker-wp4'},
+      authority:{builder:'write:wp4-owned',auditor:'read-only',rechecker:'read-only'},
+      support:[review,'gates/registry.json','docs/verify/gates.md'].map(file=>({path:file,sha256:sha(fs.readFileSync(file))})),
+      threats:['T-07-A1','T-07-A2'], findings:[], open_critical_high:0, fix_round:0 };
     const file = await put(dir, 'audit.json', value);
     assert.equal(run(['audit',file]).status,0);
     value.product_tree='0'.repeat(40); assert.notEqual(run(['audit',await put(dir,'bad-tree.json',value)]).status,0);
     value.product_tree=tree; value.fix_round=2; assert.notEqual(run(['audit',await put(dir,'bad-round.json',value)]).status,0);
-    value.fix_round=0; value.extra=true; assert.notEqual(run(['audit',await put(dir,'extra.json',value)]).status,0);
+    value.fix_round=0; value.identities.rechecker=value.identities.auditor;
+    assert.notEqual(run(['audit',await put(dir,'same-reviewer.json',value)]).status,0);
+    value.identities.rechecker='rechecker-wp4'; value.extra=true; assert.notEqual(run(['audit',await put(dir,'extra.json',value)]).status,0);
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
+});
+
+test('git evidence collection has explicit high-volume buffer and bounded diff cap', () => {
+  const source=fs.readFileSync(VALIDATOR,'utf8');
+  assert.match(source,/GIT_MAX_BUFFER = 256 \* 1024 \* 1024/);
+  assert.match(source,/DIFF_SIZE_CAP = 128 \* 1024 \* 1024/);
+  assert.match(source,/run\.stdout\.length > DIFF_SIZE_CAP/);
 });
 
 test('CI validator requires exact SHA literal seven jobs and completed success', async () => {
@@ -70,12 +82,21 @@ test('builder request and final contracts reject authority and stop spoofing', a
   const dir = fs.mkdtempSync(path.join(process.env.TEMP || os.tmpdir(), 'wp4-builder-'));
   try {
     const head=git(['rev-parse','HEAD']); const tree=git(['rev-parse','HEAD^{tree}']); const hex='a'.repeat(64);
-    const gate=(command)=>({command,passed:true});
+    const gate=(command)=>{const bytes=JSON.stringify({command,product_sha:head,status:'passed'});return {command,exit_code:0,output:{bytes,sha256:sha(Buffer.from(bytes))}}};
+    const dogfoodPath='.planning/phases/07-wp-4-gate-cards-and-dogfood/07-DOGFOOD-EVIDENCE.json';
+    const reviewMd=await put(dir,'review.md','# Review\n'); const provenancePath='UPSTREAM.md';
+    const diffArgv=['diff','--binary','--full-index',head,head,'--','gates','docs/verify/gates.md','UPSTREAM.md'];
+    const auditValue={schema:'nano.wp4-audit/1',audit_id:'audit-builder-01',base_sha:head,product_sha:head,product_tree:tree,
+      diff:{argv:diffArgv,sha256:sha(gitBytes(diffArgv))},review:{path:reviewMd,sha256:sha(fs.readFileSync(reviewMd))},owned_paths:[],
+      requirements:['CARD-01','CARD-02','CARD-03','CARD-04','CARD-05','CARD-06','CARD-07','CARD-08','PROV-03'],
+      identities:{builder:'builder-wp4',auditor:'auditor-wp4',rechecker:'rechecker-wp4'},authority:{builder:'write:wp4-owned',auditor:'read-only',rechecker:'read-only'},
+      support:[reviewMd,'gates/registry.json','docs/verify/gates.md'].map(file=>({path:file,sha256:sha(fs.readFileSync(file))})),threats:['T-07-A1','T-07-A2'],findings:[],open_critical_high:0,fix_round:0};
+    const reviewPath=await put(dir,'review.json',auditValue);
     const builder={schema:'nano.wp4-builder/1',product_sha:head,product_tree:tree,
-      audit:{open_critical_high:0,review_sha256:hex}, named_tests:['t-card-schema-valid','t-registry-closure-digests','t-ip-reference-scores-mm','t-pv-reference-scores-mm','t-cf-reference-scores-mm','t-ip-mutants-caught','t-pv-mutants-caught','t-cf-mutants-caught','t-fixture-digest-fails-closed','t-dirhash-canonical','t-meta-mutant-passing-is-gate-defect','t-summary-contract','t-gate-hash-drift-voids-validation'],
-      seeds:[41041,41042,41043].map(seed=>({seed,passed:true,sha256:hex})),
-      gates:{cargo_deny:gate('cargo deny check'),dogfood:gate('verify --run-only'),just_gate_all:gate('just gate-all'),node:gate('node --test')},
-      artifacts:{dogfood_sha256:hex,provenance_sha256:hex,review_sha256:hex},
+      audit:{open_critical_high:0,path:reviewPath,sha256:sha(fs.readFileSync(reviewPath)),recheck_path:null,recheck_sha256:null}, named_tests:['t-card-schema-valid','t-registry-closure-digests','t-ip-reference-scores-mm','t-pv-reference-scores-mm','t-cf-reference-scores-mm','t-ip-mutants-caught','t-pv-mutants-caught','t-cf-mutants-caught','t-fixture-digest-fails-closed','t-dirhash-canonical','t-meta-mutant-passing-is-gate-defect','t-summary-contract','t-gate-hash-drift-voids-validation'],
+      seeds:[41041,41042,41043].map(seed=>({seed,...gate(`node gates/tests/validate-seeded.cjs --seed ${seed}`)})),
+      gates:{cargo_deny:gate('cargo deny check'),dogfood:gate(`node gates/tests/validate-evidence.cjs dogfood ${dogfoodPath}`),just_gate_all:gate('just gate-all'),node:gate('node --test gates/tests/*.test.cjs')},
+      artifacts:{dogfood:{path:dogfoodPath,sha256:sha(fs.readFileSync(dogfoodPath))},provenance:{path:provenancePath,sha256:sha(fs.readFileSync(provenancePath))},review:{path:reviewPath,sha256:sha(fs.readFileSync(reviewPath))}},
       canary:{files_scanned:3,bytes_scanned:99,hits:0,include_sha256:hex,receipt_sha256:hex,scratch_deleted:true},
       cleanup:{cargo_targets_absent:true,github_unchanged:true,producer_diff_empty:true,scratch_absent:true,worktrees_absent:true}};
     const builderFile=await put(dir,'builder.json',builder);
