@@ -103,7 +103,7 @@ function executeDogfood() {
       exit_code:0,result:sealResult(bytes)}});
     fs.copyFileSync(path.join(packageBins,'win32-x64','wayland-nano.exe'),path.join(packageBins,'linux-x64','wayland-nano'));
     const ipBytes=fixedRun(binary,['verify','--gate','install-payload','--run-only','--json'],{cwd:root,env:{...process.env,TEMP:temp,TMP:temp},expected:3});
-    const ipSeal=directorySeal(path.join(root,'packaging','npm'));
+    const ipSeal=directorySeal(path.join(root,'packaging','npm')).slice('sealed:dir-sha256:'.length);
     fixedRun('pwsh',['-NoProfile','-File','packaging/npm/scripts/pack.ps1','-Platform','all','-ArtifactRoot','gates/fixtures/install-payload/reference/binaries']);
     const mutations=[['cf','gates/fixtures/config-schema/mutants/cf-m3/mutant.diff'],['pv',null]];
     const bad={ip:{bytes:ipBytes,seal:ipSeal}};
