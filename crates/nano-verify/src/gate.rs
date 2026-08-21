@@ -1304,11 +1304,12 @@ mod tests {
         .unwrap();
         let cancellation = GateCancellation::new();
         let trigger = cancellation.clone();
-        tokio::spawn(async move {
+        let trigger = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let signalled = std::time::Instant::now();
             trigger.cancel();
+            signalled
         });
-        let started = std::time::Instant::now();
         let execution = run_gate_execution_with_cancellation(
             &fixture_invocation("sleep"),
             &artifact,
@@ -1316,9 +1317,7 @@ mod tests {
             Some(&cancellation),
         )
         .await;
-        let elapsed_after_signal = started
-            .elapsed()
-            .saturating_sub(std::time::Duration::from_millis(100));
+        let elapsed_after_signal = trigger.await.unwrap().elapsed();
         assert!(matches!(
             execution.outcome,
             ExecutionGateOutcome::FailClosed(ExecutionFailClosedReason::Cancelled)
