@@ -1,12 +1,8 @@
 # WP-4 Final Fix Recheck
 
-The single authorized consolidated fix round is complete; no second round occurred.
-
-Independent rechecker `wp4_final_07j` audited exact product `94a5da995a7ac53656f234c59fc552a5f064aede`, including detached exact-product execution, normalized locked-registration cleanup, all controlled commands, deviations, dogfood, and adversarial failure cases. Open Critical/High count is zero.
+Independent rechecker `wp4_final_07m` verified exact product `42d2417e1b053ea8c06be5504670267892fcc8c8`, real PS5 junction behavior, detached exact-product execution, normalized cleanup, dogfood, deviations, and controlled commands. Open Critical/High count is zero after the single authorized fix round.
 
 ```json
-{"schema":"nano.wp4-recheck/1","audit_id":"wp4-audit-94a5da9","final_sha":"94a5da995a7ac53656f234c59fc552a5f064aede","final_tree":"7e3e649db21de427e20ee1812c7d1862e08617bc","fix_round":1,"open_critical_high":0,"rechecker":"wp4_final_07j"}
+{"schema":"nano.wp4-recheck/1","audit_id":"wp4-audit-42d2417","final_sha":"42d2417e1b053ea8c06be5504670267892fcc8c8","final_tree":"d458e6df443a27c8e3517dd53a7cfc0caa0db841","fix_round":1,"open_critical_high":0,"rechecker":"wp4_final_07m"}
 ```
-
-Final disposition: PASS.
 
