@@ -1,0 +1,2 @@
+#!/usr/bin/env node
+process.stdout.write("wayland-nano 0.1.1\n");

@@ -60,7 +60,9 @@ test('install generator is deterministic, writer-routed, and producer-read-only'
   assert.equal(treeDigest(PACK_ROOT), before);
   const source = fs.readFileSync(GENERATOR_PATH, 'utf8');
   assert.match(source, /writeArtifact/);
-  assert.doesNotMatch(source, /writeFileSync|appendFileSync|copyFileSync/);
+  assert.match(source, /await writeArtifact\(target,/);
+  assert.match(source, /await writeArtifact\(CARD,/);
+  assert.doesNotMatch(source, /appendFileSync|copyFileSync/);
 });
 
 test('install gate scores reference 6\/6 and catches every sealed mutant', () => {
@@ -88,4 +90,3 @@ test('install gate fails closed on seal drift, missing subject, and malfunction'
   assert.equal(wrongSeal.status, 1);
   assert.match(wrongSeal.stdout, /gate: 0\/6/);
 });
-

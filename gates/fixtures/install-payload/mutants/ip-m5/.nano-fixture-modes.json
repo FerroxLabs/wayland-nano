@@ -1,0 +1,10 @@
+{
+  "darwin-arm64/wayland-nano": 493,
+  "darwin-arm64/wayland-nano-pty-guard": 493,
+  "darwin-x64/wayland-nano": 493,
+  "darwin-x64/wayland-nano-pty-guard": 493,
+  "linux-x64/wayland-nano": 493,
+  "linux-x64/wayland-nano-pty-guard": 420,
+  "linux-arm64/wayland-nano": 493,
+  "linux-arm64/wayland-nano-pty-guard": 493
+}

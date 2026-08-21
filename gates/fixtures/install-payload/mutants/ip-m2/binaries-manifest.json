@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "algorithm": "sha256",
+  "platforms": {
+    "win32-x64": {
+      "file": "wayland-nano.exe",
+      "size": 18051584,
+      "sha256": "d4420b8308b39d9681c5de6ce363978777e50d23443cf737de12261a4c8e73b9",
+      "helpers": []
+    },
+    "darwin-arm64": {
+      "file": "wayland-nano",
+      "size": 66,
+      "sha256": "9ec3ca3faaa04c88cb642f59875b8a4ae9b55e21df03c2f96bf831232f140560",
+      "helpers": [
+        {
+          "file": "wayland-nano-pty-guard",
+          "size": 37,
+          "sha256": "bfa9f984d632a8a4380c43ed277839a1b600c0266af0a3a27d4c6abd48881475"
+        }
+      ]
+    },
+    "darwin-x64": {
+      "file": "wayland-nano",
+      "size": 66,
+      "sha256": "9ec3ca3faaa04c88cb642f59875b8a4ae9b55e21df03c2f96bf831232f140560",
+      "helpers": [
+        {
+          "file": "wayland-nano-pty-guard",
+          "size": 37,
+          "sha256": "bfa9f984d632a8a4380c43ed277839a1b600c0266af0a3a27d4c6abd48881475"
+        }
+      ]
+    },
+    "linux-x64": {
+      "file": "wayland-nano",
+      "size": 66,
+      "sha256": "9ec3ca3faaa04c88cb642f59875b8a4ae9b55e21df03c2f96bf831232f140560",
+      "helpers": [
+        {
+          "file": "wayland-nano-pty-guard",
+          "size": 37,
+          "sha256": "bfa9f984d632a8a4380c43ed277839a1b600c0266af0a3a27d4c6abd48881475"
+        }
+      ]
+    }
+  }
+}
