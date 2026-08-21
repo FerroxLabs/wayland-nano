@@ -481,6 +481,7 @@ jobs:
               const UInt32 TOKEN_ASSIGN_PRIMARY = 0x0001;
               const UInt32 TOKEN_DUPLICATE = 0x0002;
               const UInt32 TOKEN_QUERY = 0x0008;
+              const UInt32 TOKEN_ADJUST_PRIVILEGES = 0x0020;
               const UInt32 TOKEN_ADJUST_DEFAULT = 0x0080;
               const UInt32 SE_GROUP_USE_FOR_DENY_ONLY = 0x00000010;
               const UInt32 SE_GROUP_INTEGRITY = 0x00000020;
@@ -561,7 +562,7 @@ jobs:
                       integrity=IntPtr.Zero, verifyIntegrity=IntPtr.Zero, adjustState=IntPtr.Zero, desktop=IntPtr.Zero, job=IntPtr.Zero;
                   PROCESS_INFORMATION pi=new PROCESS_INFORMATION(); bool assigned=false;
                   try {
-                      Check(OpenProcessToken(GetCurrentProcess(), TOKEN_ASSIGN_PRIMARY|TOKEN_DUPLICATE|TOKEN_QUERY|TOKEN_ADJUST_DEFAULT, out currentToken), "OpenProcessToken");
+                      Check(OpenProcessToken(GetCurrentProcess(), TOKEN_ASSIGN_PRIMARY|TOKEN_DUPLICATE|TOKEN_QUERY|TOKEN_ADJUST_PRIVILEGES|TOKEN_ADJUST_DEFAULT, out currentToken), "OpenProcessToken");
                       Check(ConvertStringSidToSidW("S-1-5-32-544", out administratorsSid), "ConvertStringSidToSidW(Administrators)");
                       var disabledSid=new SID_AND_ATTRIBUTES(); disabledSid.Sid=administratorsSid; disabledSid.Attributes=SE_GROUP_USE_FOR_DENY_ONLY;
                       disabledSids=Marshal.AllocHGlobal(Marshal.SizeOf(disabledSid)); Marshal.StructureToPtr(disabledSid, disabledSids, false);
@@ -622,7 +623,8 @@ jobs:
           '@
           $needles = @(
             'TOKEN_ADJUST_DEFAULT = 0x0080',
-            'OpenProcessToken(GetCurrentProcess(), TOKEN_ASSIGN_PRIMARY|TOKEN_DUPLICATE|TOKEN_QUERY|TOKEN_ADJUST_DEFAULT',
+            'TOKEN_ADJUST_PRIVILEGES = 0x0020',
+            'OpenProcessToken(GetCurrentProcess(), TOKEN_ASSIGN_PRIMARY|TOKEN_DUPLICATE|TOKEN_QUERY|TOKEN_ADJUST_PRIVILEGES|TOKEN_ADJUST_DEFAULT',
             'ConvertStringSidToSidW("S-1-5-32-544"', 'SE_GROUP_USE_FOR_DENY_ONLY',
             'LookupPrivilegeValueW(null, "SeChangeNotifyPrivilege"', 'TokenInfo(currentToken, TokenPrivileges',
             'CreateRestrictedToken(currentToken, 0, 1, disabledSids', 'TokenInfo(restrictedToken, TokenPrivileges',
@@ -631,6 +633,8 @@ jobs:
             'CreateDesktopW', 'WaylandNanoGateCards-', 'startup.lpDesktop=@"winsta0\"+desktopName',
             'startup.lpDesktop==@"winsta0\default"', 'CloseDesktop',
             'CreateProcessAsUserW',
+            'IntPtr.Zero, IntPtr.Zero, false, CREATE_SUSPENDED|CREATE_NO_WINDOW',
+            'if(!adjusted || adjustError!=ERROR_NOT_ALL_ASSIGNED)',
             'CREATE_SUSPENDED|CREATE_NO_WINDOW', 'CreateJobObjectW', 'SetInformationJobObject',
             'JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE', 'AssignProcessToJobObject', 'ResumeThread',
             'WaitForSingleObject(pi.hProcess, 1200000)', 'TerminateJobObject(job, 124)',
