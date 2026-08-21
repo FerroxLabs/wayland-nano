@@ -283,7 +283,38 @@ Plans:
   4. Merge through detached `.tmp-wt-integ` with `--no-ff`, rerun the complete `just gate-all`, and have the integrator promote the documented dogfood job without granting WP-4 direct `.github/` ownership.
   5. Push integration `HEAD:master`; require CI green, write the final verified-change evidence summary, report the full one-line promotion result, and stop before WP-5/WP-6.
 
-**Plans**: TBD
+**Plans**: 9 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 07-01-PLAN.md — Lock shared card, output, and directory-seal contracts.
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 07-02-PLAN.md — Build and mutation-test the install-payload pack.
+- [ ] 07-03-PLAN.md — Build and mutation-test the provision-script pack.
+- [ ] 07-04-PLAN.md — Build and mutation-test the config-schema pack.
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 07-05-PLAN.md — Populate the registry and prove three seeded rotations.
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 07-06-PLAN.md — Dogfood good/bad trees and close docs/provenance.
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 07-07-PLAN.md — Run the identity-bound audit and bounded fix round.
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [ ] 07-08-PLAN.md — Run the full builder gate and freeze the promotion request.
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
+- [ ] 07-09-PLAN.md — Integrate, promote CI, prove exact-SHA green, and stop.
 
 ## Requirement Coverage
 
@@ -321,4 +352,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 4. WP-1 Gate and Receipt Foundation | 9/9 | Complete | 2026-08-20 |
 | 5. WP-2 Gated Climb | 5/5 | Complete | 2026-08-20 |
 | 6. WP-3 Verify CLI and CI Surface | 0/TBD | Not started | - |
-| 7. WP-4 Gate Cards and Dogfood | 0/TBD | Not started | - |
+| 7. WP-4 Gate Cards and Dogfood | 0/9 | Planned | - |
