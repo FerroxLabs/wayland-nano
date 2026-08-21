@@ -71,7 +71,8 @@ test('packet/live arms are explicit and exclusive', () => {
 test('Windows live arm refuses elevation and preserves external state', { skip: process.platform !== 'win32' }, () => {
   const dryRun = process.env.NANO_DRY_RUN_BIN || path.join(ROOT, 'target', 'debug', 'wayland-nano-provision-dry-run.exe');
   const setup = process.env.NANO_SETUP_BIN || path.join(ROOT, 'target', 'debug', 'wayland-nano-sandbox-setup.exe');
-  if (!fs.existsSync(dryRun) || !fs.existsSync(setup)) return;
+  assert.equal(fs.existsSync(dryRun), true, `missing required Windows dry-run capability: ${dryRun}`);
+  assert.equal(fs.existsSync(setup), true, `missing required Windows setup capability: ${setup}`);
   const result = spawnSync(process.execPath, [GATE, '--live'], {
     cwd: ROOT, encoding: 'utf8', env: { ...process.env, NANO_DRY_RUN_BIN: dryRun, NANO_SETUP_BIN: setup },
   });
