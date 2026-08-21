@@ -183,6 +183,30 @@ metadata is not copied; the immutable donor snapshot lives at
 
 ## Crates.io dependency additions (not vendored — registry deps pinned in Cargo.lock)
 
+## WP-4 gate-card provenance
+
+| Destination | Donor path | Transformation |
+|---|---|---|
+| `gates/README.md` | `ferrox-factory/gates/README.md` | Contract-level adaptation to Nano's sealed fixtures, F-only scratch, atomic writer, and WP-3-only dogfood boundary. |
+| `gates/lib/artifact-writer.cjs` | `SPEC-WP-INTERFACES.md` §9 | Original Node implementation of the contract's create-new lock, fsync, atomic replacement, retry, and cleanup rules. |
+| `gates/lib/atomic-replace-win32.ps1` | `SPEC-WP-INTERFACES.md` §9 | Original governed PowerShell bridge for exact Win32 replacement; no fallback. |
+| `gates/lib/card.cjs` | `ferrox-factory/gates/README.md` | Nano parser and closed-schema adaptation of the donor Gate Card machine block. |
+| `gates/lib/contract.cjs` | `SPEC-WP-INTERFACES.md` §4 | Original closed FAIL/summary emitter and parser support. |
+| `gates/lib/dirhash.cjs` | `ferrox-factory/gates/README.md` | Nano canonical directory-seal implementation replacing donor external fixture seals. |
+| `gates/registry.json` | `SPEC-WP-INTERFACES.md` §2 | Contract-defined registry populated with the three WP-4 closure identities. |
+| `gates/install-payload/card.md` | `ferrox-factory/gates/README.md` | Gate Card format adapted to the staged npm payload and six Nano checks/mutants. |
+| `gates/install-payload/gate.cjs` | `ferrox-factory/gates/README.md` | Original Nano stdlib gate using donor opaque-result discipline. |
+| `gates/install-payload/fixtures/generators/generators.cjs` | `packaging/npm/scripts/pack.ps1` | Original byte-authentic staging harness and sealed mutation generator. |
+| `gates/provision-script/card.md` | `ferrox-factory/gates/README.md` | Gate Card format adapted to Nano provisioning payload relations. |
+| `gates/provision-script/gate.cjs` | `ferrox-factory/gates/README.md` | Original Nano payload relation gate using donor opaque-result discipline. |
+| `gates/provision-script/fixtures/generators/generators.cjs` | `crates/nano-sandbox/src/setup_exec.rs` | Original normalized payload generator over Nano's dry-run producer. |
+| `gates/config-schema/card.md` | `ferrox-factory/gates/README.md` | Gate Card format adapted to Nano's shipped rules parser and patch mutants. |
+| `gates/config-schema/gate.sh` | `ferrox-factory/gates/README.md` | Original black-box shell driver using the donor fail-closed summary discipline. |
+| `gates/config-schema/launcher.cjs` | `SPEC-WP-INTERFACES.md` §3 | Original Windows canonical-path bridge preserving the scrubbed invocation boundary. |
+| `gates/config-schema/fixtures/generators/generators.cjs` | `crates/nano-core/src/execrules.rs` | Original strict rules corpus, parser-anchor, and patch-mutant generator. |
+| `docs/verify/gates.md` | `SPEC-WP4-gatecards-dogfood.md` §5.2 | Operator and integrator contract adapted verbatim in behavior, with builder ownership kept outside `.github`. |
+| `gates/tests/validate-evidence.cjs` | `SPEC-WP4-gatecards-dogfood.md` §§5-8 | Original closed evidence, provenance, workflow, and downstream-stage validator. |
+
 | Destination | Donor | Transformation |
 |---|---|---|
 | `crates/nano-verify/src/registry.rs` | none — `SPEC-WP-INTERFACES.md` §1-§2 | Contract-defined, no donor: `GateClosure`/`GateRegistryEntry`/schema-1 `GateRegistry` imported verbatim; canonical-JSON `closure_digest` uses SHA-256; full-envelope loading validates requirement mappings and extracts the authoritative Gate Card check inventory. |
