@@ -443,7 +443,7 @@ jobs:
             }
             return ,$ids
           }
-          $nodeCommand=Get-Command node.exe -CommandType Application -ErrorAction Stop
+          $nodeCommand=Get-Command node.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
           $nodePath=[IO.Path]::GetFullPath($nodeCommand.Source)
           $resolvedNode=[IO.Path]::GetFullPath((Get-Command $nodePath -CommandType Application -ErrorAction Stop).Source)
           if(!(Test-Path -LiteralPath $nodePath -PathType Leaf)-or![string]::Equals($resolvedNode,$nodePath,[StringComparison]::OrdinalIgnoreCase)){throw 'Node executable is not canonical'}
