@@ -45,17 +45,32 @@ test('dogfood ignores claimed success and cleanup while requiring independent ex
   try {
     const source=JSON.parse(fs.readFileSync(path.join(ROOT,'.planning/phases/07-wp-4-gate-cards-and-dogfood/07-DOGFOOD-EVIDENCE.json')));
     const file=await put(dir,'valid.json',source); let executions=0;
-    assert.doesNotThrow(()=>validator.dogfood(file,{execute:()=>{executions+=1;return {good:source.good,mutants:source.mutants}}}));
+    assert.doesNotThrow(()=>validator.dogfood(file,{execute:()=>{executions+=1;return {good:source.good,mutants:source.mutants,cleanup:source.cleanup}}}));
     assert.equal(executions,1);
     const forged=structuredClone(source); forged.good[0].result.bytes='{"outcome":"green","v":1,"verdicts":[]}';
     forged.good[0].result.sha256=sha(Buffer.from(forged.good[0].result.bytes));
     const forgedFile=await put(dir,'forged.json',forged);
-    assert.throws(()=>validator.dogfood(forgedFile,{execute:()=>({good:source.good,mutants:source.mutants})}));
+    assert.throws(()=>validator.dogfood(forgedFile,{execute:()=>({good:source.good,mutants:source.mutants,cleanup:source.cleanup})}));
     const cleanup=structuredClone(source); cleanup.cleanup.paths=['F:/caller-chosen'];
     const cleanupFile=await put(dir,'cleanup.json',cleanup); let ran=false;
-    assert.throws(()=>validator.dogfood(cleanupFile,{execute:()=>{ran=true;return {good:source.good,mutants:source.mutants}}}));
+    assert.throws(()=>validator.dogfood(cleanupFile,{execute:()=>{ran=true;return {good:source.good,mutants:source.mutants,cleanup:source.cleanup}}}));
     assert.equal(ran,false);
+    const allFalse=structuredClone(source);for(const key of Object.keys(allFalse.cleanup))allFalse.cleanup[key]=false;
+    const allFalseFile=await put(dir,'false-cleanup.json',allFalse);let falseRan=false;
+    assert.throws(()=>validator.dogfood(allFalseFile,{execute:()=>{falseRan=true}}));assert.equal(falseRan,false);
   } finally {fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('dogfood cleanup checks every git action and post-enumerates residue',()=>{
+  const resources={repo:'F:/repo',scratch:'F:/owned',worktrees:['F:/owned/a','F:/owned/b'],fixedPaths:['F:/owned','F:/owned/t']};
+  const okSpawn=(program,args)=>({status:0,stdout:args[1]==='list'?'':'',stderr:''});
+  assert.deepEqual(validator.performDogfoodCleanup(resources,{spawn:okSpawn,exists:()=>false,remove:()=>{}}),
+    {cargo_targets_absent:true,packaging_tracked_clean:true,scratch_absent:true,worktrees_absent:true});
+  const calls=[];const failRemove=(program,args)=>{calls.push(args.join(' '));return {status:args[1]==='remove'?1:0,stdout:'',stderr:''}};
+  assert.throws(()=>validator.performDogfoodCleanup(resources,{spawn:failRemove,exists:(path)=>path.endsWith('/a'),remove:()=>{}}),/remove:a/);
+  assert.ok(calls.some((call)=>call==='worktree prune'),'prune attempted after failed remove');
+  const residue=(program,args)=>({status:0,stdout:args[1]==='list'?`worktree F:/owned/a\n`:'',stderr:''});
+  assert.throws(()=>validator.performDogfoodCleanup(resources,{spawn:residue,exists:()=>false,remove:()=>{}}),/registration-residue/);
 });
 
 test('audit validator recomputes identity diff review and open high count', async () => {

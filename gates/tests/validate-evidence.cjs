@@ -61,9 +61,11 @@ function dogfood(file, deps = {}) {
     if (!['red', 'fail_closed'].includes(parsed.outcome)) die('dogfood: mutant escaped');
   }
   exact(value.cleanup, ['cargo_targets_absent', 'packaging_tracked_clean', 'scratch_absent', 'worktrees_absent'], 'cleanup');
+  if(Object.values(value.cleanup).some((entry)=>entry!==true)) die('dogfood: cleanup claims');
   const observed=(deps.execute || executeDogfood)();
   if (JSON.stringify(value.good)!==JSON.stringify(observed.good)
-      || JSON.stringify(value.mutants)!==JSON.stringify(observed.mutants)) die('dogfood: independently observed mismatch');
+      || JSON.stringify(value.mutants)!==JSON.stringify(observed.mutants)
+      || Object.keys(value.cleanup).some((key)=>value.cleanup[key]!==observed.cleanup?.[key])) die('dogfood: independently observed mismatch');
 }
 
 function fixedRun(program,args,options={}) {
@@ -77,7 +79,25 @@ function gateResult(binary,cwd,id,temp) {
   return bytes;
 }
 function sealResult(bytes) { return {bytes,sha256:sha256(Buffer.from(bytes,'utf8'))}; }
-function executeDogfood() {
+function performDogfoodCleanup(resources,deps={}) {
+  const spawn=deps.spawn||spawnSync, exists=deps.exists||fs.existsSync, remove=deps.remove||((path)=>fs.rmSync(path,{recursive:true,force:true}));
+  const errors=[];
+  for(const wt of resources.worktrees){
+    if(!exists(wt)) continue;
+    const run=spawn('git',['worktree','remove','--force',wt],{cwd:resources.repo,encoding:'utf8',windowsHide:true,maxBuffer:GIT_MAX_BUFFER});
+    if(run.error||run.status!==0) errors.push(`remove:${require('node:path').basename(wt)}`);
+  }
+  const prune=spawn('git',['worktree','prune'],{cwd:resources.repo,encoding:'utf8',windowsHide:true,maxBuffer:GIT_MAX_BUFFER});
+  if(prune.error||prune.status!==0) errors.push('prune');
+  try { if(exists(resources.scratch)) remove(resources.scratch); } catch { errors.push('scratch-remove'); }
+  for(const path of resources.fixedPaths) if(exists(path)) errors.push(`residue:${require('node:path').basename(path)}`);
+  const listed=spawn('git',['worktree','list','--porcelain'],{cwd:resources.repo,encoding:'utf8',windowsHide:true,maxBuffer:GIT_MAX_BUFFER});
+  if(listed.error||listed.status!==0) errors.push('enumerate');
+  else if(resources.worktrees.some((wt)=>listed.stdout.includes(wt))) errors.push('registration-residue');
+  if(errors.length) die(`dogfood cleanup failed: ${errors.slice(0,8).join(',')}`);
+  return {cargo_targets_absent:true,packaging_tracked_clean:true,scratch_absent:true,worktrees_absent:true};
+}
+function executeDogfood(deps={}) {
   if(process.platform!=='win32') die('dogfood execution requires Windows');
   const path=require('node:path'); const root=process.cwd();
   const scratch=path.join('F:\\',`wayland-nano-wp4-dogfood-validator-${process.pid}`); const goodRoot=path.join(scratch,'good-wt');
@@ -86,11 +106,9 @@ function executeDogfood() {
   const packageManifest=path.join(goodRoot,'packaging','npm','binaries-manifest.json');
   if(fs.existsSync(scratch)) die('dogfood cleanup root not pristine');
   const {directorySeal}=require('../lib/dirhash.cjs');
-  const clean=()=>{
-    for(const wt of ['cf-wt','pv-wt','good-wt']) { const p=path.join(scratch,wt); if(fs.existsSync(p)) spawnSync('git',['worktree','remove','--force',p],{cwd:root,windowsHide:true}); }
-    spawnSync('git',['worktree','prune'],{cwd:root,windowsHide:true});
-    if(fs.existsSync(scratch)) fs.rmSync(scratch,{recursive:true,force:true});
-  };
+  const resources={repo:root,scratch,worktrees:['cf-wt','pv-wt','good-wt'].map((name)=>path.join(scratch,name)),
+    fixedPaths:[scratch,target,temp,path.join(scratch,'cf-target'),path.join(scratch,'pv-target'),goodRoot,targetLink,packageBins,packageManifest]};
+  let outcome; let primary; let cleanup; let cleanupError;
   try {
     fs.mkdirSync(temp,{recursive:true});
     fixedRun('git',['worktree','add','--detach',goodRoot,'HEAD']);
@@ -126,8 +144,12 @@ function executeDogfood() {
     const mutants=[{mutant_id:'cf-m3',gate_id:'config-schema',seal:bad.cf.seal,exit_code:3,result:sealResult(bad.cf.bytes)},
       {mutant_id:'ip-m1',gate_id:'install-payload',seal:bad.ip.seal,exit_code:3,result:sealResult(bad.ip.bytes)},
       {mutant_id:'pv-m2',gate_id:'provision-script',seal:bad.pv.seal,exit_code:3,result:sealResult(bad.pv.bytes)}];
-    return {good,mutants};
-  } finally { clean(); }
+    outcome={good,mutants};
+  } catch(error) { primary=error; }
+  finally { try { cleanup=performDogfoodCleanup(resources,deps.cleanup); } catch(error) { cleanupError=error; } }
+  if(primary){ if(cleanupError) primary.message=`${primary.message}; ${cleanupError.message}`.slice(0,512); throw primary; }
+  if(cleanupError) throw cleanupError;
+  return {...outcome,cleanup};
 }
 
 const OWNED = [
@@ -391,5 +413,5 @@ try {
   process.exitCode = 1;
 }
 }
-module.exports={builder,dogfood,executeDogfood,commandSpec,controlledEnv,COMMANDS,NAMED,TOOLS_ROOT};
+module.exports={builder,dogfood,executeDogfood,performDogfoodCleanup,commandSpec,controlledEnv,COMMANDS,NAMED,TOOLS_ROOT};
 if(require.main===module) main();
