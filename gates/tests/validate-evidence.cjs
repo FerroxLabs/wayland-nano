@@ -9,6 +9,10 @@ const HEX = /^[0-9a-f]{64}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
 const DIFF_SIZE_CAP = 128 * 1024 * 1024;
+const DEVIATION_PATH = '.planning/phases/07-wp-4-gate-cards-and-dogfood/07-UPSTREAM-DEVIATIONS.md';
+const DEVIATION_COMMITS = ['e199fcbda37cd3d7ac9234dfb9f20b4fe2f9b97b','d5c7f10a9865218a7ec50a36e91ad8cda74aa3e5','076270079f4fc5fac3f1d664731ccfbd5cb1b25a'];
+const DEVIATION_PATHS = ['crates/nano-cli/src/verify_cmd.rs','crates/nano-cli/tests/p4_rules.rs','crates/nano-cli/tests/verify_cmd.rs',
+  'crates/nano-core/src/execrules.rs','crates/nano-core/tests/execrules.rs'];
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const die = (message) => { throw new Error(message); };
 function exact(value, keys, where) {
@@ -163,13 +167,29 @@ function bool(value, where) { if (value !== true) die(`${where}: required true`)
 function shaFile(file, expected, where) {
   if (!HEX.test(expected) || sha256(fs.readFileSync(file)) !== expected) die(`${where}: digest`);
 }
+function deviationAuthority(baseSha,productSha,value) {
+  exact(value,['commits','path','paths','sha256'],'deviations');
+  if(value.path!==DEVIATION_PATH||JSON.stringify(value.commits)!==JSON.stringify(DEVIATION_COMMITS)
+      ||JSON.stringify(value.paths)!==JSON.stringify(DEVIATION_PATHS)) die('deviations: exact authority');
+  shaFile(value.path,value.sha256,'deviations');
+  for(const commit of DEVIATION_COMMITS){
+    const ancestry=spawnSync('git',['merge-base','--is-ancestor',commit,productSha],{windowsHide:true,maxBuffer:GIT_MAX_BUFFER});
+    if(ancestry.error||ancestry.status!==0) die('deviations: owner commit ancestry');
+  }
+  const phasePaths=git(['diff','--name-only',baseSha,productSha,'--','crates']).split(/\r?\n/).filter(Boolean).sort();
+  if(JSON.stringify(phasePaths)!==JSON.stringify(DEVIATION_PATHS)) die('deviations: phase crate set');
+  const byCommit=DEVIATION_COMMITS.flatMap((commit)=>git(['diff-tree','--no-commit-id','--name-only','-r',commit])
+    .split(/\r?\n/).filter((path)=>path.startsWith('crates/'))).sort();
+  if(JSON.stringify(byCommit)!==JSON.stringify(DEVIATION_PATHS)) die('deviations: commit attribution');
+}
 function audit(file, recheck) {
   const value = json(file);
-  exact(value, ['audit_id', 'authority', 'base_sha', 'diff', 'findings', 'fix_round', 'identities', 'open_critical_high',
+  exact(value, ['audit_id', 'authority', 'base_sha', 'deviations', 'diff', 'findings', 'fix_round', 'identities', 'open_critical_high',
     'owned_paths', 'product_sha', 'product_tree', 'requirements', 'review', 'schema', 'support', 'threats'], 'audit');
   if (value.schema !== 'nano.wp4-audit/1' || typeof value.audit_id !== 'string' || value.audit_id.length < 8
       || !SHA.test(value.base_sha) || !SHA.test(value.product_sha) || !SHA.test(value.product_tree)) die('audit: identity');
   if (git(['rev-parse', `${value.product_sha}^{tree}`]) !== value.product_tree) die('audit: product tree');
+  deviationAuthority(value.base_sha,value.product_sha,value.deviations);
   exact(value.diff, ['argv', 'sha256'], 'audit.diff');
   const argv = ['diff', '--binary', '--full-index', value.base_sha, value.product_sha, '--', 'gates', 'docs/verify/gates.md', 'UPSTREAM.md'];
   if (JSON.stringify(value.diff.argv) !== JSON.stringify(argv) || sha256(gitBytes(argv)) !== value.diff.sha256) die('audit: diff');
@@ -294,7 +314,8 @@ function builder(file, requestFile, deps = {}) {
   for (const path of value.canary_files) if (!fs.statSync(path).isFile()) die('builder: canary file');
   (deps.canary || defaultCanary)(value.canary_files);
   if (!Array.isArray(value.cleanup_paths) || value.cleanup_paths.some((path)=>typeof path!=='string'||!/^F:[\\/]/i.test(path)||fs.existsSync(path))) die('builder: cleanup paths');
-  if (git(['diff','--name-only',audited.base_sha,value.product_sha,'--','packaging','scripts/provision','crates','.github','docs/STATUS.md'])) die('builder: producer ownership');
+  deviationAuthority(audited.base_sha,value.product_sha,audited.deviations);
+  if (git(['diff','--name-only',audited.base_sha,value.product_sha,'--','packaging','scripts/provision','.github','docs/STATUS.md'])) die('builder: producer ownership');
   if (!requestFile) return;
   const request = json(requestFile);
   exact(request, ['audit_sha256','base_sha','branch','builder_actions','builder_evidence_sha256','local_commands','pending',

@@ -15,7 +15,12 @@ const VALIDATOR = path.join(__dirname, 'validate-evidence.cjs');
 const sha = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const run = (args) => spawnSync(process.execPath, [VALIDATOR, ...args], { cwd: ROOT, encoding: 'utf8' });
 const git = (args) => spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' }).stdout.trim();
-const gitBytes = (args) => spawnSync('git', args, { cwd: ROOT, encoding: null }).stdout;
+const gitBytes = (args) => spawnSync('git', args, { cwd: ROOT, encoding: null, maxBuffer: 256 * 1024 * 1024 }).stdout;
+const PHASE_BASE='05637086c81e88550edb002a916a80aff4b278dc';
+const DEV_COMMITS=['e199fcbda37cd3d7ac9234dfb9f20b4fe2f9b97b','d5c7f10a9865218a7ec50a36e91ad8cda74aa3e5','076270079f4fc5fac3f1d664731ccfbd5cb1b25a'];
+const DEV_PATHS=['crates/nano-cli/src/verify_cmd.rs','crates/nano-cli/tests/p4_rules.rs','crates/nano-cli/tests/verify_cmd.rs','crates/nano-core/src/execrules.rs','crates/nano-core/tests/execrules.rs'];
+const deviationRecord=()=>({path:'.planning/phases/07-wp-4-gate-cards-and-dogfood/07-UPSTREAM-DEVIATIONS.md',
+  sha256:sha(fs.readFileSync(path.join(ROOT,'.planning/phases/07-wp-4-gate-cards-and-dogfood/07-UPSTREAM-DEVIATIONS.md'))),commits:DEV_COMMITS,paths:DEV_PATHS});
 async function put(dir, name, value) {
   const file = path.join(dir, name);
   await writeArtifact(file, Buffer.from(typeof value === 'string' ? value : `${JSON.stringify(value)}\n`));
@@ -59,21 +64,29 @@ test('audit validator recomputes identity diff review and open high count', asyn
     const head = git(['rev-parse','HEAD']);
     const tree = git(['rev-parse','HEAD^{tree}']);
     const review = await put(dir, 'review.md', '# Independent review\n');
-    const argv = ['diff','--binary','--full-index',head,head,'--','gates','docs/verify/gates.md','UPSTREAM.md'];
-    const value = { schema:'nano.wp4-audit/1', audit_id:'audit-test-01', base_sha:head, product_sha:head, product_tree:tree,
+    const argv = ['diff','--binary','--full-index',PHASE_BASE,head,'--','gates','docs/verify/gates.md','UPSTREAM.md'];
+    const owned=git(['diff','--name-only',PHASE_BASE,head,'--','gates','docs/verify/gates.md','UPSTREAM.md']).split(/\r?\n/).filter(Boolean);
+    const value = { schema:'nano.wp4-audit/1', audit_id:'audit-test-01', base_sha:PHASE_BASE, product_sha:head, product_tree:tree,deviations:deviationRecord(),
       diff:{argv,sha256:sha(gitBytes(argv))}, review:{path:review,sha256:sha(fs.readFileSync(review))},
-      owned_paths:[], requirements:['CARD-01','CARD-02','CARD-03','CARD-04','CARD-05','CARD-06','CARD-07','CARD-08','PROV-03'],
+      owned_paths:owned, requirements:['CARD-01','CARD-02','CARD-03','CARD-04','CARD-05','CARD-06','CARD-07','CARD-08','PROV-03'],
       identities:{builder:'builder-wp4',auditor:'auditor-wp4',rechecker:'rechecker-wp4'},
       authority:{builder:'write:wp4-owned',auditor:'read-only',rechecker:'read-only'},
       support:[review,'gates/registry.json','docs/verify/gates.md'].map(file=>({path:file,sha256:sha(fs.readFileSync(file))})),
       threats:['T-07-A1','T-07-A2'], findings:[], open_critical_high:0, fix_round:0 };
     const file = await put(dir, 'audit.json', value);
-    assert.equal(run(['audit',file]).status,0);
+    const validAudit=run(['audit',file]);assert.equal(validAudit.status,0,validAudit.stderr);
     value.product_tree='0'.repeat(40); assert.notEqual(run(['audit',await put(dir,'bad-tree.json',value)]).status,0);
     value.product_tree=tree; value.fix_round=2; assert.notEqual(run(['audit',await put(dir,'bad-round.json',value)]).status,0);
     value.fix_round=0; value.identities.rechecker=value.identities.auditor;
     assert.notEqual(run(['audit',await put(dir,'same-reviewer.json',value)]).status,0);
     value.identities.rechecker='rechecker-wp4'; value.extra=true; assert.notEqual(run(['audit',await put(dir,'extra.json',value)]).status,0);
+    delete value.extra;
+    for(const [name,paths] of [['zero',[]],['missing',DEV_PATHS.slice(0,-1)],['sixth',[...DEV_PATHS,'crates/nano-core/src/lib.rs']],['modified',[...DEV_PATHS.slice(0,-1),'crates/nano-core/src/lib.rs']]]){
+      const bad=structuredClone(value);bad.deviations.paths=paths;
+      assert.notEqual(run(['audit',await put(dir,`${name}-deviation.json`,bad)]).status,0,name);
+    }
+    const badDigest=structuredClone(value);badDigest.deviations.sha256='0'.repeat(64);
+    assert.notEqual(run(['audit',await put(dir,'modified-deviation-doc.json',badDigest)]).status,0);
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });
 
@@ -104,9 +117,10 @@ test('builder request and final contracts reject authority and stop spoofing', a
     const head=git(['rev-parse','HEAD']); const product=JSON.parse(fs.readFileSync(dogfoodPath)).product_sha;
     const tree=git(['rev-parse',`${product}^{tree}`]); const hex='a'.repeat(64);
     const reviewMd=await put(dir,'review.md','# Review\n'); const provenancePath='UPSTREAM.md';
-    const diffArgv=['diff','--binary','--full-index',product,product,'--','gates','docs/verify/gates.md','UPSTREAM.md'];
-    const auditValue={schema:'nano.wp4-audit/1',audit_id:'audit-builder-01',base_sha:product,product_sha:product,product_tree:tree,
-      diff:{argv:diffArgv,sha256:sha(gitBytes(diffArgv))},review:{path:reviewMd,sha256:sha(fs.readFileSync(reviewMd))},owned_paths:[],
+    const diffArgv=['diff','--binary','--full-index',PHASE_BASE,product,'--','gates','docs/verify/gates.md','UPSTREAM.md'];
+    const owned=git(['diff','--name-only',PHASE_BASE,product,'--','gates','docs/verify/gates.md','UPSTREAM.md']).split(/\r?\n/).filter(Boolean);
+    const auditValue={schema:'nano.wp4-audit/1',audit_id:'audit-builder-01',base_sha:PHASE_BASE,product_sha:product,product_tree:tree,deviations:deviationRecord(),
+      diff:{argv:diffArgv,sha256:sha(gitBytes(diffArgv))},review:{path:reviewMd,sha256:sha(fs.readFileSync(reviewMd))},owned_paths:owned,
       requirements:['CARD-01','CARD-02','CARD-03','CARD-04','CARD-05','CARD-06','CARD-07','CARD-08','PROV-03'],
       identities:{builder:'builder-wp4',auditor:'auditor-wp4',rechecker:'rechecker-wp4'},authority:{builder:'write:wp4-owned',auditor:'read-only',rechecker:'read-only'},
       support:[reviewMd,'gates/registry.json','docs/verify/gates.md'].map(file=>({path:file,sha256:sha(fs.readFileSync(file))})),threats:['T-07-A1','T-07-A2'],findings:[],open_critical_high:0,fix_round:0};
