@@ -59,29 +59,69 @@ jobs:
         uses: taiki-e/install-action@cargo-deny
 
       # The verifier's process-isolation contract requires TEMP and TMP to
-      # name the same canonical directory. Keep its dedicated value on F: so
-      # nested Cargo fixtures avoid hosted-runner long paths, but do not
-      # replace the runner-wide TEMP/TMP used by unrelated tests.
+      # name the same canonical directory. Give it a real NTFS F: volume so
+      # volume-identity checks see a distinct filesystem (subst is only a path
+      # alias). Do not replace runner-wide TEMP/TMP used by unrelated tests.
       - name: Configure verifier temp directory (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $backing = Join-Path "${{ runner.temp }}" "wayland-nano-verifier"
-          New-Item -ItemType Directory -Force -Path $backing | Out-Null
-          if (Test-Path "F:\") {
+          $ErrorActionPreference = "Stop"
+          if ((Get-PSDrive -Name F -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath "F:\")) {
             throw "F: is already in use; refusing to replace an existing drive"
           }
-          & subst.exe F: $backing
-          if ($LASTEXITCODE -ne 0) {
-            throw "failed to map the verifier temp directory to F:"
+
+          $runToken = [Guid]::NewGuid().ToString("N")
+          $vhdPath = Join-Path $env:RUNNER_TEMP "wayland-nano-verifier-$runToken.vhdx"
+          $setupScript = Join-Path $env:RUNNER_TEMP "wayland-nano-vhd-setup-$runToken.txt"
+          $detachScript = Join-Path $env:RUNNER_TEMP "wayland-nano-vhd-detach-$runToken.txt"
+          $diskpartSetup = @(
+            "create vdisk file=`"$vhdPath`" maximum=8192 type=expandable"
+            "select vdisk file=`"$vhdPath`""
+            "attach vdisk"
+            "create partition primary"
+            "format fs=ntfs quick label=WNVERIFY"
+            "assign letter=F"
+          )
+
+          try {
+            $diskpartSetup | Set-Content -LiteralPath $setupScript -Encoding ascii
+            & diskpart.exe /s $setupScript
+            if ($LASTEXITCODE -ne 0) {
+              throw "diskpart failed while creating the verifier volume"
+            }
+            $volume = Get-Volume -DriveLetter F -ErrorAction Stop
+            if ($volume.FileSystem -ne "NTFS" -or $volume.FileSystemLabel -ne "WNVERIFY") {
+              throw "F: is not the owned NTFS verifier volume"
+            }
+
+            # Persist ownership immediately after attach/assign. Later cleanup
+            # is forbidden from touching any VHD or drive not named here.
+            "WN_TEMP_VHD_PATH=$vhdPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "WN_TEMP_VHD_OWNED=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            $verifierTemp = "F:\tmp"
+            New-Item -ItemType Directory -Force -Path $verifierTemp | Out-Null
+            if (-not (Test-Path -LiteralPath $verifierTemp -PathType Container)) {
+              throw "failed to create the verifier temp child directory"
+            }
+            "WN_VERIFY_TEMP=$verifierTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } catch {
+            # A failed diskpart script can leave a partially attached image.
+            # Select only this run's unique image and detach it if present.
+            if (Test-Path -LiteralPath $vhdPath) {
+              @(
+                "select vdisk file=`"$vhdPath`""
+                "detach vdisk"
+              ) | Set-Content -LiteralPath $detachScript -Encoding ascii
+              & diskpart.exe /s $detachScript | Out-Null
+              if (-not (Get-DiskImage -ImagePath $vhdPath -ErrorAction SilentlyContinue).Attached) {
+                Remove-Item -LiteralPath $vhdPath -Force -ErrorAction SilentlyContinue
+              }
+            }
+            throw
+          } finally {
+            Remove-Item -LiteralPath $setupScript, $detachScript -Force -ErrorAction SilentlyContinue
           }
-          "WN_TEMP_SUBST=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          $verifierTemp = "F:\tmp"
-          New-Item -ItemType Directory -Force -Path $verifierTemp | Out-Null
-          if (-not (Test-Path -LiteralPath $verifierTemp -PathType Container)) {
-            throw "failed to create the verifier temp child directory"
-          }
-          "WN_VERIFY_TEMP=$verifierTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Configure verifier temp directory (unix)
         if: runner.os != 'Windows'
@@ -286,11 +326,43 @@ jobs:
           name: ci-manifest-${{ matrix.os }}
           path: artifacts/evidence/ci/
 
-      - name: Remove verifier temp drive mapping (Windows)
-        if: always() && runner.os == 'Windows' && env.WN_TEMP_SUBST == '1'
+      - name: Remove verifier temp volume (Windows)
+        if: always() && runner.os == 'Windows' && env.WN_TEMP_VHD_OWNED == '1'
         shell: pwsh
         run: |
-          & subst.exe F: /D
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning "F: verifier temp mapping was already absent"
+          $vhdPath = $env:WN_TEMP_VHD_PATH
+          $runnerTemp = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+          if ([string]::IsNullOrWhiteSpace($vhdPath)) {
+            throw "owned verifier VHD path is missing"
+          }
+          $fullVhdPath = [IO.Path]::GetFullPath($vhdPath)
+          $leaf = Split-Path -Leaf $fullVhdPath
+          if (-not $fullVhdPath.StartsWith($runnerTemp, [StringComparison]::OrdinalIgnoreCase) -or
+              $leaf -notmatch '^wayland-nano-verifier-[0-9a-f]{32}\.vhdx$') {
+            throw "refusing to clean an unowned verifier VHD path"
+          }
+          if (-not (Test-Path -LiteralPath $fullVhdPath)) {
+            Write-Warning "owned verifier VHD is already absent"
+            exit 0
+          }
+
+          $cleanupScript = Join-Path $env:RUNNER_TEMP "wayland-nano-vhd-cleanup-$([Guid]::NewGuid().ToString('N')).txt"
+          try {
+            @(
+              "select vdisk file=`"$fullVhdPath`""
+              "detach vdisk"
+            ) | Set-Content -LiteralPath $cleanupScript -Encoding ascii
+            & diskpart.exe /s $cleanupScript
+            if ($LASTEXITCODE -ne 0) {
+              Write-Warning "diskpart could not detach the owned verifier VHD"
+              exit 0
+            }
+            $image = Get-DiskImage -ImagePath $fullVhdPath -ErrorAction SilentlyContinue
+            if ($image -and $image.Attached) {
+              Write-Warning "owned verifier VHD remains attached; retaining its backing file"
+              exit 0
+            }
+            Remove-Item -LiteralPath $fullVhdPath -Force
+          } finally {
+            Remove-Item -LiteralPath $cleanupScript -Force -ErrorAction SilentlyContinue
           }
