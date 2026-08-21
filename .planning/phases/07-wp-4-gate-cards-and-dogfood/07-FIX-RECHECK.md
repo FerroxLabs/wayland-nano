@@ -1,12 +1,12 @@
-# WP-4 Absolute-Final Fix Recheck
+# WP-4 Final Fix Recheck
 
-The single authorized consolidated fix round is complete. No second fix round occurred.
+The single authorized consolidated fix round is complete; no second round occurred.
 
-Independent rechecker `wp4_absolute_final_07f` audited frozen product `71fce02bc0cbb9341e6e9f8e110706e89d2fc67c`, recomputed its tree and 80 MB diffs, verified exact deviation ancestry/attribution, executed the authoritative six-arm dogfood validation with fixed cleanup, and confirmed the exact controlled Node/seed/provenance/full-gate command set. Open Critical/High count is zero.
+Independent rechecker `wp4_final_07h` audited frozen product `e78ba6b4eac4216424ef59135fecaf879ea934c4`, recomputed exact tree/diffs, verified deviation authority, replayed six authentic dogfood arms, and proved cleanup claims plus remove/prune/post-residue failure modes fail closed. Open Critical/High count is zero.
 
 ```json
-{"schema":"nano.wp4-recheck/1","audit_id":"wp4-audit-71fce02","final_sha":"71fce02bc0cbb9341e6e9f8e110706e89d2fc67c","final_tree":"e1e8434431453de6e0a3572268dcb71b90909bbd","fix_round":1,"open_critical_high":0,"rechecker":"wp4_absolute_final_07f"}
+{"schema":"nano.wp4-recheck/1","audit_id":"wp4-audit-e78ba6b","final_sha":"e78ba6b4eac4216424ef59135fecaf879ea934c4","final_tree":"f7c4d777573371e71c243c14b322667f88bdeb1f","fix_round":1,"open_critical_high":0,"rechecker":"wp4_final_07h"}
 ```
 
-Final disposition: PASS. All subsequent files are metadata-only handoff evidence.
+Final disposition: PASS. Subsequent changes are metadata-only handoff evidence.
 

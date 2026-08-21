@@ -2,70 +2,56 @@
 phase: 07-wp-4-gate-cards-and-dogfood
 plan: 07
 subsystem: verification
-tags: [audit, dogfood, controlled-execution, provenance, fail-closed]
-requires:
-  - phase: 07-06
-    provides: WP-3-only dogfood evidence and promotion boundary
-provides:
-  - Exact-final independent WP-4 Critical/High audit
-  - One-round closure with deviation authority and controlled evidence execution
-  - Machine-valid metadata-only audit suffix
+tags: [audit, dogfood, cleanup, controlled-execution, fail-closed]
+requires: [{ phase: 07-06, provides: WP-3 dogfood contract }]
+provides: [exact-final WP-4 audit, independent cleanup-safe recheck, metadata-only closure]
 affects: [07-08, 07-09, wp4-promotion]
-tech-stack:
-  added: []
-  patterns: [exact-final-audit, independent-six-arm-dogfood, attributed-owner-deviations]
+tech-stack: { added: [], patterns: [controlled-evidence-execution, authoritative-cleanup] }
 key-files:
   created: []
   modified: [.planning/phases/07-wp-4-gate-cards-and-dogfood/07-REVIEW.md, .planning/phases/07-wp-4-gate-cards-and-dogfood/07-REVIEW.json, .planning/phases/07-wp-4-gate-cards-and-dogfood/07-FIX-RECHECK.md, .planning/phases/07-wp-4-gate-cards-and-dogfood/07-07-SUMMARY.md]
 key-decisions:
-  - "Treat earlier audit artifacts as superseded inputs and bind closure only to frozen product 71fce02."
-  - "Allow only the exact attributed upstream-owner deviation set while rejecting all additional crate paths."
+  - "Bind closure only to frozen product e78ba6b and treat prior audit files as superseded outputs."
 patterns-established:
-  - "Final audit requires independently executed dogfood/full gates, exact identities/support/diffs, and one round-bound recheck."
+  - "Cleanup proof requires true claims, checked commands, and post-enumerated absence."
 requirements-completed: [CARD-01, CARD-02, CARD-03, CARD-04, CARD-05, CARD-06, CARD-07, CARD-08, PROV-03]
 coverage:
   - id: D1
     description: Frozen WP-4 product has zero unresolved Critical/High findings
     requirement: CARD-08
-    verification:
-      - kind: integration
-        ref: "validate-evidence.cjs audit 07-REVIEW.json 07-FIX-RECHECK.md"
-        status: pass
+    verification: [{ kind: integration, ref: "validate-evidence audit + independent recheck", status: pass }]
     human_judgment: false
   - id: D2
-    description: Six-arm dogfood, attributed deviations, and exact controlled gates are independently enforced
+    description: Authentic dogfood and authoritative cleanup fail closed
     requirement: CARD-04
-    verification:
-      - kind: integration
-        ref: "validate-evidence-adversarial.test.cjs (6/6) and dogfood validator"
-        status: pass
+    verification: [{ kind: integration, ref: "adversarial 6/6 plus six-arm replay", status: pass }]
     human_judgment: false
 duration: extended-audit
 completed: 2026-08-21
 status: complete
 ---
 
-# Phase 7 Plan 07: Absolute-Final Audit Summary
+# Phase 7 Plan 07: Final Audit Summary
 
-**Frozen WP-4 product independently closed at zero Critical/High findings with authentic six-arm dogfood and exact owner-deviation authority**
+**Frozen WP-4 product closed at zero Critical/High findings with authentic six-arm dogfood and fail-closed cleanup verification**
 
 ## Accomplishments
 
-- Bound product `71fce02`, tree, complete owned diff, requirements, threats, support bytes, and three distinct roles.
-- Independently executed all six prescribed dogfood arms and authoritative cleanup, plus the controlled Node/seed/provenance/full-gate command inventory.
-- Proved only five attributed upstream-owner crate paths exist and no additional producer path is permitted.
+- Bound product `e78ba6b`, tree, 80 MB diff, exact deviations, requirements, threats, and support bytes to distinct roles.
+- Independently replayed all prescribed dogfood arms and verified unconditional cleanup including negative command/residue cases.
+- Confirmed exact controlled build, Node, seed, dogfood, provenance, `just gate-all`, and `cargo deny check` inventory.
 
 ## Verification
 
-- Independent corrected verdict: 0 Critical, 0 High.
+- Independent verdict: 0 Critical, 0 High.
 - Adversarial validator: 6/6 passed.
-- Six-arm dogfood: valid; cleanup complete.
-- `cargo deny check`: passed.
-- Final audit/recheck validator: passed.
+- Authentic dogfood: valid; cleanup roots absent.
+- Provenance: valid.
+- Final audit/recheck schema validation: passed.
 
 ## Deviations from Plan
 
-One logical fix round was implemented through disjoint owner commits across the independent findings. No second round or final-recheck product edit occurred.
+One logical fix round used disjoint owner commits; no second round or final-recheck product edit occurred.
 
 ## Known Stubs
 
@@ -73,11 +59,11 @@ None.
 
 ## Self-Check: PASSED
 
-All four metadata artifacts exist, validate against the final schema, and follow the frozen product through metadata-only commits.
+All audit artifacts exist, validate against final schema, and follow the frozen product through metadata-only commits.
 
 ## Next Phase Readiness
 
-Plan 07-08 may freeze builder evidence for exact product `71fce02bc0cbb9341e6e9f8e110706e89d2fc67c`. Promotion remains integrator-owned.
+Plan 07-08 may freeze builder evidence for exact product `e78ba6b4eac4216424ef59135fecaf879ea934c4`.
 
 ---
 *Phase: 07-wp-4-gate-cards-and-dogfood*
