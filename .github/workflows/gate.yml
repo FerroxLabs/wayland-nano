@@ -616,7 +616,7 @@ jobs:
               static bool SameLuid(LUID a, LUID b) { return a.LowPart==b.LowPart && a.HighPart==b.HighPart; }
               static IntPtr TokenInfo(IntPtr token, UInt32 kind, out UInt32 size) {
                   size=0; bool sized=GetTokenInformation(token, kind, IntPtr.Zero, 0, out size);int sizeError=Marshal.GetLastWin32Error();
-                  if(sized || size==0 || sizeError!=ERROR_INSUFFICIENT_BUFFER) throw new Win32Exception(sizeError, "GetTokenInformation(size kind="+kind+" bytes="+size+")");
+                  if(sized || size==0) throw new Win32Exception(sizeError, "GetTokenInformation(size kind="+kind+" bytes="+size+")");
                   IntPtr buffer=Marshal.AllocHGlobal((int)size);
                   try { Check(GetTokenInformation(token, kind, buffer, size, out size), "GetTokenInformation"); return buffer; }
                   catch { Marshal.FreeHGlobal(buffer); throw; }
@@ -777,8 +777,8 @@ jobs:
           $failures=[Collections.Generic.List[string]]::new()
           if($env:WN_GC_ACCOUNT_OWNED-eq'1'){
             if($env:WN_GC_ACCOUNT-notmatch'^wngc[0-9a-f]{12}$'){throw 'ephemeral account cleanup identity'}
-            $computer=[ADSI]'WinNT://.';try{$computer.Delete('User',$env:WN_GC_ACCOUNT)}catch{$failures.Add('account-delete')}
-            try{$accountProbe=[ADSI]"WinNT://./$($env:WN_GC_ACCOUNT),user";[void]$accountProbe.objectSid.Value;$failures.Add('account-residue')}catch{}
+            try{Remove-LocalUser -Name $env:WN_GC_ACCOUNT -ErrorAction Stop}catch{$failures.Add('account-delete')}
+            if(Get-LocalUser -Name $env:WN_GC_ACCOUNT -ErrorAction SilentlyContinue){$failures.Add('account-residue')}
           }
           $scratchRoot=[IO.Path]::GetFullPath('F:\tmp\wp4-install-gate');$tempPrefix=[IO.Path]::GetFullPath('F:\tmp').TrimEnd('\')+'\'
           if($scratchRoot-ne'F:\tmp\wp4-install-gate'-or!$scratchRoot.StartsWith($tempPrefix,[StringComparison]::OrdinalIgnoreCase)){throw 'scratch cleanup path drift'}
