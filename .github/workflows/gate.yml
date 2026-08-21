@@ -451,7 +451,7 @@ jobs:
           $gateIds = Assert-Registry (Get-Content gates/registry.json -Raw | ConvertFrom-Json)
           & $nodePath -e "const c=require('crypto'),r=require('./gates/registry.json');for(const [id,e] of Object.entries(r.gates))if(c.createHash('sha256').update(JSON.stringify(e.closure)).digest('hex')!==e.closure_digest)throw Error(id)"
           if ($LASTEXITCODE -ne 0) { throw 'closure digest drift' }
-          $protectedDir='F:\gate-cards-bin';$protectedBinary=Join-Path $protectedDir 'wayland-nano.exe'
+          $protectedDir='F:\gate-cards-bin';$protectedBinary=Join-Path $protectedDir 'wayland-nano.exe';$protectedGitConfig=Join-Path $protectedDir 'gitconfig'
           if(Test-Path -LiteralPath $protectedDir){throw 'protected binary directory is not pristine'}
           $accountName=('wngc'+[Guid]::NewGuid().ToString('N').Substring(0,12));$random=[byte[]]::new(32);[Security.Cryptography.RandomNumberGenerator]::Fill($random);$accountPassword='Aa1!'+[Convert]::ToHexString($random)
           $brokerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -464,6 +464,8 @@ jobs:
           if($adminMembers-contains$accountName){throw 'ephemeral account is an Administrator'}
           New-Item -ItemType Directory -Path $protectedDir | Out-Null
           Copy-Item -LiteralPath 'F:\repo\target\debug\wayland-nano.exe' -Destination $protectedBinary
+          if(Test-Path Env:GIT_CONFIG_GLOBAL){throw 'unexpected Git config environment'}
+          [IO.File]::WriteAllText($protectedGitConfig,"[safe]`n`tdirectory = F:/repo`n",[Text.UTF8Encoding]::new($false))
           $systemSid=[Security.Principal.SecurityIdentifier]::new('S-1-5-18');$adminSid=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544');$userIdentity=[Security.Principal.SecurityIdentifier]::new($userSid)
           function Set-ExactAcl($path,$directory,$userRights){
             $acl=if($directory){[Security.AccessControl.DirectorySecurity]::new()}else{[Security.AccessControl.FileSecurity]::new()}
@@ -478,7 +480,7 @@ jobs:
           Set-ExactAcl 'F:\' $true $rx;Set-ExactAcl 'F:\repo' $true $rx
           & icacls.exe 'F:\repo' /reset /T /C | Out-Null;if($LASTEXITCODE-ne 0){throw 'repository descendant ACL reset failed'}
           & icacls.exe 'F:\repo' /setowner '*S-1-5-18' /T /C | Out-Null;if($LASTEXITCODE-ne 0){throw 'repository descendant ownership failed'}
-          Set-ExactAcl 'F:\repo' $true $rx;Set-ExactAcl 'F:\tmp' $true $modify;Set-ExactAcl $protectedDir $true $rx;Set-ExactAcl $protectedBinary $false $rx
+          Set-ExactAcl 'F:\repo' $true $rx;Set-ExactAcl 'F:\tmp' $true $modify;Set-ExactAcl $protectedDir $true $rx;Set-ExactAcl $protectedBinary $false $rx;Set-ExactAcl $protectedGitConfig $false $rx
           function Assert-ProtectedAcl($path,$directory,$expectedUserRights){
             $acl=Get-Acl -LiteralPath $path
             if(!$acl.AreAccessRulesProtected-or$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value-ne'S-1-5-18'){throw 'protected ACL owner/inheritance'}
@@ -491,8 +493,12 @@ jobs:
             if($expectedUserRights-eq$rx-and(($userRule.FileSystemRights-band$forbidden)-ne 0-or($userRule.FileSystemRights-band$rx)-ne$rx)){throw 'protected ACL user rights'}
             if($expectedUserRights-eq$modify-and($userRule.FileSystemRights-band$modify)-ne$modify){throw 'runtime temp ACL user rights'}
           }
-          Assert-ProtectedAcl 'F:\' $true $rx;Assert-ProtectedAcl 'F:\repo' $true $rx;Assert-ProtectedAcl 'F:\tmp' $true $modify;Assert-ProtectedAcl $protectedDir $true $rx;Assert-ProtectedAcl $protectedBinary $false $rx
-          $protectedHash=(Get-FileHash -LiteralPath $protectedBinary -Algorithm SHA256).Hash
+          Assert-ProtectedAcl 'F:\' $true $rx;Assert-ProtectedAcl 'F:\repo' $true $rx;Assert-ProtectedAcl 'F:\tmp' $true $modify;Assert-ProtectedAcl $protectedDir $true $rx;Assert-ProtectedAcl $protectedBinary $false $rx;Assert-ProtectedAcl $protectedGitConfig $false $rx
+          $protectedHash=(Get-FileHash -LiteralPath $protectedBinary -Algorithm SHA256).Hash;$gitConfigHash=(Get-FileHash -LiteralPath $protectedGitConfig -Algorithm SHA256).Hash
+          $env:GIT_CONFIG_GLOBAL=$protectedGitConfig
+          $brokerPath=$env:PATH;$brokerPathExt=$env:PATHEXT;$brokerSystemRoot=$env:SystemRoot;$brokerWinDir=$env:WINDIR;$brokerComSpec=$env:COMSPEC
+          foreach($value in @($brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec)){if([string]::IsNullOrWhiteSpace($value)-or$value.Contains([char]0)){throw 'invalid broker environment source'}}
+          if([IO.Path]::GetFullPath($brokerSystemRoot)-ne[IO.Path]::GetFullPath($brokerWinDir)-or[IO.Path]::GetFullPath($brokerComSpec)-ne[IO.Path]::Combine([IO.Path]::GetFullPath($brokerSystemRoot),'System32','cmd.exe')-or!(Test-Path -LiteralPath $brokerComSpec -PathType Leaf)){throw 'broker Windows environment identity'}
           $scratchRoot='F:\tmp\wp4-install-gate'
           if((Test-Path Env:NANO_WP4_TEMP_ROOT) -or (Test-Path -LiteralPath $scratchRoot)){throw 'install scratch is not pristine'}
           if((Get-Item -LiteralPath 'F:\tmp').Attributes-band[IO.FileAttributes]::ReparsePoint){throw 'runtime temp is a reparse point'}
@@ -517,6 +523,7 @@ jobs:
           using System.Security.Principal;
           using System.Runtime.InteropServices;
           using System.Text;
+          using System.Text.RegularExpressions;
 
           public static class GateCardsRestrictedProcess {
               const UInt32 TOKEN_ASSIGN_PRIMARY = 0x0001;
@@ -533,13 +540,13 @@ jobs:
               const UInt32 TokenElevation = 20;
               const UInt32 LOGON32_LOGON_INTERACTIVE = 2;
               const UInt32 LOGON32_PROVIDER_DEFAULT = 0;
-              const UInt32 LOGON_WITH_PROFILE = 1;
               const UInt32 ERROR_INSUFFICIENT_BUFFER = 122;
               const UInt32 ERROR_NOT_ALL_ASSIGNED = 1300;
               const UInt32 WINSTA_ALL_ACCESS = 0x0000037F;
               const UInt32 DESKTOP_ALL_ACCESS = 0x000F01FF;
               const UInt32 CREATE_SUSPENDED = 0x00000004;
               const UInt32 CREATE_NO_WINDOW = 0x08000000;
+              const UInt32 CREATE_UNICODE_ENVIRONMENT = 0x00000400;
               const UInt32 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
               const UInt32 JobObjectExtendedLimitInformation = 9;
               const UInt32 WAIT_OBJECT_0 = 0x00000000;
@@ -558,6 +565,7 @@ jobs:
               const string Application = @"F:\gate-cards-bin\wayland-nano.exe";
               const string WorkingDirectory = @"F:\repo";
               const string ScratchRoot = @"F:\tmp\wp4-install-gate";
+              const string GitConfig = @"F:\gate-cards-bin\gitconfig";
 
               [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
               struct STARTUPINFO { public UInt32 cb; public string lpReserved; public string lpDesktop; public string lpTitle; public UInt32 dwX; public UInt32 dwY; public UInt32 dwXSize; public UInt32 dwYSize; public UInt32 dwXCountChars; public UInt32 dwYCountChars; public UInt32 dwFillAttribute; public UInt32 dwFlags; public Int16 wShowWindow; public Int16 cbReserved2; public IntPtr lpReserved2; public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError; }
@@ -584,6 +592,7 @@ jobs:
 
               [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool LogonUserW(string lpszUsername,string lpszDomain,string lpszPassword,UInt32 dwLogonType,UInt32 dwLogonProvider,out IntPtr phToken);
               [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcessWithTokenW(IntPtr hToken,UInt32 dwLogonFlags,string lpApplicationName,StringBuilder lpCommandLine,UInt32 dwCreationFlags,IntPtr lpEnvironment,string lpCurrentDirectory,ref STARTUPINFO lpStartupInfo,out PROCESS_INFORMATION lpProcessInformation);
+              [DllImport("advapi32.dll", EntryPoint="CreateProcessWithTokenW", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcessWithTokenWEx(IntPtr token,UInt32 logonFlags,string application,StringBuilder command,UInt32 flags,IntPtr environment,string currentDirectory,IntPtr startup,out PROCESS_INFORMATION process);
               [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool ConvertStringSidToSidW(string StringSid, out IntPtr Sid);
               [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool LookupPrivilegeValueW(string lpSystemName, string lpName, out LUID lpLuid);
               [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr TokenHandle, UInt32 TokenInformationClass, IntPtr TokenInformation, UInt32 TokenInformationLength, out UInt32 ReturnLength);
@@ -621,6 +630,12 @@ jobs:
                   try { Check(GetTokenInformation(token, kind, buffer, size, out size), "GetTokenInformation"); return buffer; }
                   catch { Marshal.FreeHGlobal(buffer); throw; }
               }
+              static IntPtr BuildEnvironment(string accountName,string path,string pathExt,string systemRoot,string winDir,string comSpec) {
+                  foreach(string value in new[]{path,pathExt,systemRoot,winDir,comSpec})if(String.IsNullOrWhiteSpace(value)||value.IndexOf('\0')>=0)throw new InvalidOperationException("broker environment source");
+                  if(!Regex.IsMatch(accountName,"^wngc[0-9a-f]{12}$"))throw new InvalidOperationException("ephemeral account environment");
+                  var values=new System.Collections.Generic.SortedDictionary<string,string>(StringComparer.OrdinalIgnoreCase){{"COMSPEC",comSpec},{"GIT_CONFIG_GLOBAL",@"F:\gate-cards-bin\gitconfig"},{"NANO_HOME",@"F:\wayland-nano-fixture"},{"NANO_WP4_TEMP_ROOT",ScratchRoot},{"PATH",path},{"PATHEXT",pathExt},{"SystemRoot",systemRoot},{"TEMP",@"F:\tmp"},{"TMP",@"F:\tmp"},{"TMPDIR","F:/tmp"},{"USERNAME",accountName},{"WINDIR",winDir}};
+                  var block=new StringBuilder();foreach(var pair in values){block.Append(pair.Key).Append('=').Append(pair.Value).Append('\0');}block.Append('\0');return Marshal.StringToHGlobalUni(block.ToString());
+              }
               static void RequireAccessDenied(bool unexpectedlySucceeded, string operation) {
                   int error=Marshal.GetLastWin32Error();if(unexpectedlySucceeded || error!=ERROR_ACCESS_DENIED)throw new Win32Exception(error, operation);
               }
@@ -643,15 +658,15 @@ jobs:
                       RequireAccessDenied(false,"protected parent replacement");
                   } finally { Check(RevertToSelf(),"RevertToSelf"); }
               }
-
-              public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid) {
+              public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec) {
                   if(gateId!="config-schema" && gateId!="install-payload" && gateId!="provision-script") throw new ArgumentException("gate id is not canonical", "gateId");
                   if(String.IsNullOrEmpty(accountName)||String.IsNullOrEmpty(accountPassword))throw new ArgumentException("ephemeral account credentials");
                   if(Environment.GetEnvironmentVariable("NANO_WP4_TEMP_ROOT")!=ScratchRoot) throw new InvalidOperationException("fixed install scratch environment");
+                  if(Environment.GetEnvironmentVariable("GIT_CONFIG_GLOBAL")!=GitConfig) throw new InvalidOperationException("fixed Git safe-directory config");
                   string command="\"F:\\gate-cards-bin\\wayland-nano.exe\" verify --gate "+gateId+" --run-only";
                   IntPtr restrictedToken=IntPtr.Zero, administratorsSid=IntPtr.Zero, mediumSid=IntPtr.Zero,
                       restrictedPrivileges=IntPtr.Zero, verifyIntegrity=IntPtr.Zero, stationSecurity=IntPtr.Zero,
-                      originalStation=IntPtr.Zero,station=IntPtr.Zero,desktop=IntPtr.Zero,job=IntPtr.Zero;
+                      originalStation=IntPtr.Zero,station=IntPtr.Zero,desktop=IntPtr.Zero,environment=IntPtr.Zero,job=IntPtr.Zero;
                   PROCESS_INFORMATION pi=new PROCESS_INFORMATION(); bool assigned=false,stationSwitched=false;
                   try {
                       Check(LogonUserW(accountName,".",accountPassword,LOGON32_LOGON_INTERACTIVE,LOGON32_PROVIDER_DEFAULT,out restrictedToken),"LogonUserW(ephemeral account)");
@@ -667,12 +682,13 @@ jobs:
                       originalStation=GetProcessWindowStation();Check(originalStation!=IntPtr.Zero,"GetProcessWindowStation");station=CreateWindowStationW(stationName,0,WINSTA_ALL_ACCESS,ref stationAttributes);Check(station!=IntPtr.Zero,"CreateWindowStationW");
                       Check(SetProcessWindowStation(station),"SetProcessWindowStation(private)");stationSwitched=true;try{desktop=CreateDesktopW(desktopName,null,IntPtr.Zero,0,DESKTOP_ALL_ACCESS,ref stationAttributes);Check(desktop!=IntPtr.Zero,"CreateDesktopW");}finally{Check(SetProcessWindowStation(originalStation),"SetProcessWindowStation(restore)");stationSwitched=false;}
                       job=CreateJobObjectW(IntPtr.Zero, null); Check(job!=IntPtr.Zero, "CreateJobObjectW");
+                      environment=BuildEnvironment(accountName,path,pathExt,systemRoot,winDir,comSpec);
                       var limits=new JOBOBJECT_EXTENDED_LIMIT_INFORMATION(); limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
                       int size=Marshal.SizeOf(limits); IntPtr limitsPtr=Marshal.AllocHGlobal(size);
                       try { Marshal.StructureToPtr(limits, limitsPtr, false); Check(SetInformationJobObject(job, JobObjectExtendedLimitInformation, limitsPtr, (UInt32)size), "SetInformationJobObject"); }
                       finally { Marshal.FreeHGlobal(limitsPtr); }
-                      var startup=new STARTUPINFO(); startup.cb=(UInt32)Marshal.SizeOf(startup);startup.lpDesktop=stationName+@"\"+desktopName;if(!startup.lpDesktop.StartsWith("WaylandNanoGateCardsStation-",StringComparison.Ordinal)||startup.lpDesktop.IndexOf(@"\WaylandNanoGateCards-",StringComparison.Ordinal)<0)throw new InvalidOperationException("private desktop identity");
-                      Check(CreateProcessWithTokenW(restrictedToken,0,Application,new StringBuilder(command),CREATE_SUSPENDED|CREATE_NO_WINDOW,IntPtr.Zero,WorkingDirectory,ref startup,out pi),"CreateProcessWithTokenW");
+                      var startup=new STARTUPINFO();startup.cb=(UInt32)Marshal.SizeOf(startup);startup.lpDesktop=stationName+@"\"+desktopName;if(!startup.lpDesktop.StartsWith("WaylandNanoGateCardsStation-",StringComparison.Ordinal)||startup.lpDesktop.IndexOf(@"\WaylandNanoGateCards-",StringComparison.Ordinal)<0)throw new InvalidOperationException("private desktop identity");
+                      Check(CreateProcessWithTokenW(restrictedToken,0,Application,new StringBuilder(command),CREATE_SUSPENDED|CREATE_NO_WINDOW|CREATE_UNICODE_ENVIRONMENT,environment,WorkingDirectory,ref startup,out pi),"CreateProcessWithTokenW");
                       Check(AssignProcessToJobObject(job, pi.hProcess), "AssignProcessToJobObject"); assigned=true;
                       if (ResumeThread(pi.hThread)==UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread");
                       UInt32 wait=WaitForSingleObject(pi.hProcess, 1200000);
@@ -688,6 +704,7 @@ jobs:
                       if(pi.hThread!=IntPtr.Zero) CloseHandle(pi.hThread); if(pi.hProcess!=IntPtr.Zero) CloseHandle(pi.hProcess);
                       if(stationSwitched&&originalStation!=IntPtr.Zero)SetProcessWindowStation(originalStation);
                       if(desktop!=IntPtr.Zero)CloseDesktop(desktop);if(station!=IntPtr.Zero)CloseWindowStation(station);if(stationSecurity!=IntPtr.Zero)Marshal.FreeHGlobal(stationSecurity);
+                      if(environment!=IntPtr.Zero)Marshal.FreeHGlobal(environment);
                       if(verifyIntegrity!=IntPtr.Zero)Marshal.FreeHGlobal(verifyIntegrity);
                       if(restrictedPrivileges!=IntPtr.Zero)Marshal.FreeHGlobal(restrictedPrivileges);
                       if(restrictedToken!=IntPtr.Zero) CloseHandle(restrictedToken);
@@ -699,9 +716,18 @@ jobs:
           '@
           $needles = @(
             'const string Application = @"F:\gate-cards-bin\wayland-nano.exe"',
-            'public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid)',
+            'const string GitConfig = @"F:\gate-cards-bin\gitconfig"',
+            'public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec)',
+            'SortedDictionary<string,string>(StringComparer.OrdinalIgnoreCase)',
+            'BuildEnvironment(accountName,path,pathExt,systemRoot,winDir,comSpec)',
+            'Regex.IsMatch(accountName,"^wngc[0-9a-f]{12}$")',
+            '{"COMSPEC",comSpec}', '{"GIT_CONFIG_GLOBAL",@"F:\gate-cards-bin\gitconfig"}',
+            '{"NANO_HOME",@"F:\wayland-nano-fixture"}', '{"NANO_WP4_TEMP_ROOT",ScratchRoot}', '{"PATH",path}', '{"PATHEXT",pathExt}',
+            '{"SystemRoot",systemRoot}', '{"TEMP",@"F:\tmp"}', '{"TMP",@"F:\tmp"}', '{"TMPDIR","F:/tmp"}',
+            '{"USERNAME",accountName}', '{"WINDIR",winDir}',
+            'block.Append(''\0'')', 'Marshal.StringToHGlobalUni', 'CREATE_UNICODE_ENVIRONMENT',
             'LogonUserW(accountName,".",accountPassword,LOGON32_LOGON_INTERACTIVE,LOGON32_PROVIDER_DEFAULT',
-            'CreateProcessWithTokenW(restrictedToken,0,Application',
+            'CreateProcessWithTokenWEx(restrictedToken,0,Application,new StringBuilder(command)',
             'TokenInfo(restrictedToken,TokenElevation', 'TokenIsElevated!=0',
             'TokenInfo(restrictedToken,TokenGroups', 'ephemeral account has Administrators membership',
             'dangerous ephemeral privilege', 'ephemeral token Medium integrity',
@@ -720,7 +746,7 @@ jobs:
             'MoveFileExW(Application,Application+".moved"', '@"F:\gate-cards-bin\replacement.tmp"',
             'MoveFileExW(@"F:\gate-cards-bin",@"F:\gate-cards-bin-moved"',
             'CreateDirectoryW(@"F:\restricted-probe"',
-            'CREATE_SUSPENDED|CREATE_NO_WINDOW,IntPtr.Zero,WorkingDirectory',
+            'CREATE_SUSPENDED|CREATE_NO_WINDOW|CREATE_UNICODE_ENVIRONMENT,environment,WorkingDirectory',
             'CREATE_SUSPENDED|CREATE_NO_WINDOW', 'CreateJobObjectW', 'SetInformationJobObject',
             'JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE', 'AssignProcessToJobObject', 'ResumeThread',
             'WaitForSingleObject(pi.hProcess, 1200000)', 'TerminateJobObject(job, 124)',
@@ -735,7 +761,7 @@ jobs:
             'ProbeProtectedBinary(restrictedToken)', 'originalStation=GetProcessWindowStation(', 'station=CreateWindowStationW(',
             'Check(SetProcessWindowStation(station)', 'desktop=CreateDesktopW(', 'Check(SetProcessWindowStation(originalStation)',
             'job=CreateJobObjectW(',
-            'Check(SetInformationJobObject(', 'Check(CreateProcessWithTokenW(',
+            'Check(SetInformationJobObject(', 'Check(CreateProcessWithTokenWEx(',
             'Check(AssignProcessToJobObject(', 'if (ResumeThread(', 'UInt32 wait=WaitForSingleObject(',
             'Check(GetExitCodeProcess(')
           $previous = -1
@@ -745,13 +771,13 @@ jobs:
           if(!(Test-Path -LiteralPath $binary -PathType Leaf)){throw 'landed WP-3 binary is missing'}
           $binaryHash=(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash
           function Invoke-ProtectedGate($gateId){
-            if(!(Test-Path -LiteralPath $protectedDir -PathType Container)-or!(Test-Path -LiteralPath $binary -PathType Leaf)-or(Get-Item -LiteralPath $binary).FullName-ne'F:\gate-cards-bin\wayland-nano.exe'-or(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash-ne$binaryHash){throw 'protected identity changed before gate'}
-            try{$exit=[GateCardsRestrictedProcess]::RunGate($gateId,$accountName,$accountPassword,$userSid,$brokerSid)}finally{
+            if(!(Test-Path -LiteralPath $protectedDir -PathType Container)-or!(Test-Path -LiteralPath $binary -PathType Leaf)-or(Get-Item -LiteralPath $binary).FullName-ne'F:\gate-cards-bin\wayland-nano.exe'-or(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash-ne$binaryHash-or(Get-FileHash -LiteralPath $protectedGitConfig -Algorithm SHA256).Hash-ne$gitConfigHash){throw 'protected identity changed before gate'}
+            try{$exit=[GateCardsRestrictedProcess]::RunGate($gateId,$accountName,$accountPassword,$userSid,$brokerSid,$brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec)}finally{
               if($gateId-eq'install-payload'-and(Test-Path -LiteralPath $scratchRoot)){
                 Remove-VerifiedScratch $scratchRoot
               }
             }
-            if(!(Test-Path -LiteralPath $protectedDir -PathType Container)-or!(Test-Path -LiteralPath $binary -PathType Leaf)-or(Get-Item -LiteralPath $binary).FullName-ne'F:\gate-cards-bin\wayland-nano.exe'-or(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash-ne$binaryHash){throw 'protected identity changed after gate'}
+            if(!(Test-Path -LiteralPath $protectedDir -PathType Container)-or!(Test-Path -LiteralPath $binary -PathType Leaf)-or(Get-Item -LiteralPath $binary).FullName-ne'F:\gate-cards-bin\wayland-nano.exe'-or(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash-ne$binaryHash-or(Get-FileHash -LiteralPath $protectedGitConfig -Algorithm SHA256).Hash-ne$gitConfigHash){throw 'protected identity changed after gate'}
             return $exit
           }
           # Exact landed WP-3 contract: verify --gate "$gate_id" --run-only
