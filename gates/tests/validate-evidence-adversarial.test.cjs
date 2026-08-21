@@ -209,15 +209,20 @@ test('PowerShell 5.1 junction argv uses fixed Path and never LiteralPath or Forc
 });
 
 test('real Windows PowerShell creates verifies and removes the owned junction', {skip:process.platform!=='win32'},()=>{
-  const owned=`F:\\w4ps5-junction-smoke-${process.pid}`; const repoTarget=path.join(ROOT,'target');
-  assert.equal(fs.existsSync(repoTarget),false,'repository target must begin absent');
-  assert.equal(fs.existsSync(owned),false,'owned smoke root must begin absent');
-  fs.mkdirSync(owned,{recursive:true});
+  const scratch=`F:\\w4ps5-junction-smoke-${process.pid}-${Date.now().toString(36)}`;
+  const destination=path.join(scratch,'destination'),link=path.join(scratch,'junction');
+  assert.equal(fs.existsSync(scratch),false,'unique smoke root must begin absent');
+  fs.mkdirSync(destination,{recursive:true});
   try {
-    const result=validator.withNodeJunction(validator.COMMANDS[1],()=>({status:0,stdout:'ok',stderr:''}),owned);
-    assert.equal(result.status,0);assert.equal(fs.existsSync(repoTarget),false);
-  } finally {if(fs.existsSync(repoTarget))fs.rmSync(repoTarget,{recursive:true,force:true});if(fs.existsSync(owned))fs.rmSync(owned,{recursive:true,force:true});}
-  assert.equal(fs.existsSync(repoTarget),false);assert.equal(fs.existsSync(owned),false);
+    const create=spawnSync('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-Command',
+      '& { param($link,$destination) $ErrorActionPreference="Stop"; New-Item -ItemType Junction -Path $link -Target $destination | Out-Null }',link,destination],{encoding:'utf8',windowsHide:true});
+    assert.equal(create.status,0,create.stderr);assert.equal(fs.lstatSync(link).isSymbolicLink(),true);
+    assert.equal(path.resolve(fs.realpathSync(link)).toLowerCase(),path.resolve(destination).toLowerCase());
+    const remove=spawnSync('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-Command',
+      '& { param($link) $ErrorActionPreference="Stop"; [IO.Directory]::Delete($link,$false) }',link],{encoding:'utf8',windowsHide:true});
+    assert.equal(remove.status,0,remove.stderr);assert.equal(fs.existsSync(link),false);
+  } finally {if(fs.existsSync(link))fs.rmSync(link,{recursive:true,force:true});if(fs.existsSync(scratch))fs.rmSync(scratch,{recursive:true,force:true});}
+  assert.equal(fs.existsSync(link),false);assert.equal(fs.existsSync(destination),false);assert.equal(fs.existsSync(scratch),false);
 });
 
 test('product worktree pins bytes and canonicalizes cleanup registrations',()=>{
