@@ -2,42 +2,42 @@
 phase: 07-wp-4-gate-cards-and-dogfood
 plan: 07
 subsystem: verification
-tags: [audit, gate-cards, dogfood, mutation-testing, fail-closed]
+tags: [audit, dogfood, controlled-execution, provenance, fail-closed]
 requires:
   - phase: 07-06
-    provides: WP-3-only dogfood and promotion contract
+    provides: WP-3-only dogfood evidence and promotion boundary
 provides:
-  - Identity-bound independent Critical/High audit of the complete WP-4 product
-  - Single-round closure with exact final-byte independent recheck
-  - Machine-readable closed audit and metadata-only product suffix
+  - Exact-final independent WP-4 Critical/High audit
+  - One-round closure with deviation authority and controlled evidence execution
+  - Machine-valid metadata-only audit suffix
 affects: [07-08, 07-09, wp4-promotion]
 tech-stack:
   added: []
-  patterns: [independent-final-byte-recheck, controlled-evidence-execution, exact-product-dogfood]
+  patterns: [exact-final-audit, independent-six-arm-dogfood, attributed-owner-deviations]
 key-files:
-  created: [.planning/phases/07-wp-4-gate-cards-and-dogfood/07-REVIEW.md, .planning/phases/07-wp-4-gate-cards-and-dogfood/07-REVIEW.json, .planning/phases/07-wp-4-gate-cards-and-dogfood/07-FIX-RECHECK.md, .planning/phases/07-wp-4-gate-cards-and-dogfood/07-07-SUMMARY.md]
-  modified: []
+  created: []
+  modified: [.planning/phases/07-wp-4-gate-cards-and-dogfood/07-REVIEW.md, .planning/phases/07-wp-4-gate-cards-and-dogfood/07-REVIEW.json, .planning/phases/07-wp-4-gate-cards-and-dogfood/07-FIX-RECHECK.md, .planning/phases/07-wp-4-gate-cards-and-dogfood/07-07-SUMMARY.md]
 key-decisions:
-  - "Audit the frozen code product separately from its exact dogfood metadata child."
-  - "Accept only the five named upstream-owner crate deviations and require zero additional crate paths."
+  - "Treat earlier audit artifacts as superseded inputs and bind closure only to frozen product 71fce02."
+  - "Allow only the exact attributed upstream-owner deviation set while rejecting all additional crate paths."
 patterns-established:
-  - "Audit proof binds distinct identities, exact product/tree/diff, support digests, controlled execution, and a round-bound independent recheck."
+  - "Final audit requires independently executed dogfood/full gates, exact identities/support/diffs, and one round-bound recheck."
 requirements-completed: [CARD-01, CARD-02, CARD-03, CARD-04, CARD-05, CARD-06, CARD-07, CARD-08, PROV-03]
 coverage:
   - id: D1
-    description: Complete WP-4 product has zero unresolved Critical/High findings after one bounded fix round
+    description: Frozen WP-4 product has zero unresolved Critical/High findings
     requirement: CARD-08
     verification:
       - kind: integration
-        ref: "node gates/tests/validate-evidence.cjs audit 07-REVIEW.json 07-FIX-RECHECK.md"
+        ref: "validate-evidence.cjs audit 07-REVIEW.json 07-FIX-RECHECK.md"
         status: pass
     human_judgment: false
   - id: D2
-    description: Final evidence validators independently execute dogfood and the controlled acceptance battery
+    description: Six-arm dogfood, attributed deviations, and exact controlled gates are independently enforced
     requirement: CARD-04
     verification:
       - kind: integration
-        ref: "gates/tests/validate-evidence-adversarial.test.cjs (6/6)"
+        ref: "validate-evidence-adversarial.test.cjs (6/6) and dogfood validator"
         status: pass
     human_judgment: false
 duration: extended-audit
@@ -45,34 +45,27 @@ completed: 2026-08-21
 status: complete
 ---
 
-# Phase 7 Plan 07: Final Critical/High Audit Summary
+# Phase 7 Plan 07: Absolute-Final Audit Summary
 
-**Exact-product WP-4 audit closed at zero Critical/High findings after one bounded fix round and an independent six-arm dogfood recheck**
+**Frozen WP-4 product independently closed at zero Critical/High findings with authentic six-arm dogfood and exact owner-deviation authority**
 
 ## Accomplishments
 
-- Bound the frozen product, tree, 80 MB canonical diff, complete owned path inventory, requirements, threats, and support artifacts to distinct builder/auditor/rechecker identities.
-- Closed every audit finding through the single authorized round and independently rechecked exact final bytes.
-- Proved authentic six-arm WP-3 dogfood execution, authoritative cleanup, exact controlled Node/seed/full-gate commands, and exact five-path upstream deviation confinement.
+- Bound product `71fce02`, tree, complete owned diff, requirements, threats, support bytes, and three distinct roles.
+- Independently executed all six prescribed dogfood arms and authoritative cleanup, plus the controlled Node/seed/provenance/full-gate command inventory.
+- Proved only five attributed upstream-owner crate paths exist and no additional producer path is permitted.
 
 ## Verification
 
-- Adversarial evidence validator: 6/6 passed.
-- Authoritative dogfood validator: valid with three good and three prescribed bad observations.
-- Provenance validator: valid.
+- Independent corrected verdict: 0 Critical, 0 High.
+- Adversarial validator: 6/6 passed.
+- Six-arm dogfood: valid; cleanup complete.
 - `cargo deny check`: passed.
-- Independent reviewer verdict: zero Critical, zero High.
+- Final audit/recheck validator: passed.
 
 ## Deviations from Plan
 
-The one authorized fix round required multiple disjoint owner commits because the initial audit exposed independent install, provision, evidence-binding, and cleanup defects. All were consolidated as one logical round; no second round occurred and no product change was made during this final recheck.
-
-## Threat Flags
-
-| Flag | File | Description |
-|---|---|---|
-| threat_flag: audit-repudiation | `07-REVIEW.json` | Exact identities, support digests, tree/diff recomputation, and independent recheck close T-07-A1. |
-| threat_flag: evidence-tampering | `07-FIX-RECHECK.md` | Fix-round count and exact final product binding close T-07-A2. |
+One logical fix round was implemented through disjoint owner commits across the independent findings. No second round or final-recheck product edit occurred.
 
 ## Known Stubs
 
@@ -80,11 +73,11 @@ None.
 
 ## Self-Check: PASSED
 
-All four declared metadata artifacts exist, the review validator passes against the independent recheck, and the product remains an ancestor with only metadata suffix changes.
+All four metadata artifacts exist, validate against the final schema, and follow the frozen product through metadata-only commits.
 
 ## Next Phase Readiness
 
-Plan 07-08 may freeze builder evidence against product `3351e5598829ae481c36b95fb1ef40f9b95c779d`. Merge, push, `.github` promotion, and CI remain integrator-owned.
+Plan 07-08 may freeze builder evidence for exact product `71fce02bc0cbb9341e6e9f8e110706e89d2fc67c`. Promotion remains integrator-owned.
 
 ---
 *Phase: 07-wp-4-gate-cards-and-dogfood*
