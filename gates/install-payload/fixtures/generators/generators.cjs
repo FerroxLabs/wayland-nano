@@ -4,6 +4,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { writeArtifact } = require('../../../lib/artifact-writer.cjs');
 const { directorySeal } = require('../../../lib/dirhash.cjs');
 
@@ -23,26 +24,42 @@ function producerBytes(relative) {
   return fs.readFileSync(path.join(PRODUCER, ...relative.split('/')));
 }
 
-function baseFiles(hostBinary) {
-  const files = new Map([
-    ['package.json', producerBytes('package.json')],
-    ['README.md', producerBytes('README.md')],
-    ['bin/install.js', producerBytes('bin/install.js')],
-    ['bin/wayland-nano.js', producerBytes('bin/wayland-nano.js')],
-  ]);
-  for (const platform of PLATFORMS) {
-    const primary = platform === 'win32-x64' ? 'wayland-nano.exe' : 'wayland-nano';
-    files.set(posix('binaries', platform, primary), platform === 'win32-x64' ? hostBinary : scriptBinary);
-    if (platform !== 'win32-x64') files.set(posix('binaries', platform, 'wayland-nano-pty-guard'), guardBinary);
-  }
-  rebuildManifest(files);
-  files.set('.nano-fixture-modes.json', Buffer.from(`${JSON.stringify({
-    'darwin-arm64/wayland-nano': 493, 'darwin-arm64/wayland-nano-pty-guard': 493,
-    'darwin-x64/wayland-nano': 493, 'darwin-x64/wayland-nano-pty-guard': 493,
-    'linux-x64/wayland-nano': 493, 'linux-x64/wayland-nano-pty-guard': 493,
-    'linux-arm64/wayland-nano': 493, 'linux-arm64/wayland-nano-pty-guard': 493,
-  }, null, 2)}\n`));
+function readTree(root) {
+  const files = new Map();
+  const walk = (current) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const absolute = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(absolute);
+      else if (entry.isFile()) files.set(path.relative(root, absolute).split(path.sep).join('/'), fs.readFileSync(absolute));
+      else throw new Error('pack output contains non-file entry');
+    }
+  };
+  walk(root);
   return files;
+}
+
+function baseFiles(hostBinary) {
+  const stage = fs.mkdtempSync(path.join(path.resolve(process.env.NANO_WP4_TEMP_ROOT), 'ip-authentic-'));
+  try {
+    const stagedRepo = path.join(stage, 'repo');
+    const stagedPackage = path.join(stagedRepo, 'packaging', 'npm');
+    const artifactRoot = path.join(stage, 'artifacts');
+    fs.mkdirSync(path.dirname(stagedPackage), { recursive: true });
+    fs.cpSync(PRODUCER, stagedPackage, { recursive: true, errorOnExist: true });
+    for (const platform of PLATFORMS) {
+      const platformRoot = path.join(artifactRoot, platform);
+      fs.mkdirSync(platformRoot, { recursive: true });
+      const primary = platform === 'win32-x64' ? 'wayland-nano.exe' : 'wayland-nano';
+      fs.writeFileSync(path.join(platformRoot, primary), platform === 'win32-x64' ? hostBinary : scriptBinary);
+      if (platform !== 'win32-x64') fs.writeFileSync(path.join(platformRoot, 'wayland-nano-pty-guard'), guardBinary);
+    }
+    const shell = 'pwsh';
+    const packed = spawnSync(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', path.join(stagedPackage, 'scripts', 'pack.ps1'), '-Platform', 'all', '-ArtifactRoot', artifactRoot],
+    { cwd: stagedRepo, encoding: 'utf8', timeout: 60_000, windowsHide: true });
+    if (packed.status !== 0) throw new Error(`pack.ps1 failed: ${packed.stderr || packed.stdout}`);
+    return readTree(stagedPackage);
+  } finally { fs.rmSync(stage, { recursive: true, force: true }); }
 }
 
 function rebuildManifest(files) {
@@ -74,9 +91,7 @@ function mutate(reference, id) {
   else if (id === 'ip-m4') {
     for (const name of [...files.keys()]) if (name.startsWith('binaries/darwin-arm64/')) files.delete(name);
   } else if (id === 'ip-m5') {
-    const modes = JSON.parse(files.get('.nano-fixture-modes.json'));
-    modes['linux-x64/wayland-nano-pty-guard'] = 420;
-    files.set('.nano-fixture-modes.json', Buffer.from(`${JSON.stringify(modes, null, 2)}\n`));
+    files.set('.nano-fixture-mode.json', Buffer.from('{"schema":1,"strip_exec":"linux-x64/wayland-nano-pty-guard"}\n'));
   } else if (id === 'ip-m6') files.set('bin/install.js', Buffer.from('process.exit(0);\n'));
   else throw new Error(`unknown mutant ${id}`);
   return files;
@@ -110,10 +125,12 @@ async function publish(directory, files) {
     for (const relative of previous) {
       if (!files.has(relative)) fs.rmSync(path.join(directory, ...relative.split('/')), { force: true });
     }
-    if (process.platform !== 'win32' && files.has('.nano-fixture-modes.json')) {
-      const modes = JSON.parse(files.get('.nano-fixture-modes.json'));
-      for (const [relative, mode] of Object.entries(modes)) {
-        fs.chmodSync(path.join(directory, 'binaries', ...relative.split('/')), mode);
+    if (process.platform !== 'win32') {
+      for (const platform of PLATFORMS) {
+        if (platform === 'win32-x64') continue;
+        fs.chmodSync(path.join(directory, 'binaries', platform, 'wayland-nano'), 0o755);
+        fs.chmodSync(path.join(directory, 'binaries', platform, 'wayland-nano-pty-guard'),
+          files.has('.nano-fixture-mode.json') && platform === 'linux-x64' ? 0o644 : 0o755);
       }
     }
   } finally { fs.rmSync(stage, { recursive: true, force: true }); }
@@ -149,10 +166,7 @@ function inspectFixture(directory) {
     } catch { failures.add('IP-03'); }
   }
   try { if (!fs.readFileSync(path.join(directory, 'bin', 'install.js')).equals(producerBytes('bin/install.js'))) failures.add('IP-04'); } catch { failures.add('IP-04'); }
-  try {
-    const modes = JSON.parse(fs.readFileSync(path.join(directory, '.nano-fixture-modes.json')));
-    if (Object.values(modes).some((mode) => (mode & 0o111) === 0)) failures.add('IP-05');
-  } catch { failures.add('IP-05'); }
+  if (fs.existsSync(path.join(directory, '.nano-fixture-mode.json'))) failures.add('IP-05');
   if (!manifest?.platforms?.['win32-x64'] || failures.has('IP-06')) failures.add('IP-01');
   return { failures: [...failures].sort() };
 }

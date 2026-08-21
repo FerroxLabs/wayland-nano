@@ -3,7 +3,7 @@ card: 1
 gate_id: install-payload
 domain: repo-deliverable
 tier: 1
-gate_script_hash: 2a696abe30930ba2419fb8cc48bca7aacef00f3b9ae016e3b6101f3797ae387d
+gate_script_hash: 93142543a6f40c526b814751ba367143a1219abd22379050a17693be17b816b1
 relational_target:
   artifact: the staged npm package tree
   relation: every staged binary resolves against the integrity manifest and install refuses tampering
@@ -18,18 +18,18 @@ checks:
 wrapped_tools:
   - { name: node, version: 20, license: MIT, role: stdlib-only gate and package lifecycle runtime }
 validation:
-  reference: sealed:dir-sha256:f52747028a8ac7620b9b0e23f9dde8fc38c2baec6a716ed13d37f9034a6a5d7f
+  reference: sealed:dir-sha256:da60507be5b50970dcb31ba0d8b98a908da680fb7c69164e06f86285f0525623
   pool_min: 6
   pool_status: full
   mutants:
-    - { id: ip-m1, class: fluent-but-wrong, why_fluent: the win32-x64 executable is staged under linux-x64 with the expected filename, so the tree looks complete, expected_drop: 1, must_fail: [IP-03], fixture: sealed:dir-sha256:0c51e5a8ae134d6a8523a52df676fef3e8bc90431c332cc844cf62a3203a3333 }
-    - { id: ip-m2, class: fluent-but-wrong, why_fluent: the valid manifest quietly omits the least-used linux-arm64 lane while its directory remains, expected_drop: 1, must_fail: [IP-02], fixture: sealed:dir-sha256:66834ebe874a1719b6759d06703b43f56e917f738447ddd48913a2f7d11c15a6 }
-    - { id: ip-m3, class: fluent-but-wrong, why_fluent: a well-formed 64-hex digest pins previous bytes and passes superficial schema review, expected_drop: 1, must_fail: [IP-03], fixture: sealed:dir-sha256:59d1910d2347ba15351f5126b8af2d3ddac41f4d02560171384274811d55c3e4 }
-    - { id: ip-m4, class: fluent-but-wrong, why_fluent: the darwin-arm64 directory is absent while the complete-looking manifest still declares it, expected_drop: 1, must_fail: [IP-02], fixture: sealed:dir-sha256:7bd786ae849f04209def58278794fb7042d1c3ae9f4c635cb0a837829c017023 }
-    - { id: ip-m5, class: fluent-but-wrong, why_fluent: the PTY guard is present and hashed but recorded non-executable while the primary smoke path remains green, expected_drop: 1, must_fail: [IP-05], fixture: sealed:dir-sha256:f25d42124bd09b7c8e8b24898b28286be92d3807aa2b80f70016629a6bd51dca }
-    - { id: ip-m6, class: fluent-but-wrong, why_fluent: postinstall is a successful no-op and the shipped wrapper and binaries still look runnable, expected_drop: 1, must_fail: [IP-04], fixture: sealed:dir-sha256:fa791862a0da41b992b85158785d79939326e4a45437df898140d741638a0612 }
+    - { id: ip-m1, class: fluent-but-wrong, why_fluent: the win32-x64 executable is staged under linux-x64 with the expected filename, so the tree looks complete, expected_drop: 1, must_fail: [IP-03], fixture: sealed:dir-sha256:b15114e7c39cb211e130be6ea4299abf1c95f9bb95a95f30fff764bb14cd10f8 }
+    - { id: ip-m2, class: fluent-but-wrong, why_fluent: the valid manifest quietly omits the least-used linux-arm64 lane while its directory remains, expected_drop: 1, must_fail: [IP-02], fixture: sealed:dir-sha256:f22406bbb69574b705d409437800a335987c1bb29f46ac50f6ee3e2f95ab866a }
+    - { id: ip-m3, class: fluent-but-wrong, why_fluent: a well-formed 64-hex digest pins previous bytes and passes superficial schema review, expected_drop: 1, must_fail: [IP-03], fixture: sealed:dir-sha256:8b402e711fe3af27c45708f63156dacb17cd56b2ad92f388e6196e1bb91558e1 }
+    - { id: ip-m4, class: fluent-but-wrong, why_fluent: the darwin-arm64 directory is absent while the complete-looking manifest still declares it, expected_drop: 1, must_fail: [IP-02], fixture: sealed:dir-sha256:4af00ab5384200683157ad1ab4f8d3198c9b212fbd78e9cc4da0ff4660dc0507 }
+    - { id: ip-m5, class: fluent-but-wrong, why_fluent: the PTY guard is present and hashed but recorded non-executable while the primary smoke path remains green, expected_drop: 1, must_fail: [IP-05], fixture: sealed:dir-sha256:7f6522969f8068ccd6e9d953f3ca5baca670b004ad6edd4b417f43b0415f2f6d }
+    - { id: ip-m6, class: fluent-but-wrong, why_fluent: postinstall is a successful no-op and the shipped wrapper and binaries still look runnable, expected_drop: 1, must_fail: [IP-04], fixture: sealed:dir-sha256:b3905718e20394924a8f6fdd92d630fc669142957f76d7eafa077650e4379b6e }
   rotation_k: 2
-  last_validated: 2a696abe30930ba2419fb8cc48bca7aacef00f3b9ae016e3b6101f3797ae387d
+  last_validated: 93142543a6f40c526b814751ba367143a1219abd22379050a17693be17b816b1
 gamed_modes:
   - { mode: hardcoded hashes over swapped bytes, status: sealed, note: ip-m1 and ip-m3 require independent whole-pool rehashing }
   - { mode: host-only inspection, status: mitigated, note: IP-02 and IP-03 traverse every platform and helper }

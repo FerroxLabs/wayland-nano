@@ -137,11 +137,14 @@ function runGate(source, expectedSeal, contract) {
         catch { contract.fail('IP-05', 'execution'); }
       }
     }
-    const modeFixture = path.join(packageRoot, '.nano-fixture-modes.json');
+    const modeFixture = path.join(packageRoot, '.nano-fixture-mode.json');
     if (fs.existsSync(modeFixture)) {
       try {
         const modes = JSON.parse(fs.readFileSync(modeFixture));
-        if (Object.values(modes).some((mode) => !Number.isInteger(mode) || (mode & 0o111) === 0)) contract.fail('IP-05', 'execution');
+        if (Object.keys(modes).sort().join(',') !== 'schema,strip_exec'
+            || modes.schema !== 1
+            || modes.strip_exec !== 'linux-x64/wayland-nano-pty-guard') throw new Error('invalid mode fixture');
+        contract.fail('IP-05', 'execution');
       } catch { contract.fail('IP-05', 'execution'); }
     }
   } finally { fs.rmSync(scratch, { recursive: true, force: true }); }

@@ -34,6 +34,13 @@ test('t-ip-reference-scores-mm', () => {
   assert.equal(card.validation.reference, directorySeal(reference));
   assert.deepEqual(generator.inspectFixture(reference).failures, []);
   assert.equal(card.validation.rotation_k, 2);
+  for (const relative of ['ACCEPTANCE-WIN32.md', 'ACCEPTANCE.md', 'package.json', 'README.md',
+    'bin/install.js', 'bin/wayland-nano.js', 'scripts/pack.ps1']) {
+    assert.deepEqual(fs.readFileSync(path.join(reference, ...relative.split('/'))),
+      fs.readFileSync(path.join(PACK_ROOT, ...relative.split('/'))), `authentic ${relative}`);
+  }
+  assert.equal(fs.existsSync(path.join(reference, '.nano-fixture-modes.json')), false);
+  assert.equal(fs.existsSync(path.join(reference, '.nano-fixture-mode.json')), false);
 });
 
 test('t-ip-mutants-caught', () => {
