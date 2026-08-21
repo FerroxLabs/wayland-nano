@@ -304,10 +304,10 @@ function withNodeJunction(command,run,toolsRoot,deps={},control={}) {
   const exists=deps.exists||fs.existsSync;
   if(exists(target)) die('builder: repository target preexists');
   const create=deps.create||((link,destination)=>spawnSync('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-Command',
-    '$ErrorActionPreference="Stop"; New-Item -ItemType Junction -Path $args[0] -Target $args[1] | Out-Null',link,destination],
+    '& { param($link,$destination) $ErrorActionPreference="Stop"; New-Item -ItemType Junction -Path $link -Target $destination | Out-Null }',link,destination],
     {encoding:'utf8',windowsHide:true,timeout:30_000,maxBuffer:GIT_MAX_BUFFER}));
   const remove=deps.remove||((link)=>spawnSync('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-Command',
-    '$ErrorActionPreference="Stop"; [IO.Directory]::Delete($args[0],$false)',link],
+    '& { param($link) $ErrorActionPreference="Stop"; [IO.Directory]::Delete($link,$false) }',link],
     {encoding:'utf8',windowsHide:true,timeout:30_000,maxBuffer:GIT_MAX_BUFFER}));
   const identity=deps.identity||((link,destination)=>fs.lstatSync(link).isSymbolicLink()
     && path.resolve(fs.realpathSync(link)).toLowerCase()===path.resolve(destination).toLowerCase());

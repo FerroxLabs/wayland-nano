@@ -200,10 +200,24 @@ test('Windows Node junction is fail-closed and always absent afterward',()=>{
 
 test('PowerShell 5.1 junction argv uses fixed Path and never LiteralPath or Force',()=>{
   const source=fs.readFileSync(VALIDATOR,'utf8');
-  assert.match(source,/New-Item -ItemType Junction -Path \$args\[0\] -Target \$args\[1\]/);
+  assert.match(source,/param\(\$link,\$destination\)[^\n]*New-Item -ItemType Junction -Path \$link -Target \$destination/);
+  assert.match(source,/param\(\$link\)[^\n]*Directory\]::Delete\(\$link,\$false\)/);
+  assert.doesNotMatch(source,/\$args\[[01]\]/);
   assert.doesNotMatch(source,/New-Item -ItemType Junction -LiteralPath/);
   assert.doesNotMatch(source,/New-Item -ItemType Junction[^\n]*-Force/);
   assert.match(source,/if\(exists\(target\)\) die\('builder: repository target preexists'\)/);
+});
+
+test('real Windows PowerShell creates verifies and removes the owned junction', {skip:process.platform!=='win32'},()=>{
+  const owned=`F:\\w4ps5-junction-smoke-${process.pid}`; const repoTarget=path.join(ROOT,'target');
+  assert.equal(fs.existsSync(repoTarget),false,'repository target must begin absent');
+  assert.equal(fs.existsSync(owned),false,'owned smoke root must begin absent');
+  fs.mkdirSync(owned,{recursive:true});
+  try {
+    const result=validator.withNodeJunction(validator.COMMANDS[1],()=>({status:0,stdout:'ok',stderr:''}),owned);
+    assert.equal(result.status,0);assert.equal(fs.existsSync(repoTarget),false);
+  } finally {if(fs.existsSync(repoTarget))fs.rmSync(repoTarget,{recursive:true,force:true});if(fs.existsSync(owned))fs.rmSync(owned,{recursive:true,force:true});}
+  assert.equal(fs.existsSync(repoTarget),false);assert.equal(fs.existsSync(owned),false);
 });
 
 test('product worktree pins bytes and canonicalizes cleanup registrations',()=>{
