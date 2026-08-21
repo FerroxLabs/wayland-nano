@@ -453,9 +453,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'closure digest drift' }
           $protectedDir='F:\gate-cards-bin';$protectedBinary=Join-Path $protectedDir 'wayland-nano.exe'
           if(Test-Path -LiteralPath $protectedDir){throw 'protected binary directory is not pristine'}
+          $accountName=('wngc'+[Guid]::NewGuid().ToString('N').Substring(0,12));$random=[byte[]]::new(32);[Security.Cryptography.RandomNumberGenerator]::Fill($random);$accountPassword='Aa1!'+[Convert]::ToBase64String($random)
+          $brokerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          Write-Output "::add-mask::$accountPassword"
+          & net.exe user $accountName $accountPassword /add /expires:never /passwordchg:no /active:yes *> $null
+          if($LASTEXITCODE-ne 0){throw 'ephemeral account creation failed'}
+          "WN_GC_ACCOUNT=$accountName"|Out-File $env:GITHUB_ENV -Encoding utf8 -Append;'WN_GC_ACCOUNT_OWNED=1'|Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          $account=[ADSI]"WinNT://./$accountName,user";$sidBytes=[byte[]]$account.objectSid.Value;$userSid=[Security.Principal.SecurityIdentifier]::new($sidBytes,0).Value
+          $admins=[ADSI]'WinNT://./Administrators,group';$adminMembers=@($admins.psbase.Invoke('Members')|ForEach-Object {$_.GetType().InvokeMember('Name','GetProperty',$null,$_,$null)})
+          if($adminMembers-contains$accountName){throw 'ephemeral account is an Administrator'}
           New-Item -ItemType Directory -Path $protectedDir | Out-Null
           Copy-Item -LiteralPath 'F:\repo\target\debug\wayland-nano.exe' -Destination $protectedBinary
-          $userSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
           $systemSid=[Security.Principal.SecurityIdentifier]::new('S-1-5-18');$adminSid=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544');$userIdentity=[Security.Principal.SecurityIdentifier]::new($userSid)
           function Set-ExactAcl($path,$directory,$userRights){
             $acl=if($directory){[Security.AccessControl.DirectorySecurity]::new()}else{[Security.AccessControl.FileSecurity]::new()}
@@ -490,6 +498,18 @@ jobs:
           if((Get-Item -LiteralPath 'F:\tmp').Attributes-band[IO.FileAttributes]::ReparsePoint){throw 'runtime temp is a reparse point'}
           if(@(Get-ChildItem Env:|Where-Object Name -like 'NANO_*_TEMP_ROOT').Count-ne 0){throw 'unexpected scratch environment'}
           $env:NANO_WP4_TEMP_ROOT=$scratchRoot
+          function Remove-VerifiedScratch($root){
+            $full=[IO.Path]::GetFullPath($root);$prefix=[IO.Path]::GetFullPath('F:\tmp').TrimEnd('\')+'\'
+            if($full-ne'F:\tmp\wp4-install-gate'-or!$full.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){throw 'scratch containment'}
+            if(!(Test-Path -LiteralPath $full)){return}
+            $stack=[Collections.Generic.Stack[string]]::new();$stack.Push($full)
+            while($stack.Count){$directory=$stack.Pop();$item=Get-Item -LiteralPath $directory -Force;if($item.Attributes-band[IO.FileAttributes]::ReparsePoint){throw "scratch reparse: $directory"};foreach($child in Get-ChildItem -LiteralPath $directory -Force){if($child.Attributes-band[IO.FileAttributes]::ReparsePoint){throw "scratch reparse: $($child.FullName)"};if($child.PSIsContainer){$stack.Push($child.FullName)}}}
+            Remove-Item -LiteralPath $full -Recurse -Force;if(Test-Path -LiteralPath $full){throw 'scratch removal failed'}
+          }
+          $sentinel='F:\tmp\wp4-cleanup-sentinel';if(Test-Path $sentinel){throw 'canary sentinel not pristine'};New-Item -ItemType Directory $sentinel|Out-Null;Set-Content -LiteralPath (Join-Path $sentinel 'sentinel.txt') -Value 'owned-sentinel'
+          New-Item -ItemType Directory $scratchRoot|Out-Null;$junction=Join-Path $scratchRoot 'nested-junction';New-Item -ItemType Junction -Path $junction -Target $sentinel|Out-Null
+          $blocked=$false;try{Remove-VerifiedScratch $scratchRoot}catch{$blocked=$true};if(!$blocked-or!(Test-Path -LiteralPath (Join-Path $sentinel 'sentinel.txt'))){throw 'nested junction canary failed'}
+          Remove-Item -LiteralPath $junction -Force;Remove-VerifiedScratch $scratchRoot;Remove-Item -LiteralPath $sentinel -Recurse -Force;if((Test-Path $sentinel) -or (Test-Path $scratchRoot)){throw 'canary cleanup failed'}
           $launcherSource = @'
           using System;
           using System.ComponentModel;
@@ -508,7 +528,12 @@ jobs:
               const UInt32 SE_GROUP_INTEGRITY = 0x00000020;
               const UInt32 SE_PRIVILEGE_ENABLED = 0x00000002;
               const UInt32 TokenPrivileges = 3;
+              const UInt32 TokenGroups = 2;
               const UInt32 TokenIntegrityLevel = 25;
+              const UInt32 TokenElevation = 20;
+              const UInt32 LOGON32_LOGON_INTERACTIVE = 2;
+              const UInt32 LOGON32_PROVIDER_DEFAULT = 0;
+              const UInt32 LOGON_WITH_PROFILE = 1;
               const UInt32 ERROR_INSUFFICIENT_BUFFER = 122;
               const UInt32 ERROR_NOT_ALL_ASSIGNED = 1300;
               const UInt32 WINSTA_ALL_ACCESS = 0x0000037F;
@@ -542,6 +567,8 @@ jobs:
               struct SID_AND_ATTRIBUTES { public IntPtr Sid; public UInt32 Attributes; }
               [StructLayout(LayoutKind.Sequential)]
               struct TOKEN_MANDATORY_LABEL { public SID_AND_ATTRIBUTES Label; }
+              [StructLayout(LayoutKind.Sequential)] struct TOKEN_GROUPS_ONE { public UInt32 GroupCount; public SID_AND_ATTRIBUTES Groups; }
+              [StructLayout(LayoutKind.Sequential)] struct TOKEN_ELEVATION { public UInt32 TokenIsElevated; }
               [StructLayout(LayoutKind.Sequential)]
               struct SECURITY_ATTRIBUTES { public UInt32 nLength; public IntPtr lpSecurityDescriptor; [MarshalAs(UnmanagedType.Bool)] public bool bInheritHandle; }
               [StructLayout(LayoutKind.Sequential)]
@@ -555,25 +582,20 @@ jobs:
               [StructLayout(LayoutKind.Sequential)]
               struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION { public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation; public IO_COUNTERS IoInfo; public UIntPtr ProcessMemoryLimit; public UIntPtr JobMemoryLimit; public UIntPtr PeakProcessMemoryUsed; public UIntPtr PeakJobMemoryUsed; }
 
-              [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
-              [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr ProcessHandle, UInt32 DesiredAccess, out IntPtr TokenHandle);
-              [DllImport("advapi32.dll", SetLastError=true)] static extern bool CreateRestrictedToken(IntPtr ExistingTokenHandle, UInt32 Flags, UInt32 DisableSidCount, IntPtr SidsToDisable, UInt32 DeletePrivilegeCount, IntPtr PrivilegesToDelete, UInt32 RestrictedSidCount, IntPtr SidsToRestrict, out IntPtr NewTokenHandle);
+              [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool LogonUserW(string lpszUsername,string lpszDomain,string lpszPassword,UInt32 dwLogonType,UInt32 dwLogonProvider,out IntPtr phToken);
+              [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcessWithTokenW(IntPtr hToken,UInt32 dwLogonFlags,string lpApplicationName,StringBuilder lpCommandLine,UInt32 dwCreationFlags,IntPtr lpEnvironment,string lpCurrentDirectory,ref STARTUPINFO lpStartupInfo,out PROCESS_INFORMATION lpProcessInformation);
               [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool ConvertStringSidToSidW(string StringSid, out IntPtr Sid);
               [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool LookupPrivilegeValueW(string lpSystemName, string lpName, out LUID lpLuid);
               [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr TokenHandle, UInt32 TokenInformationClass, IntPtr TokenInformation, UInt32 TokenInformationLength, out UInt32 ReturnLength);
-              [DllImport("advapi32.dll", SetLastError=true)] static extern bool SetTokenInformation(IntPtr TokenHandle, UInt32 TokenInformationClass, IntPtr TokenInformation, UInt32 TokenInformationLength);
-              [DllImport("advapi32.dll", SetLastError=true)] static extern bool AdjustTokenPrivileges(IntPtr TokenHandle, bool DisableAllPrivileges, IntPtr NewState, UInt32 BufferLength, IntPtr PreviousState, IntPtr ReturnLength);
               [DllImport("advapi32.dll", SetLastError=true)] static extern bool ImpersonateLoggedOnUser(IntPtr hToken);
               [DllImport("advapi32.dll", SetLastError=true)] static extern bool RevertToSelf();
-              [DllImport("advapi32.dll", SetLastError=true)] static extern UInt32 GetLengthSid(IntPtr pSid);
               [DllImport("advapi32.dll", SetLastError=true)] static extern bool EqualSid(IntPtr pSid1, IntPtr pSid2);
-              [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcessAsUserW(IntPtr hToken, string lpApplicationName, StringBuilder lpCommandLine, IntPtr lpProcessAttributes, IntPtr lpThreadAttributes, bool bInheritHandles, UInt32 dwCreationFlags, IntPtr lpEnvironment, string lpCurrentDirectory, ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
-              [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateWindowStationW(string lpwinsta, UInt32 dwFlags, UInt32 dwDesiredAccess, ref SECURITY_ATTRIBUTES lpsa);
+              [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateWindowStationW(string lpwinsta,UInt32 dwFlags,UInt32 dwDesiredAccess,ref SECURITY_ATTRIBUTES lpsa);
               [DllImport("user32.dll", SetLastError=true)] static extern IntPtr GetProcessWindowStation();
               [DllImport("user32.dll", SetLastError=true)] static extern bool SetProcessWindowStation(IntPtr hWinSta);
               [DllImport("user32.dll", SetLastError=true)] static extern bool CloseWindowStation(IntPtr hWinSta);
-              [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateDesktopW(string lpszDesktop, string lpszDevice, IntPtr pDevmode, UInt32 dwFlags, UInt32 dwDesiredAccess, ref SECURITY_ATTRIBUTES lpsa);
-              [DllImport("user32.dll", SetLastError=true)] static extern bool CloseDesktop(IntPtr hDesktop);
+              [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateDesktopW(string name,string device,IntPtr devmode,UInt32 flags,UInt32 access,ref SECURITY_ATTRIBUTES sa);
+              [DllImport("user32.dll", SetLastError=true)] static extern bool CloseDesktop(IntPtr desktop);
               [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateJobObjectW(IntPtr lpJobAttributes, string lpName);
               [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetInformationJobObject(IntPtr hJob, UInt32 JobObjectInfoClass, IntPtr lpJobObjectInfo, UInt32 cbJobObjectInfoLength);
               [DllImport("kernel32.dll", SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
@@ -622,63 +644,35 @@ jobs:
                   } finally { Check(RevertToSelf(),"RevertToSelf"); }
               }
 
-              public static int RunGate(string gateId) {
+              public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid) {
                   if(gateId!="config-schema" && gateId!="install-payload" && gateId!="provision-script") throw new ArgumentException("gate id is not canonical", "gateId");
+                  if(String.IsNullOrEmpty(accountName)||String.IsNullOrEmpty(accountPassword))throw new ArgumentException("ephemeral account credentials");
                   if(Environment.GetEnvironmentVariable("NANO_WP4_TEMP_ROOT")!=ScratchRoot) throw new InvalidOperationException("fixed install scratch environment");
                   string command="\"F:\\gate-cards-bin\\wayland-nano.exe\" verify --gate "+gateId+" --run-only";
-                  IntPtr currentToken=IntPtr.Zero, restrictedToken=IntPtr.Zero, administratorsSid=IntPtr.Zero, mediumSid=IntPtr.Zero,
-                      disabledSids=IntPtr.Zero, sourcePrivileges=IntPtr.Zero, deletePrivileges=IntPtr.Zero, restrictedPrivileges=IntPtr.Zero,
-                      integrity=IntPtr.Zero, verifyIntegrity=IntPtr.Zero, adjustState=IntPtr.Zero, desktopSecurity=IntPtr.Zero,
-                      originalWindowStation=IntPtr.Zero, windowStation=IntPtr.Zero, desktop=IntPtr.Zero, job=IntPtr.Zero;
-                  PROCESS_INFORMATION pi=new PROCESS_INFORMATION(); bool assigned=false,windowStationSwitched=false;
+                  IntPtr restrictedToken=IntPtr.Zero, administratorsSid=IntPtr.Zero, mediumSid=IntPtr.Zero,
+                      restrictedPrivileges=IntPtr.Zero, verifyIntegrity=IntPtr.Zero, stationSecurity=IntPtr.Zero,
+                      originalStation=IntPtr.Zero,station=IntPtr.Zero,desktop=IntPtr.Zero,job=IntPtr.Zero;
+                  PROCESS_INFORMATION pi=new PROCESS_INFORMATION(); bool assigned=false,stationSwitched=false;
                   try {
-                      Check(OpenProcessToken(GetCurrentProcess(), TOKEN_ASSIGN_PRIMARY|TOKEN_DUPLICATE|TOKEN_QUERY|TOKEN_ADJUST_PRIVILEGES|TOKEN_ADJUST_DEFAULT, out currentToken), "OpenProcessToken");
-                      Check(ConvertStringSidToSidW("S-1-5-32-544", out administratorsSid), "ConvertStringSidToSidW(Administrators)");
-                      var disabledSid=new SID_AND_ATTRIBUTES(); disabledSid.Sid=administratorsSid; disabledSid.Attributes=SE_GROUP_USE_FOR_DENY_ONLY;
-                      disabledSids=Marshal.AllocHGlobal(Marshal.SizeOf(disabledSid)); Marshal.StructureToPtr(disabledSid, disabledSids, false);
-                      LUID changeNotify; Check(LookupPrivilegeValueW(null, "SeChangeNotifyPrivilege", out changeNotify), "LookupPrivilegeValueW(ChangeNotify)");
-                      UInt32 sourceSize; sourcePrivileges=TokenInfo(currentToken, TokenPrivileges, out sourceSize);
-                      UInt32 sourceCount=(UInt32)Marshal.ReadInt32(sourcePrivileges); int luidSize=Marshal.SizeOf(typeof(LUID_AND_ATTRIBUTES));
-                      var deletes=new System.Collections.Generic.List<LUID_AND_ATTRIBUTES>();
-                      for(int i=0;i<sourceCount;i++){var item=Marshal.PtrToStructure<LUID_AND_ATTRIBUTES>(IntPtr.Add(sourcePrivileges,4+i*luidSize));if(!SameLuid(item.Luid,changeNotify))deletes.Add(item);}
-                      if(deletes.Count>0){deletePrivileges=Marshal.AllocHGlobal(deletes.Count*luidSize);for(int i=0;i<deletes.Count;i++)Marshal.StructureToPtr(deletes[i],IntPtr.Add(deletePrivileges,i*luidSize),false);}
-                      Check(CreateRestrictedToken(currentToken, 0, 1, disabledSids, (UInt32)deletes.Count, deletePrivileges, 0, IntPtr.Zero, out restrictedToken), "CreateRestrictedToken(explicit privilege deletion)");
-                      UInt32 restrictedSize; restrictedPrivileges=TokenInfo(restrictedToken, TokenPrivileges, out restrictedSize);
-                      UInt32 remaining=(UInt32)Marshal.ReadInt32(restrictedPrivileges);
-                      if(remaining>1)throw new InvalidOperationException("restricted privilege inventory");
-                      if(remaining==1){var only=Marshal.PtrToStructure<LUID_AND_ATTRIBUTES>(IntPtr.Add(restrictedPrivileges,4));if(!SameLuid(only.Luid,changeNotify))throw new InvalidOperationException("unexpected remaining privilege");}
-                      LUID debug; Check(LookupPrivilegeValueW(null,"SeDebugPrivilege",out debug),"LookupPrivilegeValueW(Debug)");
-                      adjustState=Marshal.AllocHGlobal(4+luidSize);Marshal.WriteInt32(adjustState,1);Marshal.StructureToPtr(new LUID_AND_ATTRIBUTES{Luid=debug,Attributes=SE_PRIVILEGE_ENABLED},IntPtr.Add(adjustState,4),false);
-                      Marshal.GetLastWin32Error(); bool adjusted=AdjustTokenPrivileges(restrictedToken,false,adjustState,(UInt32)(4+luidSize),IntPtr.Zero,IntPtr.Zero);int adjustError=Marshal.GetLastWin32Error();
-                      if(!adjusted || adjustError!=ERROR_NOT_ALL_ASSIGNED)throw new InvalidOperationException("deleted SeDebugPrivilege became recoverable");
-                      Check(ConvertStringSidToSidW("S-1-16-8192", out mediumSid), "ConvertStringSidToSidW(Medium)");
-                      var label=new TOKEN_MANDATORY_LABEL();label.Label.Sid=mediumSid;label.Label.Attributes=SE_GROUP_INTEGRITY;
-                      int labelSize=Marshal.SizeOf(label);UInt32 sidSize=GetLengthSid(mediumSid);if(sidSize==0)throw new Win32Exception(Marshal.GetLastWin32Error(),"GetLengthSid");
-                      integrity=Marshal.AllocHGlobal(labelSize);Marshal.StructureToPtr(label,integrity,false);
-                      Check(SetTokenInformation(restrictedToken,TokenIntegrityLevel,integrity,(UInt32)labelSize+sidSize),"SetTokenInformation(Medium)");
-                      UInt32 verifySize;verifyIntegrity=TokenInfo(restrictedToken,TokenIntegrityLevel,out verifySize);var observed=Marshal.PtrToStructure<TOKEN_MANDATORY_LABEL>(verifyIntegrity);
-                      Check(EqualSid(observed.Label.Sid,mediumSid),"EqualSid(Medium)");
+                      Check(LogonUserW(accountName,".",accountPassword,LOGON32_LOGON_INTERACTIVE,LOGON32_PROVIDER_DEFAULT,out restrictedToken),"LogonUserW(ephemeral account)");
+                      UInt32 elevationSize;IntPtr elevation=TokenInfo(restrictedToken,TokenElevation,out elevationSize);try{if(Marshal.PtrToStructure<TOKEN_ELEVATION>(elevation).TokenIsElevated!=0)throw new InvalidOperationException("ephemeral token elevated");}finally{Marshal.FreeHGlobal(elevation);}
+                      Check(ConvertStringSidToSidW("S-1-16-8192",out mediumSid),"ConvertStringSidToSidW(Medium)");UInt32 mediumSize;verifyIntegrity=TokenInfo(restrictedToken,TokenIntegrityLevel,out mediumSize);var mediumLabel=Marshal.PtrToStructure<TOKEN_MANDATORY_LABEL>(verifyIntegrity);Check(EqualSid(mediumLabel.Label.Sid,mediumSid),"ephemeral token Medium integrity");
+                      Check(ConvertStringSidToSidW("S-1-5-32-544",out administratorsSid),"ConvertStringSidToSidW(Administrators)");UInt32 groupSize;IntPtr groups=TokenInfo(restrictedToken,TokenGroups,out groupSize);try{UInt32 count=(UInt32)Marshal.ReadInt32(groups);int offset=(int)Marshal.OffsetOf(typeof(TOKEN_GROUPS_ONE),"Groups");int stride=Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));for(int i=0;i<count;i++){var group=Marshal.PtrToStructure<SID_AND_ATTRIBUTES>(IntPtr.Add(groups,offset+i*stride));if(EqualSid(group.Sid,administratorsSid))throw new InvalidOperationException("ephemeral account has Administrators membership");}}finally{Marshal.FreeHGlobal(groups);}
+                      UInt32 accountPrivilegeSize;restrictedPrivileges=TokenInfo(restrictedToken,TokenPrivileges,out accountPrivilegeSize);UInt32 accountPrivilegeCount=(UInt32)Marshal.ReadInt32(restrictedPrivileges);int accountLuidSize=Marshal.SizeOf(typeof(LUID_AND_ATTRIBUTES));
+                      foreach(string dangerous in new[]{"SeDebugPrivilege","SeRestorePrivilege","SeTakeOwnershipPrivilege","SeBackupPrivilege","SeTcbPrivilege","SeImpersonatePrivilege"}){LUID dangerousLuid;Check(LookupPrivilegeValueW(null,dangerous,out dangerousLuid),"LookupPrivilegeValueW(dangerous)");for(int i=0;i<accountPrivilegeCount;i++){var privilege=Marshal.PtrToStructure<LUID_AND_ATTRIBUTES>(IntPtr.Add(restrictedPrivileges,4+i*accountLuidSize));if(SameLuid(privilege.Luid,dangerousLuid))throw new InvalidOperationException("dangerous ephemeral privilege");}}
                       ProbeProtectedBinary(restrictedToken);
-                      string desktopName="WaylandNanoGateCards-"+Guid.NewGuid().ToString("N");
-                      string userSid=WindowsIdentity.GetCurrent().User.Value;
-                      var descriptor=new RawSecurityDescriptor("O:"+userSid+"G:"+userSid+"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;"+userSid+")");
-                      byte[] descriptorBytes=new byte[descriptor.BinaryLength];descriptor.GetBinaryForm(descriptorBytes,0);
-                      desktopSecurity=Marshal.AllocHGlobal(descriptorBytes.Length);Marshal.Copy(descriptorBytes,0,desktopSecurity,descriptorBytes.Length);
-                      var desktopAttributes=new SECURITY_ATTRIBUTES { nLength=(UInt32)Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)),lpSecurityDescriptor=desktopSecurity,bInheritHandle=false };
-                      string windowStationName="WaylandNanoGateCardsStation-"+Guid.NewGuid().ToString("N");
-                      originalWindowStation=GetProcessWindowStation();Check(originalWindowStation!=IntPtr.Zero,"GetProcessWindowStation");
-                      windowStation=CreateWindowStationW(windowStationName,0,WINSTA_ALL_ACCESS,ref desktopAttributes);Check(windowStation!=IntPtr.Zero,"CreateWindowStationW");
-                      Check(SetProcessWindowStation(windowStation),"SetProcessWindowStation(private)");windowStationSwitched=true;
-                      try { desktop=CreateDesktopW(desktopName,null,IntPtr.Zero,0,DESKTOP_ALL_ACCESS,ref desktopAttributes);Check(desktop!=IntPtr.Zero,"CreateDesktopW"); }
-                      finally { Check(SetProcessWindowStation(originalWindowStation),"SetProcessWindowStation(original)");windowStationSwitched=false; }
+                      string stationName="WaylandNanoGateCardsStation-"+Guid.NewGuid().ToString("N"),desktopName="WaylandNanoGateCards-"+Guid.NewGuid().ToString("N");
+                      var descriptor=new RawSecurityDescriptor("O:"+brokerSid+"G:"+brokerSid+"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;"+brokerSid+")(A;;GA;;;"+accountSid+")");byte[] descriptorBytes=new byte[descriptor.BinaryLength];descriptor.GetBinaryForm(descriptorBytes,0);stationSecurity=Marshal.AllocHGlobal(descriptorBytes.Length);Marshal.Copy(descriptorBytes,0,stationSecurity,descriptorBytes.Length);
+                      var stationAttributes=new SECURITY_ATTRIBUTES{nLength=(UInt32)Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)),lpSecurityDescriptor=stationSecurity,bInheritHandle=false};
+                      originalStation=GetProcessWindowStation();Check(originalStation!=IntPtr.Zero,"GetProcessWindowStation");station=CreateWindowStationW(stationName,0,WINSTA_ALL_ACCESS,ref stationAttributes);Check(station!=IntPtr.Zero,"CreateWindowStationW");
+                      Check(SetProcessWindowStation(station),"SetProcessWindowStation(private)");stationSwitched=true;try{desktop=CreateDesktopW(desktopName,null,IntPtr.Zero,0,DESKTOP_ALL_ACCESS,ref stationAttributes);Check(desktop!=IntPtr.Zero,"CreateDesktopW");}finally{Check(SetProcessWindowStation(originalStation),"SetProcessWindowStation(restore)");stationSwitched=false;}
                       job=CreateJobObjectW(IntPtr.Zero, null); Check(job!=IntPtr.Zero, "CreateJobObjectW");
                       var limits=new JOBOBJECT_EXTENDED_LIMIT_INFORMATION(); limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
                       int size=Marshal.SizeOf(limits); IntPtr limitsPtr=Marshal.AllocHGlobal(size);
                       try { Marshal.StructureToPtr(limits, limitsPtr, false); Check(SetInformationJobObject(job, JobObjectExtendedLimitInformation, limitsPtr, (UInt32)size), "SetInformationJobObject"); }
                       finally { Marshal.FreeHGlobal(limitsPtr); }
-                      var startup=new STARTUPINFO(); startup.cb=(UInt32)Marshal.SizeOf(startup);startup.lpDesktop=windowStationName+@"\"+desktopName;
-                      if(!startup.lpDesktop.StartsWith("WaylandNanoGateCardsStation-",StringComparison.Ordinal)||startup.lpDesktop.IndexOf(@"\WaylandNanoGateCards-",StringComparison.Ordinal)<0)throw new InvalidOperationException("unique desktop binding");
-                      Check(CreateProcessAsUserW(restrictedToken, Application, new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, false, CREATE_SUSPENDED|CREATE_NO_WINDOW, IntPtr.Zero, WorkingDirectory, ref startup, out pi), "CreateProcessAsUserW");
+                      var startup=new STARTUPINFO(); startup.cb=(UInt32)Marshal.SizeOf(startup);startup.lpDesktop=stationName+@"\"+desktopName;if(!startup.lpDesktop.StartsWith("WaylandNanoGateCardsStation-",StringComparison.Ordinal)||startup.lpDesktop.IndexOf(@"\WaylandNanoGateCards-",StringComparison.Ordinal)<0)throw new InvalidOperationException("private desktop identity");
+                      Check(CreateProcessWithTokenW(restrictedToken,0,Application,new StringBuilder(command),CREATE_SUSPENDED|CREATE_NO_WINDOW,IntPtr.Zero,WorkingDirectory,ref startup,out pi),"CreateProcessWithTokenW");
                       Check(AssignProcessToJobObject(job, pi.hProcess), "AssignProcessToJobObject"); assigned=true;
                       if (ResumeThread(pi.hThread)==UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread");
                       UInt32 wait=WaitForSingleObject(pi.hProcess, 1200000);
@@ -692,14 +686,12 @@ jobs:
                       throw;
                   } finally {
                       if(pi.hThread!=IntPtr.Zero) CloseHandle(pi.hThread); if(pi.hProcess!=IntPtr.Zero) CloseHandle(pi.hProcess);
-                      if(windowStationSwitched && originalWindowStation!=IntPtr.Zero) SetProcessWindowStation(originalWindowStation);
-                      if(desktop!=IntPtr.Zero) CloseDesktop(desktop);
-                      if(windowStation!=IntPtr.Zero) CloseWindowStation(windowStation);
-                      if(desktopSecurity!=IntPtr.Zero) Marshal.FreeHGlobal(desktopSecurity);
-                      if(adjustState!=IntPtr.Zero) Marshal.FreeHGlobal(adjustState);if(verifyIntegrity!=IntPtr.Zero)Marshal.FreeHGlobal(verifyIntegrity);if(integrity!=IntPtr.Zero)Marshal.FreeHGlobal(integrity);
-                      if(restrictedPrivileges!=IntPtr.Zero)Marshal.FreeHGlobal(restrictedPrivileges);if(deletePrivileges!=IntPtr.Zero)Marshal.FreeHGlobal(deletePrivileges);if(sourcePrivileges!=IntPtr.Zero)Marshal.FreeHGlobal(sourcePrivileges);
-                      if(restrictedToken!=IntPtr.Zero) CloseHandle(restrictedToken); if(currentToken!=IntPtr.Zero) CloseHandle(currentToken);
-                      if(disabledSids!=IntPtr.Zero) Marshal.FreeHGlobal(disabledSids); if(mediumSid!=IntPtr.Zero)LocalFree(mediumSid);if(administratorsSid!=IntPtr.Zero) LocalFree(administratorsSid);
+                      if(stationSwitched&&originalStation!=IntPtr.Zero)SetProcessWindowStation(originalStation);
+                      if(desktop!=IntPtr.Zero)CloseDesktop(desktop);if(station!=IntPtr.Zero)CloseWindowStation(station);if(stationSecurity!=IntPtr.Zero)Marshal.FreeHGlobal(stationSecurity);
+                      if(verifyIntegrity!=IntPtr.Zero)Marshal.FreeHGlobal(verifyIntegrity);
+                      if(restrictedPrivileges!=IntPtr.Zero)Marshal.FreeHGlobal(restrictedPrivileges);
+                      if(restrictedToken!=IntPtr.Zero) CloseHandle(restrictedToken);
+                      if(mediumSid!=IntPtr.Zero)LocalFree(mediumSid);if(administratorsSid!=IntPtr.Zero) LocalFree(administratorsSid);
                       if(job!=IntPtr.Zero) CloseHandle(job);
                   }
               }
@@ -707,7 +699,16 @@ jobs:
           '@
           $needles = @(
             'const string Application = @"F:\gate-cards-bin\wayland-nano.exe"',
-            'public static int RunGate(string gateId)',
+            'public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid)',
+            'LogonUserW(accountName,".",accountPassword,LOGON32_LOGON_INTERACTIVE,LOGON32_PROVIDER_DEFAULT',
+            'CreateProcessWithTokenW(restrictedToken,0,Application',
+            'TokenInfo(restrictedToken,TokenElevation', 'TokenIsElevated!=0',
+            'TokenInfo(restrictedToken,TokenGroups', 'ephemeral account has Administrators membership',
+            'dangerous ephemeral privilege', 'ephemeral token Medium integrity',
+            'RawSecurityDescriptor("O:"+brokerSid+"G:"+brokerSid+"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;"+brokerSid+")(A;;GA;;;"+accountSid+")")',
+            'CreateWindowStationW(stationName,0,WINSTA_ALL_ACCESS', 'SetProcessWindowStation(station)',
+            'CreateDesktopW(desktopName,null,IntPtr.Zero,0,DESKTOP_ALL_ACCESS', 'SetProcessWindowStation(originalStation)',
+            'startup.lpDesktop=stationName+@"\"+desktopName', 'CloseDesktop(desktop)', 'CloseWindowStation(station)',
             'gateId!="config-schema" && gateId!="install-payload" && gateId!="provision-script"',
             'string command="\"F:\\gate-cards-bin\\wayland-nano.exe\" verify --gate "+gateId+" --run-only"',
             'const string ScratchRoot = @"F:\tmp\wp4-install-gate"',
@@ -719,22 +720,7 @@ jobs:
             'MoveFileExW(Application,Application+".moved"', '@"F:\gate-cards-bin\replacement.tmp"',
             'MoveFileExW(@"F:\gate-cards-bin",@"F:\gate-cards-bin-moved"',
             'CreateDirectoryW(@"F:\restricted-probe"',
-            'TOKEN_ADJUST_DEFAULT = 0x0080',
-            'TOKEN_ADJUST_PRIVILEGES = 0x0020',
-            'OpenProcessToken(GetCurrentProcess(), TOKEN_ASSIGN_PRIMARY|TOKEN_DUPLICATE|TOKEN_QUERY|TOKEN_ADJUST_PRIVILEGES|TOKEN_ADJUST_DEFAULT',
-            'ConvertStringSidToSidW("S-1-5-32-544"', 'SE_GROUP_USE_FOR_DENY_ONLY',
-            'LookupPrivilegeValueW(null, "SeChangeNotifyPrivilege"', 'TokenInfo(currentToken, TokenPrivileges',
-            'CreateRestrictedToken(currentToken, 0, 1, disabledSids', 'TokenInfo(restrictedToken, TokenPrivileges',
-            'AdjustTokenPrivileges', 'ERROR_NOT_ALL_ASSIGNED', 'SeDebugPrivilege',
-            'ConvertStringSidToSidW("S-1-16-8192"', 'SetTokenInformation', 'GetTokenInformation', 'EqualSid',
-            'RawSecurityDescriptor("O:"+userSid+"G:"+userSid+"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;"+userSid+")")',
-            'CreateWindowStationW(windowStationName,0,WINSTA_ALL_ACCESS,ref desktopAttributes)', 'SetProcessWindowStation(windowStation)',
-            'CreateDesktopW(desktopName,null,IntPtr.Zero,0,DESKTOP_ALL_ACCESS,ref desktopAttributes)', 'WaylandNanoGateCards-', 'startup.lpDesktop=windowStationName+@"\"+desktopName',
-            'SetProcessWindowStation(originalWindowStation)', 'CloseDesktop', 'CloseWindowStation',
-            'CreateProcessAsUserW',
-            'IntPtr.Zero, IntPtr.Zero, false, CREATE_SUSPENDED|CREATE_NO_WINDOW',
-            'CREATE_SUSPENDED|CREATE_NO_WINDOW, IntPtr.Zero, WorkingDirectory',
-            'if(!adjusted || adjustError!=ERROR_NOT_ALL_ASSIGNED)',
+            'CREATE_SUSPENDED|CREATE_NO_WINDOW,IntPtr.Zero,WorkingDirectory',
             'CREATE_SUSPENDED|CREATE_NO_WINDOW', 'CreateJobObjectW', 'SetInformationJobObject',
             'JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE', 'AssignProcessToJobObject', 'ResumeThread',
             'WaitForSingleObject(pi.hProcess, 1200000)', 'TerminateJobObject(job, 124)',
@@ -742,13 +728,16 @@ jobs:
           )
           foreach($needle in $needles){if(!$launcherSource.Contains($needle)){throw "restricted launcher assertion failed: $needle"}}
           if($launcherSource.Contains('gate-cards-child')-or$launcherSource.Contains('node.exe')-or$launcherSource.Contains('.ps1')-or$launcherSource.Contains('PowerShell')){throw 'restricted launcher contains a broker or dynamic application'}
+          foreach($forbiddenApi in @('CreateRestrictedToken','CreateProcessAsUserW')){if($launcherSource.Contains($forbiddenApi)){throw "obsolete restricted harness remains: $forbiddenApi"}}
           if($launcherSource.Contains('DISABLE_MAX_PRIVILEGE')){throw 'recoverable privilege-disable flag is forbidden'}
-          $ordered = @('Check(OpenProcessToken(', 'Check(ConvertStringSidToSidW("S-1-5-32-544"', 'sourcePrivileges=TokenInfo(',
-            'Check(CreateRestrictedToken(', 'restrictedPrivileges=TokenInfo(', 'Check(ConvertStringSidToSidW("S-1-16-8192"',
-            'Check(SetTokenInformation(', 'verifyIntegrity=TokenInfo(', 'desktop=CreateDesktopW(', 'job=CreateJobObjectW(',
-            'Check(SetInformationJobObject(', 'Check(CreateProcessAsUserW(',
+          $ordered = @('Check(LogonUserW(', 'TokenInfo(restrictedToken,TokenElevation', 'TokenInfo(restrictedToken,TokenIntegrityLevel',
+            'TokenInfo(restrictedToken,TokenGroups', 'restrictedPrivileges=TokenInfo(restrictedToken,TokenPrivileges',
+            'ProbeProtectedBinary(restrictedToken)', 'originalStation=GetProcessWindowStation(', 'station=CreateWindowStationW(',
+            'Check(SetProcessWindowStation(station)', 'desktop=CreateDesktopW(', 'Check(SetProcessWindowStation(originalStation)',
+            'job=CreateJobObjectW(',
+            'Check(SetInformationJobObject(', 'Check(CreateProcessWithTokenW(',
             'Check(AssignProcessToJobObject(', 'if (ResumeThread(', 'UInt32 wait=WaitForSingleObject(',
-            'Check(GetExitCodeProcess(', 'if(desktop!=IntPtr.Zero) CloseDesktop(')
+            'Check(GetExitCodeProcess(')
           $previous = -1
           foreach($needle in $ordered){$position=$launcherSource.IndexOf($needle,[StringComparison]::Ordinal);if($position-le$previous){throw "restricted launcher order failed: $needle"};$previous=$position}
           Add-Type -TypeDefinition $launcherSource
@@ -757,12 +746,9 @@ jobs:
           $binaryHash=(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash
           function Invoke-ProtectedGate($gateId){
             if(!(Test-Path -LiteralPath $protectedDir -PathType Container)-or!(Test-Path -LiteralPath $binary -PathType Leaf)-or(Get-Item -LiteralPath $binary).FullName-ne'F:\gate-cards-bin\wayland-nano.exe'-or(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash-ne$binaryHash){throw 'protected identity changed before gate'}
-            try{$exit=[GateCardsRestrictedProcess]::RunGate($gateId)}finally{
+            try{$exit=[GateCardsRestrictedProcess]::RunGate($gateId,$accountName,$accountPassword,$userSid,$brokerSid)}finally{
               if($gateId-eq'install-payload'-and(Test-Path -LiteralPath $scratchRoot)){
-                $fullScratch=[IO.Path]::GetFullPath($scratchRoot);$tempPrefix=[IO.Path]::GetFullPath('F:\tmp').TrimEnd('\')+'\'
-                if($fullScratch-ne'F:\tmp\wp4-install-gate'-or!$fullScratch.StartsWith($tempPrefix,[StringComparison]::OrdinalIgnoreCase)-or((Get-Item -LiteralPath $fullScratch).Attributes-band[IO.FileAttributes]::ReparsePoint)){throw 'unsafe install scratch cleanup'}
-                Remove-Item -LiteralPath $fullScratch -Recurse -Force
-                if(Test-Path -LiteralPath $fullScratch){throw 'install scratch cleanup failed'}
+                Remove-VerifiedScratch $scratchRoot
               }
             }
             if(!(Test-Path -LiteralPath $protectedDir -PathType Container)-or!(Test-Path -LiteralPath $binary -PathType Leaf)-or(Get-Item -LiteralPath $binary).FullName-ne'F:\gate-cards-bin\wayland-nano.exe'-or(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash-ne$binaryHash){throw 'protected identity changed after gate'}
@@ -789,9 +775,18 @@ jobs:
         shell: pwsh
         run: |
           $failed=$false
+          if($env:WN_GC_ACCOUNT_OWNED-eq'1'){
+            if($env:WN_GC_ACCOUNT-notmatch'^wngc[0-9a-f]{12}$'){throw 'ephemeral account cleanup identity'}
+            & net.exe user $env:WN_GC_ACCOUNT /delete *> $null;if($LASTEXITCODE-ne 0){$failed=$true}
+            & net.exe user $env:WN_GC_ACCOUNT *> $null;if($LASTEXITCODE-eq 0){$failed=$true}
+          }
           $scratchRoot=[IO.Path]::GetFullPath('F:\tmp\wp4-install-gate');$tempPrefix=[IO.Path]::GetFullPath('F:\tmp').TrimEnd('\')+'\'
           if($scratchRoot-ne'F:\tmp\wp4-install-gate'-or!$scratchRoot.StartsWith($tempPrefix,[StringComparison]::OrdinalIgnoreCase)){throw 'scratch cleanup path drift'}
-          if(Test-Path -LiteralPath $scratchRoot){if((Get-Item -LiteralPath $scratchRoot).Attributes-band[IO.FileAttributes]::ReparsePoint){throw 'scratch cleanup reparse point'};Remove-Item -LiteralPath $scratchRoot -Recurse -Force}
+          if(Test-Path -LiteralPath $scratchRoot){
+            $stack=[Collections.Generic.Stack[string]]::new();$stack.Push($scratchRoot)
+            while($stack.Count){$directory=$stack.Pop();$item=Get-Item -LiteralPath $directory -Force;if($item.Attributes-band[IO.FileAttributes]::ReparsePoint){throw "scratch cleanup reparse: $directory"};foreach($child in Get-ChildItem -LiteralPath $directory -Force){if($child.Attributes-band[IO.FileAttributes]::ReparsePoint){throw "scratch cleanup reparse: $($child.FullName)"};if($child.PSIsContainer){$stack.Push($child.FullName)}}}
+            Remove-Item -LiteralPath $scratchRoot -Recurse -Force
+          }
           if(Test-Path -LiteralPath $scratchRoot){$failed=$true}
           foreach($probe in @('F:\restricted-probe','F:\gate-cards-bin-moved')){if(Test-Path -LiteralPath $probe){Remove-Item -LiteralPath $probe -Recurse -Force};if(Test-Path -LiteralPath $probe){$failed=$true}}
           $protectedDir=[IO.Path]::GetFullPath('F:\gate-cards-bin')
