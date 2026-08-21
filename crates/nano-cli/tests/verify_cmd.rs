@@ -26,16 +26,12 @@ fn serial() -> MutexGuard<'static, ()> {
 
 fn unique_root(label: &str) -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let temp = std::fs::canonicalize(std::env::var_os("TEMP").expect("TEMP required")).unwrap();
-    assert_eq!(
-        temp,
-        std::fs::canonicalize(std::env::var_os("TMP").unwrap()).unwrap()
-    );
-    assert!(
-        temp.to_string_lossy()
-            .trim_start_matches(r"\\?\")
-            .starts_with("F:\\")
-    );
+    let temp = ["TEMP", "TMP"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .find(|path| path.is_dir())
+        .unwrap_or_else(std::env::temp_dir);
     temp.join(format!(
         "wn-wp3-{label}-{}-{}",
         std::process::id(),
