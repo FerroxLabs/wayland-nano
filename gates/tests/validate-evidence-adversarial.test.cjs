@@ -145,13 +145,13 @@ test('builder request and final contracts reject authority and stop spoofing', a
       commands:validator.COMMANDS,canary_files:[dogfoodPath,reviewPath,'UPSTREAM.md','docs/verify/gates.md'],cleanup_paths:[validator.TOOLS_ROOT]};
     const builderFile=await put(dir,'builder.json',builder);
     const executed=[]; const envs=[]; let canaryRuns=0; const toolsRoot=path.join(dir,'owned-tools');
-    const deps={toolsRoot,run:(command,control)=>{executed.push(command);envs.push(control.env);if(command===validator.COMMANDS[0]){fs.mkdirSync(toolsRoot,{recursive:true});fs.writeFileSync(path.join(toolsRoot,'owned'),'x');}return {status:0,stdout:command===validator.COMMANDS[1]?validator.NAMED.join('\n'):'ok',stderr:''}},canary:()=>{canaryRuns+=1}};
-    const repoTarget=path.join(ROOT,'target'); const madeRepoTarget=!fs.existsSync(repoTarget); if(madeRepoTarget)fs.mkdirSync(repoTarget);
+    let junctionExists=false;
+    const deps={toolsRoot,run:(command,control)=>{executed.push(command);envs.push(control.env);if(command===validator.COMMANDS[0]){fs.mkdirSync(toolsRoot,{recursive:true});fs.writeFileSync(path.join(toolsRoot,'owned'),'x');}return {status:0,stdout:command===validator.COMMANDS[1]?validator.NAMED.join('\n'):'ok',stderr:''}},canary:()=>{canaryRuns+=1},
+      junction:{platform:'win32',exists:()=>junctionExists,create:()=>{junctionExists=true;return {status:0}},identity:()=>true,remove:()=>{junctionExists=false;return {status:0}}}};
     assert.doesNotThrow(()=>validator.builder(builderFile,undefined,deps));
     assert.deepEqual(executed,validator.COMMANDS); assert.equal(canaryRuns,1);
-    assert.equal(fs.existsSync(toolsRoot),false);assert.equal(fs.existsSync(repoTarget),true);
+    assert.equal(fs.existsSync(toolsRoot),false);assert.equal(junctionExists,false);
     for(const env of envs)assert.deepEqual(env,validator.controlledEnv(toolsRoot));
-    if(madeRepoTarget)fs.rmSync(repoTarget,{recursive:true,force:true});
     fs.mkdirSync(toolsRoot,{recursive:true});assert.throws(()=>validator.builder(builderFile,undefined,deps));fs.rmSync(toolsRoot,{recursive:true,force:true});
     const forged={...builder,passed:true}; const forgedFile=await put(dir,'forged.json',forged);
     assert.throws(()=>validator.builder(forgedFile,undefined,{run:()=>{throw new Error('must not execute')}}));
@@ -177,4 +177,19 @@ test('builder request and final contracts reject authority and stop spoofing', a
     assert.equal(run(['final',finalFile,ciFile]).status,0);
     final.stop.wp5_absent=false; assert.notEqual(run(['final',await put(dir,'bad-final.md',`\`\`\`json\n${JSON.stringify(final)}\n\`\`\`\n`),ciFile]).status,0);
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
+});
+
+test('Windows Node junction is fail-closed and always absent afterward',()=>{
+  const command=validator.COMMANDS[1],run=()=>({status:0,stdout:'ok',stderr:''});
+  let removed=false;
+  assert.throws(()=>validator.withNodeJunction(command,run,'F:/w4e-tools',{platform:'win32',exists:()=>true,remove:()=>{removed=true;return {status:0}}}),/preexists/);
+  assert.equal(removed,false,'preexisting target is never deleted');
+  assert.throws(()=>validator.withNodeJunction(command,run,'F:/w4e-tools',{platform:'win32',exists:()=>false,create:()=>({status:1})}),/create failed/);
+  let state=false;
+  assert.throws(()=>validator.withNodeJunction(command,run,'F:/w4e-tools',{platform:'win32',exists:()=>state,create:()=>{state=true;return {status:0}},identity:()=>true,remove:()=>({status:1})}),/cleanup failed/);
+  state=false;
+  assert.throws(()=>validator.withNodeJunction(command,run,'F:/w4e-tools',{platform:'win32',exists:()=>state,create:()=>{state=true;return {status:0}},identity:()=>true,remove:()=>({status:0})}),/cleanup failed/);
+  state=false;
+  const result=validator.withNodeJunction(command,run,'F:/w4e-tools',{platform:'win32',exists:()=>state,create:()=>{state=true;return {status:0}},identity:()=>true,remove:()=>{state=false;return {status:0}}});
+  assert.equal(result.status,0);assert.equal(state,false);
 });

@@ -287,6 +287,34 @@ function defaultRun(command) {
 }
 function controlledEnv(root=TOOLS_ROOT){return {CARGO_TARGET_DIR:root,NANO_CLI_BIN:`${root}\\debug\\wayland-nano.exe`,
   NANO_DRY_RUN_BIN:`${root}\\debug\\wayland-nano-provision-dry-run.exe`,NANO_SETUP_BIN:`${root}\\debug\\wayland-nano-sandbox-setup.exe`};}
+function withNodeJunction(command,run,toolsRoot,deps={}) {
+  if((deps.platform||process.platform)!=='win32') return run(command,{env:controlledEnv(toolsRoot)});
+  const path=require('node:path'), target=path.join(process.cwd(),'target');
+  const exists=deps.exists||fs.existsSync;
+  if(exists(target)) die('builder: repository target preexists');
+  const create=deps.create||((link,destination)=>spawnSync('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-Command',
+    '$ErrorActionPreference="Stop"; New-Item -ItemType Junction -LiteralPath $args[0] -Target $args[1] | Out-Null',link,destination],
+    {encoding:'utf8',windowsHide:true,timeout:30_000,maxBuffer:GIT_MAX_BUFFER}));
+  const remove=deps.remove||((link)=>spawnSync('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-Command',
+    '$ErrorActionPreference="Stop"; [IO.Directory]::Delete($args[0],$false)',link],
+    {encoding:'utf8',windowsHide:true,timeout:30_000,maxBuffer:GIT_MAX_BUFFER}));
+  const identity=deps.identity||((link,destination)=>fs.lstatSync(link).isSymbolicLink()
+    && path.resolve(fs.realpathSync(link)).toLowerCase()===path.resolve(destination).toLowerCase());
+  const made=create(target,toolsRoot);
+  if(!made||made.error||made.status!==0) die('builder: target junction create failed');
+  let primary; let result; let cleanup;
+  try {
+    if(!exists(target)||!identity(target,toolsRoot)) die('builder: target junction identity');
+    result=run(command,{env:controlledEnv(toolsRoot)});
+  } catch(error){primary=error;}
+  finally {
+    const removed=remove(target);
+    if(!removed||removed.error||removed.status!==0||exists(target)) cleanup=new Error('builder: target junction cleanup failed');
+  }
+  if(primary){if(cleanup)primary.message=`${primary.message}; ${cleanup.message}`.slice(0,512);throw primary;}
+  if(cleanup)throw cleanup;
+  return result;
+}
 function artifact(value, where) {
   exact(value, ['path','sha256'], where);
   shaFile(value.path,value.sha256,where);
@@ -329,7 +357,7 @@ function builder(file, requestFile, deps = {}) {
   if(fs.existsSync(toolsRoot)) die('builder: owned tools root not pristine');
   try { for (const command of COMMANDS) {
     commandSpec(command);
-    const result=run(command,{env:controlledEnv(toolsRoot)});
+    const result=command===COMMANDS[1]?withNodeJunction(command,run,toolsRoot,deps.junction):run(command,{env:controlledEnv(toolsRoot)});
     if (!result || result.error || result.status !== 0 || result.signal) die(`builder: controlled command failed: ${command}`);
     const output=`${result.stdout || ''}${result.stderr || ''}`;
     if (Buffer.byteLength(output)>DIFF_SIZE_CAP) die('builder: command output cap');
@@ -413,5 +441,5 @@ try {
   process.exitCode = 1;
 }
 }
-module.exports={builder,dogfood,executeDogfood,performDogfoodCleanup,commandSpec,controlledEnv,COMMANDS,NAMED,TOOLS_ROOT};
+module.exports={builder,dogfood,executeDogfood,performDogfoodCleanup,withNodeJunction,commandSpec,controlledEnv,COMMANDS,NAMED,TOOLS_ROOT};
 if(require.main===module) main();
