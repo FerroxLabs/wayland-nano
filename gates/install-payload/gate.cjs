@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { loadCard } = require('../lib/card.cjs');
 const { GateContract } = require('../lib/contract.cjs');
 const { directorySeal } = require('../lib/dirhash.cjs');
 
@@ -149,8 +150,15 @@ function runGate(source, expectedSeal, contract) {
 function main(argv) {
   const contract = new GateContract(INVENTORY);
   try {
-    if (argv.length !== 2) failAll(contract);
-    else runGate(argv[0], argv[1], contract);
+    if (argv.length < 1 || argv.length > 2) failAll(contract);
+    else {
+      // WP3 appends only registry.run_artifact. In that canonical production
+      // form the card, not candidate-controlled manifest bytes, is the seal
+      // authority. The explicit second argument remains an author-test seam.
+      const expectedSeal = argv[1]
+        || loadCard(path.join(__dirname, 'card.md')).validation.reference;
+      runGate(argv[0], expectedSeal, contract);
+    }
   } catch { failAll(contract); }
   contract.write();
   process.exitCode = contract.failures.size === 0 ? 0 : 1;

@@ -82,6 +82,28 @@ test('install gate scores reference 6\/6 and catches every sealed mutant', () =>
   }
 });
 
+test('install gate accepts the exact one-artifact WP3 registry argv', () => {
+  const reference = path.join(FIXTURE_ROOT, 'reference');
+  const run = spawnSync(process.execPath, [GATE_PATH, reference], {
+    cwd: ROOT, encoding: 'utf8',
+    env: { ...process.env, NANO_WP4_TEMP_ROOT: path.join(ROOT, 'target', 'wp4-ip-temp') },
+    timeout: 30_000,
+  });
+  assert.equal(run.status, 0, run.stderr || run.stdout);
+  assert.deepEqual(parseGateOutput(run.stdout, INVENTORY), {
+    ok: true, passed: 6, total: 6, failures: [], failClosed: null,
+  });
+
+  const selfAttesting = spawnSync(process.execPath,
+    [GATE_PATH, path.join(FIXTURE_ROOT, 'mutants', 'ip-m3')], {
+      cwd: ROOT, encoding: 'utf8',
+      env: { ...process.env, NANO_WP4_TEMP_ROOT: path.join(ROOT, 'target', 'wp4-ip-temp') },
+      timeout: 30_000,
+    });
+  assert.equal(selfAttesting.status, 1);
+  assert.match(selfAttesting.stdout, /gate: 0\/6/);
+});
+
 test('install gate fails closed on seal drift, missing subject, and malfunction', () => {
   const missing = spawnSync(process.execPath, [GATE_PATH, path.join(FIXTURE_ROOT, 'missing'), `sealed:dir-sha256:${'0'.repeat(64)}`], { encoding: 'utf8' });
   assert.equal(missing.status, 1);
