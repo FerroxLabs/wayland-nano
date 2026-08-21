@@ -78,15 +78,15 @@
 
 ### WP-4 Gate Cards and Dogfood
 
-- [ ] **CARD-01**: The registry contains canonical closure bodies/digests, direct-or-pinned-interpreter script shapes, repo-confined run-only artifacts, and requirement-to-gate mappings for install-payload, provision-script, and config-schema packs.
-- [ ] **CARD-02**: Each Gate Card declares a closed inventory, categories, wrapped-tool pins, invocation policy, sealed fixture digest, validation status, and known gamed modes.
-- [ ] **CARD-03**: Each pack has at least five documented fluent-but-wrong mutants with `why_fluent` and `expected_drop`, and every mutant is caught.
-- [ ] **CARD-04**: Every sealed fixture passes all checks, while missing/tampered digests, unknown IDs, and inconsistent summaries fail closed.
-- [ ] **CARD-05**: Install-payload verifies the actual packaged payload and helpers without changing packaging sources.
-- [ ] **CARD-06**: Provision-script verifies the Windows dry-run payload, operation/idempotence semantics, and no-mutation oracle without changing provisioning sources.
-- [ ] **CARD-07**: Config-schema verifies the pinned catalog/schema contract and sealed source-patch mutants in throwaway worktrees with complete cleanup.
-- [ ] **CARD-08**: Dogfood CI exercises cards only through the WP-3 verifier surface and demonstrates a bad change blocked and a good change accepted.
-- [ ] **PROV-03**: Every donor-adapted WP-4 Gate Card or helper file has an exact transformation entry in `UPSTREAM.md`.
+- [x] **CARD-01**: The registry contains canonical closure bodies/digests, direct-or-pinned-interpreter script shapes, repo-confined run-only artifacts, and requirement-to-gate mappings for install-payload, provision-script, and config-schema packs.
+- [x] **CARD-02**: Each Gate Card declares a closed inventory, categories, wrapped-tool pins, invocation policy, sealed fixture digest, validation status, and known gamed modes.
+- [x] **CARD-03**: Each pack has at least five documented fluent-but-wrong mutants with `why_fluent` and `expected_drop`, and every mutant is caught.
+- [x] **CARD-04**: Every sealed fixture passes all checks, while missing/tampered digests, unknown IDs, and inconsistent summaries fail closed.
+- [x] **CARD-05**: Install-payload verifies the actual packaged payload and helpers without changing packaging sources.
+- [x] **CARD-06**: Provision-script verifies the Windows dry-run payload, operation/idempotence semantics, and no-mutation oracle without changing provisioning sources.
+- [x] **CARD-07**: Config-schema verifies the pinned catalog/schema contract and sealed source-patch mutants in throwaway worktrees with complete cleanup.
+- [x] **CARD-08**: Dogfood CI exercises cards only through the WP-3 verifier surface and demonstrates a bad change blocked and a good change accepted.
+- [x] **PROV-03**: Every donor-adapted WP-4 Gate Card or helper file has an exact transformation entry in `UPSTREAM.md`.
 
 ### Final Program Evidence
 

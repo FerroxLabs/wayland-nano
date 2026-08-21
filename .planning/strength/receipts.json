@@ -174,44 +174,173 @@
     "CLI-01": {
       "requirement": "CLI-01",
       "test": "cargo test -p nano-cli verify_cmd::tests::parse_accepts_all_three_closed_modes_and_defaults -- --exact --nocapture",
-      "failing_run": { "exit_code": 101, "log_digest": "5d32070db970ecd5e3f2b99775dbc9fe71af1d50d26a16e9569c79c83a0cd5da" },
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "5d32070db970ecd5e3f2b99775dbc9fe71af1d50d26a16e9569c79c83a0cd5da"
+      },
       "commit": "90945c34f1ef74d4aba8986904cae1333dfc14ee"
     },
     "CLI-02": {
       "requirement": "CLI-02",
       "test": "cargo test -p nano-cli verify_cmd::tests::only_complete_nonzero_red_with_lower_hex_digest_is_eligible -- --exact --nocapture",
-      "failing_run": { "exit_code": 101, "log_digest": "b4096951ccf87d4981cede2ba88d62096affe0eea787ca074b222e7134f8bf6f" },
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "b4096951ccf87d4981cede2ba88d62096affe0eea787ca074b222e7134f8bf6f"
+      },
       "commit": "4531a02a6fbcd99643a6d0e3b85b558d19ab78b1"
     },
     "CLI-03": {
       "requirement": "CLI-03",
       "test": "cargo test -p nano-cli verify_cmd::tests::events_emit_only_closed_fields_with_monotonic_sequence -- --exact --nocapture",
-      "failing_run": { "exit_code": 101, "log_digest": "40f8fd20441aac7394ef199797633d0b59ac03aebc504e2164803b3714216f25" },
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "40f8fd20441aac7394ef199797633d0b59ac03aebc504e2164803b3714216f25"
+      },
       "commit": "7ff634a0d453b1cc2e82da1f8d1b4552e830de20"
     },
     "CLI-04": {
       "requirement": "CLI-04",
       "test": "cargo test -p nano-cli verify_cmd::tests::receipt_preflight_structure_obeys_parse_then_red_order -- --exact --nocapture",
-      "failing_run": { "exit_code": 101, "log_digest": "5dd889d61724dd8ed466e6665389c38b30ef824e6d000a3f4ffb65b83626dbd6" },
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "5dd889d61724dd8ed466e6665389c38b30ef824e6d000a3f4ffb65b83626dbd6"
+      },
       "commit": "2a1aca3019e22854fba5d919d23abbb78503cd53"
     },
     "CLI-05": {
       "requirement": "CLI-05",
       "test": "cargo test -p nano-cli --test verify_cmd verify_authored_defect_red_identifiers_only -- --exact --nocapture",
-      "failing_run": { "exit_code": 101, "log_digest": "cbd7b63de284363cb0c5fcdc513ef2fd9977f382d21e1ddfe0042148b0754e29" },
+      "failing_run": {
+        "exit_code": 101,
+        "log_digest": "cbd7b63de284363cb0c5fcdc513ef2fd9977f382d21e1ddfe0042148b0754e29"
+      },
       "commit": "329e05aa9724f3c8d55fa05f91fc4a260ce26e96"
     },
     "CLI-06": {
       "requirement": "CLI-06",
       "test": "pwsh -NoProfile -File docs/verify/ci/test-receipt-diff.ps1",
-      "failing_run": { "exit_code": 64, "log_digest": "6ce75bbe86fd257d24fe37f05044b92b25565bd005768d54e5b87abe334483b3" },
+      "failing_run": {
+        "exit_code": 64,
+        "log_digest": "6ce75bbe86fd257d24fe37f05044b92b25565bd005768d54e5b87abe334483b3"
+      },
       "commit": "1699245adaa1a78201986cc6f84c58ba8571edfa"
     },
     "PROV-02": {
       "requirement": "PROV-02",
       "test": "PowerShell UPSTREAM.md exact WP3 provenance oracle",
-      "failing_run": { "exit_code": 1, "log_digest": "46870f2ab31e9031efbc8ef851f0890097576adb5e2fbf00e97ee56644d6ea0f" },
+      "failing_run": {
+        "exit_code": 1,
+        "log_digest": "46870f2ab31e9031efbc8ef851f0890097576adb5e2fbf00e97ee56644d6ea0f"
+      },
       "commit": "b1b10c6853e5ecd911693ae4f71db26a9f8a062b"
+    },
+    "CARD-01": {
+      "requirement": "CARD-01",
+      "test": "node --test gates/tests/gates-card-schema.test.cjs",
+      "failing_run": {
+        "exit_code": 1,
+        "log_digest": "461028e622b4dc49b1f1358ff512304af15cd13d4111596f8c39116687d0c56e"
+      },
+      "commit": "42b959939933f6e5334cee3c5592205acbd24395"
+    },
+    "CARD-02": {
+      "requirement": "CARD-02",
+      "test": "node --test gates/tests/gates-card-schema.test.cjs",
+      "failing_run": {
+        "exit_code": 1,
+        "log_digest": "5f1784ae4c100a2749dd864d84ae9584c5a6ed744e025ea1ec44ca044458bdc0"
+      },
+      "commit": "56273dd201cef8a820126497594e619656416107"
+    },
+    "CARD-03": {
+      "requirement": "CARD-03",
+      "test": "node --test gates/tests/gates-install-payload.test.cjs",
+      "failing_run": {
+        "exit_code": 1,
+        "log_digest": "dcef18904c9180857a2eec6a92374e1b7747ca9ff40cf05ed57cf1dc3bb65ecb"
+      },
+      "commit": "7f3e421f29a4aef53e0ccdb12e176f3519c1a232"
+    },
+    "CARD-04": {
+      "requirement": "CARD-04",
+      "test": "node --test gates/tests/gates-card-schema.test.cjs",
+      "failing_run": {
+        "exit_code": 1,
+        "log_digest": "5f1784ae4c100a2749dd864d84ae9584c5a6ed744e025ea1ec44ca044458bdc0"
+      },
+      "commit": "56273dd201cef8a820126497594e619656416107"
+    },
+    "CARD-05": {
+      "requirement": "CARD-05",
+      "test": "node --test gates/tests/gates-install-payload.test.cjs",
+      "failing_run": {
+        "exit_code": 1,
+        "log_digest": "dcef18904c9180857a2eec6a92374e1b7747ca9ff40cf05ed57cf1dc3bb65ecb"
+      },
+      "commit": "7f3e421f29a4aef53e0ccdb12e176f3519c1a232"
+    },
+    "CARD-06": {
+      "requirement": "CARD-06",
+      "test": "node --test gates/tests/gates-provision-script.test.cjs",
+      "failing_run": {
+        "exit_code": 1,
+        "log_digest": "c0d597852965efdaa68e8ebf1d5840008ebe38b761f294a4cc06569f05445204"
+      },
+      "commit": "dc92ce0c1169a03da2da5ea5500dfc307eb13ee7"
+    },
+    "CARD-07": {
+      "requirement": "CARD-07",
+      "test": "node --test gates/tests/gates-config-schema.test.cjs",
+      "failing_run": {
+        "exit_code": 1,
+        "log_digest": "9d71e006278497e3caeb29326670ee6c0dc273af4565326d29de16f9b5051954"
+      },
+      "commit": "f8d3e91cca50c6ac65d334cf7ae490b73b9123b4"
+    },
+    "CARD-08": {
+      "requirement": "CARD-08",
+      "test": "pwsh -NoProfile -Command \"if(Test-Path -LiteralPath '.planning/phases/07-wp-4-gate-cards-and-dogfood/07-DOGFOOD-EVIDENCE.json'){exit 0}; Write-Output 'RED:CARD-08 dogfood evidence absent'; exit 1\"",
+      "failing_run": {
+        "exit_code": 1,
+        "log_digest": "284e3438e3e964d4c1099f21328bfedd0b2ec1902f319e46385f2fa47c383f5d"
+      },
+      "commit": "076270079f4fc5fac3f1d664731ccfbd5cb1b25a"
+    },
+    "PROV-03": {
+      "requirement": "PROV-03",
+      "test": "pwsh -NoProfile -Command \"$rows=@(Select-String -Path UPSTREAM.md -Pattern '^\\| ``gates/'); if($rows.Count -ge 19){exit 0}; Write-Output 'RED:PROV-03 WP4 provenance rows absent'; exit 1\"",
+      "failing_run": {
+        "exit_code": 1,
+        "log_digest": "16d2441375f5f4602d54fd272316da95216919157a7b2220fff024f52299dc24"
+      },
+      "commit": "73df9cde936c7ffe2c9150703fd19c78a6156ecf"
+    },
+    "EVID-01": {
+      "requirement": "EVID-01",
+      "test": "pwsh -NoProfile -Command \"$text=Get-Content '.github/workflows/gate.yml' -Raw; if($text -match '(?m)^\\s{2}gate-cards:'){exit 0}; Write-Output 'RED:EVID-01 integrator gate-cards job absent'; exit 1\"",
+      "failing_run": {
+        "exit_code": 1,
+        "log_digest": "97a64071993a5121cb8a3fa2db2ee8b1cf54f4ecfe50172afb48baebdd638ce5"
+      },
+      "commit": "f190d40cd18fd193a88fd6483c91bbbb4edc3181"
+    },
+    "EVID-02": {
+      "requirement": "EVID-02",
+      "test": "pwsh -NoProfile -Command \"if(Test-Path -LiteralPath '.planning/phases/07-wp-4-gate-cards-and-dogfood/07-09-SUMMARY.md'){exit 0}; Write-Output 'RED:EVID-02 final evidence summary absent'; exit 1\"",
+      "failing_run": {
+        "exit_code": 1,
+        "log_digest": "b2306812239b36e8a04eb98f2195cd945e1094d91264ce11543d02a69a326e34"
+      },
+      "commit": "f190d40cd18fd193a88fd6483c91bbbb4edc3181"
+    },
+    "EVID-03": {
+      "requirement": "EVID-03",
+      "test": "pwsh -NoProfile -Command \"if(Test-Path -LiteralPath '.planning/phases/07-wp-4-gate-cards-and-dogfood/07-09-SUMMARY.md'){exit 0}; Write-Output 'RED:EVID-03 terminal owner handoff absent'; exit 1\"",
+      "failing_run": {
+        "exit_code": 1,
+        "log_digest": "4f6f7c70a72efc71563049805dcf5a45177a9b1363c883d40879acfa09552312"
+      },
+      "commit": "f190d40cd18fd193a88fd6483c91bbbb4edc3181"
     }
   }
 }
