@@ -1669,12 +1669,47 @@ mod tests {
 
     #[test]
     fn bootstrap_is_byte_exact_and_rejects_requested_work() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let bytes = std::fs::read(root.join("gates/registry.json")).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("gates")).unwrap();
+        std::fs::write(
+            root.path().join("gates/registry.json"),
+            EMPTY_REGISTRY_BOOTSTRAP,
+        )
+        .unwrap();
+        let bytes = std::fs::read(root.path().join("gates/registry.json")).unwrap();
         assert_eq!(bytes, EMPTY_REGISTRY_BOOTSTRAP);
-        assert_eq!(load_requested_registry(&root, None, None).unwrap(), None);
-        assert_eq!(load_requested_registry(&root, Some("demo"), None), Err(2));
-        assert_eq!(load_requested_registry(&root, None, Some("CLI-01")), Err(2));
+        assert_eq!(bytes.len(), 41);
+        assert!(!bytes.ends_with(b"\n"));
+        assert_eq!(
+            load_requested_registry(root.path(), None, None).unwrap(),
+            None
+        );
+        assert_eq!(
+            load_requested_registry(root.path(), Some("demo"), None),
+            Err(2)
+        );
+        assert_eq!(
+            load_requested_registry(root.path(), None, Some("CLI-01")),
+            Err(2)
+        );
+    }
+
+    #[test]
+    fn populated_workspace_registry_uses_canonical_loader() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let canonical = nano_verify::load_registry(&root).unwrap();
+        let requested = load_requested_registry(&root, None, None)
+            .unwrap()
+            .expect("the populated workspace registry is not an empty bootstrap");
+        assert!(!requested.gates.is_empty());
+        assert_eq!(
+            requested.gates.keys().collect::<Vec<_>>(),
+            canonical.gates.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            requested.requirements.keys().collect::<Vec<_>>(),
+            canonical.requirements.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]
