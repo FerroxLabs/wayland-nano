@@ -58,6 +58,36 @@ jobs:
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny
 
+      # The verifier's process-isolation contract requires TEMP and TMP to
+      # name the same canonical directory. Keep it on F: on Windows so nested
+      # Cargo fixtures also avoid the hosted runner's long C: temp paths.
+      - name: Configure verifier temp directory (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $backing = Join-Path "${{ runner.temp }}" "wayland-nano-verifier"
+          New-Item -ItemType Directory -Force -Path $backing | Out-Null
+          if (Test-Path "F:\") {
+            throw "F: is already in use; refusing to replace an existing drive"
+          }
+          & subst.exe F: $backing
+          if ($LASTEXITCODE -ne 0) {
+            throw "failed to map the verifier temp directory to F:"
+          }
+          "WN_TEMP_SUBST=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TEMP=F:\" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=F:\" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Configure verifier temp directory (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          verifier_temp="${RUNNER_TEMP}/wayland-nano-verifier"
+          mkdir -p "$verifier_temp"
+          echo "TEMP=$verifier_temp" >> "$GITHUB_ENV"
+          echo "TMP=$verifier_temp" >> "$GITHUB_ENV"
+          echo "TMPDIR=$verifier_temp" >> "$GITHUB_ENV"
+
       - name: gate-fmt
         run: just gate-fmt
 
@@ -185,3 +215,12 @@ jobs:
         with:
           name: ci-manifest-${{ matrix.os }}
           path: artifacts/evidence/ci/
+
+      - name: Remove verifier temp drive mapping (Windows)
+        if: always() && runner.os == 'Windows' && env.WN_TEMP_SUBST == '1'
+        shell: pwsh
+        run: |
+          & subst.exe F: /D
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "F: verifier temp mapping was already absent"
+          }
