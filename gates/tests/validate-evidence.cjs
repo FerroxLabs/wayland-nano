@@ -80,35 +80,34 @@ function sealResult(bytes) { return {bytes,sha256:sha256(Buffer.from(bytes,'utf8
 function executeDogfood() {
   if(process.platform!=='win32') die('dogfood execution requires Windows');
   const path=require('node:path'); const root=process.cwd();
-  const scratch=path.join('F:\\',`wayland-nano-wp4-dogfood-validator-${process.pid}`);
+  const scratch=path.join('F:\\',`wayland-nano-wp4-dogfood-validator-${process.pid}`); const goodRoot=path.join(scratch,'good-wt');
   const target=path.join(scratch,'good-target'); const temp=path.join(scratch,'temp');
-  const targetLink=path.join(root,'target'); const packageBins=path.join(root,'packaging','npm','binaries');
-  const packageManifest=path.join(root,'packaging','npm','binaries-manifest.json');
-  if(fs.existsSync(scratch)||fs.existsSync(targetLink)||fs.existsSync(packageBins)||fs.existsSync(packageManifest)) die('dogfood cleanup root not pristine');
+  const targetLink=path.join(goodRoot,'target'); const packageBins=path.join(goodRoot,'packaging','npm','binaries');
+  const packageManifest=path.join(goodRoot,'packaging','npm','binaries-manifest.json');
+  if(fs.existsSync(scratch)) die('dogfood cleanup root not pristine');
   const {directorySeal}=require('../lib/dirhash.cjs');
   const clean=()=>{
-    for(const wt of ['cf-wt','pv-wt']) { const p=path.join(scratch,wt); if(fs.existsSync(p)) spawnSync('git',['worktree','remove','--force',p],{cwd:root,windowsHide:true}); }
+    for(const wt of ['cf-wt','pv-wt','good-wt']) { const p=path.join(scratch,wt); if(fs.existsSync(p)) spawnSync('git',['worktree','remove','--force',p],{cwd:root,windowsHide:true}); }
     spawnSync('git',['worktree','prune'],{cwd:root,windowsHide:true});
-    for(const p of [targetLink,packageBins]) if(fs.existsSync(p)) fs.rmSync(p,{recursive:true,force:true});
-    if(fs.existsSync(packageManifest)) fs.rmSync(packageManifest,{force:true});
     if(fs.existsSync(scratch)) fs.rmSync(scratch,{recursive:true,force:true});
   };
   try {
     fs.mkdirSync(temp,{recursive:true});
-    fixedRun('cargo',['build','-p','nano-cli','-p','nano-sandbox','--bins','--target-dir',target],{timeout:1_200_000});
-    fixedRun('cargo',['build','-p','nano-sandbox','--bin','wayland-nano-provision-dry-run','--bin','wayland-nano-sandbox-setup','--target-dir',target],{timeout:600_000});
-    fixedRun('pwsh',['-NoProfile','-File','packaging/npm/scripts/pack.ps1','-Platform','all','-ArtifactRoot','gates/fixtures/install-payload/reference/binaries']);
+    fixedRun('git',['worktree','add','--detach',goodRoot,'HEAD']);
+    fixedRun('cargo',['build','-p','nano-cli','-p','nano-sandbox','--bins','--target-dir',target],{cwd:goodRoot,timeout:1_200_000});
+    fixedRun('cargo',['build','-p','nano-sandbox','--bin','wayland-nano-provision-dry-run','--bin','wayland-nano-sandbox-setup','--target-dir',target],{cwd:goodRoot,timeout:600_000});
+    fixedRun('pwsh',['-NoProfile','-File','packaging/npm/scripts/pack.ps1','-Platform','all','-ArtifactRoot','gates/fixtures/install-payload/reference/binaries'],{cwd:goodRoot});
     fs.symlinkSync(target,targetLink,'junction');
     const binary=path.join(target,'debug','wayland-nano.exe');
     const ids=['config-schema','install-payload','provision-script'];
-    const good=ids.map((gate_id)=>{const bytes=gateResult(binary,root,gate_id,temp);return {gate_id,
-      fixture_seal:gate_id==='install-payload'?directorySeal(path.join(root,'packaging','npm')):
-        directorySeal(path.join(root,'gates','fixtures',gate_id,gate_id==='config-schema'?'probes':'reference')),
+    const good=ids.map((gate_id)=>{const bytes=gateResult(binary,goodRoot,gate_id,temp);return {gate_id,
+      fixture_seal:gate_id==='install-payload'?directorySeal(path.join(goodRoot,'packaging','npm')):
+        directorySeal(path.join(goodRoot,'gates','fixtures',gate_id,gate_id==='config-schema'?'probes':'reference')),
       exit_code:0,result:sealResult(bytes)}});
     fs.copyFileSync(path.join(packageBins,'win32-x64','wayland-nano.exe'),path.join(packageBins,'linux-x64','wayland-nano'));
-    const ipBytes=fixedRun(binary,['verify','--gate','install-payload','--run-only','--json'],{cwd:root,env:{...process.env,TEMP:temp,TMP:temp},expected:3});
-    const ipSeal=directorySeal(path.join(root,'packaging','npm')).slice('sealed:dir-sha256:'.length);
-    fixedRun('pwsh',['-NoProfile','-File','packaging/npm/scripts/pack.ps1','-Platform','all','-ArtifactRoot','gates/fixtures/install-payload/reference/binaries']);
+    const ipBytes=fixedRun(binary,['verify','--gate','install-payload','--run-only','--json'],{cwd:goodRoot,env:{...process.env,TEMP:temp,TMP:temp},expected:3});
+    const ipSeal=directorySeal(path.join(goodRoot,'packaging','npm')).slice('sealed:dir-sha256:'.length);
+    fixedRun('pwsh',['-NoProfile','-File','packaging/npm/scripts/pack.ps1','-Platform','all','-ArtifactRoot','gates/fixtures/install-payload/reference/binaries'],{cwd:goodRoot});
     const mutations=[['cf','gates/fixtures/config-schema/mutants/cf-m3/mutant.diff'],['pv',null]];
     const bad={ip:{bytes:ipBytes,seal:ipSeal}};
     for(const [kind,patch] of mutations){
@@ -241,24 +240,31 @@ const NAMED = ['t-card-schema-valid','t-registry-closure-digests','t-ip-referenc
   't-cf-reference-scores-mm','t-ip-mutants-caught','t-pv-mutants-caught','t-cf-mutants-caught','t-fixture-digest-fails-closed',
   't-dirhash-canonical','t-meta-mutant-passing-is-gate-defect','t-summary-contract','t-gate-hash-drift-voids-validation'];
 const DOGFOOD_PATH = '.planning/phases/07-wp-4-gate-cards-and-dogfood/07-DOGFOOD-EVIDENCE.json';
-const COMMANDS = ['node --test gates/tests/*.test.cjs',
+const TOOLS_ROOT = 'F:\\w4e-tools';
+const BUILD_COMMAND = 'cargo build -p nano-cli -p nano-sandbox --bins --target-dir F:/w4e-tools';
+const COMMANDS = [BUILD_COMMAND,'node --test gates/tests/*.test.cjs',
   'node gates/tests/validate-seeded.cjs --seed 41041','node gates/tests/validate-seeded.cjs --seed 41042',
   'node gates/tests/validate-seeded.cjs --seed 41043',`node gates/tests/validate-evidence.cjs dogfood ${DOGFOOD_PATH}`,
   'node gates/tests/validate-evidence.cjs provenance UPSTREAM.md','just gate-all','cargo deny check'];
 function commandSpec(command) {
-  if (command === COMMANDS[0]) return { program:process.execPath,args:['--test','gates/tests/*.test.cjs'],timeout:900_000 };
+  if (command === COMMANDS[0]) return { program:'cargo',args:['build','-p','nano-cli','-p','nano-sandbox','--bins','--target-dir','F:/w4e-tools'],timeout:1_200_000 };
+  if (command === COMMANDS[1]) return { program:process.execPath,args:['--test','gates/tests/*.test.cjs'],timeout:900_000 };
   const seed = /^node gates\/tests\/validate-seeded\.cjs --seed (4104[123])$/.exec(command)?.[1];
   if (seed) return { program:process.execPath,args:['gates/tests/validate-seeded.cjs','--seed',seed],timeout:600_000 };
-  if (command === COMMANDS[4]) return { program:process.execPath,args:['gates/tests/validate-evidence.cjs','dogfood',DOGFOOD_PATH],timeout:30_000 };
-  if (command === COMMANDS[5]) return { program:process.execPath,args:['gates/tests/validate-evidence.cjs','provenance','UPSTREAM.md'],timeout:30_000 };
-  if (command === COMMANDS[6]) return { program:'just',args:['gate-all'],timeout:1_800_000 };
-  if (command === COMMANDS[7]) return { program:'cargo',args:['deny','check'],timeout:600_000 };
+  if (command === COMMANDS[5]) return { program:process.execPath,args:['gates/tests/validate-evidence.cjs','dogfood',DOGFOOD_PATH],timeout:1_200_000 };
+  if (command === COMMANDS[6]) return { program:process.execPath,args:['gates/tests/validate-evidence.cjs','provenance','UPSTREAM.md'],timeout:30_000 };
+  if (command === COMMANDS[7]) return { program:'just',args:['gate-all'],timeout:1_800_000 };
+  if (command === COMMANDS[8]) return { program:'cargo',args:['deny','check'],timeout:600_000 };
   die('builder: forbidden command');
 }
 function defaultRun(command) {
   const spec=commandSpec(command);
-  return spawnSync(spec.program,spec.args,{cwd:process.cwd(),encoding:'utf8',windowsHide:true,timeout:spec.timeout,maxBuffer:GIT_MAX_BUFFER});
+  const env={...process.env,CARGO_TARGET_DIR:TOOLS_ROOT,NANO_CLI_BIN:`${TOOLS_ROOT}\\debug\\wayland-nano.exe`,
+    NANO_DRY_RUN_BIN:`${TOOLS_ROOT}\\debug\\wayland-nano-provision-dry-run.exe`,NANO_SETUP_BIN:`${TOOLS_ROOT}\\debug\\wayland-nano-sandbox-setup.exe`};
+  return spawnSync(spec.program,spec.args,{cwd:process.cwd(),env,encoding:'utf8',windowsHide:true,timeout:spec.timeout,maxBuffer:GIT_MAX_BUFFER});
 }
+function controlledEnv(root=TOOLS_ROOT){return {CARGO_TARGET_DIR:root,NANO_CLI_BIN:`${root}\\debug\\wayland-nano.exe`,
+  NANO_DRY_RUN_BIN:`${root}\\debug\\wayland-nano-provision-dry-run.exe`,NANO_SETUP_BIN:`${root}\\debug\\wayland-nano-sandbox-setup.exe`};}
 function artifact(value, where) {
   exact(value, ['path','sha256'], where);
   shaFile(value.path,value.sha256,where);
@@ -297,23 +303,24 @@ function builder(file, requestFile, deps = {}) {
   if (JSON.stringify(value.named_tests) !== JSON.stringify(NAMED) || JSON.stringify(value.commands) !== JSON.stringify(COMMANDS)) die('builder: exact battery');
   const dogfood=json(DOGFOOD_PATH);
   if (dogfood.product_sha !== value.product_sha) die('builder: dogfood must equal product head');
-  const run=deps.run || defaultRun;
-  for (const command of COMMANDS) {
+  const run=deps.run || defaultRun; const toolsRoot=deps.toolsRoot||TOOLS_ROOT;
+  if(fs.existsSync(toolsRoot)) die('builder: owned tools root not pristine');
+  try { for (const command of COMMANDS) {
     commandSpec(command);
-    const result=run(command);
+    const result=run(command,{env:controlledEnv(toolsRoot)});
     if (!result || result.error || result.status !== 0 || result.signal) die(`builder: controlled command failed: ${command}`);
     const output=`${result.stdout || ''}${result.stderr || ''}`;
     if (Buffer.byteLength(output)>DIFF_SIZE_CAP) die('builder: command output cap');
-    if (command===COMMANDS[0]) for (const name of NAMED) {
+    if (command===COMMANDS[1]) for (const name of NAMED) {
       const hits=output.split(name).length-1;
       if (hits!==1) die(`builder: named test count ${name}`);
     }
-  }
+  }} finally { if(fs.existsSync(toolsRoot)) fs.rmSync(toolsRoot,{recursive:true,force:true}); }
   const expectedCanary=[DOGFOOD_PATH,value.audit.path,...(value.audit.recheck_path?[value.audit.recheck_path]:[]),'UPSTREAM.md','docs/verify/gates.md'].sort();
   if (JSON.stringify([...value.canary_files].sort())!==JSON.stringify(expectedCanary)) die('builder: canary inventory');
   for (const path of value.canary_files) if (!fs.statSync(path).isFile()) die('builder: canary file');
   (deps.canary || defaultCanary)(value.canary_files);
-  if (!Array.isArray(value.cleanup_paths) || value.cleanup_paths.some((path)=>typeof path!=='string'||!/^F:[\\/]/i.test(path)||fs.existsSync(path))) die('builder: cleanup paths');
+  if (JSON.stringify(value.cleanup_paths)!==JSON.stringify([TOOLS_ROOT])) die('builder: exact cleanup root');
   deviationAuthority(audited.base_sha,value.product_sha,audited.deviations);
   if (git(['diff','--name-only',audited.base_sha,value.product_sha,'--','packaging','scripts/provision','.github','docs/STATUS.md'])) die('builder: producer ownership');
   if (!requestFile) return;
@@ -384,5 +391,5 @@ try {
   process.exitCode = 1;
 }
 }
-module.exports={builder,dogfood,executeDogfood,commandSpec,COMMANDS,NAMED};
+module.exports={builder,dogfood,executeDogfood,commandSpec,controlledEnv,COMMANDS,NAMED,TOOLS_ROOT};
 if(require.main===module) main();

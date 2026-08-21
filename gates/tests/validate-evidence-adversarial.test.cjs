@@ -127,12 +127,17 @@ test('builder request and final contracts reject authority and stop spoofing', a
     const reviewPath=await put(dir,'review.json',auditValue);
     const builder={schema:'nano.wp4-builder/1',product_sha:product,product_tree:tree,
       audit:{open_critical_high:0,path:reviewPath,sha256:sha(fs.readFileSync(reviewPath)),recheck_path:null,recheck_sha256:null}, named_tests:['t-card-schema-valid','t-registry-closure-digests','t-ip-reference-scores-mm','t-pv-reference-scores-mm','t-cf-reference-scores-mm','t-ip-mutants-caught','t-pv-mutants-caught','t-cf-mutants-caught','t-fixture-digest-fails-closed','t-dirhash-canonical','t-meta-mutant-passing-is-gate-defect','t-summary-contract','t-gate-hash-drift-voids-validation'],
-      commands:validator.COMMANDS,canary_files:[dogfoodPath,reviewPath,'UPSTREAM.md','docs/verify/gates.md'],cleanup_paths:['F:/definitely-absent-wp4-test']};
+      commands:validator.COMMANDS,canary_files:[dogfoodPath,reviewPath,'UPSTREAM.md','docs/verify/gates.md'],cleanup_paths:[validator.TOOLS_ROOT]};
     const builderFile=await put(dir,'builder.json',builder);
-    const executed=[]; let canaryRuns=0;
-    const deps={run:(command)=>{executed.push(command);return {status:0,stdout:command===validator.COMMANDS[0]?validator.NAMED.join('\n'):'ok',stderr:''}},canary:()=>{canaryRuns+=1}};
+    const executed=[]; const envs=[]; let canaryRuns=0; const toolsRoot=path.join(dir,'owned-tools');
+    const deps={toolsRoot,run:(command,control)=>{executed.push(command);envs.push(control.env);if(command===validator.COMMANDS[0]){fs.mkdirSync(toolsRoot,{recursive:true});fs.writeFileSync(path.join(toolsRoot,'owned'),'x');}return {status:0,stdout:command===validator.COMMANDS[1]?validator.NAMED.join('\n'):'ok',stderr:''}},canary:()=>{canaryRuns+=1}};
+    const repoTarget=path.join(ROOT,'target'); const madeRepoTarget=!fs.existsSync(repoTarget); if(madeRepoTarget)fs.mkdirSync(repoTarget);
     assert.doesNotThrow(()=>validator.builder(builderFile,undefined,deps));
     assert.deepEqual(executed,validator.COMMANDS); assert.equal(canaryRuns,1);
+    assert.equal(fs.existsSync(toolsRoot),false);assert.equal(fs.existsSync(repoTarget),true);
+    for(const env of envs)assert.deepEqual(env,validator.controlledEnv(toolsRoot));
+    if(madeRepoTarget)fs.rmSync(repoTarget,{recursive:true,force:true});
+    fs.mkdirSync(toolsRoot,{recursive:true});assert.throws(()=>validator.builder(builderFile,undefined,deps));fs.rmSync(toolsRoot,{recursive:true,force:true});
     const forged={...builder,passed:true}; const forgedFile=await put(dir,'forged.json',forged);
     assert.throws(()=>validator.builder(forgedFile,undefined,{run:()=>{throw new Error('must not execute')}}));
     const mismatch={...builder,commands:[...validator.COMMANDS].reverse()}; const mismatchFile=await put(dir,'mismatch.json',mismatch);
