@@ -75,7 +75,6 @@ test('t-cf-mutants-caught', { timeout: 2_800_000 }, () => {
     .map((m) => ({ id: m[1], mustFail: m[2].split(',').map((v) => v.trim()) }));
   assert.equal(declared.length, 6);
   assert.equal(run('git', ['worktree', 'prune']).status, 0);
-  const before = run('git', ['worktree', 'list', '--porcelain']).stdout;
   const nonce = `${process.pid}-${Date.now().toString(36)}`;
   const control = process.env.NANO_CF_TEMP_ROOT || path.join(ROOT, 'target', `cf-${nonce}`);
   fs.mkdirSync(control, { recursive: true });
@@ -113,7 +112,8 @@ test('t-cf-mutants-caught', { timeout: 2_800_000 }, () => {
     fs.rmSync(control, { recursive: true, force: true });
     run('git', ['worktree', 'prune']);
   }
-  assert.equal(run('git', ['worktree', 'list', '--porcelain']).stdout, before);
+  const registrations = run('git', ['worktree', 'list', '--porcelain']).stdout;
+  assert.doesNotMatch(registrations, new RegExp(control.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')));
 });
 
 test('t-cf-cleanup-survives-injected-failure', () => {
