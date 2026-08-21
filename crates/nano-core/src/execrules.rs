@@ -58,6 +58,9 @@ pub enum RuleSource {
 
 impl PrefixRule {
     pub fn validate(&self) -> Result<(), RuleValidationError> {
+        if self.pattern.len() > MAX_TOKENS {
+            return Err(RuleValidationError::TooManyTokens);
+        }
         let Some(PatternToken::Single(program)) = self.pattern.first() else {
             return Err(RuleValidationError::LiteralProgramRequired);
         };
@@ -73,6 +76,14 @@ impl PrefixRule {
                     if values.is_empty() || values.iter().any(String::is_empty) =>
                 {
                     return Err(RuleValidationError::EmptyAlternatives);
+                }
+                PatternToken::Single(value) if value.len() > MAX_COMMAND_BYTES => {
+                    return Err(RuleValidationError::TokenTooLong);
+                }
+                PatternToken::Alts(values)
+                    if values.iter().any(|value| value.len() > MAX_COMMAND_BYTES) =>
+                {
+                    return Err(RuleValidationError::TokenTooLong);
                 }
                 _ => {}
             }
@@ -99,6 +110,8 @@ pub enum RuleValidationError {
     LiteralProgramRequired,
     EmptyToken,
     EmptyAlternatives,
+    TokenTooLong,
+    TooManyTokens,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

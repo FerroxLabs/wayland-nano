@@ -247,6 +247,62 @@ fn invalid_patterns_are_rejected_structurally() {
 }
 
 #[test]
+fn rules_reject_patterns_beyond_evaluation_bounds() {
+    let boundary = PrefixRule {
+        pattern: (0..64)
+            .map(|index| {
+                PatternToken::Single(if index == 0 {
+                    "x".repeat(4 * 1024)
+                } else {
+                    format!("token-{index}")
+                })
+            })
+            .collect(),
+        exact: false,
+        decision: RuleDecision::Allow,
+        justification: None,
+        added_at: None,
+        source: None,
+    };
+    assert!(RuleSet::new(vec![boundary]).is_ok());
+
+    let too_long = PrefixRule {
+        pattern: vec![PatternToken::Single("x".repeat(4 * 1024 + 1))],
+        exact: false,
+        decision: RuleDecision::Allow,
+        justification: None,
+        added_at: None,
+        source: None,
+    };
+    assert!(RuleSet::new(vec![too_long]).is_err());
+
+    let too_long_alternative = PrefixRule {
+        pattern: vec![
+            PatternToken::Single("git".into()),
+            PatternToken::Alts(vec!["x".repeat(4 * 1024 + 1)]),
+        ],
+        exact: false,
+        decision: RuleDecision::Allow,
+        justification: None,
+        added_at: None,
+        source: None,
+    };
+    assert!(RuleSet::new(vec![too_long_alternative]).is_err());
+
+    let too_many = PrefixRule {
+        pattern: (0..65)
+            .map(|index| PatternToken::Single(format!("token-{index}")))
+            .collect(),
+        exact: false,
+        decision: RuleDecision::Allow,
+        justification: None,
+        added_at: None,
+        source: None,
+    };
+    assert!(RuleSet::new(vec![too_many]).is_err());
+}
+
+#[test]
 fn strictest_wins_and_allow_requires_every_segment() {
     let rules = RuleSet::new(vec![
         rule(&["git", "status"], true, RuleDecision::Allow),
