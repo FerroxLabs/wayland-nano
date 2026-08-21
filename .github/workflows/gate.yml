@@ -453,11 +453,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'closure digest drift' }
           $protectedDir='F:\gate-cards-bin';$protectedBinary=Join-Path $protectedDir 'wayland-nano.exe'
           if(Test-Path -LiteralPath $protectedDir){throw 'protected binary directory is not pristine'}
-          $accountName=('wngc'+[Guid]::NewGuid().ToString('N').Substring(0,12));$random=[byte[]]::new(32);[Security.Cryptography.RandomNumberGenerator]::Fill($random);$accountPassword='Aa1!'+[Convert]::ToBase64String($random)
+          $accountName=('wngc'+[Guid]::NewGuid().ToString('N').Substring(0,12));$random=[byte[]]::new(32);[Security.Cryptography.RandomNumberGenerator]::Fill($random);$accountPassword='Aa1!'+[Convert]::ToHexString($random)
           $brokerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
           Write-Output "::add-mask::$accountPassword"
           & net.exe user $accountName $accountPassword /add /expires:never /passwordchg:no /active:yes *> $null
-          if($LASTEXITCODE-ne 0){throw 'ephemeral account creation failed'}
+          if($LASTEXITCODE-ne 0){throw "ephemeral account creation failed (exit $LASTEXITCODE)"}
           "WN_GC_ACCOUNT=$accountName"|Out-File $env:GITHUB_ENV -Encoding utf8 -Append;'WN_GC_ACCOUNT_OWNED=1'|Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           $account=[ADSI]"WinNT://./$accountName,user";$sidBytes=[byte[]]$account.objectSid.Value;$userSid=[Security.Principal.SecurityIdentifier]::new($sidBytes,0).Value
           $admins=[ADSI]'WinNT://./Administrators,group';$adminMembers=@($admins.psbase.Invoke('Members')|ForEach-Object {$_.GetType().InvokeMember('Name','GetProperty',$null,$_,$null)})
