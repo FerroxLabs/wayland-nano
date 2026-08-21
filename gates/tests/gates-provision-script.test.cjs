@@ -23,6 +23,7 @@ const INVENTORY = [
 const { parseGateOutput } = require('../lib/contract.cjs');
 const { parseCard, scriptHash } = require('../lib/card.cjs');
 const { digestDirectory } = require('../lib/dirhash.cjs');
+const { externalSnapshot, liveInvocationAllowed } = require('../provision-script/gate.cjs');
 
 function sha(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(path.join(ROOT, file))).digest('hex');
@@ -94,9 +95,36 @@ test('Windows live arm refuses elevation and preserves external state', { skip: 
   const setup = process.env.NANO_SETUP_BIN || path.join(ROOT, 'target', 'debug', 'wayland-nano-sandbox-setup.exe');
   assert.equal(fs.existsSync(dryRun), true, `missing required Windows dry-run capability: ${dryRun}`);
   assert.equal(fs.existsSync(setup), true, `missing required Windows setup capability: ${setup}`);
-  const result = spawnSync(process.execPath, [GATE, '--live'], {
+  const artifact = path.join(FIXTURES, 'reference', 'payload.json');
+  const result = spawnSync(process.execPath, [GATE, '--live', artifact], {
     cwd: ROOT, encoding: 'utf8', env: { ...process.env, NANO_DRY_RUN_BIN: dryRun, NANO_SETUP_BIN: setup },
   });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.equal(parseGateOutput(result.stdout, INVENTORY).ok, true);
+});
+
+test('non-Windows canonical live invocation fails closed', () => {
+  const artifact = path.join(FIXTURES, 'reference', 'payload.json');
+  assert.equal(liveInvocationAllowed(['--live', artifact], 'linux'), false);
+  assert.equal(liveInvocationAllowed(['--live', artifact], 'darwin'), false);
+});
+
+test('WP3 run-only uses the Windows live no-mutation closure', { skip: process.platform !== 'win32' }, () => {
+  const registry = JSON.parse(fs.readFileSync(path.join(ROOT, 'gates', 'registry.json'), 'utf8'));
+  const entry = registry.gates['provision-script'];
+  assert.deepEqual(entry.closure.argv, ['node', 'gates/provision-script/gate.cjs', '--live']);
+  assert.deepEqual(entry.closure.env, {
+    NANO_DRY_RUN_BIN: 'target/debug/wayland-nano-provision-dry-run.exe',
+    NANO_SETUP_BIN: 'target/debug/wayland-nano-sandbox-setup.exe',
+  });
+  const cli = process.env.NANO_CLI_BIN || path.join(ROOT, 'target', 'debug', 'wayland-nano.exe');
+  assert.equal(fs.existsSync(cli), true, `missing required WP3 CLI: ${cli}`);
+  const liveHome = path.join(process.env.USERPROFILE, '.nano');
+  const before = externalSnapshot(liveHome);
+  const result = spawnSync(cli, ['verify', '--gate', 'provision-script', '--run-only', '--json'], {
+    cwd: ROOT, encoding: 'utf8', env: { ...process.env }, timeout: 30_000,
+  });
+  const after = externalSnapshot(liveHome);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.equal(after, before, 'WP3 run-only must not mutate user/firewall/marker state');
 });

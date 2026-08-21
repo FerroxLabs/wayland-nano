@@ -7,7 +7,7 @@ card: 1
 gate_id: provision-script
 domain: repo-deliverable
 tier: 1
-gate_script_hash: 6b8e7b1b003a6f10da3ad859e5f0f8ab7478a3694db7aee43c4860e66c23b18b
+gate_script_hash: 253ea2704f2a5a20d80e2d5bac4e1b0cb0f3edde123849ba6e7290963c7d81f1
 relational_target:
   artifact: marker-framed provisioning payload
   relation: dry-run bytes preserve versioned identity idempotence and no-mutation invariants
@@ -21,6 +21,9 @@ checks:
   - { id: PV-06, category: relation, desc: created and uninstall sets remain exact, measures: owned identities and wildcard ban }
 wrapped_tools:
   - { name: node, version: 20, license: MIT, role: packet gate runner }
+  - { name: powershell, version: system, license: system, role: elevation and external-state oracle }
+  - { name: wayland-nano-provision-dry-run, version: workspace, license: project, role: authentic live payload producer }
+  - { name: wayland-nano-sandbox-setup, version: workspace, license: project, role: non-elevated refusal probe }
 validation:
   reference: sealed:dir-sha256:11ac199f0b16ca2c2b93c0cad496253fafe2112ae113d7ace9fdd3ec52d56508
   pool_min: 6
@@ -33,7 +36,7 @@ validation:
     - { id: pv-m5, class: fluent-but-wrong, why_fluent: uninstall cleanup broadens to wildcard, expected_drop: 1, must_fail: [PV-06], fixture: sealed:dir-sha256:8b05885ffa3bf89cb602bd586dfbd4b245a7de48f952bb30377511d523af4a38 }
     - { id: pv-m6, class: fluent-but-wrong, why_fluent: elevation hint added to wire payload, expected_drop: 1, must_fail: [PV-01], fixture: sealed:dir-sha256:c1f7ed1604cc96bfdc62aba6687527dd2479e0a192538bc469b4e9466a8af9cf }
   rotation_k: 2
-  last_validated: 6b8e7b1b003a6f10da3ad859e5f0f8ab7478a3694db7aee43c4860e66c23b18b
+  last_validated: 253ea2704f2a5a20d80e2d5bac4e1b0cb0f3edde123849ba6e7290963c7d81f1
 gamed_modes:
   - { mode: fabricated packet, status: sealed, note: generator reproduces bytes from real marker-framed serializer output }
   - { mode: elevated validation, status: mitigated, note: live arm invokes setup without elevation and requires refusal plus state equality }

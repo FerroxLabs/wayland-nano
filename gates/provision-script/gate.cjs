@@ -20,6 +20,23 @@ function externalSnapshot(nanoHome) {
   return crypto.createHash('sha256').update(result.stdout.trim()).digest('hex');
 }
 
+function liveProbeIsNonElevated() {
+  const script = "$p=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()); if($p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){exit 1}else{exit 0}";
+  return spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+    encoding: 'utf8', windowsHide: true,
+  }).status === 0;
+}
+
+function canonicalArtifactKey(value) {
+  return fs.realpathSync(String(value).replace(/^\\\\\?\\/, '')).toLowerCase();
+}
+
+function liveInvocationAllowed(argv, platform = process.platform) {
+  if (platform !== 'win32' || argv.length !== 2) return false;
+  const expected = canonicalArtifactKey(path.resolve('gates', 'fixtures', 'provision-script', 'reference', 'payload.json'));
+  return canonicalArtifactKey(argv[1]) === expected && liveProbeIsNonElevated();
+}
+
 function validate(payload, live = null) {
   const gate = new GateContract(INVENTORY);
   const keys = Object.keys(payload).sort();
@@ -55,7 +72,7 @@ function main(argv) {
       if (argv.length !== 2 || packetAt !== 0) return malfunction();
       payload = JSON.parse(fs.readFileSync(argv[1], 'utf8'));
     } else {
-      if (argv.length !== 1 || process.platform !== 'win32') return malfunction();
+      if (!liveInvocationAllowed(argv)) return malfunction();
       const dryRun = process.env.NANO_DRY_RUN_BIN; const setup = process.env.NANO_SETUP_BIN;
       if (!dryRun || !setup || !fs.existsSync(dryRun) || !fs.existsSync(setup)) return malfunction();
       const produced = spawnSync(dryRun, [], { encoding: 'utf8', windowsHide: true });
@@ -66,5 +83,5 @@ function main(argv) {
   } catch { malfunction(); }
 }
 
-module.exports = { INVENTORY, KEYS, validate, externalSnapshot };
+module.exports = { INVENTORY, KEYS, validate, externalSnapshot, liveProbeIsNonElevated, liveInvocationAllowed };
 if (require.main === module) main(process.argv.slice(2));
