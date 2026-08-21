@@ -28,7 +28,7 @@ function result(value, expected, where) {
         || !['structure', 'value', 'relation', 'grounding', 'execution', 'security'].includes(verdict.category)) die(`${where}: identifiers-only`);
   }
 }
-function dogfood(file) {
+function dogfood(file, deps = {}) {
   const value = json(file);
   exact(value, ['base_sha', 'cleanup', 'good', 'invocation', 'mutants', 'product_sha', 'registry_sha256', 'schema'], 'dogfood');
   if (value.schema !== 'nano.wp4-dogfood/1' || !SHA.test(value.base_sha) || !SHA.test(value.product_sha)
@@ -57,7 +57,74 @@ function dogfood(file) {
     if (!['red', 'fail_closed'].includes(parsed.outcome)) die('dogfood: mutant escaped');
   }
   exact(value.cleanup, ['cargo_targets_absent', 'packaging_tracked_clean', 'scratch_absent', 'worktrees_absent'], 'cleanup');
-  if (Object.values(value.cleanup).some((entry) => entry !== true)) die('dogfood: cleanup');
+  const observed=(deps.execute || executeDogfood)();
+  if (JSON.stringify(value.good)!==JSON.stringify(observed.good)
+      || JSON.stringify(value.mutants)!==JSON.stringify(observed.mutants)) die('dogfood: independently observed mismatch');
+}
+
+function fixedRun(program,args,options={}) {
+  const run=spawnSync(program,args,{cwd:options.cwd||process.cwd(),env:options.env||process.env,encoding:'utf8',windowsHide:true,
+    timeout:options.timeout||900_000,maxBuffer:GIT_MAX_BUFFER});
+  if(run.error||run.status!==(options.expected??0)) die(`dogfood execution failed: ${program}`);
+  return run.stdout.trim();
+}
+function gateResult(binary,cwd,id,temp) {
+  const bytes=fixedRun(binary,['verify','--gate',id,'--run-only','--json'],{cwd,env:{...process.env,TEMP:temp,TMP:temp},expected:id.startsWith('bad:')?3:0});
+  return bytes;
+}
+function sealResult(bytes) { return {bytes,sha256:sha256(Buffer.from(bytes,'utf8'))}; }
+function executeDogfood() {
+  if(process.platform!=='win32') die('dogfood execution requires Windows');
+  const path=require('node:path'); const root=process.cwd();
+  const scratch=path.join('F:\\',`wayland-nano-wp4-dogfood-validator-${process.pid}`);
+  const target=path.join(scratch,'good-target'); const temp=path.join(scratch,'temp');
+  const targetLink=path.join(root,'target'); const packageBins=path.join(root,'packaging','npm','binaries');
+  const packageManifest=path.join(root,'packaging','npm','binaries-manifest.json');
+  if(fs.existsSync(scratch)||fs.existsSync(targetLink)||fs.existsSync(packageBins)||fs.existsSync(packageManifest)) die('dogfood cleanup root not pristine');
+  const {directorySeal}=require('../lib/dirhash.cjs');
+  const clean=()=>{
+    for(const wt of ['cf-wt','pv-wt']) { const p=path.join(scratch,wt); if(fs.existsSync(p)) spawnSync('git',['worktree','remove','--force',p],{cwd:root,windowsHide:true}); }
+    spawnSync('git',['worktree','prune'],{cwd:root,windowsHide:true});
+    for(const p of [targetLink,packageBins]) if(fs.existsSync(p)) fs.rmSync(p,{recursive:true,force:true});
+    if(fs.existsSync(packageManifest)) fs.rmSync(packageManifest,{force:true});
+    if(fs.existsSync(scratch)) fs.rmSync(scratch,{recursive:true,force:true});
+  };
+  try {
+    fs.mkdirSync(temp,{recursive:true});
+    fixedRun('cargo',['build','-p','nano-cli','-p','nano-sandbox','--bins','--target-dir',target],{timeout:1_200_000});
+    fixedRun('cargo',['build','-p','nano-sandbox','--bin','wayland-nano-provision-dry-run','--bin','wayland-nano-sandbox-setup','--target-dir',target],{timeout:600_000});
+    fixedRun('pwsh',['-NoProfile','-File','packaging/npm/scripts/pack.ps1','-Platform','all','-ArtifactRoot','gates/fixtures/install-payload/reference/binaries']);
+    fs.symlinkSync(target,targetLink,'junction');
+    const binary=path.join(target,'debug','wayland-nano.exe');
+    const ids=['config-schema','install-payload','provision-script'];
+    const good=ids.map((gate_id)=>{const bytes=gateResult(binary,root,gate_id,temp);return {gate_id,
+      fixture_seal:gate_id==='install-payload'?directorySeal(path.join(root,'packaging','npm')):
+        directorySeal(path.join(root,'gates','fixtures',gate_id,gate_id==='config-schema'?'probes':'reference')),
+      exit_code:0,result:sealResult(bytes)}});
+    fs.copyFileSync(path.join(packageBins,'win32-x64','wayland-nano.exe'),path.join(packageBins,'linux-x64','wayland-nano'));
+    const ipBytes=fixedRun(binary,['verify','--gate','install-payload','--run-only','--json'],{cwd:root,env:{...process.env,TEMP:temp,TMP:temp},expected:3});
+    const ipSeal=directorySeal(path.join(root,'packaging','npm'));
+    fixedRun('pwsh',['-NoProfile','-File','packaging/npm/scripts/pack.ps1','-Platform','all','-ArtifactRoot','gates/fixtures/install-payload/reference/binaries']);
+    const mutations=[['cf','gates/fixtures/config-schema/mutants/cf-m3/mutant.diff'],['pv',null]];
+    const bad={ip:{bytes:ipBytes,seal:ipSeal}};
+    for(const [kind,patch] of mutations){
+      const wt=path.join(scratch,`${kind}-wt`), out=path.join(scratch,`${kind}-target`);
+      fixedRun('git',['worktree','add','--detach',wt,'HEAD']);
+      if(patch) fixedRun('git',['-C',wt,'apply',path.join(root,patch)]);
+      else { const file=path.join(wt,'crates','nano-sandbox','src','setup_types.rs'); fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace('NanoSandboxOffline','NanoOffline').replace('NanoSandboxOnline','NanoOnline')); }
+      if(kind==='cf') fixedRun('cargo',['build','--manifest-path',path.join(wt,'Cargo.toml'),'-p','nano-cli','--target-dir',out],{timeout:1_200_000});
+      else { fixedRun('cargo',['build','--manifest-path',path.join(wt,'Cargo.toml'),'-p','nano-cli','-p','nano-sandbox','--bins','--target-dir',out],{timeout:1_200_000}); fixedRun('cargo',['build','--manifest-path',path.join(wt,'Cargo.toml'),'-p','nano-sandbox','--bin','wayland-nano-provision-dry-run','--bin','wayland-nano-sandbox-setup','--target-dir',out],{timeout:600_000}); }
+      fs.symlinkSync(out,path.join(wt,'target'),'junction');
+      const id=kind==='cf'?'config-schema':'provision-script';
+      const bytes=fixedRun(path.join(out,'debug','wayland-nano.exe'),['verify','--gate',id,'--run-only','--json'],{cwd:wt,env:{...process.env,TEMP:temp,TMP:temp},expected:3});
+      const diff=spawnSync('git',['-C',wt,'diff','--binary','--full-index'],{encoding:null,maxBuffer:GIT_MAX_BUFFER});
+      if(diff.error||diff.status!==0) die('dogfood mutation digest'); bad[kind]={bytes,seal:sha256(diff.stdout)};
+    }
+    const mutants=[{mutant_id:'cf-m3',gate_id:'config-schema',seal:bad.cf.seal,exit_code:3,result:sealResult(bad.cf.bytes)},
+      {mutant_id:'ip-m1',gate_id:'install-payload',seal:bad.ip.seal,exit_code:3,result:sealResult(bad.ip.bytes)},
+      {mutant_id:'pv-m2',gate_id:'provision-script',seal:bad.pv.seal,exit_code:3,result:sealResult(bad.pv.bytes)}];
+    return {good,mutants};
+  } finally { clean(); }
 }
 
 const OWNED = [
@@ -157,13 +224,15 @@ const DOGFOOD_PATH = '.planning/phases/07-wp-4-gate-cards-and-dogfood/07-DOGFOOD
 const COMMANDS = ['node --test gates/tests/*.test.cjs',
   'node gates/tests/validate-seeded.cjs --seed 41041','node gates/tests/validate-seeded.cjs --seed 41042',
   'node gates/tests/validate-seeded.cjs --seed 41043',`node gates/tests/validate-evidence.cjs dogfood ${DOGFOOD_PATH}`,
-  'node gates/tests/validate-evidence.cjs provenance UPSTREAM.md'];
+  'node gates/tests/validate-evidence.cjs provenance UPSTREAM.md','just gate-all','cargo deny check'];
 function commandSpec(command) {
   if (command === COMMANDS[0]) return { program:process.execPath,args:['--test','gates/tests/*.test.cjs'],timeout:900_000 };
   const seed = /^node gates\/tests\/validate-seeded\.cjs --seed (4104[123])$/.exec(command)?.[1];
   if (seed) return { program:process.execPath,args:['gates/tests/validate-seeded.cjs','--seed',seed],timeout:600_000 };
   if (command === COMMANDS[4]) return { program:process.execPath,args:['gates/tests/validate-evidence.cjs','dogfood',DOGFOOD_PATH],timeout:30_000 };
   if (command === COMMANDS[5]) return { program:process.execPath,args:['gates/tests/validate-evidence.cjs','provenance','UPSTREAM.md'],timeout:30_000 };
+  if (command === COMMANDS[6]) return { program:'just',args:['gate-all'],timeout:1_800_000 };
+  if (command === COMMANDS[7]) return { program:'cargo',args:['deny','check'],timeout:600_000 };
   die('builder: forbidden command');
 }
 function defaultRun(command) {
@@ -294,5 +363,5 @@ try {
   process.exitCode = 1;
 }
 }
-module.exports={builder,commandSpec,COMMANDS,NAMED};
+module.exports={builder,dogfood,executeDogfood,commandSpec,COMMANDS,NAMED};
 if(require.main===module) main();

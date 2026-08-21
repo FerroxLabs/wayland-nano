@@ -35,6 +35,24 @@ test('evidence validators reject marker-only missing extra and mismatched payloa
   } finally { fs.rmSync(dir, { recursive:true, force:true }); }
 });
 
+test('dogfood ignores claimed success and cleanup while requiring independent exact execution', async () => {
+  const dir=fs.mkdtempSync(path.join(process.env.TEMP||os.tmpdir(),'wp4-dogfood-di-'));
+  try {
+    const source=JSON.parse(fs.readFileSync(path.join(ROOT,'.planning/phases/07-wp-4-gate-cards-and-dogfood/07-DOGFOOD-EVIDENCE.json')));
+    const file=await put(dir,'valid.json',source); let executions=0;
+    assert.doesNotThrow(()=>validator.dogfood(file,{execute:()=>{executions+=1;return {good:source.good,mutants:source.mutants}}}));
+    assert.equal(executions,1);
+    const forged=structuredClone(source); forged.good[0].result.bytes='{"outcome":"green","v":1,"verdicts":[]}';
+    forged.good[0].result.sha256=sha(Buffer.from(forged.good[0].result.bytes));
+    const forgedFile=await put(dir,'forged.json',forged);
+    assert.throws(()=>validator.dogfood(forgedFile,{execute:()=>({good:source.good,mutants:source.mutants})}));
+    const cleanup=structuredClone(source); cleanup.cleanup.paths=['F:/caller-chosen'];
+    const cleanupFile=await put(dir,'cleanup.json',cleanup); let ran=false;
+    assert.throws(()=>validator.dogfood(cleanupFile,{execute:()=>{ran=true;return {good:source.good,mutants:source.mutants}}}));
+    assert.equal(ran,false);
+  } finally {fs.rmSync(dir,{recursive:true,force:true});}
+});
+
 test('audit validator recomputes identity diff review and open high count', async () => {
   const dir = fs.mkdtempSync(path.join(process.env.TEMP || os.tmpdir(), 'wp4-audit-'));
   try {
