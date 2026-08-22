@@ -890,30 +890,30 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'dllprobe build failed' }
 
           $wnBnoLinksSource = @'
-using System;
-using System.Runtime.InteropServices;
-using System.Security.AccessControl;
-using System.Security.Principal;
-public static class WnBnoLinks {
-    [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern uint GetNamedSecurityInfo(string name, uint objectType, uint securityInfo, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr sd);
-    [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern uint SetNamedSecurityInfo(string name, uint objectType, uint securityInfo, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
-    [DllImport("advapi32.dll")] static extern uint GetSecurityDescriptorLength(IntPtr sd);
-    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr h);
-    const uint SE_KERNEL_OBJECT = 6;
-    const uint DACL_SECURITY_INFORMATION = 4;
-    static IntPtr PinnedAcl(RawSecurityDescriptor rsd, out GCHandle handle) {
-        var acl = rsd.DiscretionaryAcl;
-        if (acl == null) throw new InvalidOperationException("bnolinks dacl missing");
-        byte[] bytes = new byte[acl.BinaryLength]; acl.GetBinaryForm(bytes, 0);
-        handle = GCHandle.Alloc(bytes, GCHandleType.Pinned);
-        return handle.AddrOfPinnedObject();
-    }
-    public static string Grant(string sidText, int session) {
-        string name = "Sessions\\BNOLINKS\\" + session;
-        IntPtr owner, group, dacl, sacl, sd;
-        uint rc = GetNamedSecurityInfo(name, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, out owner, out group, out dacl, out sacl, out sd);
-        if (rc != 0) throw new InvalidOperationException("bnolinks read rc=" + rc);
-        try {
+          using System;
+          using System.Runtime.InteropServices;
+          using System.Security.AccessControl;
+          using System.Security.Principal;
+          public static class WnBnoLinks {
+              [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern uint GetNamedSecurityInfo(string name, uint objectType, uint securityInfo, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr sd);
+              [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern uint SetNamedSecurityInfo(string name, uint objectType, uint securityInfo, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+              [DllImport("advapi32.dll")] static extern uint GetSecurityDescriptorLength(IntPtr sd);
+              [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr h);
+              const uint SE_KERNEL_OBJECT = 6;
+              const uint DACL_SECURITY_INFORMATION = 4;
+              static IntPtr PinnedAcl(RawSecurityDescriptor rsd, out GCHandle handle) {
+                  var acl = rsd.DiscretionaryAcl;
+                  if (acl == null) throw new InvalidOperationException("bnolinks dacl missing");
+                  byte[] bytes = new byte[acl.BinaryLength]; acl.GetBinaryForm(bytes, 0);
+                  handle = GCHandle.Alloc(bytes, GCHandleType.Pinned);
+                  return handle.AddrOfPinnedObject();
+              }
+              public static string Grant(string sidText, int session) {
+                  string name = "Sessions\\BNOLINKS\\" + session;
+                  IntPtr owner, group, dacl, sacl, sd;
+                  uint rc = GetNamedSecurityInfo(name, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, out owner, out group, out dacl, out sacl, out sd);
+                  if (rc != 0) throw new InvalidOperationException("bnolinks read rc=" + rc);
+                  try {
             uint length = GetSecurityDescriptorLength(sd);
             byte[] original = new byte[length]; Marshal.Copy(sd, original, 0, (int)length);
             var rsd = new RawSecurityDescriptor(original, 0);
@@ -937,19 +937,19 @@ public static class WnBnoLinks {
                 if (!found) throw new InvalidOperationException("bnolinks grant not applied");
             } finally { if (sd2 != IntPtr.Zero) LocalFree(sd2); }
             return Convert.ToBase64String(original);
-        } finally { if (sd != IntPtr.Zero) LocalFree(sd); }
-    }
-    public static void Restore(int session, string originalBase64) {
-        string name = "Sessions\\BNOLINKS\\" + session;
-        var rsd = new RawSecurityDescriptor(Convert.FromBase64String(originalBase64), 0);
-        GCHandle handle;
-        IntPtr aclPtr = PinnedAcl(rsd, out handle);
-        try {
+                  } finally { if (sd != IntPtr.Zero) LocalFree(sd); }
+              }
+              public static void Restore(int session, string originalBase64) {
+                  string name = "Sessions\\BNOLINKS\\" + session;
+                  var rsd = new RawSecurityDescriptor(Convert.FromBase64String(originalBase64), 0);
+                  GCHandle handle;
+                  IntPtr aclPtr = PinnedAcl(rsd, out handle);
+                  try {
             uint rc = SetNamedSecurityInfo(name, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, IntPtr.Zero, IntPtr.Zero, aclPtr, IntPtr.Zero);
             if (rc != 0) throw new InvalidOperationException("bnolinks restore rc=" + rc);
-        } finally { handle.Free(); }
-    }
-}
+                  } finally { handle.Free(); }
+              }
+          }
           '@
           Add-Type -TypeDefinition $wnBnoLinksSource
           $bnoSession=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
