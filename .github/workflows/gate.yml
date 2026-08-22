@@ -750,7 +750,7 @@ jobs:
               public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string ignored;return RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,null,1,out ignored);}
               public static string RunDiagnostic(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string result;RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,true,null,1,out result);return result;}
               public static string RunCapabilities(string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){
-                  string[,] probes={{"git_version","git.exe --version >nul"},{"git_config","git.exe config --global --get-all safe.directory >nul"},{"git_repo","git.exe -C F:\\repo rev-parse --show-toplevel >nul"},{"node","node.exe --version >nul"},{"bash","\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" --version >nul"},{"cygpath","\"C:\\Program Files\\Git\\usr\\bin\\cygpath.exe\" -u F:\\tmp >nul"},{"whoami","whoami.exe >nul"},{"icacls","icacls.exe F:\\tmp >nul"},{"bash_mktemp","\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" -lc ^\"t=$(mktemp /f/tmp/wncap.XXXXXX) && rm -f $t^\" >nul"},{"protected_binary","if not exist F:\\gate-cards-bin\\wayland-nano.exe exit /b 61 & type F:\\gate-cards-bin\\wayland-nano.exe >nul"},{"config_card","if not exist F:\\repo\\gates\\config-schema\\card.md exit /b 62 & type F:\\repo\\gates\\config-schema\\card.md >nul"},{"config_probes","if not exist F:\\repo\\gates\\fixtures\\config-schema\\probes exit /b 63 & dir /b F:\\repo\\gates\\fixtures\\config-schema\\probes >nul"},{"dllprobe","F:\\tmp\\dllprobe.exe > F:\\tmp\\dllprobe-out.txt 2>&1"},{"bash_node","node.exe F:\\tmp\\wp4-spawn-bash.js"},{"git_real","\"C:\\Program Files\\Git\\usr\\bin\\git.exe\" --version >nul"}};
+                  string[,] probes={{"git_version","git.exe --version >nul"},{"git_config","git.exe config --global --get-all safe.directory >nul"},{"git_repo","git.exe -C F:\\repo rev-parse --show-toplevel >nul"},{"node","node.exe --version >nul"},{"bash","\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" --version >nul"},{"cygpath","\"C:\\Program Files\\Git\\usr\\bin\\cygpath.exe\" -u F:\\tmp >nul"},{"whoami","whoami.exe >nul"},{"icacls","icacls.exe F:\\tmp >nul"},{"bash_mktemp","\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" -lc ^\"t=$(mktemp /f/tmp/wncap.XXXXXX) && rm -f $t^\" >nul"},{"protected_binary","if not exist F:\\gate-cards-bin\\wayland-nano.exe exit /b 61 & type F:\\gate-cards-bin\\wayland-nano.exe >nul"},{"config_card","if not exist F:\\repo\\gates\\config-schema\\card.md exit /b 62 & type F:\\repo\\gates\\config-schema\\card.md >nul"},{"config_probes","if not exist F:\\repo\\gates\\fixtures\\config-schema\\probes exit /b 63 & dir /b F:\\repo\\gates\\fixtures\\config-schema\\probes >nul"}};
                   var capability=new System.Text.StringBuilder("capability=");bool allPass=true;for(int i=0;i<probes.GetLength(0);i++){string ignored;int exit=RunCore("config-schema",accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,probes[i,1],1,out ignored);capability.Append(probes[i,0]).Append(':').Append(exit).Append(';');if(exit!=0)allPass=false;}return allPass?"capability=all_pass":capability.ToString().TrimEnd(';');
               }
           }
@@ -766,7 +766,6 @@ jobs:
             '{"node","node.exe --version >nul"}', '{"bash","\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" --version >nul"}',
             '{"cygpath","\"C:\\Program Files\\Git\\usr\\bin\\cygpath.exe\" -u F:\\tmp >nul"}', '{"whoami","whoami.exe >nul"}',
             '{"icacls","icacls.exe F:\\tmp >nul"}', '{"bash_mktemp","\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" -lc',
-            '{"dllprobe","F:\\tmp\\dllprobe.exe > F:\\tmp\\dllprobe-out.txt 2>&1"},{"bash_node","node.exe F:\\tmp\\wp4-spawn-bash.js"}', '{"git_real","\"C:\\Program Files\\Git\\usr\\bin\\git.exe\" --version >nul"}',
             '{"protected_binary","if not exist F:\\gate-cards-bin\\wayland-nano.exe',
             '{"config_card","if not exist F:\\repo\\gates\\config-schema\\card.md',
             '{"config_probes","if not exist F:\\repo\\gates\\fixtures\\config-schema\\probes',
@@ -868,27 +867,6 @@ jobs:
             if(!(Test-Path -LiteralPath $protectedDir -PathType Container)-or!(Test-Path -LiteralPath $binary -PathType Leaf)-or(Get-Item -LiteralPath $binary).FullName-ne'F:\gate-cards-bin\wayland-nano.exe'-or(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash-ne$binaryHash-or(Get-FileHash -LiteralPath $protectedGitConfig -Algorithm SHA256).Hash-ne$gitConfigHash){throw 'protected identity changed after gate'}
             return $exit
           }
-          @'
-          use std::ffi::OsStr;
-          use std::os::windows::ffi::OsStrExt;
-          #[link(name="kernel32")]
-          extern "system" { fn LoadLibraryW(name: *const u16) -> isize; fn GetLastError() -> u32; }
-          fn main() {
-              let dlls = ["kernel32.dll","user32.dll","secur32.dll","sspicli.dll","userenv.dll","authz.dll","wkscli.dll","netutils.dll","ws2_32.dll","version.dll","advapi32.dll","shell32.dll","C:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\msys-2.0.dll"];
-              let mut bad = 0u32;
-              for d in dlls {
-                  let wide: Vec<u16> = OsStr::new(d).encode_wide().chain(std::iter::once(0)).collect();
-                  let h = unsafe { LoadLibraryW(wide.as_ptr()) };
-                  let err = unsafe { GetLastError() };
-                  println!("{} -> {} err={}", d, if h != 0 { "ok" } else { "FAIL" }, err);
-                  if h == 0 { bad += 1; }
-              }
-              std::process::exit(if bad == 0 { 0 } else { 42 });
-          }
-          '@ | Set-Content -LiteralPath 'F:\tmp\dllprobe.rs' -Encoding ascii
-          & rustc --edition 2021 -O 'F:\tmp\dllprobe.rs' -o 'F:\tmp\dllprobe.exe'
-          if ($LASTEXITCODE -ne 0) { throw 'dllprobe build failed' }
-
           $wnBnoLinksSource = @'
           using System;
           using System.Runtime.InteropServices;
@@ -965,27 +943,11 @@ jobs:
           Add-Type -TypeDefinition $wnBnoLinksSource
           $bnoSession=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
           [WnBnoLinks]::Grant($userSid,$bnoSession)
-          Set-Content -LiteralPath 'F:\tmp\wp4-spawn-bash.js' -Encoding ascii -Value 'const r=require(''child_process'').spawnSync(''bash'',[''--version''],{stdio:''ignore''});process.exit(r.status===null?1:r.status);'
-          $preflightCapability=[GateCardsRestrictedProcess]::RunCapabilities($accountName,$accountPassword,$userSid,$brokerSid,$brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec)
-          if($preflightCapability-ne'capability=all_pass'){throw "capability preflight failed: $preflightCapability"}
           # Exact landed WP-3 contract: verify --gate "$gate_id" --run-only
           foreach($gate_id in $gateIds){$exit=Invoke-ProtectedGate $gate_id $true;if($exit-ne 0){$capability='capability=not_run';if($gate_id-eq'config-schema'-and$script:LastGateDiagnostic.StartsWith('outcome=fail_closed')){try{$capability=[GateCardsRestrictedProcess]::RunCapabilities($accountName,$accountPassword,$userSid,$brokerSid,$brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec)}catch{$capability='capability=unavailable:-1'};if($capability-notmatch'^capability=(all_pass|[a-z0-9_]+:-?[0-9]+(;[a-z0-9_]+:-?[0-9]+)*)$'){throw 'capability diagnostic contract'}};throw "good gate blocked: $gate_id (exit $exit; $script:LastGateDiagnostic; $capability)"}}
           Copy-Item -Force packaging/npm/binaries/win32-x64/wayland-nano.exe packaging/npm/binaries/linux-x64/wayland-nano
           $badExit=Invoke-ProtectedGate 'install-payload' $false
           if($badExit-ne 3){throw 'ip-m1 did not block with exit 3'}
-
-      - name: Dump restricted-child crash events
-        if: always()
-        shell: pwsh
-        run: |
-          if (Test-Path 'F:\tmp\dllprobe-out.txt') { Get-Content 'F:\tmp\dllprobe-out.txt' | ForEach-Object { "DLLPROBE: $_" } } else { 'DLLPROBE: no output file' }
-          $events = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000; ProviderName='Application Error'} -MaxEvents 12 -ErrorAction SilentlyContinue
-          if (-not $events) { 'no Application Error 1000 events'; exit 0 }
-          foreach ($event in $events) {
-            $text = $event.Message -replace "`r?`n", ' | '
-            if ($text.Length -gt 400) { $text = $text.Substring(0, 400) }
-            "CRASH_EVENT: $text"
-          }
 
       - name: Require clean producer tree
         if: always()
