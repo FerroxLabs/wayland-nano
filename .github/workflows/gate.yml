@@ -734,7 +734,7 @@ jobs:
             '{"USERNAME",accountName}', '{"WINDIR",winDir}',
             'block.Append(''\0'')', 'Marshal.StringToHGlobalUni', 'CREATE_UNICODE_ENVIRONMENT',
             'LogonUserW(accountName,".",accountPassword,LOGON32_LOGON_INTERACTIVE,LOGON32_PROVIDER_DEFAULT',
-            'CreateProcessWithTokenW(restrictedToken,0,Application,new StringBuilder(command)',
+            'CreateProcessWithTokenW(restrictedToken,0,application,new StringBuilder(command)',
             'TokenInfo(restrictedToken,TokenElevation', 'TokenIsElevated!=0',
             'TokenInfo(restrictedToken,TokenGroups', 'ephemeral account has Administrators membership',
             'dangerous ephemeral privilege', 'ephemeral token Medium integrity',
