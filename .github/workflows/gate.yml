@@ -901,7 +901,8 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $events = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000} -MaxEvents 12 -ErrorAction SilentlyContinue
+          if (Test-Path 'F:\tmp\dllprobe-out.txt') { Get-Content 'F:\tmp\dllprobe-out.txt' | ForEach-Object { "DLLPROBE: $_" } } else { 'DLLPROBE: no output file' }
+          $events = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000; ProviderName='Application Error'} -MaxEvents 12 -ErrorAction SilentlyContinue
           if (-not $events) { 'no Application Error 1000 events'; exit 0 }
           foreach ($event in $events) {
             $text = $event.Message -replace "`r?`n", ' | '
