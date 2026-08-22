@@ -368,7 +368,7 @@ jobs:
           }
 
   gate-cards:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -747,11 +747,11 @@ jobs:
                       if(cleanupFailed)throw new InvalidOperationException("restricted desktop cleanup failed");
                   }
               }
-              public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string ignored;return RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,null,0,out ignored);}
-              public static string RunDiagnostic(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string result;RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,true,null,0,out result);return result;}
+              public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string ignored;return RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,null,1,out ignored);}
+              public static string RunDiagnostic(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string result;RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,true,null,1,out result);return result;}
               public static string RunCapabilities(string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){
                   string[,] probes={{"git_version","git.exe --version >nul"},{"git_config","git.exe config --global --get-all safe.directory >nul"},{"git_repo","git.exe -C F:\\repo rev-parse --show-toplevel >nul"},{"node","node.exe --version >nul"},{"bash","\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" --version >nul"},{"cygpath","\"C:\\Program Files\\Git\\usr\\bin\\cygpath.exe\" -u F:\\tmp >nul"},{"whoami","whoami.exe >nul"},{"icacls","icacls.exe F:\\tmp >nul"},{"bash_mktemp","\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" -lc ^\"t=$(mktemp /f/tmp/wncap.XXXXXX) && rm -f $t^\" >nul"},{"protected_binary","if not exist F:\\gate-cards-bin\\wayland-nano.exe exit /b 61 & type F:\\gate-cards-bin\\wayland-nano.exe >nul"},{"config_card","if not exist F:\\repo\\gates\\config-schema\\card.md exit /b 62 & type F:\\repo\\gates\\config-schema\\card.md >nul"},{"config_probes","if not exist F:\\repo\\gates\\fixtures\\config-schema\\probes exit /b 63 & dir /b F:\\repo\\gates\\fixtures\\config-schema\\probes >nul"},{"bash_node","node.exe F:\\tmp\\wp4-spawn-bash.js"},{"git_real","\"C:\\Program Files\\Git\\usr\\bin\\git.exe\" --version >nul"}};
-                  var capability=new System.Text.StringBuilder("capability=");bool allPass=true;for(int mode=0;mode<2;mode++)for(int i=0;i<probes.GetLength(0);i++){string ignored;int exit=RunCore("config-schema",accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,probes[i,1],mode,out ignored);capability.Append('m').Append(mode).Append('_').Append(probes[i,0]).Append(':').Append(exit).Append(';');if(exit!=0)allPass=false;}return allPass?"capability=all_pass":capability.ToString().TrimEnd(';');
+                  var capability=new System.Text.StringBuilder("capability=");bool allPass=true;for(int i=0;i<probes.GetLength(0);i++){string ignored;int exit=RunCore("config-schema",accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,probes[i,1],1,out ignored);capability.Append(probes[i,0]).Append(':').Append(exit).Append(';');if(exit!=0)allPass=false;}return allPass?"capability=all_pass":capability.ToString().TrimEnd(';');
               }
           }
           '@
