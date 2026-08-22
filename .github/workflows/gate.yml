@@ -634,7 +634,8 @@ jobs:
               static IntPtr BuildEnvironment(string accountName,string path,string pathExt,string systemRoot,string winDir,string comSpec) {
                   foreach(string value in new[]{path,pathExt,systemRoot,winDir,comSpec})if(String.IsNullOrWhiteSpace(value)||value.IndexOf('\0')>=0)throw new InvalidOperationException("broker environment source");
                   if(!Regex.IsMatch(accountName,"^wngc[0-9a-f]{12}$"))throw new InvalidOperationException("ephemeral account environment");
-                  var values=new System.Collections.Generic.SortedDictionary<string,string>(StringComparer.OrdinalIgnoreCase){{"COMSPEC",comSpec},{"GIT_CONFIG_GLOBAL",@"F:\gate-cards-bin\gitconfig"},{"NANO_HOME",@"F:\wayland-nano-fixture"},{"NANO_WP4_TEMP_ROOT",ScratchRoot},{"PATH",path},{"PATHEXT",pathExt},{"SystemRoot",systemRoot},{"TEMP",@"F:\tmp"},{"TMP",@"F:\tmp"},{"TMPDIR","F:/tmp"},{"USERNAME",accountName},{"WINDIR",winDir}};
+                  var values=new System.Collections.Generic.SortedDictionary<string,string>(StringComparer.OrdinalIgnoreCase){{"COMSPEC",comSpec},{"GIT_CONFIG_GLOBAL",@"F:\gate-cards-bin\gitconfig"},{"HOME","F:/tmp"},{"NANO_CF_RUN_ROOT","/f/tmp"},{"NANO_HOME",@"F:\wayland-nano-fixture"},{"NANO_WP4_TEMP_ROOT",ScratchRoot},{"PATH",path},{"PATHEXT",pathExt},{"SystemRoot",systemRoot},{"TEMP",@"F:\tmp"},{"TMP",@"F:\tmp"},{"TMPDIR","F:/tmp"},{"USERNAME",accountName},{"WINDIR",winDir}};
+                  if(values.Count!=14)throw new InvalidOperationException("closed child environment inventory");
                   var block=new StringBuilder();foreach(var pair in values){block.Append(pair.Key).Append('=').Append(pair.Value).Append('\0');}block.Append('\0');return Marshal.StringToHGlobalUni(block.ToString());
               }
               static void RequireAccessDenied(bool unexpectedlySucceeded, string operation) {
@@ -728,10 +729,12 @@ jobs:
             'SortedDictionary<string,string>(StringComparer.OrdinalIgnoreCase)',
             'BuildEnvironment(accountName,path,pathExt,systemRoot,winDir,comSpec)',
             'Regex.IsMatch(accountName,"^wngc[0-9a-f]{12}$")',
-            '{"COMSPEC",comSpec}', '{"GIT_CONFIG_GLOBAL",@"F:\gate-cards-bin\gitconfig"}',
+            '{"COMSPEC",comSpec}', '{"GIT_CONFIG_GLOBAL",@"F:\gate-cards-bin\gitconfig"}', '{"HOME","F:/tmp"}',
+            '{"NANO_CF_RUN_ROOT","/f/tmp"}',
             '{"NANO_HOME",@"F:\wayland-nano-fixture"}', '{"NANO_WP4_TEMP_ROOT",ScratchRoot}', '{"PATH",path}', '{"PATHEXT",pathExt}',
             '{"SystemRoot",systemRoot}', '{"TEMP",@"F:\tmp"}', '{"TMP",@"F:\tmp"}', '{"TMPDIR","F:/tmp"}',
             '{"USERNAME",accountName}', '{"WINDIR",winDir}',
+            'if(values.Count!=14)',
             'block.Append(''\0'')', 'Marshal.StringToHGlobalUni', 'CREATE_UNICODE_ENVIRONMENT',
             'LogonUserW(accountName,".",accountPassword,LOGON32_LOGON_INTERACTIVE,LOGON32_PROVIDER_DEFAULT',
             'CreateProcessWithTokenW(restrictedToken,0,application,new StringBuilder(command)',
