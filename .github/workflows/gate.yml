@@ -675,6 +675,7 @@ jobs:
                   if(Environment.GetEnvironmentVariable("NANO_WP4_TEMP_ROOT")!=ScratchRoot) throw new InvalidOperationException("fixed install scratch environment");
                   if(Environment.GetEnvironmentVariable("GIT_CONFIG_GLOBAL")!=GitConfig) throw new InvalidOperationException("fixed Git safe-directory config");
                   sanitized="";string diagnosticPath=@"F:\tmp\gate-failure-"+Guid.NewGuid().ToString("N")+".json",application=(diagnostic||fixedCommand!=null)?comSpec:Application;
+                  UInt32 timeoutMs=fixedCommand!=null?30000U:1200000U;
                   string command=fixedCommand!=null?("\""+comSpec+"\" /d /s /c \""+fixedCommand+"\""):(diagnostic?("\""+comSpec+"\" /d /s /c \"\""+Application+"\" verify --gate "+gateId+" --run-only --json > \""+diagnosticPath+"\"\""):("\""+Application+"\" verify --gate "+gateId+" --run-only"));
                   IntPtr restrictedToken=IntPtr.Zero, administratorsSid=IntPtr.Zero, mediumSid=IntPtr.Zero,
                       restrictedPrivileges=IntPtr.Zero, verifyIntegrity=IntPtr.Zero, stationSecurity=IntPtr.Zero,
@@ -704,8 +705,8 @@ jobs:
                       Check(CreateProcessWithTokenW(restrictedToken,0,application,new StringBuilder(command),CREATE_SUSPENDED|CREATE_NO_WINDOW|CREATE_UNICODE_ENVIRONMENT,environment,WorkingDirectory,ref startup,out pi),"CreateProcessWithTokenW");
                       Check(AssignProcessToJobObject(job, pi.hProcess), "AssignProcessToJobObject"); assigned=true;
                       if (ResumeThread(pi.hThread)==UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread");
-                      UInt32 wait=WaitForSingleObject(pi.hProcess, 1200000);
-                      if (wait==WAIT_TIMEOUT) { Check(TerminateJobObject(job, 124), "TerminateJobObject(timeout)"); UInt32 stopped=WaitForSingleObject(pi.hProcess, 30000); if(stopped!=WAIT_OBJECT_0) throw new TimeoutException("restricted child termination timeout"); throw new TimeoutException("restricted child timeout"); }
+                      UInt32 wait=WaitForSingleObject(pi.hProcess,timeoutMs);
+                      if (wait==WAIT_TIMEOUT) { Check(TerminateJobObject(job,124),"TerminateJobObject(timeout)");UInt32 stopped=WaitForSingleObject(pi.hProcess,30000);if(stopped!=WAIT_OBJECT_0)throw new TimeoutException("restricted child termination timeout");if(fixedCommand!=null)return 124;throw new TimeoutException("restricted child timeout"); }
                       if (wait!=WAIT_OBJECT_0) throw new Win32Exception(Marshal.GetLastWin32Error(), "WaitForSingleObject");
                       UInt32 exitCode; Check(GetExitCodeProcess(pi.hProcess, out exitCode), "GetExitCodeProcess");
                       if(exitCode==STILL_ACTIVE) throw new InvalidOperationException("restricted child remained active");
@@ -791,7 +792,8 @@ jobs:
             'CREATE_SUSPENDED|CREATE_NO_WINDOW|CREATE_UNICODE_ENVIRONMENT,environment,WorkingDirectory',
             'CREATE_SUSPENDED|CREATE_NO_WINDOW', 'CreateJobObjectW', 'SetInformationJobObject',
             'JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE', 'AssignProcessToJobObject', 'ResumeThread',
-            'WaitForSingleObject(pi.hProcess, 1200000)', 'TerminateJobObject(job, 124)',
+            'timeoutMs=fixedCommand!=null?30000U:1200000U', 'WaitForSingleObject(pi.hProcess,timeoutMs)',
+            'TerminateJobObject(job,124)', 'if(fixedCommand!=null)return 124',
             'WaitForSingleObject(pi.hProcess, 30000)', 'GetExitCodeProcess', 'CloseHandle'
           )
           foreach($needle in $needles){if(!$launcherSource.Contains($needle)){throw "restricted launcher assertion failed: $needle"}}
