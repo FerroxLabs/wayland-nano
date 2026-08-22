@@ -524,6 +524,8 @@ jobs:
           using System.Runtime.InteropServices;
           using System.Text;
           using System.Text.RegularExpressions;
+          using System.Text.Json;
+          using System.IO;
 
           public static class GateCardsRestrictedProcess {
               const UInt32 TOKEN_ASSIGN_PRIMARY = 0x0001;
@@ -657,12 +659,13 @@ jobs:
                       RequireAccessDenied(false,"protected parent replacement");
                   } finally { Check(RevertToSelf(),"RevertToSelf"); }
               }
-              public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec) {
+              static int RunCore(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec,bool diagnostic,out string sanitized) {
                   if(gateId!="config-schema" && gateId!="install-payload" && gateId!="provision-script") throw new ArgumentException("gate id is not canonical", "gateId");
                   if(String.IsNullOrEmpty(accountName)||String.IsNullOrEmpty(accountPassword))throw new ArgumentException("ephemeral account credentials");
                   if(Environment.GetEnvironmentVariable("NANO_WP4_TEMP_ROOT")!=ScratchRoot) throw new InvalidOperationException("fixed install scratch environment");
                   if(Environment.GetEnvironmentVariable("GIT_CONFIG_GLOBAL")!=GitConfig) throw new InvalidOperationException("fixed Git safe-directory config");
-                  string command="\"F:\\gate-cards-bin\\wayland-nano.exe\" verify --gate "+gateId+" --run-only";
+                  sanitized="";string diagnosticPath=@"F:\tmp\gate-failure-"+Guid.NewGuid().ToString("N")+".json",application=diagnostic?comSpec:Application;
+                  string command=diagnostic?("\""+comSpec+"\" /d /s /c \"\""+Application+"\" verify --gate "+gateId+" --run-only --json > \""+diagnosticPath+"\"\""):("\""+Application+"\" verify --gate "+gateId+" --run-only");
                   IntPtr restrictedToken=IntPtr.Zero, administratorsSid=IntPtr.Zero, mediumSid=IntPtr.Zero,
                       restrictedPrivileges=IntPtr.Zero, verifyIntegrity=IntPtr.Zero, stationSecurity=IntPtr.Zero,
                       originalStation=IntPtr.Zero,station=IntPtr.Zero,desktop=IntPtr.Zero,environment=IntPtr.Zero,job=IntPtr.Zero;
@@ -687,7 +690,7 @@ jobs:
                       try { Marshal.StructureToPtr(limits, limitsPtr, false); Check(SetInformationJobObject(job, JobObjectExtendedLimitInformation, limitsPtr, (UInt32)size), "SetInformationJobObject"); }
                       finally { Marshal.FreeHGlobal(limitsPtr); }
                       var startup=new STARTUPINFO();startup.cb=(UInt32)Marshal.SizeOf(startup);startup.lpDesktop=stationName+@"\"+desktopName;if(!startup.lpDesktop.StartsWith("WaylandNanoGateCardsStation-",StringComparison.Ordinal)||startup.lpDesktop.IndexOf(@"\WaylandNanoGateCards-",StringComparison.Ordinal)<0)throw new InvalidOperationException("private desktop identity");
-                      Check(CreateProcessWithTokenW(restrictedToken,0,Application,new StringBuilder(command),CREATE_SUSPENDED|CREATE_NO_WINDOW|CREATE_UNICODE_ENVIRONMENT,environment,WorkingDirectory,ref startup,out pi),"CreateProcessWithTokenW");
+                      Check(CreateProcessWithTokenW(restrictedToken,0,application,new StringBuilder(command),CREATE_SUSPENDED|CREATE_NO_WINDOW|CREATE_UNICODE_ENVIRONMENT,environment,WorkingDirectory,ref startup,out pi),"CreateProcessWithTokenW");
                       Check(AssignProcessToJobObject(job, pi.hProcess), "AssignProcessToJobObject"); assigned=true;
                       if (ResumeThread(pi.hThread)==UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread");
                       UInt32 wait=WaitForSingleObject(pi.hProcess, 1200000);
@@ -695,6 +698,8 @@ jobs:
                       if (wait!=WAIT_OBJECT_0) throw new Win32Exception(Marshal.GetLastWin32Error(), "WaitForSingleObject");
                       UInt32 exitCode; Check(GetExitCodeProcess(pi.hProcess, out exitCode), "GetExitCodeProcess");
                       if(exitCode==STILL_ACTIVE) throw new InvalidOperationException("restricted child remained active");
+                      CloseHandle(job);job=IntPtr.Zero;
+                      if(diagnostic){if(!File.Exists(diagnosticPath))sanitized="none";else{var info=new FileInfo(diagnosticPath);if((info.Attributes&FileAttributes.ReparsePoint)!=0||info.Length>4096)throw new InvalidOperationException("diagnostic file contract");using(var document=JsonDocument.Parse(File.ReadAllBytes(diagnosticPath))){var root=document.RootElement;if(root.ValueKind!=JsonValueKind.Object||root.GetRawText().Length>4096)throw new InvalidOperationException("diagnostic JSON root");var names=new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);foreach(var property in root.EnumerateObject())names.Add(property.Name);if(names.Count!=3||!names.Contains("v")||!names.Contains("outcome")||!names.Contains("verdicts")||root.GetProperty("v").GetInt32()!=1)throw new InvalidOperationException("diagnostic JSON schema");string outcome=root.GetProperty("outcome").GetString();if(outcome!="green"&&outcome!="red"&&outcome!="fail_closed")throw new InvalidOperationException("diagnostic outcome");var verdicts=root.GetProperty("verdicts");if(verdicts.ValueKind!=JsonValueKind.Array||verdicts.GetArrayLength()>32)throw new InvalidOperationException("diagnostic verdict inventory");var tokens=new System.Collections.Generic.List<string>();foreach(var verdict in verdicts.EnumerateArray()){if(verdict.ValueKind!=JsonValueKind.Object)throw new InvalidOperationException("diagnostic verdict");var fields=new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);foreach(var property in verdict.EnumerateObject())fields.Add(property.Name);if(fields.Count!=3||!fields.Contains("category")||!fields.Contains("id")||!fields.Contains("passed"))throw new InvalidOperationException("diagnostic verdict schema");string category=verdict.GetProperty("category").GetString(),id=verdict.GetProperty("id").GetString();if(!Regex.IsMatch(id??"","^[A-Z]{2}-[0-9]{2}$")||!Regex.IsMatch(category??"","^(structure|value|relation|grounding|execution|security)$")||(verdict.GetProperty("passed").ValueKind!=JsonValueKind.True&&verdict.GetProperty("passed").ValueKind!=JsonValueKind.False))throw new InvalidOperationException("diagnostic verdict value");tokens.Add(id+":"+category+":"+verdict.GetProperty("passed").GetBoolean().ToString().ToLowerInvariant());}sanitized="outcome="+outcome+(tokens.Count==0?"":";"+String.Join(";",tokens));}}}
                       return unchecked((int)exitCode);
                   } catch {
                       if(pi.hProcess!=IntPtr.Zero) { if(assigned && job!=IntPtr.Zero) TerminateJobObject(job, 125); else TerminateProcess(pi.hProcess, 125); WaitForSingleObject(pi.hProcess, 30000); }
@@ -709,8 +714,11 @@ jobs:
                       if(restrictedToken!=IntPtr.Zero) CloseHandle(restrictedToken);
                       if(mediumSid!=IntPtr.Zero)LocalFree(mediumSid);if(administratorsSid!=IntPtr.Zero) LocalFree(administratorsSid);
                       if(job!=IntPtr.Zero) CloseHandle(job);
+                      if(diagnostic&&File.Exists(diagnosticPath)){File.Delete(diagnosticPath);}if(diagnostic&&File.Exists(diagnosticPath))throw new InvalidOperationException("diagnostic residue");
                   }
               }
+              public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string ignored;return RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,out ignored);}
+              public static string RunDiagnostic(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string result;RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,true,out result);return result;}
           }
           '@
           $needles = @(
@@ -735,7 +743,10 @@ jobs:
             'CreateDesktopW(desktopName,null,IntPtr.Zero,0,DESKTOP_ALL_ACCESS', 'SetProcessWindowStation(originalStation)',
             'startup.lpDesktop=stationName+@"\"+desktopName', 'CloseDesktop(desktop)', 'CloseWindowStation(station)',
             'gateId!="config-schema" && gateId!="install-payload" && gateId!="provision-script"',
-            'string command="\"F:\\gate-cards-bin\\wayland-nano.exe\" verify --gate "+gateId+" --run-only"',
+            ':("\""+Application+"\" verify --gate "+gateId+" --run-only")',
+            '--run-only --json > \""+diagnosticPath', 'JsonDocument.Parse',
+            'names.Count!=3', 'verdicts.GetArrayLength()>32', 'info.Length>4096',
+            'CloseHandle(job);job=IntPtr.Zero', 'diagnostic residue',
             'const string ScratchRoot = @"F:\tmp\wp4-install-gate"',
             'Environment.GetEnvironmentVariable("NANO_WP4_TEMP_ROOT")!=ScratchRoot',
             'ProbeProtectedBinary(restrictedToken)', 'ImpersonateLoggedOnUser', 'RevertToSelf',
@@ -769,9 +780,10 @@ jobs:
           $binary='F:\gate-cards-bin\wayland-nano.exe'
           if(!(Test-Path -LiteralPath $binary -PathType Leaf)){throw 'landed WP-3 binary is missing'}
           $binaryHash=(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash
-          function Invoke-ProtectedGate($gateId){
+          function Invoke-ProtectedGate($gateId,$diagnoseUnexpected){
             if(!(Test-Path -LiteralPath $protectedDir -PathType Container)-or!(Test-Path -LiteralPath $binary -PathType Leaf)-or(Get-Item -LiteralPath $binary).FullName-ne'F:\gate-cards-bin\wayland-nano.exe'-or(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash-ne$binaryHash-or(Get-FileHash -LiteralPath $protectedGitConfig -Algorithm SHA256).Hash-ne$gitConfigHash){throw 'protected identity changed before gate'}
-            try{$exit=[GateCardsRestrictedProcess]::RunGate($gateId,$accountName,$accountPassword,$userSid,$brokerSid,$brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec)}finally{
+            $script:LastGateDiagnostic='none'
+            try{$exit=[GateCardsRestrictedProcess]::RunGate($gateId,$accountName,$accountPassword,$userSid,$brokerSid,$brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec);if(($exit-ne 0) -and $diagnoseUnexpected){try{$script:LastGateDiagnostic=[GateCardsRestrictedProcess]::RunDiagnostic($gateId,$accountName,$accountPassword,$userSid,$brokerSid,$brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec);if($script:LastGateDiagnostic-notmatch'^(none|outcome=(green|red|fail_closed)(;[A-Z]{2}-[0-9]{2}:(structure|value|relation|grounding|execution|security):(true|false)){0,32})$'){throw 'diagnostic sanitizer contract'}}catch{$script:LastGateDiagnostic='none'}}}finally{
               if($gateId-eq'install-payload'-and(Test-Path -LiteralPath $scratchRoot)){
                 Remove-VerifiedScratch $scratchRoot
               }
@@ -780,9 +792,9 @@ jobs:
             return $exit
           }
           # Exact landed WP-3 contract: verify --gate "$gate_id" --run-only
-          foreach($gate_id in $gateIds){$exit=Invoke-ProtectedGate $gate_id;if($exit-ne 0){throw "good gate blocked: $gate_id (exit $exit)"}}
+          foreach($gate_id in $gateIds){$exit=Invoke-ProtectedGate $gate_id $true;if($exit-ne 0){throw "good gate blocked: $gate_id (exit $exit; $script:LastGateDiagnostic)"}}
           Copy-Item -Force packaging/npm/binaries/win32-x64/wayland-nano.exe packaging/npm/binaries/linux-x64/wayland-nano
-          $badExit=Invoke-ProtectedGate 'install-payload'
+          $badExit=Invoke-ProtectedGate 'install-payload' $false
           if($badExit-ne 3){throw 'ip-m1 did not block with exit 3'}
 
       - name: Require clean producer tree
