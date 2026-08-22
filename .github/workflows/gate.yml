@@ -877,6 +877,18 @@ jobs:
           $badExit=Invoke-ProtectedGate 'install-payload' $false
           if($badExit-ne 3){throw 'ip-m1 did not block with exit 3'}
 
+      - name: Dump restricted-child crash events
+        if: always()
+        shell: pwsh
+        run: |
+          $events = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000} -MaxEvents 12 -ErrorAction SilentlyContinue
+          if (-not $events) { 'no Application Error 1000 events'; exit 0 }
+          foreach ($event in $events) {
+            $text = $event.Message -replace "`r?`n", ' | '
+            if ($text.Length -gt 400) { $text = $text.Substring(0, 400) }
+            "CRASH_EVENT: $text"
+          }
+
       - name: Require clean producer tree
         if: always()
         shell: pwsh
