@@ -499,6 +499,9 @@ jobs:
           Assert-ProtectedAcl 'F:\' $true $rx;Assert-ProtectedAcl 'F:\repo' $true $rx;Assert-ProtectedAcl 'F:\tmp' $true $modify;Assert-ProtectedAcl $protectedDir $true $rx;Assert-ProtectedAcl $protectedBinary $false $rx;Assert-ProtectedAcl $protectedGitConfig $false $rx
           $accountHome="F:\tmp\$accountName-home";if($accountName-notmatch'^wngc[0-9a-f]{12}$'-or(Test-Path -LiteralPath $accountHome)){throw 'account home is not pristine'};New-Item -ItemType Directory -Path $accountHome|Out-Null
           $homeItem=Get-Item -LiteralPath $accountHome -Force;if($homeItem.Attributes-band[IO.FileAttributes]::ReparsePoint){throw 'account home is a reparse point'};$homeAcl=Get-Acl -LiteralPath $accountHome;$homeRule=@($homeAcl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])|Where-Object {$_.IdentityReference.Value-eq$userSid});if($homeRule.Count-ne 1-or($homeRule[0].FileSystemRights-band$modify)-ne$modify){throw 'account home does not inherit account Modify'}
+          $gateScratch=[IO.Path]::GetFullPath('F:\repo\target\wp4-install-gate');if($gateScratch-ne'F:\repo\target\wp4-install-gate'){throw 'gate scratch identity'}
+          New-Item -ItemType Directory -Force $gateScratch|Out-Null
+          & icacls.exe $gateScratch /grant "*$($userSid):(OI)(CI)(M)" | Out-Null;if($LASTEXITCODE-ne 0){throw 'gate scratch grant failed'}
           $protectedHash=(Get-FileHash -LiteralPath $protectedBinary -Algorithm SHA256).Hash;$gitConfigHash=(Get-FileHash -LiteralPath $protectedGitConfig -Algorithm SHA256).Hash
           $env:GIT_CONFIG_GLOBAL=$protectedGitConfig
           $brokerPath="C:\Program Files\Git\usr\bin;C:\Program Files\Git\bin;"+$env:PATH;$brokerPathExt=$env:PATHEXT;$brokerSystemRoot=$env:SystemRoot;$brokerWinDir=$env:WINDIR;$brokerComSpec=$env:COMSPEC
