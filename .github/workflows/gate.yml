@@ -660,13 +660,13 @@ jobs:
                       RequireAccessDenied(false,"protected parent replacement");
                   } finally { Check(RevertToSelf(),"RevertToSelf"); }
               }
-              static int RunCore(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec,bool diagnostic,out string sanitized) {
+              static int RunCore(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec,bool diagnostic,string fixedCommand,out string sanitized) {
                   if(gateId!="config-schema" && gateId!="install-payload" && gateId!="provision-script") throw new ArgumentException("gate id is not canonical", "gateId");
                   if(String.IsNullOrEmpty(accountName)||String.IsNullOrEmpty(accountPassword))throw new ArgumentException("ephemeral account credentials");
                   if(Environment.GetEnvironmentVariable("NANO_WP4_TEMP_ROOT")!=ScratchRoot) throw new InvalidOperationException("fixed install scratch environment");
                   if(Environment.GetEnvironmentVariable("GIT_CONFIG_GLOBAL")!=GitConfig) throw new InvalidOperationException("fixed Git safe-directory config");
-                  sanitized="";string diagnosticPath=@"F:\tmp\gate-failure-"+Guid.NewGuid().ToString("N")+".json",application=diagnostic?comSpec:Application;
-                  string command=diagnostic?("\""+comSpec+"\" /d /s /c \"\""+Application+"\" verify --gate "+gateId+" --run-only --json > \""+diagnosticPath+"\"\""):("\""+Application+"\" verify --gate "+gateId+" --run-only");
+                  sanitized="";string diagnosticPath=@"F:\tmp\gate-failure-"+Guid.NewGuid().ToString("N")+".json",application=(diagnostic||fixedCommand!=null)?comSpec:Application;
+                  string command=fixedCommand!=null?("\""+comSpec+"\" /d /s /c \""+fixedCommand+"\""):(diagnostic?("\""+comSpec+"\" /d /s /c \"\""+Application+"\" verify --gate "+gateId+" --run-only --json > \""+diagnosticPath+"\"\""):("\""+Application+"\" verify --gate "+gateId+" --run-only"));
                   IntPtr restrictedToken=IntPtr.Zero, administratorsSid=IntPtr.Zero, mediumSid=IntPtr.Zero,
                       restrictedPrivileges=IntPtr.Zero, verifyIntegrity=IntPtr.Zero, stationSecurity=IntPtr.Zero,
                       originalStation=IntPtr.Zero,station=IntPtr.Zero,desktop=IntPtr.Zero,environment=IntPtr.Zero,job=IntPtr.Zero;
@@ -718,14 +718,26 @@ jobs:
                       if(diagnostic&&File.Exists(diagnosticPath)){File.Delete(diagnosticPath);}if(diagnostic&&File.Exists(diagnosticPath))throw new InvalidOperationException("diagnostic residue");
                   }
               }
-              public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string ignored;return RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,out ignored);}
-              public static string RunDiagnostic(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string result;RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,true,out result);return result;}
+              public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string ignored;return RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,null,out ignored);}
+              public static string RunDiagnostic(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string result;RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,true,null,out result);return result;}
+              public static string RunCapabilities(string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){
+                  string[,] probes={{"git_safe","git.exe -C F:\\repo rev-parse --show-toplevel >nul"},{"node","node.exe --version >nul"},{"bash","bash.exe --version >nul"},{"cygpath","cygpath.exe -u F:\\tmp >nul"},{"whoami","whoami.exe >nul"},{"icacls","icacls.exe F:\\tmp >nul"},{"bash_mktemp","bash.exe -lc ^\"t=$(mktemp /f/tmp/wncap.XXXXXX) && rm -f $t^\" >nul"},{"protected_binary","if not exist F:\\gate-cards-bin\\wayland-nano.exe exit /b 61 & type F:\\gate-cards-bin\\wayland-nano.exe >nul"},{"config_card","if not exist F:\\repo\\gates\\config-schema\\card.md exit /b 62 & type F:\\repo\\gates\\config-schema\\card.md >nul"},{"config_probes","if not exist F:\\repo\\gates\\fixtures\\config-schema\\probes exit /b 63 & dir /b F:\\repo\\gates\\fixtures\\config-schema\\probes >nul"}};
+                  for(int i=0;i<probes.GetLength(0);i++){string ignored;int exit=RunCore("config-schema",accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,probes[i,1],out ignored);if(exit!=0)return "capability="+probes[i,0]+":"+exit;}return "capability=all_pass";
+              }
           }
           '@
           $needles = @(
             'const string Application = @"F:\gate-cards-bin\wayland-nano.exe"',
             'const string GitConfig = @"F:\gate-cards-bin\gitconfig"',
             'public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec)',
+            'public static string RunCapabilities(', 'capability=all_pass',
+            '{"git_safe","git.exe -C F:\\repo rev-parse --show-toplevel >nul"}',
+            '{"node","node.exe --version >nul"}', '{"bash","bash.exe --version >nul"}',
+            '{"cygpath","cygpath.exe -u F:\\tmp >nul"}', '{"whoami","whoami.exe >nul"}',
+            '{"icacls","icacls.exe F:\\tmp >nul"}', '{"bash_mktemp","bash.exe -lc',
+            '{"protected_binary","if not exist F:\\gate-cards-bin\\wayland-nano.exe',
+            '{"config_card","if not exist F:\\repo\\gates\\config-schema\\card.md',
+            '{"config_probes","if not exist F:\\repo\\gates\\fixtures\\config-schema\\probes',
             'SortedDictionary<string,string>(StringComparer.OrdinalIgnoreCase)',
             'BuildEnvironment(accountName,path,pathExt,systemRoot,winDir,comSpec)',
             'Regex.IsMatch(accountName,"^wngc[0-9a-f]{12}$")',
@@ -795,7 +807,7 @@ jobs:
             return $exit
           }
           # Exact landed WP-3 contract: verify --gate "$gate_id" --run-only
-          foreach($gate_id in $gateIds){$exit=Invoke-ProtectedGate $gate_id $true;if($exit-ne 0){throw "good gate blocked: $gate_id (exit $exit; $script:LastGateDiagnostic)"}}
+          foreach($gate_id in $gateIds){$exit=Invoke-ProtectedGate $gate_id $true;if($exit-ne 0){$capability='capability=not_run';if($gate_id-eq'config-schema'-and$script:LastGateDiagnostic.StartsWith('outcome=fail_closed')){try{$capability=[GateCardsRestrictedProcess]::RunCapabilities($accountName,$accountPassword,$userSid,$brokerSid,$brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec)}catch{$capability='capability=unavailable:-1'};if($capability-notmatch'^capability=(all_pass|[a-z_]+:-?[0-9]+)$'){throw 'capability diagnostic contract'}};throw "good gate blocked: $gate_id (exit $exit; $script:LastGateDiagnostic; $capability)"}}
           Copy-Item -Force packaging/npm/binaries/win32-x64/wayland-nano.exe packaging/npm/binaries/linux-x64/wayland-nano
           $badExit=Invoke-ProtectedGate 'install-payload' $false
           if($badExit-ne 3){throw 'ip-m1 did not block with exit 3'}
