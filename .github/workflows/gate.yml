@@ -494,6 +494,8 @@ jobs:
             if($expectedUserRights-eq$modify-and($userRule.FileSystemRights-band$modify)-ne$modify){throw 'runtime temp ACL user rights'}
           }
           Assert-ProtectedAcl 'F:\' $true $rx;Assert-ProtectedAcl 'F:\repo' $true $rx;Assert-ProtectedAcl 'F:\tmp' $true $modify;Assert-ProtectedAcl $protectedDir $true $rx;Assert-ProtectedAcl $protectedBinary $false $rx;Assert-ProtectedAcl $protectedGitConfig $false $rx
+          $accountHome="F:\tmp\$accountName-home";if($accountName-notmatch'^wngc[0-9a-f]{12}$'-or(Test-Path -LiteralPath $accountHome)){throw 'account home is not pristine'};New-Item -ItemType Directory -Path $accountHome|Out-Null
+          $homeItem=Get-Item -LiteralPath $accountHome -Force;if($homeItem.Attributes-band[IO.FileAttributes]::ReparsePoint){throw 'account home is a reparse point'};$homeAcl=Get-Acl -LiteralPath $accountHome;$homeRule=@($homeAcl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])|Where-Object {$_.IdentityReference.Value-eq$userSid});if($homeRule.Count-ne 1-or($homeRule[0].FileSystemRights-band$modify)-ne$modify){throw 'account home does not inherit account Modify'}
           $protectedHash=(Get-FileHash -LiteralPath $protectedBinary -Algorithm SHA256).Hash;$gitConfigHash=(Get-FileHash -LiteralPath $protectedGitConfig -Algorithm SHA256).Hash
           $env:GIT_CONFIG_GLOBAL=$protectedGitConfig
           $brokerPath=$env:PATH;$brokerPathExt=$env:PATHEXT;$brokerSystemRoot=$env:SystemRoot;$brokerWinDir=$env:WINDIR;$brokerComSpec=$env:COMSPEC
@@ -634,8 +636,9 @@ jobs:
               static IntPtr BuildEnvironment(string accountName,string path,string pathExt,string systemRoot,string winDir,string comSpec) {
                   foreach(string value in new[]{path,pathExt,systemRoot,winDir,comSpec})if(String.IsNullOrWhiteSpace(value)||value.IndexOf('\0')>=0)throw new InvalidOperationException("broker environment source");
                   if(!Regex.IsMatch(accountName,"^wngc[0-9a-f]{12}$"))throw new InvalidOperationException("ephemeral account environment");
-                  var values=new System.Collections.Generic.SortedDictionary<string,string>(StringComparer.OrdinalIgnoreCase){{"COMSPEC",comSpec},{"GIT_CONFIG_GLOBAL",@"F:\gate-cards-bin\gitconfig"},{"HOME","F:/tmp"},{"NANO_CF_RUN_ROOT","/f/tmp"},{"NANO_HOME",@"F:\wayland-nano-fixture"},{"NANO_WP4_TEMP_ROOT",ScratchRoot},{"PATH",path},{"PATHEXT",pathExt},{"SystemRoot",systemRoot},{"TEMP",@"F:\tmp"},{"TMP",@"F:\tmp"},{"TMPDIR","F:/tmp"},{"USERNAME",accountName},{"WINDIR",winDir}};
-                  if(values.Count!=14)throw new InvalidOperationException("closed child environment inventory");
+                  string homeWin=@"F:\tmp\"+accountName+"-home",homeMsys="F:/tmp/"+accountName+"-home";
+                  var values=new System.Collections.Generic.SortedDictionary<string,string>(StringComparer.OrdinalIgnoreCase){{"COMSPEC",comSpec},{"GIT_CONFIG_GLOBAL",@"F:\gate-cards-bin\gitconfig"},{"HOME",homeMsys},{"HOMEDRIVE","F:"},{"HOMEPATH",@"\tmp\"+accountName+"-home"},{"NANO_CF_RUN_ROOT","/f/tmp"},{"NANO_HOME",@"F:\wayland-nano-fixture"},{"NANO_WP4_TEMP_ROOT",ScratchRoot},{"PATH",path},{"PATHEXT",pathExt},{"SystemRoot",systemRoot},{"TEMP",@"F:\tmp"},{"TMP",@"F:\tmp"},{"TMPDIR","F:/tmp"},{"USERNAME",accountName},{"USERPROFILE",homeWin},{"WINDIR",winDir}};
+                  if(values.Count!=17)throw new InvalidOperationException("closed child environment inventory");
                   var block=new StringBuilder();foreach(var pair in values){block.Append(pair.Key).Append('=').Append(pair.Value).Append('\0');}block.Append('\0');return Marshal.StringToHGlobalUni(block.ToString());
               }
               static void RequireAccessDenied(bool unexpectedlySucceeded, string operation) {
@@ -741,12 +744,13 @@ jobs:
             'SortedDictionary<string,string>(StringComparer.OrdinalIgnoreCase)',
             'BuildEnvironment(accountName,path,pathExt,systemRoot,winDir,comSpec)',
             'Regex.IsMatch(accountName,"^wngc[0-9a-f]{12}$")',
-            '{"COMSPEC",comSpec}', '{"GIT_CONFIG_GLOBAL",@"F:\gate-cards-bin\gitconfig"}', '{"HOME","F:/tmp"}',
+            '{"COMSPEC",comSpec}', '{"GIT_CONFIG_GLOBAL",@"F:\gate-cards-bin\gitconfig"}', '{"HOME",homeMsys}',
+            '{"HOMEDRIVE","F:"}', '{"HOMEPATH",@"\tmp\"+accountName+"-home"}',
             '{"NANO_CF_RUN_ROOT","/f/tmp"}',
             '{"NANO_HOME",@"F:\wayland-nano-fixture"}', '{"NANO_WP4_TEMP_ROOT",ScratchRoot}', '{"PATH",path}', '{"PATHEXT",pathExt}',
             '{"SystemRoot",systemRoot}', '{"TEMP",@"F:\tmp"}', '{"TMP",@"F:\tmp"}', '{"TMPDIR","F:/tmp"}',
-            '{"USERNAME",accountName}', '{"WINDIR",winDir}',
-            'if(values.Count!=14)',
+            '{"USERNAME",accountName}', '{"USERPROFILE",homeWin}', '{"WINDIR",winDir}',
+            'if(values.Count!=17)',
             'block.Append(''\0'')', 'Marshal.StringToHGlobalUni', 'CREATE_UNICODE_ENVIRONMENT',
             'LogonUserW(accountName,".",accountPassword,LOGON32_LOGON_INTERACTIVE,LOGON32_PROVIDER_DEFAULT',
             'CreateProcessWithTokenW(restrictedToken,0,application,new StringBuilder(command)',
@@ -806,6 +810,8 @@ jobs:
             if(!(Test-Path -LiteralPath $protectedDir -PathType Container)-or!(Test-Path -LiteralPath $binary -PathType Leaf)-or(Get-Item -LiteralPath $binary).FullName-ne'F:\gate-cards-bin\wayland-nano.exe'-or(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash-ne$binaryHash-or(Get-FileHash -LiteralPath $protectedGitConfig -Algorithm SHA256).Hash-ne$gitConfigHash){throw 'protected identity changed after gate'}
             return $exit
           }
+          $preflightCapability=[GateCardsRestrictedProcess]::RunCapabilities($accountName,$accountPassword,$userSid,$brokerSid,$brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec)
+          if($preflightCapability-ne'capability=all_pass'){throw "capability preflight failed: $preflightCapability"}
           # Exact landed WP-3 contract: verify --gate "$gate_id" --run-only
           foreach($gate_id in $gateIds){$exit=Invoke-ProtectedGate $gate_id $true;if($exit-ne 0){$capability='capability=not_run';if($gate_id-eq'config-schema'-and$script:LastGateDiagnostic.StartsWith('outcome=fail_closed')){try{$capability=[GateCardsRestrictedProcess]::RunCapabilities($accountName,$accountPassword,$userSid,$brokerSid,$brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec)}catch{$capability='capability=unavailable:-1'};if($capability-notmatch'^capability=(all_pass|[a-z_]+:-?[0-9]+)$'){throw 'capability diagnostic contract'}};throw "good gate blocked: $gate_id (exit $exit; $script:LastGateDiagnostic; $capability)"}}
           Copy-Item -Force packaging/npm/binaries/win32-x64/wayland-nano.exe packaging/npm/binaries/linux-x64/wayland-nano
@@ -831,6 +837,9 @@ jobs:
             if($env:WN_GC_ACCOUNT-notmatch'^wngc[0-9a-f]{12}$'){throw 'ephemeral account cleanup identity'}
             try{Remove-LocalUser -Name $env:WN_GC_ACCOUNT -ErrorAction Stop}catch{$failures.Add('account-delete')}
             if(Get-LocalUser -Name $env:WN_GC_ACCOUNT -ErrorAction SilentlyContinue){$failures.Add('account-residue')}
+            $accountHome=[IO.Path]::GetFullPath("F:\tmp\$($env:WN_GC_ACCOUNT)-home");if($accountHome-ne"F:\tmp\$($env:WN_GC_ACCOUNT)-home"){throw 'account home cleanup identity'}
+            if(Test-Path -LiteralPath $accountHome){$stack=[Collections.Generic.Stack[string]]::new();$stack.Push($accountHome);while($stack.Count){$directory=$stack.Pop();$item=Get-Item -LiteralPath $directory -Force;if($item.Attributes-band[IO.FileAttributes]::ReparsePoint){throw "account home reparse: $directory"};foreach($child in Get-ChildItem -LiteralPath $directory -Force){if($child.Attributes-band[IO.FileAttributes]::ReparsePoint){throw "account home reparse: $($child.FullName)"};if($child.PSIsContainer){$stack.Push($child.FullName)}}};Remove-Item -LiteralPath $accountHome -Recurse -Force}
+            if(Test-Path -LiteralPath $accountHome){$failures.Add('account-home-residue')}
           }
           $scratchRoot=[IO.Path]::GetFullPath('F:\tmp\wp4-install-gate');$tempPrefix=[IO.Path]::GetFullPath('F:\tmp').TrimEnd('\')+'\'
           if($scratchRoot-ne'F:\tmp\wp4-install-gate'-or!$scratchRoot.StartsWith($tempPrefix,[StringComparison]::OrdinalIgnoreCase)){throw 'scratch cleanup path drift'}
