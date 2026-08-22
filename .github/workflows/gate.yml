@@ -501,7 +501,7 @@ jobs:
           $homeItem=Get-Item -LiteralPath $accountHome -Force;if($homeItem.Attributes-band[IO.FileAttributes]::ReparsePoint){throw 'account home is a reparse point'};$homeAcl=Get-Acl -LiteralPath $accountHome;$homeRule=@($homeAcl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])|Where-Object {$_.IdentityReference.Value-eq$userSid});if($homeRule.Count-ne 1-or($homeRule[0].FileSystemRights-band$modify)-ne$modify){throw 'account home does not inherit account Modify'}
           $protectedHash=(Get-FileHash -LiteralPath $protectedBinary -Algorithm SHA256).Hash;$gitConfigHash=(Get-FileHash -LiteralPath $protectedGitConfig -Algorithm SHA256).Hash
           $env:GIT_CONFIG_GLOBAL=$protectedGitConfig
-          $brokerPath=$env:PATH;$brokerPathExt=$env:PATHEXT;$brokerSystemRoot=$env:SystemRoot;$brokerWinDir=$env:WINDIR;$brokerComSpec=$env:COMSPEC
+          $brokerPath="C:\Program Files\Git\usr\bin;C:\Program Files\Git\bin;"+$env:PATH;$brokerPathExt=$env:PATHEXT;$brokerSystemRoot=$env:SystemRoot;$brokerWinDir=$env:WINDIR;$brokerComSpec=$env:COMSPEC
           foreach($value in @($brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec)){if([string]::IsNullOrWhiteSpace($value)-or$value.Contains([char]0)){throw 'invalid broker environment source'}}
           if([IO.Path]::GetFullPath($brokerSystemRoot)-ne[IO.Path]::GetFullPath($brokerWinDir)-or[IO.Path]::GetFullPath($brokerComSpec)-ne[IO.Path]::Combine([IO.Path]::GetFullPath($brokerSystemRoot),'System32','cmd.exe')-or!(Test-Path -LiteralPath $brokerComSpec -PathType Leaf)){throw 'broker Windows environment identity'}
           $scratchRoot='F:\tmp\wp4-install-gate'
@@ -743,7 +743,7 @@ jobs:
               public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string ignored;return RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,null,out ignored);}
               public static string RunDiagnostic(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string result;RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,true,null,out result);return result;}
               public static string RunCapabilities(string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){
-                  string[,] probes={{"git_version","git.exe --version >nul"},{"git_config","git.exe config --global --get-all safe.directory >nul"},{"git_repo","git.exe -C F:\\repo rev-parse --show-toplevel >nul"},{"node","node.exe --version >nul"},{"bash","bash.exe --version >nul"},{"cygpath","cygpath.exe -u F:\\tmp >nul"},{"whoami","whoami.exe >nul"},{"icacls","icacls.exe F:\\tmp >nul"},{"bash_mktemp","bash.exe -lc ^\"t=$(mktemp /f/tmp/wncap.XXXXXX) && rm -f $t^\" >nul"},{"protected_binary","if not exist F:\\gate-cards-bin\\wayland-nano.exe exit /b 61 & type F:\\gate-cards-bin\\wayland-nano.exe >nul"},{"config_card","if not exist F:\\repo\\gates\\config-schema\\card.md exit /b 62 & type F:\\repo\\gates\\config-schema\\card.md >nul"},{"config_probes","if not exist F:\\repo\\gates\\fixtures\\config-schema\\probes exit /b 63 & dir /b F:\\repo\\gates\\fixtures\\config-schema\\probes >nul"}};
+                  string[,] probes={{"git_version","git.exe --version >nul"},{"git_config","git.exe config --global --get-all safe.directory >nul"},{"git_repo","git.exe -C F:\\repo rev-parse --show-toplevel >nul"},{"node","node.exe --version >nul"},{"bash","\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" --version >nul"},{"cygpath","\"C:\\Program Files\\Git\\usr\\bin\\cygpath.exe\" -u F:\\tmp >nul"},{"whoami","whoami.exe >nul"},{"icacls","icacls.exe F:\\tmp >nul"},{"bash_mktemp","\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" -lc ^\"t=$(mktemp /f/tmp/wncap.XXXXXX) && rm -f $t^\" >nul"},{"protected_binary","if not exist F:\\gate-cards-bin\\wayland-nano.exe exit /b 61 & type F:\\gate-cards-bin\\wayland-nano.exe >nul"},{"config_card","if not exist F:\\repo\\gates\\config-schema\\card.md exit /b 62 & type F:\\repo\\gates\\config-schema\\card.md >nul"},{"config_probes","if not exist F:\\repo\\gates\\fixtures\\config-schema\\probes exit /b 63 & dir /b F:\\repo\\gates\\fixtures\\config-schema\\probes >nul"}};
                   for(int i=0;i<probes.GetLength(0);i++){string ignored;int exit=RunCore("config-schema",accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,probes[i,1],out ignored);if(exit!=0)return "capability="+probes[i,0]+":"+exit;}return "capability=all_pass";
               }
           }
@@ -756,9 +756,9 @@ jobs:
             '{"git_version","git.exe --version >nul"}',
             '{"git_config","git.exe config --global --get-all safe.directory >nul"}',
             '{"git_repo","git.exe -C F:\\repo rev-parse --show-toplevel >nul"}',
-            '{"node","node.exe --version >nul"}', '{"bash","bash.exe --version >nul"}',
-            '{"cygpath","cygpath.exe -u F:\\tmp >nul"}', '{"whoami","whoami.exe >nul"}',
-            '{"icacls","icacls.exe F:\\tmp >nul"}', '{"bash_mktemp","bash.exe -lc',
+            '{"node","node.exe --version >nul"}', '{"bash","\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" --version >nul"}',
+            '{"cygpath","\"C:\\Program Files\\Git\\usr\\bin\\cygpath.exe\" -u F:\\tmp >nul"}', '{"whoami","whoami.exe >nul"}',
+            '{"icacls","icacls.exe F:\\tmp >nul"}', '{"bash_mktemp","\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" -lc',
             '{"protected_binary","if not exist F:\\gate-cards-bin\\wayland-nano.exe',
             '{"config_card","if not exist F:\\repo\\gates\\config-schema\\card.md',
             '{"config_probes","if not exist F:\\repo\\gates\\fixtures\\config-schema\\probes',
