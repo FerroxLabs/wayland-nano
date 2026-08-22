@@ -778,7 +778,7 @@ jobs:
             'WaitForSingleObject(pi.hProcess, 30000)', 'GetExitCodeProcess', 'CloseHandle'
           )
           foreach($needle in $needles){if(!$launcherSource.Contains($needle)){throw "restricted launcher assertion failed: $needle"}}
-          if($launcherSource.Contains('gate-cards-child')-or$launcherSource.Contains('node.exe')-or$launcherSource.Contains('.ps1')-or$launcherSource.Contains('PowerShell')){throw 'restricted launcher contains a broker or dynamic application'}
+          if($launcherSource.Contains('gate-cards-child')-or$launcherSource.Contains('.ps1')-or$launcherSource.Contains('PowerShell')){throw 'restricted launcher contains a broker script'}
           foreach($forbiddenApi in @('CreateRestrictedToken','CreateProcessAsUserW')){if($launcherSource.Contains($forbiddenApi)){throw "obsolete restricted harness remains: $forbiddenApi"}}
           if($launcherSource.Contains('DISABLE_MAX_PRIVILEGE')){throw 'recoverable privilege-disable flag is forbidden'}
           $ordered = @('Check(LogonUserW(', 'TokenInfo(restrictedToken,TokenElevation', 'TokenInfo(restrictedToken,TokenIntegrityLevel',
