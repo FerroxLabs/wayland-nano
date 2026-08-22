@@ -743,7 +743,7 @@ jobs:
               public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string ignored;return RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,null,out ignored);}
               public static string RunDiagnostic(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string result;RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,true,null,out result);return result;}
               public static string RunCapabilities(string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){
-                  string[,] probes={{"git_safe","git.exe -C F:\\repo rev-parse --show-toplevel >nul"},{"node","node.exe --version >nul"},{"bash","bash.exe --version >nul"},{"cygpath","cygpath.exe -u F:\\tmp >nul"},{"whoami","whoami.exe >nul"},{"icacls","icacls.exe F:\\tmp >nul"},{"bash_mktemp","bash.exe -lc ^\"t=$(mktemp /f/tmp/wncap.XXXXXX) && rm -f $t^\" >nul"},{"protected_binary","if not exist F:\\gate-cards-bin\\wayland-nano.exe exit /b 61 & type F:\\gate-cards-bin\\wayland-nano.exe >nul"},{"config_card","if not exist F:\\repo\\gates\\config-schema\\card.md exit /b 62 & type F:\\repo\\gates\\config-schema\\card.md >nul"},{"config_probes","if not exist F:\\repo\\gates\\fixtures\\config-schema\\probes exit /b 63 & dir /b F:\\repo\\gates\\fixtures\\config-schema\\probes >nul"}};
+                  string[,] probes={{"git_version","git.exe --version >nul"},{"git_config","git.exe config --global --get-all safe.directory >nul"},{"git_repo","git.exe -C F:\\repo rev-parse --show-toplevel >nul"},{"node","node.exe --version >nul"},{"bash","bash.exe --version >nul"},{"cygpath","cygpath.exe -u F:\\tmp >nul"},{"whoami","whoami.exe >nul"},{"icacls","icacls.exe F:\\tmp >nul"},{"bash_mktemp","bash.exe -lc ^\"t=$(mktemp /f/tmp/wncap.XXXXXX) && rm -f $t^\" >nul"},{"protected_binary","if not exist F:\\gate-cards-bin\\wayland-nano.exe exit /b 61 & type F:\\gate-cards-bin\\wayland-nano.exe >nul"},{"config_card","if not exist F:\\repo\\gates\\config-schema\\card.md exit /b 62 & type F:\\repo\\gates\\config-schema\\card.md >nul"},{"config_probes","if not exist F:\\repo\\gates\\fixtures\\config-schema\\probes exit /b 63 & dir /b F:\\repo\\gates\\fixtures\\config-schema\\probes >nul"}};
                   for(int i=0;i<probes.GetLength(0);i++){string ignored;int exit=RunCore("config-schema",accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,probes[i,1],out ignored);if(exit!=0)return "capability="+probes[i,0]+":"+exit;}return "capability=all_pass";
               }
           }
@@ -753,7 +753,9 @@ jobs:
             'const string GitConfig = @"F:\gate-cards-bin\gitconfig"',
             'public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec)',
             'public static string RunCapabilities(', 'capability=all_pass',
-            '{"git_safe","git.exe -C F:\\repo rev-parse --show-toplevel >nul"}',
+            '{"git_version","git.exe --version >nul"}',
+            '{"git_config","git.exe config --global --get-all safe.directory >nul"}',
+            '{"git_repo","git.exe -C F:\\repo rev-parse --show-toplevel >nul"}',
             '{"node","node.exe --version >nul"}', '{"bash","bash.exe --version >nul"}',
             '{"cygpath","cygpath.exe -u F:\\tmp >nul"}', '{"whoami","whoami.exe >nul"}',
             '{"icacls","icacls.exe F:\\tmp >nul"}', '{"bash_mktemp","bash.exe -lc',
