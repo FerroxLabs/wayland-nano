@@ -551,6 +551,7 @@ jobs:
               const UInt32 ERROR_INSUFFICIENT_BUFFER = 122;
               const UInt32 ERROR_NOT_ALL_ASSIGNED = 1300;
               const UInt32 PRIVATE_OBJECT_FULL_ACCESS = 0x000F03FF;
+              const UInt32 WINSTA_GRANT_ACCESS = 0x0000037F;
               const UInt32 LOGON_WITH_PROFILE = 0x00000001;
               const UInt32 CREATE_SUSPENDED = 0x00000004;
               const UInt32 CREATE_NO_WINDOW = 0x08000000;
@@ -655,6 +656,9 @@ jobs:
               }
               static byte[] UserObjectSecurity(IntPtr handle){UInt32 requested=7,needed;GetUserObjectSecurity(handle,ref requested,null,0,out needed);if(needed==0)throw new Win32Exception(Marshal.GetLastWin32Error(),"GetUserObjectSecurity(size)");byte[] bytes=new byte[needed];Check(GetUserObjectSecurity(handle,ref requested,bytes,needed,out needed),"GetUserObjectSecurity");return bytes;}
               static string UserObjectName(IntPtr handle){UInt32 needed;GetUserObjectInformationW(handle,2,null,0,out needed);if(needed<2)throw new Win32Exception(Marshal.GetLastWin32Error(),"GetUserObjectInformationW(size)");byte[] bytes=new byte[needed];Check(GetUserObjectInformationW(handle,2,bytes,needed,out needed),"GetUserObjectInformationW(UOI_NAME)");return Encoding.Unicode.GetString(bytes,0,(int)needed).TrimEnd('\0');}
+              static void SetUserObjectDacl(IntPtr handle,byte[] bytes){UInt32 requested=4;Check(SetUserObjectSecurity(handle,ref requested,bytes),"SetUserObjectSecurity(DACL)");}
+              static bool EqualBytes(byte[] left,byte[] right){if(left==null||right==null||left.Length!=right.Length)return false;for(int i=0;i<left.Length;i++)if(left[i]!=right[i])return false;return true;}
+              static bool DescriptorContainsSid(byte[] bytes,SecurityIdentifier sid){var descriptor=new RawSecurityDescriptor(bytes,0);if(descriptor.DiscretionaryAcl==null)return false;foreach(GenericAce ace in descriptor.DiscretionaryAcl){var known=ace as KnownAce;if(known!=null&&known.SecurityIdentifier.Equals(sid))return true;}return false;}
               static void GrantPrivateObjectAccess(IntPtr handle,SecurityIdentifier sid,UInt32 access,string kind,UInt32 canonicalMask){var descriptor=new RawSecurityDescriptor(UserObjectSecurity(handle),0);if(descriptor.DiscretionaryAcl==null)descriptor.DiscretionaryAcl=new RawAcl(2,1);descriptor.DiscretionaryAcl.InsertAce(descriptor.DiscretionaryAcl.Count,new CommonAce(AceFlags.None,AceQualifier.AccessAllowed,unchecked((int)access),sid,false,null));byte[] bytes=new byte[descriptor.BinaryLength];descriptor.GetBinaryForm(bytes,0);UInt32 requested=4;Check(SetUserObjectSecurity(handle,ref requested,bytes),"SetUserObjectSecurity(private "+kind+")");var applied=new RawSecurityDescriptor(UserObjectSecurity(handle),0);bool found=false;if(applied.DiscretionaryAcl!=null)foreach(GenericAce ace in applied.DiscretionaryAcl){var known=ace as KnownAce;if(known!=null&&known.SecurityIdentifier.Equals(sid)&&(unchecked((UInt32)known.AccessMask)&canonicalMask)==canonicalMask)found=true;}if(!found)throw new InvalidOperationException("private "+kind+" access");}
               static void ValidateActualToken(IntPtr token,string accountSid){IntPtr expectedSid=IntPtr.Zero,elevation=IntPtr.Zero,integrity=IntPtr.Zero,groups=IntPtr.Zero,privileges=IntPtr.Zero,user=IntPtr.Zero,adminSid=IntPtr.Zero;try{Check(ConvertStringSidToSidW(accountSid,out expectedSid),"ConvertStringSidToSidW(account)");UInt32 size;user=TokenInfo(token,TokenUser,out size);if(!EqualSid(Marshal.PtrToStructure<TOKEN_USER_VALUE>(user).User.Sid,expectedSid))throw new InvalidOperationException("actual token user mismatch");elevation=TokenInfo(token,TokenElevation,out size);if(Marshal.PtrToStructure<TOKEN_ELEVATION>(elevation).TokenIsElevated!=0)throw new InvalidOperationException("actual token elevated");IntPtr mediumSid;Check(ConvertStringSidToSidW("S-1-16-8192",out mediumSid),"ConvertStringSidToSidW(actual Medium)");try{integrity=TokenInfo(token,TokenIntegrityLevel,out size);if(!EqualSid(Marshal.PtrToStructure<TOKEN_MANDATORY_LABEL>(integrity).Label.Sid,mediumSid))throw new InvalidOperationException("actual token integrity");}finally{LocalFree(mediumSid);}Check(ConvertStringSidToSidW("S-1-5-32-544",out adminSid),"ConvertStringSidToSidW(actual Administrators)");groups=TokenInfo(token,TokenGroups,out size);UInt32 groupCount=(UInt32)Marshal.ReadInt32(groups);int groupOffset=(int)Marshal.OffsetOf(typeof(TOKEN_GROUPS_ONE),"Groups"),groupStride=Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));for(int i=0;i<groupCount;i++)if(EqualSid(Marshal.PtrToStructure<SID_AND_ATTRIBUTES>(IntPtr.Add(groups,groupOffset+i*groupStride)).Sid,adminSid))throw new InvalidOperationException("actual token Administrators");privileges=TokenInfo(token,TokenPrivileges,out size);UInt32 privilegeCount=(UInt32)Marshal.ReadInt32(privileges);int privilegeStride=Marshal.SizeOf(typeof(LUID_AND_ATTRIBUTES));foreach(string dangerous in new[]{"SeDebugPrivilege","SeRestorePrivilege","SeTakeOwnershipPrivilege","SeBackupPrivilege","SeTcbPrivilege","SeImpersonatePrivilege"}){LUID luid;Check(LookupPrivilegeValueW(null,dangerous,out luid),"LookupPrivilegeValueW(actual dangerous)");for(int i=0;i<privilegeCount;i++)if(SameLuid(Marshal.PtrToStructure<LUID_AND_ATTRIBUTES>(IntPtr.Add(privileges,4+i*privilegeStride)).Luid,luid))throw new InvalidOperationException("actual dangerous privilege");}}finally{if(user!=IntPtr.Zero)Marshal.FreeHGlobal(user);if(elevation!=IntPtr.Zero)Marshal.FreeHGlobal(elevation);if(integrity!=IntPtr.Zero)Marshal.FreeHGlobal(integrity);if(groups!=IntPtr.Zero)Marshal.FreeHGlobal(groups);if(privileges!=IntPtr.Zero)Marshal.FreeHGlobal(privileges);if(expectedSid!=IntPtr.Zero)LocalFree(expectedSid);if(adminSid!=IntPtr.Zero)LocalFree(adminSid);}}
               static void DrainJob(IntPtr job){Check(TerminateJobObject(job,126),"TerminateJobObject(drain)");int size=Marshal.SizeOf(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION));IntPtr buffer=Marshal.AllocHGlobal(size);try{for(int attempt=0;attempt<300;attempt++){UInt32 returned;Check(QueryInformationJobObject(job,1,buffer,(UInt32)size,out returned),"QueryInformationJobObject");if(Marshal.PtrToStructure<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>(buffer).ActiveProcesses==0)return;System.Threading.Thread.Sleep(100);}throw new TimeoutException("job descendants remained active");}finally{Marshal.FreeHGlobal(buffer);}}
@@ -680,7 +684,7 @@ jobs:
                       RequireAccessDenied(false,"protected parent replacement");
                   } finally { Check(RevertToSelf(),"RevertToSelf"); }
               }
-              static int RunCore(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec,bool diagnostic,string fixedCommand,out string sanitized) {
+              static int RunCore(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec,bool diagnostic,string fixedCommand,int stationMode,out string sanitized) {
                   if(gateId!="config-schema" && gateId!="install-payload" && gateId!="provision-script") throw new ArgumentException("gate id is not canonical", "gateId");
                   if(String.IsNullOrEmpty(accountName)||String.IsNullOrEmpty(accountPassword))throw new ArgumentException("ephemeral account credentials");
                   if(Environment.GetEnvironmentVariable("NANO_WP4_TEMP_ROOT")!=ScratchRoot) throw new InvalidOperationException("fixed install scratch environment");
@@ -691,7 +695,7 @@ jobs:
                   IntPtr restrictedToken=IntPtr.Zero, administratorsSid=IntPtr.Zero, mediumSid=IntPtr.Zero,
                       restrictedPrivileges=IntPtr.Zero, verifyIntegrity=IntPtr.Zero,
                       brokerStation=IntPtr.Zero,privateStation=IntPtr.Zero,privateDesktop=IntPtr.Zero,environment=IntPtr.Zero,actualToken=IntPtr.Zero,job=IntPtr.Zero;
-                  PROCESS_INFORMATION pi=new PROCESS_INFORMATION(); bool assigned=false,privateSelected=false,cleanupFailed=false;
+                  PROCESS_INFORMATION pi=new PROCESS_INFORMATION(); bool assigned=false,stationAugmented=false,privateSelected=false,cleanupFailed=false;byte[] originalStationSecurity=null;
                   try {
                       Check(LogonUserW(accountName,".",accountPassword,LOGON32_LOGON_INTERACTIVE,LOGON32_PROVIDER_DEFAULT,out restrictedToken),"LogonUserW(ephemeral account)");
                       UInt32 elevationSize;IntPtr elevation=TokenInfo(restrictedToken,TokenElevation,out elevationSize);try{if(Marshal.PtrToStructure<TOKEN_ELEVATION>(elevation).TokenIsElevated!=0)throw new InvalidOperationException("ephemeral token elevated");}finally{Marshal.FreeHGlobal(elevation);}
@@ -700,16 +704,17 @@ jobs:
                       UInt32 accountPrivilegeSize;restrictedPrivileges=TokenInfo(restrictedToken,TokenPrivileges,out accountPrivilegeSize);UInt32 accountPrivilegeCount=(UInt32)Marshal.ReadInt32(restrictedPrivileges);int accountLuidSize=Marshal.SizeOf(typeof(LUID_AND_ATTRIBUTES));
                       foreach(string dangerous in new[]{"SeDebugPrivilege","SeRestorePrivilege","SeTakeOwnershipPrivilege","SeBackupPrivilege","SeTcbPrivilege","SeImpersonatePrivilege"}){LUID dangerousLuid;Check(LookupPrivilegeValueW(null,dangerous,out dangerousLuid),"LookupPrivilegeValueW(dangerous)");for(int i=0;i<accountPrivilegeCount;i++){var privilege=Marshal.PtrToStructure<LUID_AND_ATTRIBUTES>(IntPtr.Add(restrictedPrivileges,4+i*accountLuidSize));if(SameLuid(privilege.Luid,dangerousLuid))throw new InvalidOperationException("dangerous ephemeral privilege");}}
                       ProbeProtectedBinary(restrictedToken);
-                      brokerStation=GetProcessWindowStation();Check(brokerStation!=IntPtr.Zero,"GetProcessWindowStation");var ephemeralSid=new SecurityIdentifier(accountSid);string privateStationName="NanoSandboxGate-"+Guid.NewGuid().ToString("N"),privateDesktopName="NanoSandboxGateDesktop";
-                      privateStation=CreateWindowStationW(privateStationName,0,PRIVATE_OBJECT_FULL_ACCESS,IntPtr.Zero);Check(privateStation!=IntPtr.Zero,"CreateWindowStationW(private)");GrantPrivateObjectAccess(privateStation,ephemeralSid,PRIVATE_OBJECT_FULL_ACCESS,"window station",0x000F037F);Check(SetProcessWindowStation(privateStation),"SetProcessWindowStation(private)");privateSelected=true;try{privateDesktop=CreateDesktopW(privateDesktopName,null,IntPtr.Zero,0,PRIVATE_OBJECT_FULL_ACCESS,IntPtr.Zero);Check(privateDesktop!=IntPtr.Zero,"CreateDesktopW(private)");}finally{Check(SetProcessWindowStation(brokerStation),"SetProcessWindowStation(broker)");privateSelected=false;}
-                      if(!String.Equals(UserObjectName(privateStation),privateStationName,StringComparison.Ordinal)||!String.Equals(UserObjectName(privateDesktop),privateDesktopName,StringComparison.Ordinal))throw new InvalidOperationException("private desktop identity");GrantPrivateObjectAccess(privateDesktop,ephemeralSid,PRIVATE_OBJECT_FULL_ACCESS,"desktop",0x000F01FF);
+                      brokerStation=GetProcessWindowStation();Check(brokerStation!=IntPtr.Zero,"GetProcessWindowStation");var ephemeralSid=new SecurityIdentifier(accountSid);string privateDesktopName="NanoSandboxGateDesktop-"+Guid.NewGuid().ToString("N"),desktopParent;
+                      if(stationMode==1){string privateStationName="NanoSandboxGate-"+Guid.NewGuid().ToString("N");privateStation=CreateWindowStationW(privateStationName,0,PRIVATE_OBJECT_FULL_ACCESS,IntPtr.Zero);Check(privateStation!=IntPtr.Zero,"CreateWindowStationW(private)");GrantPrivateObjectAccess(privateStation,ephemeralSid,PRIVATE_OBJECT_FULL_ACCESS,"window station",0x000F037F);Check(SetProcessWindowStation(privateStation),"SetProcessWindowStation(private)");privateSelected=true;try{privateDesktop=CreateDesktopW(privateDesktopName,null,IntPtr.Zero,0,PRIVATE_OBJECT_FULL_ACCESS,IntPtr.Zero);Check(privateDesktop!=IntPtr.Zero,"CreateDesktopW(private)");}finally{Check(SetProcessWindowStation(brokerStation),"SetProcessWindowStation(broker)");privateSelected=false;}desktopParent=privateStationName;}
+                      else{if(!String.Equals(UserObjectName(brokerStation),"WinSta0",StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("broker station is not WinSta0");originalStationSecurity=UserObjectSecurity(brokerStation);if(DescriptorContainsSid(originalStationSecurity,ephemeralSid))throw new InvalidOperationException("ephemeral SID already on WinSta0");var stationDescriptor=new RawSecurityDescriptor(originalStationSecurity,0);if(stationDescriptor.DiscretionaryAcl==null)stationDescriptor.DiscretionaryAcl=new RawAcl(2,1);stationDescriptor.DiscretionaryAcl.InsertAce(stationDescriptor.DiscretionaryAcl.Count,new CommonAce(AceFlags.None,AceQualifier.AccessAllowed,unchecked((int)WINSTA_GRANT_ACCESS),ephemeralSid,false,null));byte[] stationAugmentedBytes=new byte[stationDescriptor.BinaryLength];stationDescriptor.GetBinaryForm(stationAugmentedBytes,0);SetUserObjectDacl(brokerStation,stationAugmentedBytes);stationAugmented=true;if(!DescriptorContainsSid(UserObjectSecurity(brokerStation),ephemeralSid))throw new InvalidOperationException("WinSta0 grant missing");privateDesktop=CreateDesktopW(privateDesktopName,null,IntPtr.Zero,0,PRIVATE_OBJECT_FULL_ACCESS,IntPtr.Zero);Check(privateDesktop!=IntPtr.Zero,"CreateDesktopW(private)");desktopParent="WinSta0";}
+                      if(!String.Equals(UserObjectName(privateDesktop),privateDesktopName,StringComparison.Ordinal))throw new InvalidOperationException("private desktop identity");GrantPrivateObjectAccess(privateDesktop,ephemeralSid,PRIVATE_OBJECT_FULL_ACCESS,"desktop",0x000F01FF);
                       job=CreateJobObjectW(IntPtr.Zero, null); Check(job!=IntPtr.Zero, "CreateJobObjectW");
                       environment=BuildEnvironment(accountName,path,pathExt,systemRoot,winDir,comSpec);
                       var limits=new JOBOBJECT_EXTENDED_LIMIT_INFORMATION(); limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
                       int size=Marshal.SizeOf(limits); IntPtr limitsPtr=Marshal.AllocHGlobal(size);
                       try { Marshal.StructureToPtr(limits, limitsPtr, false); Check(SetInformationJobObject(job, JobObjectExtendedLimitInformation, limitsPtr, (UInt32)size), "SetInformationJobObject"); }
                       finally { Marshal.FreeHGlobal(limitsPtr); }
-                      var startup=new STARTUPINFO();startup.cb=(UInt32)Marshal.SizeOf(startup);startup.lpDesktop=privateStationName+"\\"+privateDesktopName;
+                      var startup=new STARTUPINFO();startup.cb=(UInt32)Marshal.SizeOf(startup);startup.lpDesktop=desktopParent+"\\"+privateDesktopName;
                       Check(CreateProcessWithLogonW(accountName,".",accountPassword,LOGON_WITH_PROFILE,application,new StringBuilder(command),CREATE_SUSPENDED|CREATE_NO_WINDOW|CREATE_UNICODE_ENVIRONMENT,environment,WorkingDirectory,ref startup,out pi),"CreateProcessWithLogonW");
                       Check(OpenProcessToken(pi.hProcess,TOKEN_QUERY,out actualToken),"OpenProcessToken(actual child)");ValidateActualToken(actualToken,accountSid);CloseHandle(actualToken);actualToken=IntPtr.Zero;
                       Check(AssignProcessToJobObject(job, pi.hProcess), "AssignProcessToJobObject"); assigned=true;
@@ -729,6 +734,7 @@ jobs:
                       if(job!=IntPtr.Zero){try{DrainJob(job);CloseHandle(job);job=IntPtr.Zero;}catch{cleanupFailed=true;}}
                       if(pi.hThread!=IntPtr.Zero) CloseHandle(pi.hThread); if(pi.hProcess!=IntPtr.Zero) CloseHandle(pi.hProcess);
                       if(privateSelected){try{if(brokerStation==IntPtr.Zero||!SetProcessWindowStation(brokerStation))cleanupFailed=true;else privateSelected=false;}catch{cleanupFailed=true;}}
+                      if(stationAugmented&&brokerStation!=IntPtr.Zero&&originalStationSecurity!=null){try{SetUserObjectDacl(brokerStation,originalStationSecurity);byte[] restored=UserObjectSecurity(brokerStation);if(!EqualBytes(originalStationSecurity,restored)||DescriptorContainsSid(restored,new SecurityIdentifier(accountSid)))cleanupFailed=true;else stationAugmented=false;}catch{cleanupFailed=true;}}
                       if(privateDesktop!=IntPtr.Zero&&!CloseDesktop(privateDesktop))cleanupFailed=true;
                       if(privateStation!=IntPtr.Zero&&!CloseWindowStation(privateStation))cleanupFailed=true;
                       if(environment!=IntPtr.Zero)Marshal.FreeHGlobal(environment);
@@ -738,14 +744,14 @@ jobs:
                       if(actualToken!=IntPtr.Zero)CloseHandle(actualToken);
                       if(mediumSid!=IntPtr.Zero)LocalFree(mediumSid);if(administratorsSid!=IntPtr.Zero) LocalFree(administratorsSid);
                       if(diagnostic&&File.Exists(diagnosticPath)){File.Delete(diagnosticPath);}if(diagnostic&&File.Exists(diagnosticPath))throw new InvalidOperationException("diagnostic residue");
-                      if(cleanupFailed)throw new InvalidOperationException("private desktop cleanup failed");
+                      if(cleanupFailed)throw new InvalidOperationException("restricted desktop cleanup failed");
                   }
               }
-              public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string ignored;return RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,null,out ignored);}
-              public static string RunDiagnostic(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string result;RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,true,null,out result);return result;}
+              public static int RunGate(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string ignored;return RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,null,0,out ignored);}
+              public static string RunDiagnostic(string gateId,string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){string result;RunCore(gateId,accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,true,null,0,out result);return result;}
               public static string RunCapabilities(string accountName,string accountPassword,string accountSid,string brokerSid,string path,string pathExt,string systemRoot,string winDir,string comSpec){
                   string[,] probes={{"git_version","git.exe --version >nul"},{"git_config","git.exe config --global --get-all safe.directory >nul"},{"git_repo","git.exe -C F:\\repo rev-parse --show-toplevel >nul"},{"node","node.exe --version >nul"},{"bash","\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" --version >nul"},{"cygpath","\"C:\\Program Files\\Git\\usr\\bin\\cygpath.exe\" -u F:\\tmp >nul"},{"whoami","whoami.exe >nul"},{"icacls","icacls.exe F:\\tmp >nul"},{"bash_mktemp","\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" -lc ^\"t=$(mktemp /f/tmp/wncap.XXXXXX) && rm -f $t^\" >nul"},{"protected_binary","if not exist F:\\gate-cards-bin\\wayland-nano.exe exit /b 61 & type F:\\gate-cards-bin\\wayland-nano.exe >nul"},{"config_card","if not exist F:\\repo\\gates\\config-schema\\card.md exit /b 62 & type F:\\repo\\gates\\config-schema\\card.md >nul"},{"config_probes","if not exist F:\\repo\\gates\\fixtures\\config-schema\\probes exit /b 63 & dir /b F:\\repo\\gates\\fixtures\\config-schema\\probes >nul"},{"bash_node","node.exe F:\\tmp\\wp4-spawn-bash.js"},{"git_real","\"C:\\Program Files\\Git\\usr\\bin\\git.exe\" --version >nul"}};
-                  var capability=new System.Text.StringBuilder("capability=");bool allPass=true;for(int i=0;i<probes.GetLength(0);i++){string ignored;int exit=RunCore("config-schema",accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,probes[i,1],out ignored);capability.Append(probes[i,0]).Append(':').Append(exit).Append(';');if(exit!=0)allPass=false;}return allPass?"capability=all_pass":capability.ToString().TrimEnd(';');
+                  var capability=new System.Text.StringBuilder("capability=");bool allPass=true;for(int mode=0;mode<2;mode++)for(int i=0;i<probes.GetLength(0);i++){string ignored;int exit=RunCore("config-schema",accountName,accountPassword,accountSid,brokerSid,path,pathExt,systemRoot,winDir,comSpec,false,probes[i,1],mode,out ignored);capability.Append('m').Append(mode).Append('_').Append(probes[i,0]).Append(':').Append(exit).Append(';');if(exit!=0)allPass=false;}return allPass?"capability=all_pass":capability.ToString().TrimEnd(';');
               }
           }
           '@
@@ -784,24 +790,32 @@ jobs:
             'TokenInfo(restrictedToken,TokenElevation', 'TokenIsElevated!=0',
             'TokenInfo(restrictedToken,TokenGroups', 'ephemeral account has Administrators membership',
             'dangerous ephemeral privilege', 'ephemeral token Medium integrity',
+            'CreateDesktopW(string name,string device,IntPtr deviceMode,UInt32 flags,UInt32 access,IntPtr securityAttributes)',
             'CreateWindowStationW(string name,UInt32 flags,UInt32 access,IntPtr securityAttributes)',
             'SetProcessWindowStation(IntPtr station)', 'CloseWindowStation(IntPtr station)',
-            'CreateDesktopW(string name,string device,IntPtr deviceMode,UInt32 flags,UInt32 access,IntPtr securityAttributes)',
+            'stationMode==1',
+            'CreateWindowStationW(privateStationName,0,PRIVATE_OBJECT_FULL_ACCESS,IntPtr.Zero)',
+            'SetProcessWindowStation(privateStation)', 'SetProcessWindowStation(brokerStation)',
+            'CloseWindowStation(privateStation)', 'desktopParent=privateStationName',
+            'desktopParent="WinSta0"',
             'GetUserObjectInformationW(handle,2', 'SetUserObjectSecurity(IntPtr handle,ref UInt32 requested,byte[] security)',
             'new RawSecurityDescriptor(UserObjectSecurity(handle),0)',
             'new CommonAce(AceFlags.None,AceQualifier.AccessAllowed,unchecked((int)access),sid,false,null)',
-            'privateStationName="NanoSandboxGate-"+Guid.NewGuid().ToString("N")',
-            'privateDesktopName="NanoSandboxGateDesktop"',
             'LOGON_WITH_PROFILE = 0x00000001', 'PRIVATE_OBJECT_FULL_ACCESS = 0x000F03FF',
-            'CreateWindowStationW(privateStationName,0,PRIVATE_OBJECT_FULL_ACCESS,IntPtr.Zero)',
-            'GrantPrivateObjectAccess(privateStation,ephemeralSid,PRIVATE_OBJECT_FULL_ACCESS,"window station",0x000F037F)',
-            'SetProcessWindowStation(privateStation)',
+            'WINSTA_GRANT_ACCESS = 0x0000037F',
+            'String.Equals(UserObjectName(brokerStation),"WinSta0",StringComparison.OrdinalIgnoreCase)',
+            'privateDesktopName="NanoSandboxGateDesktop-"+Guid.NewGuid().ToString("N")',
+            'DescriptorContainsSid(originalStationSecurity,ephemeralSid)',
+            'SetUserObjectDacl(brokerStation,stationAugmentedBytes)',
+            'DescriptorContainsSid(UserObjectSecurity(brokerStation),ephemeralSid)',
+            'SetUserObjectDacl(brokerStation,originalStationSecurity)',
+            'EqualBytes(originalStationSecurity,restored)',
+            'DescriptorContainsSid(restored,new SecurityIdentifier(accountSid))',
             'CreateDesktopW(privateDesktopName,null,IntPtr.Zero,0,PRIVATE_OBJECT_FULL_ACCESS,IntPtr.Zero)',
-            'SetProcessWindowStation(brokerStation)',
             'GrantPrivateObjectAccess(privateDesktop,ephemeralSid,PRIVATE_OBJECT_FULL_ACCESS,"desktop",0x000F01FF)',
-            'startup.lpDesktop=privateStationName+"\\"+privateDesktopName',
-            'CloseDesktop(privateDesktop)', 'CloseWindowStation(privateStation)',
-            'private desktop cleanup failed',
+            'startup.lpDesktop=desktopParent+"\\"+privateDesktopName',
+            'CloseDesktop(privateDesktop)',
+            'restricted desktop cleanup failed',
             'gateId!="config-schema" && gateId!="install-payload" && gateId!="provision-script"',
             ':("\""+Application+"\" verify --gate "+gateId+" --run-only")',
             '--run-only --json > \""+diagnosticPath', 'JsonDocument.Parse',
@@ -831,9 +845,6 @@ jobs:
           $ordered = @('Check(LogonUserW(', 'TokenInfo(restrictedToken,TokenElevation', 'TokenInfo(restrictedToken,TokenIntegrityLevel',
             'TokenInfo(restrictedToken,TokenGroups', 'restrictedPrivileges=TokenInfo(restrictedToken,TokenPrivileges',
             'ProbeProtectedBinary(restrictedToken)', 'brokerStation=GetProcessWindowStation(',
-            'privateStation=CreateWindowStationW(', 'GrantPrivateObjectAccess(privateStation',
-            'Check(SetProcessWindowStation(privateStation)',
-            'privateDesktop=CreateDesktopW(', 'Check(SetProcessWindowStation(brokerStation)',
             'GrantPrivateObjectAccess(privateDesktop',
             'job=CreateJobObjectW(',
             'Check(SetInformationJobObject(', 'Check(CreateProcessWithLogonW(', 'Check(OpenProcessToken(pi.hProcess',
@@ -861,7 +872,7 @@ jobs:
           $preflightCapability=[GateCardsRestrictedProcess]::RunCapabilities($accountName,$accountPassword,$userSid,$brokerSid,$brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec)
           if($preflightCapability-ne'capability=all_pass'){throw "capability preflight failed: $preflightCapability"}
           # Exact landed WP-3 contract: verify --gate "$gate_id" --run-only
-          foreach($gate_id in $gateIds){$exit=Invoke-ProtectedGate $gate_id $true;if($exit-ne 0){$capability='capability=not_run';if($gate_id-eq'config-schema'-and$script:LastGateDiagnostic.StartsWith('outcome=fail_closed')){try{$capability=[GateCardsRestrictedProcess]::RunCapabilities($accountName,$accountPassword,$userSid,$brokerSid,$brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec)}catch{$capability='capability=unavailable:-1'};if($capability-notmatch'^capability=(all_pass|[a-z_]+:-?[0-9]+(;[a-z_]+:-?[0-9]+)*)$'){throw 'capability diagnostic contract'}};throw "good gate blocked: $gate_id (exit $exit; $script:LastGateDiagnostic; $capability)"}}
+          foreach($gate_id in $gateIds){$exit=Invoke-ProtectedGate $gate_id $true;if($exit-ne 0){$capability='capability=not_run';if($gate_id-eq'config-schema'-and$script:LastGateDiagnostic.StartsWith('outcome=fail_closed')){try{$capability=[GateCardsRestrictedProcess]::RunCapabilities($accountName,$accountPassword,$userSid,$brokerSid,$brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec)}catch{$capability='capability=unavailable:-1'};if($capability-notmatch'^capability=(all_pass|[a-z0-9_]+:-?[0-9]+(;[a-z0-9_]+:-?[0-9]+)*)$'){throw 'capability diagnostic contract'}};throw "good gate blocked: $gate_id (exit $exit; $script:LastGateDiagnostic; $capability)"}}
           Copy-Item -Force packaging/npm/binaries/win32-x64/wayland-nano.exe packaging/npm/binaries/linux-x64/wayland-nano
           $badExit=Invoke-ProtectedGate 'install-payload' $false
           if($badExit-ne 3){throw 'ip-m1 did not block with exit 3'}
