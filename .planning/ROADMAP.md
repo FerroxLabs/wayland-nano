@@ -22,7 +22,7 @@ This milestone promotes the approved Wayland Nano 0.2 verified-change program th
 - [x] **Phase 4: WP-1 Gate and Receipt Foundation** - Deliver canonical gate execution and independently checkable red-green receipt primitives. (completed 2026-08-20)
 - [x] **Phase 5: WP-2 Gated Climb** - Deliver the budgeted, opaque-feedback, ratcheted climb engine. (completed 2026-08-20)
 - [ ] **Phase 6: WP-3 Verify CLI and CI Surface** - Expose verified change through the CLI, offline receipt checking, and a pinned CI consumer.
-- [ ] **Phase 7: WP-4 Gate Cards and Dogfood** - Seal three mutant-tested Gate Card packs, dogfood them through the verifier, and hand the promoted evidence to the owner.
+- [x] **Phase 7: WP-4 Gate Cards and Dogfood** - Seal three mutant-tested Gate Card packs, dogfood them through the verifier, and hand the promoted evidence to the owner.
 
 ## Phase Details
 

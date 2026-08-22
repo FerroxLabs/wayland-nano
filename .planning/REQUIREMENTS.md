@@ -90,9 +90,9 @@
 
 ### Final Program Evidence
 
-- [ ] **EVID-01**: WP-0.2 through WP-4 are merged in dependency order with branch and merge commit IDs, local/integration gate results, and green CI links.
-- [ ] **EVID-02**: A final canary-clean evidence summary is appended under `../shared/reviews/verified-change/` and explicitly records WP-0.1, WP-5, and WP-6 as owner-led/not executed.
-- [ ] **EVID-03**: Autonomous execution stops after WP-4 and hands the verified build state to the owner without starting the demo/partner or decision-gate programs.
+- [x] **EVID-01**: WP-0.2 through WP-4 are merged in dependency order with branch and merge commit IDs, local/integration gate results, and green CI links.
+- [x] **EVID-02**: A final canary-clean evidence summary is appended under `../shared/reviews/verified-change/` and explicitly records WP-0.1, WP-5, and WP-6 as owner-led/not executed.
+- [x] **EVID-03**: Autonomous execution stops after WP-4 and hands the verified build state to the owner without starting the demo/partner or decision-gate programs.
 
 ## Deferred Requirements
 
