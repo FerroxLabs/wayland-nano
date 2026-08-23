@@ -54,6 +54,97 @@ live_test!(windows_focus_invariance_and_sendinput_landing, {
             .expect("SendInput click must land in a live session");
         let after = backend.frontmost_app().await.unwrap();
         assert_eq!(before, after, "synthesized input must never change focus");
+
+        // WP-0.1 landing proof: spawn the probe window, click inside its
+        // client area, let it self-close on idle, then assert the recorded
+        // client coordinate lands inside the client rect. External process
+        // state (the helper's own stdout JSON), never self-report.
+        use nano_cua::coords;
+        use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+        use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+        use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, GetClientRect};
+
+        let helper = std::env::var("NANO_CUA_PROBE_WINDOW").unwrap_or_else(|_| {
+            format!(
+                "{}\\..\\..\\target\\debug\\examples\\cua_probe_window.exe",
+                env!("CARGO_MANIFEST_DIR")
+            )
+        });
+        let child = std::process::Command::new(&helper)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("probe window helper must spawn");
+        let class: Vec<u16> = "NanoCuaProbeWindow\0".encode_utf16().collect();
+        let mut hwnd: HWND = 0;
+        for _ in 0..50 {
+            hwnd = unsafe { FindWindowW(class.as_ptr(), std::ptr::null()) };
+            if hwnd != 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(hwnd != 0, "probe window never appeared");
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        assert!(
+            unsafe { GetClientRect(hwnd, &mut rect) } != 0,
+            "GetClientRect"
+        );
+        let mut origin = POINT { x: 0, y: 0 };
+        assert!(
+            unsafe { ClientToScreen(hwnd, &mut origin) } != 0,
+            "ClientToScreen"
+        );
+        let scale = f64::from(unsafe { GetDpiForSystem() }) / 96.0;
+        let (click_x, click_y) = coords::logical_to_physical(
+            origin.x + (rect.right - rect.left) / 2,
+            origin.y + (rect.bottom - rect.top) / 2,
+            scale,
+        );
+        // The probe window takes the foreground when it appears; the backend's
+        // focus re-check must bind to the frontmost state AT dispatch time.
+        let current = backend.frontmost_app().await.unwrap();
+        backend
+            .dispatch(
+                current.as_deref(),
+                CuaOp::LeftClick {
+                    x: click_x,
+                    y: click_y,
+                    button: MouseButton::Left,
+                    mods: KeyMods::default(),
+                },
+            )
+            .await
+            .expect("landing click must dispatch in a live session");
+        let output = child
+            .wait_with_output()
+            .expect("probe window must self-close on idle");
+        assert_eq!(output.status.code(), Some(0), "probe window exit code");
+        let stdout = String::from_utf8(output.stdout).expect("probe output utf8");
+        let line = stdout.lines().last().expect("probe result line");
+        let parsed: serde_json::Value = serde_json::from_str(line).expect("probe result JSON");
+        assert_eq!(parsed["probe"], "cua_window");
+        let clicks = parsed["clicks"].as_array().expect("clicks array");
+        assert!(!clicks.is_empty(), "the landing click was never recorded");
+        let (cx, cy) = (
+            clicks[0]["x"].as_i64().unwrap() as i32,
+            clicks[0]["y"].as_i64().unwrap() as i32,
+        );
+        let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
+        assert!(
+            cx >= 0 && cy >= 0 && cx < width && cy < height,
+            "recorded click ({cx},{cy}) outside the {width}x{height} client rect"
+        );
+        let end = backend.frontmost_app().await.unwrap();
+        assert_eq!(
+            before, end,
+            "focus must be unchanged after the landing click"
+        );
     }
     #[cfg(not(target_os = "windows"))]
     eprintln!("SKIP: Windows focus-invariance proof runs on a Windows host");

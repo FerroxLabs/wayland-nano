@@ -1,0 +1,14 @@
+{
+  "probe": "cua-focus-landing",
+  "utc": "20260823T064427Z",
+  "helper_sha256": "D49AADE780D4F8E678E40BA9A27872A2FCC364500704DB9ED534553747157C36",
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "applied_dpi": 96,
+  "test_output_tail": [
+    "test windows_focus_invariance_and_sendinput_landing ... ok",
+    "",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.82s",
+    ""
+  ],
+  "result": "green"
+}
