@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-nano-egress = { version = "0.1.0", path = "../nano-egress" }
+nano-egress = { version = "0.2.0", path = "../nano-egress" }
 async-trait = "0.1"
 base64 = "0.22"
 jsonschema = "=0.32.1"
