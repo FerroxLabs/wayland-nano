@@ -20,6 +20,7 @@ members = [
     "crates/nano-tui",
     "crates/nano-cua",
     "crates/nano-verify",
+    "crates/nano-memory",
 ]
 
 [workspace.package]
