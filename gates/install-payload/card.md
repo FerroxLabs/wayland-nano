@@ -18,7 +18,7 @@ checks:
 wrapped_tools:
   - { name: node, version: 20, license: MIT, role: stdlib-only gate and package lifecycle runtime }
 validation:
-  reference: sealed:dir-sha256:da60507be5b50970dcb31ba0d8b98a908da680fb7c69164e06f86285f0525623
+  reference: sealed:dir-sha256:fe05b559237d6649fe5465fe33bf7c27bddae3f78b8d1c7696929832eb4fe7f7
   pool_min: 6
   pool_status: full
   mutants:
