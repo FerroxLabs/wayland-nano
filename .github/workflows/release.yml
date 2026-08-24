@@ -62,6 +62,84 @@ jobs:
       # The gate must pass on the tagged commit before any artifact exists.
       - name: Install just
         uses: taiki-e/install-action@just
+
+      # Verifier temp parity with gate.yml: the verify (WP-3) integration
+      # tests' process-isolation contract requires TEMP and TMP to name the
+      # same canonical directory. gate.yml has done this since the verifier
+      # tests landed; release.yml ran gate-test without it and every platform
+      # leg failed ("unverifiable" verdicts) on the first tag that carried
+      # WP-3. Keep these steps byte-identical to gate.yml's.
+      - name: Configure verifier temp directory (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ((Get-PSDrive -Name F -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath "F:\")) {
+            throw "F: is already in use; refusing to replace an existing drive"
+          }
+
+          $runToken = [Guid]::NewGuid().ToString("N")
+          $vhdPath = Join-Path $env:RUNNER_TEMP "wayland-nano-verifier-$runToken.vhdx"
+          $setupScript = Join-Path $env:RUNNER_TEMP "wayland-nano-vhd-setup-$runToken.txt"
+          $detachScript = Join-Path $env:RUNNER_TEMP "wayland-nano-vhd-detach-$runToken.txt"
+          $diskpartSetup = @(
+            "create vdisk file=`"$vhdPath`" maximum=8192 type=expandable"
+            "select vdisk file=`"$vhdPath`""
+            "attach vdisk"
+            "create partition primary"
+            "format fs=ntfs quick label=WNVERIFY"
+            "assign letter=F"
+          )
+
+          try {
+            $diskpartSetup | Set-Content -LiteralPath $setupScript -Encoding ascii
+            & diskpart.exe /s $setupScript
+            if ($LASTEXITCODE -ne 0) {
+              throw "diskpart failed while creating the verifier volume"
+            }
+            $volume = Get-Volume -DriveLetter F -ErrorAction Stop
+            if ($volume.FileSystem -ne "NTFS" -or $volume.FileSystemLabel -ne "WNVERIFY") {
+              throw "F: is not the owned NTFS verifier volume"
+            }
+
+            # Persist ownership immediately after attach/assign. Later cleanup
+            # is forbidden from touching any VHD or drive not named here.
+            "WN_TEMP_VHD_PATH=$vhdPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "WN_TEMP_VHD_OWNED=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            $verifierTemp = "F:\tmp"
+            New-Item -ItemType Directory -Force -Path $verifierTemp | Out-Null
+            if (-not (Test-Path -LiteralPath $verifierTemp -PathType Container)) {
+              throw "failed to create the verifier temp child directory"
+            }
+            "WN_VERIFY_TEMP=$verifierTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } catch {
+            # A failed diskpart script can leave a partially attached image.
+            # Select only this run's unique image and detach it if present.
+            if (Test-Path -LiteralPath $vhdPath) {
+              @(
+                "select vdisk file=`"$vhdPath`""
+                "detach vdisk"
+              ) | Set-Content -LiteralPath $detachScript -Encoding ascii
+              & diskpart.exe /s $detachScript | Out-Null
+              if (-not (Get-DiskImage -ImagePath $vhdPath -ErrorAction SilentlyContinue).Attached) {
+                Remove-Item -LiteralPath $vhdPath -Force -ErrorAction SilentlyContinue
+              }
+            }
+            throw
+          } finally {
+            Remove-Item -LiteralPath $setupScript, $detachScript -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Configure verifier temp directory (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          verifier_temp="${RUNNER_TEMP}/wayland-nano-verifier"
+          mkdir -p "$verifier_temp"
+          echo "TEMP=$verifier_temp" >> "$GITHUB_ENV"
+          echo "TMP=$verifier_temp" >> "$GITHUB_ENV"
+          echo "TMPDIR=$verifier_temp" >> "$GITHUB_ENV"
+
       - name: gate-fmt
         run: just gate-fmt
       - name: gate-lint
@@ -79,7 +157,71 @@ jobs:
           sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0 || true
           sudo sysctl kernel.unprivileged_userns_clone=1 || true
       - name: gate-test
+        if: runner.os != 'Windows'
         run: just gate-test
+
+      # Windows verifier split, byte-identical to gate.yml: unrelated tests
+      # keep the runner's native TEMP/TMP; the 14 verify (WP-3) integration
+      # tests run once below under the scoped short verifier temp path.
+      - name: gate-test (Windows workspace)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $verifierTests = @(
+            "verify_authored_defect_red_identifiers_only"
+            "verify_receipt_roundtrip_valid"
+            "verify_receipt_tampered_fails_closed"
+            "verify_receipt_fabricated_commit"
+            "verify_receipt_unknown_field_fails_closed"
+            "verify_receipt_green_only_is_never_red"
+            "verify_receipt_gate_pin_drift"
+            "verify_exit_code_matrix"
+            "verify_red_run_writes_no_receipt"
+            "verify_receipt_ancestry_unproven"
+            "verify_receipt_rerun_red_is_gate_mismatch"
+            "verify_run_only_resolves_artifact_and_exit_codes"
+            "verify_full_flow_green_mints_receipt"
+            "fixture_materializes_real_history_and_resolves_templates"
+          )
+          $listOutput = & cargo test -p nano-cli --test verify_cmd -- --list 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            $listOutput | Write-Output
+            throw "failed to enumerate verify_cmd tests"
+          }
+          $declared = @($listOutput | ForEach-Object {
+            if ($_ -match '^([^:]+): test$') { $Matches[1] }
+          })
+          $uniqueDeclared = @($declared | Sort-Object -Unique)
+          if ($declared.Count -ne 14 -or $uniqueDeclared.Count -ne 14) {
+            throw "verify_cmd must contain exactly 14 unique tests; found $($declared.Count) entries and $($uniqueDeclared.Count) unique names"
+          }
+          $declaredInventory = $uniqueDeclared -join "`n"
+          $expectedInventory = ($verifierTests | Sort-Object) -join "`n"
+          if ($declaredInventory -ne $expectedInventory) {
+            throw "verify_cmd test inventory drifted; update the scoped Windows gate explicitly"
+          }
+          $cargoArgs = @("test", "--workspace", "--")
+          foreach ($test in $verifierTests) {
+            $cargoArgs += @("--skip", $test)
+          }
+          & cargo @cargoArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows workspace tests failed"
+          }
+
+      - name: gate-test (Windows verifier scoped temp)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not $env:WN_VERIFY_TEMP) {
+            throw "WN_VERIFY_TEMP was not configured"
+          }
+          $env:TEMP = $env:WN_VERIFY_TEMP
+          $env:TMP = $env:WN_VERIFY_TEMP
+          cargo test -p nano-cli --test verify_cmd -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows verifier integration tests failed"
+          }
 
       - name: Release build
         run: cargo build --release -p nano-cli --target ${{ matrix.target }}
@@ -211,6 +353,49 @@ jobs:
           # Preserve the platform directory so merge-multiple produces the
           # ArtifactRoot layout consumed by pack.ps1.
           path: packaging/npm/binaries/
+
+      # Byte-identical to gate.yml's cleanup: detach only the owned,
+      # token-named verifier VHD created at the start of this job.
+      - name: Remove verifier temp volume (Windows)
+        if: always() && runner.os == 'Windows' && env.WN_TEMP_VHD_OWNED == '1'
+        shell: pwsh
+        run: |
+          $vhdPath = $env:WN_TEMP_VHD_PATH
+          $runnerTemp = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+          if ([string]::IsNullOrWhiteSpace($vhdPath)) {
+            throw "owned verifier VHD path is missing"
+          }
+          $fullVhdPath = [IO.Path]::GetFullPath($vhdPath)
+          $leaf = Split-Path -Leaf $fullVhdPath
+          if (-not $fullVhdPath.StartsWith($runnerTemp, [StringComparison]::OrdinalIgnoreCase) -or
+              $leaf -notmatch '^wayland-nano-verifier-[0-9a-f]{32}\.vhdx$') {
+            throw "refusing to clean an unowned verifier VHD path"
+          }
+          if (-not (Test-Path -LiteralPath $fullVhdPath)) {
+            Write-Warning "owned verifier VHD is already absent"
+            exit 0
+          }
+
+          $cleanupScript = Join-Path $env:RUNNER_TEMP "wayland-nano-vhd-cleanup-$([Guid]::NewGuid().ToString('N')).txt"
+          try {
+            @(
+              "select vdisk file=`"$fullVhdPath`""
+              "detach vdisk"
+            ) | Set-Content -LiteralPath $cleanupScript -Encoding ascii
+            & diskpart.exe /s $cleanupScript
+            if ($LASTEXITCODE -ne 0) {
+              Write-Warning "diskpart could not detach the owned verifier VHD"
+              exit 0
+            }
+            $image = Get-DiskImage -ImagePath $fullVhdPath -ErrorAction SilentlyContinue
+            if ($image -and $image.Attached) {
+              Write-Warning "owned verifier VHD remains attached; retaining its backing file"
+              exit 0
+            }
+            Remove-Item -LiteralPath $fullVhdPath -Force
+          } finally {
+            Remove-Item -LiteralPath $cleanupScript -Force -ErrorAction SilentlyContinue
+          }
 
   publish:
     needs: build
