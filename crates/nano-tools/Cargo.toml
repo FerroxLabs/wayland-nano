@@ -6,19 +6,19 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-nano-sandbox = { version = "0.1.0", path = "../nano-sandbox" }
+nano-sandbox = { version = "0.2.0", path = "../nano-sandbox" }
 dunce = "1"
 dirs-next = "2"
 globset = "0.4"
 regex = "1"
-nano-core = { version = "0.1.0", path = "../nano-core" }
-nano-repomap = { version = "0.1.0", path = "../nano-repomap" }
-nano-egress = { version = "0.1.0", path = "../nano-egress" }
-nano-model = { version = "0.1.0", path = "../nano-model" }
+nano-core = { version = "0.2.0", path = "../nano-core" }
+nano-repomap = { version = "0.2.0", path = "../nano-repomap" }
+nano-egress = { version = "0.2.0", path = "../nano-egress" }
+nano-model = { version = "0.2.0", path = "../nano-model" }
 # nano-session supplies NanoErrorKind (the typed journal vocabulary) for the
 # P2a image loader's typed rejections. P2b moves the shared ImageRef shape
 # to nano-model; nano-session depends only on that lower-layer model crate.
-nano-session = { version = "0.1.0", path = "../nano-session" }
+nano-session = { version = "0.2.0", path = "../nano-session" }
 async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"
@@ -54,7 +54,7 @@ windows-sys = { version = "0.52", features = [
 # Feature-unify the pure unix argv/policy builders into test builds so the
 # shell transform wiring is unit-tested on every host (they are pure string
 # construction; runtime spawn paths stay platform-bound).
-nano-sandbox = { version = "0.1.0", path = "../nano-sandbox", features = ["unix-argv-builders"] }
+nano-sandbox = { version = "0.2.0", path = "../nano-sandbox", features = ["unix-argv-builders"] }
 pretty_assertions = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "time"] }

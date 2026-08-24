@@ -6,8 +6,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-nano-core = { version = "0.1.0", path = "../nano-core" }
-nano-sandbox = { version = "0.1.0", path = "../nano-sandbox" }
+nano-core = { version = "0.2.0", path = "../nano-core" }
+nano-sandbox = { version = "0.2.0", path = "../nano-sandbox" }
 dunce = "1"
 globset = "0.4"
 regex = "1"

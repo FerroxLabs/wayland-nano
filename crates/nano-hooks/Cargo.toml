@@ -18,7 +18,7 @@ tracing = "0.1"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-nano-sandbox = { version = "0.1.0", path = "../nano-sandbox" }
+nano-sandbox = { version = "0.2.0", path = "../nano-sandbox" }
 
 [dev-dependencies]
 tempfile = "3"

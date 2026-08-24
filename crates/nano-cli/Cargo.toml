@@ -28,26 +28,26 @@ async-trait = "0.1"
 # boundary (0.22, the in-tree version — nano-sandbox).
 base64 = "0.22"
 dirs-next = "2"
-nano-agent = { version = "0.1.0", path = "../nano-agent" }
+nano-agent = { version = "0.2.0", path = "../nano-agent" }
 # S7 seam: the checkpoint store is opened at session bootstrap (recovery
 # sweep) and shared into the per-turn CheckpointToolExecutor wrap.
-nano-checkpoints = { version = "0.1.0", path = "../nano-checkpoints" }
-nano-hooks = { version = "0.1.0", path = "../nano-hooks" }
-nano-core = { version = "0.1.0", path = "../nano-core" }
+nano-checkpoints = { version = "0.2.0", path = "../nano-checkpoints" }
+nano-hooks = { version = "0.2.0", path = "../nano-hooks" }
+nano-core = { version = "0.2.0", path = "../nano-core" }
 # S9: the ACP host constructs the CUA backend/policy (backends::for_platform,
 # CuaPolicy::default); the bridge and engine seam live in nano-agent.
-nano-cua = { version = "0.1.0", path = "../nano-cua" }
-nano-egress = { version = "0.1.0", path = "../nano-egress" }
+nano-cua = { version = "0.2.0", path = "../nano-cua" }
+nano-egress = { version = "0.2.0", path = "../nano-egress" }
 # F-36 (P3 §6.3): the OAuth record_grant producer converts
 # nano-mcp's flow::GrantRecord into the journaled Op::McpOauthGrant.
-nano-mcp = { version = "0.1.0", path = "../nano-mcp" }
-nano-model = { version = "0.1.0", path = "../nano-model" }
-nano-plugins = { version = "0.1.0", path = "../nano-plugins" }
-nano-protocol = { version = "0.1.0", path = "../nano-protocol" }
-nano-sandbox = { version = "0.1.0", path = "../nano-sandbox" }
-nano-session = { version = "0.1.0", path = "../nano-session" }
-nano-tools = { version = "0.1.0", path = "../nano-tools" }
-nano-verify = { version = "0.1.0", path = "../nano-verify" }
+nano-mcp = { version = "0.2.0", path = "../nano-mcp" }
+nano-model = { version = "0.2.0", path = "../nano-model" }
+nano-plugins = { version = "0.2.0", path = "../nano-plugins" }
+nano-protocol = { version = "0.2.0", path = "../nano-protocol" }
+nano-sandbox = { version = "0.2.0", path = "../nano-sandbox" }
+nano-session = { version = "0.2.0", path = "../nano-session" }
+nano-tools = { version = "0.2.0", path = "../nano-tools" }
+nano-verify = { version = "0.2.0", path = "../nano-verify" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # P5 §7: the candidate snapshot's catalog/proof digest (0.10, the in-tree
@@ -59,8 +59,8 @@ tokio = { version = "1", features = ["macros", "rt", "sync"] }
 [dev-dependencies]
 serde_json = "1"
 async-trait = "0.1"
-nano-agent = { version = "0.1.0", path = "../nano-agent" }
-nano-model = { version = "0.1.0", path = "../nano-model" }
+nano-agent = { version = "0.2.0", path = "../nano-agent" }
+nano-model = { version = "0.2.0", path = "../nano-model" }
 tempfile = "3"
 
 # P4 §3.3: the hardened review-diff git invocation kills the child's
