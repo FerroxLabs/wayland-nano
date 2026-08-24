@@ -1,0 +1,14 @@
+[package]
+name = "nano-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# CI spike for the P-MEM storage stack: bundled SQLite (FTS5 compiled in) plus
+# the sqlite-vec native extension, statically linked via the cc crate. No
+# schema design lives here yet — this crate exists to prove the native C
+# build is green on every gate target (Windows ARM64 is the known risk).
+rusqlite = { version = "0.37", features = ["bundled"] }
+sqlite-vec = "0.1.9"
