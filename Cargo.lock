@@ -1726,10 +1726,15 @@ dependencies = [
 
 [[package]]
 name = "nano-memory"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
+ "nano-session",
  "rusqlite",
+ "serde",
+ "serde_json",
  "sqlite-vec",
+ "tempfile",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

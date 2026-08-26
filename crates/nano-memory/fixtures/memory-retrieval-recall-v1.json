@@ -1,0 +1,969 @@
+{
+  "version": "memory-retrieval-recall-v1",
+  "facts": [
+    {
+      "id": "f01",
+      "subject": "deployment target",
+      "predicate": "is",
+      "object": "staging cluster",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f02",
+      "subject": "database engine",
+      "predicate": "is",
+      "object": "SQLite FTS5",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f03",
+      "subject": "embedding dimension",
+      "predicate": "is",
+      "object": "384 dimensions",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-b",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f04",
+      "subject": "release channel",
+      "predicate": "is",
+      "object": "stable channel",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-b",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f05",
+      "subject": "cache policy",
+      "predicate": "is",
+      "object": "least recently used",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f06",
+      "subject": "backup schedule",
+      "predicate": "is",
+      "object": "daily at midnight",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-a",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f07",
+      "subject": "service port",
+      "predicate": "is",
+      "object": "port 8443",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-b",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f08",
+      "subject": "log format",
+      "predicate": "is",
+      "object": "structured JSON",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-b",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f09",
+      "subject": "test command",
+      "predicate": "is",
+      "object": "cargo test workspace",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f10",
+      "subject": "owner team",
+      "predicate": "is",
+      "object": "platform engineering",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-a",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f11",
+      "subject": "retention limit",
+      "predicate": "is",
+      "object": "fifty thousand facts",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-b",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f12",
+      "subject": "session lock",
+      "predicate": "is",
+      "object": "single writer",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-b",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f13",
+      "subject": "privacy rule",
+      "predicate": "is",
+      "object": "project partition",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f14",
+      "subject": "agent identity",
+      "predicate": "is",
+      "object": "bot alpha",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f15",
+      "subject": "resolver policy",
+      "predicate": "is",
+      "object": "trust tier first",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-b",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f16",
+      "subject": "fusion method",
+      "predicate": "is",
+      "object": "reciprocal rank fusion",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-b",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f17",
+      "subject": "search backend",
+      "predicate": "is",
+      "object": "full text BM25",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f18",
+      "subject": "vector backend",
+      "predicate": "is",
+      "object": "sqlite vec KNN",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-a",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f19",
+      "subject": "journal ordering",
+      "predicate": "is",
+      "object": "journal before database",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-b",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f20",
+      "subject": "receipt text",
+      "predicate": "is",
+      "object": "memory updated",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-b",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f21",
+      "subject": "distractor subject 21",
+      "predicate": "is",
+      "object": "unrelated value 21",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f22",
+      "subject": "distractor subject 22",
+      "predicate": "is",
+      "object": "unrelated value 22",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-a",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f23",
+      "subject": "distractor subject 23",
+      "predicate": "is",
+      "object": "unrelated value 23",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-b",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f24",
+      "subject": "distractor subject 24",
+      "predicate": "is",
+      "object": "unrelated value 24",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-b",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f25",
+      "subject": "distractor subject 25",
+      "predicate": "is",
+      "object": "unrelated value 25",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f26",
+      "subject": "distractor subject 26",
+      "predicate": "is",
+      "object": "unrelated value 26",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f27",
+      "subject": "distractor subject 27",
+      "predicate": "is",
+      "object": "unrelated value 27",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-b",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f28",
+      "subject": "distractor subject 28",
+      "predicate": "is",
+      "object": "unrelated value 28",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-b",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f29",
+      "subject": "distractor subject 29",
+      "predicate": "is",
+      "object": "unrelated value 29",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f30",
+      "subject": "distractor subject 30",
+      "predicate": "is",
+      "object": "unrelated value 30",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-a",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f31",
+      "subject": "distractor subject 31",
+      "predicate": "is",
+      "object": "unrelated value 31",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-b",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f32",
+      "subject": "distractor subject 32",
+      "predicate": "is",
+      "object": "unrelated value 32",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-b",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f33",
+      "subject": "distractor subject 33",
+      "predicate": "is",
+      "object": "unrelated value 33",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f34",
+      "subject": "distractor subject 34",
+      "predicate": "is",
+      "object": "unrelated value 34",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-a",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f35",
+      "subject": "distractor subject 35",
+      "predicate": "is",
+      "object": "unrelated value 35",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-b",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f36",
+      "subject": "distractor subject 36",
+      "predicate": "is",
+      "object": "unrelated value 36",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-b",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f37",
+      "subject": "distractor subject 37",
+      "predicate": "is",
+      "object": "unrelated value 37",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f38",
+      "subject": "distractor subject 38",
+      "predicate": "is",
+      "object": "unrelated value 38",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f39",
+      "subject": "distractor subject 39",
+      "predicate": "is",
+      "object": "unrelated value 39",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-b",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f40",
+      "subject": "distractor subject 40",
+      "predicate": "is",
+      "object": "unrelated value 40",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-b",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f41",
+      "subject": "distractor subject 41",
+      "predicate": "is",
+      "object": "unrelated value 41",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f42",
+      "subject": "distractor subject 42",
+      "predicate": "is",
+      "object": "unrelated value 42",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-a",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f43",
+      "subject": "distractor subject 43",
+      "predicate": "is",
+      "object": "unrelated value 43",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-b",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f44",
+      "subject": "distractor subject 44",
+      "predicate": "is",
+      "object": "unrelated value 44",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-b",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f45",
+      "subject": "distractor subject 45",
+      "predicate": "is",
+      "object": "unrelated value 45",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f46",
+      "subject": "distractor subject 46",
+      "predicate": "is",
+      "object": "unrelated value 46",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-a",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f47",
+      "subject": "distractor subject 47",
+      "predicate": "is",
+      "object": "unrelated value 47",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-b",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f48",
+      "subject": "distractor subject 48",
+      "predicate": "is",
+      "object": "unrelated value 48",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-b",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "f49",
+      "subject": "distractor subject 49",
+      "predicate": "is",
+      "object": "unrelated value 49",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "f50",
+      "subject": "distractor subject 50",
+      "predicate": "is",
+      "object": "unrelated value 50",
+      "confidence": 0.9,
+      "source_episode": null,
+      "valid_from": "2026-08-20T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-b"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "d01",
+      "summary": "Decision 1 use deterministic local memory option 1",
+      "why": "keeps the core private and reproducible",
+      "how_to_apply": "apply option 1 in the memory store",
+      "tags": [
+        "memory",
+        "core",
+        "option-1"
+      ],
+      "source_episode": null,
+      "source_trust": "User",
+      "project": "project-b",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "d02",
+      "summary": "Decision 2 use deterministic local memory option 2",
+      "why": "keeps the core private and reproducible",
+      "how_to_apply": "apply option 2 in the memory store",
+      "tags": [
+        "memory",
+        "core",
+        "option-2"
+      ],
+      "source_episode": null,
+      "source_trust": "ToolOutput",
+      "project": "project-b",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "d03",
+      "summary": "Decision 3 use deterministic local memory option 3",
+      "why": "keeps the core private and reproducible",
+      "how_to_apply": "apply option 3 in the memory store",
+      "tags": [
+        "memory",
+        "core",
+        "option-3"
+      ],
+      "source_episode": null,
+      "source_trust": "User",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "d04",
+      "summary": "Decision 4 use deterministic local memory option 4",
+      "why": "keeps the core private and reproducible",
+      "how_to_apply": "apply option 4 in the memory store",
+      "tags": [
+        "memory",
+        "core",
+        "option-4"
+      ],
+      "source_episode": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "d05",
+      "summary": "Decision 5 use deterministic local memory option 5",
+      "why": "keeps the core private and reproducible",
+      "how_to_apply": "apply option 5 in the memory store",
+      "tags": [
+        "memory",
+        "core",
+        "option-5"
+      ],
+      "source_episode": null,
+      "source_trust": "User",
+      "project": "project-b",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "d06",
+      "summary": "Decision 6 use deterministic local memory option 6",
+      "why": "keeps the core private and reproducible",
+      "how_to_apply": "apply option 6 in the memory store",
+      "tags": [
+        "memory",
+        "core",
+        "option-6"
+      ],
+      "source_episode": null,
+      "source_trust": "ToolOutput",
+      "project": "project-b",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "d07",
+      "summary": "Decision 7 use deterministic local memory option 7",
+      "why": "keeps the core private and reproducible",
+      "how_to_apply": "apply option 7 in the memory store",
+      "tags": [
+        "memory",
+        "core",
+        "option-7"
+      ],
+      "source_episode": null,
+      "source_trust": "User",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "d08",
+      "summary": "Decision 8 use deterministic local memory option 8",
+      "why": "keeps the core private and reproducible",
+      "how_to_apply": "apply option 8 in the memory store",
+      "tags": [
+        "memory",
+        "core",
+        "option-8"
+      ],
+      "source_episode": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-b"
+    },
+    {
+      "id": "d09",
+      "summary": "Decision 9 use deterministic local memory option 9",
+      "why": "keeps the core private and reproducible",
+      "how_to_apply": "apply option 9 in the memory store",
+      "tags": [
+        "memory",
+        "core",
+        "option-9"
+      ],
+      "source_episode": null,
+      "source_trust": "User",
+      "project": "project-b",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "d10",
+      "summary": "Decision 10 use deterministic local memory option 10",
+      "why": "keeps the core private and reproducible",
+      "how_to_apply": "apply option 10 in the memory store",
+      "tags": [
+        "memory",
+        "core",
+        "option-10"
+      ],
+      "source_episode": null,
+      "source_trust": "ToolOutput",
+      "project": "project-b",
+      "agent_id": "bot-b"
+    }
+  ],
+  "queries": [
+    {
+      "text": "deployment target staging cluster",
+      "project": "project-a",
+      "agent_id": "bot-a",
+      "relevant_ids": [
+        "f01"
+      ]
+    },
+    {
+      "text": "database engine SQLite FTS5",
+      "project": "project-a",
+      "agent_id": "bot-b",
+      "relevant_ids": [
+        "f02"
+      ]
+    },
+    {
+      "text": "embedding dimension 384 dimensions",
+      "project": "project-b",
+      "agent_id": "bot-a",
+      "relevant_ids": [
+        "f03"
+      ]
+    },
+    {
+      "text": "release channel stable channel",
+      "project": "project-b",
+      "agent_id": "bot-b",
+      "relevant_ids": [
+        "f04"
+      ]
+    },
+    {
+      "text": "cache policy least recently used",
+      "project": "project-a",
+      "agent_id": "bot-a",
+      "relevant_ids": [
+        "f05"
+      ]
+    },
+    {
+      "text": "backup schedule daily at midnight",
+      "project": "project-a",
+      "agent_id": "bot-b",
+      "relevant_ids": [
+        "f06"
+      ]
+    },
+    {
+      "text": "service port port 8443",
+      "project": "project-b",
+      "agent_id": "bot-a",
+      "relevant_ids": [
+        "f07"
+      ]
+    },
+    {
+      "text": "log format structured JSON",
+      "project": "project-b",
+      "agent_id": "bot-b",
+      "relevant_ids": [
+        "f08"
+      ]
+    },
+    {
+      "text": "test command cargo test workspace",
+      "project": "project-a",
+      "agent_id": "bot-a",
+      "relevant_ids": [
+        "f09"
+      ]
+    },
+    {
+      "text": "owner team platform engineering",
+      "project": "project-a",
+      "agent_id": "bot-b",
+      "relevant_ids": [
+        "f10"
+      ]
+    },
+    {
+      "text": "retention limit fifty thousand facts",
+      "project": "project-b",
+      "agent_id": "bot-a",
+      "relevant_ids": [
+        "f11"
+      ]
+    },
+    {
+      "text": "session lock single writer",
+      "project": "project-b",
+      "agent_id": "bot-b",
+      "relevant_ids": [
+        "f12"
+      ]
+    },
+    {
+      "text": "privacy rule project partition",
+      "project": "project-a",
+      "agent_id": "bot-a",
+      "relevant_ids": [
+        "f13"
+      ]
+    },
+    {
+      "text": "agent identity bot alpha",
+      "project": "project-a",
+      "agent_id": "bot-b",
+      "relevant_ids": [
+        "f14"
+      ]
+    },
+    {
+      "text": "resolver policy trust tier first",
+      "project": "project-b",
+      "agent_id": "bot-a",
+      "relevant_ids": [
+        "f15"
+      ]
+    },
+    {
+      "text": "Decision 1 deterministic local memory option 1",
+      "project": "project-b",
+      "agent_id": "bot-a",
+      "relevant_ids": [
+        "d01"
+      ]
+    },
+    {
+      "text": "Decision 2 deterministic local memory option 2",
+      "project": "project-b",
+      "agent_id": "bot-b",
+      "relevant_ids": [
+        "d02"
+      ]
+    },
+    {
+      "text": "Decision 3 deterministic local memory option 3",
+      "project": "project-a",
+      "agent_id": "bot-a",
+      "relevant_ids": [
+        "d03"
+      ]
+    },
+    {
+      "text": "Decision 4 deterministic local memory option 4",
+      "project": "project-a",
+      "agent_id": "bot-b",
+      "relevant_ids": [
+        "d04"
+      ]
+    },
+    {
+      "text": "Decision 5 deterministic local memory option 5",
+      "project": "project-b",
+      "agent_id": "bot-a",
+      "relevant_ids": [
+        "d05"
+      ]
+    }
+  ]
+}
