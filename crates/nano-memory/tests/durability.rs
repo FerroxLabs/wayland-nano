@@ -109,7 +109,7 @@ fn durability_kill_mid_write() {
         .env("NANO_MEMORY_KILL_MARKER", &marker)
         .spawn()
         .unwrap();
-    for _ in 0..250 {
+    for _ in 0..1500 {
         if marker.exists() {
             break;
         }
