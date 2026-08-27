@@ -1,94 +1,99 @@
 # Technology Stack
 
-**Analysis Date:** 2026-08-16
+**Analysis Date:** 2026-08-27
 
 ## Languages
 
 **Primary:**
-- Rust 2024 edition - All runtime, protocol, sandbox, agent, model, tool, and CLI implementation under `wayland-nano/crates/`; workspace policy is defined in `wayland-nano/Cargo.toml`.
+- Rust 1.95.0, edition 2024 - all runtime, protocol, security, persistence, verification, and TUI crates under `crates/`; the toolchain is pinned in `rust-toolchain.toml`.
 
 **Secondary:**
-- PowerShell - Provisioning, evidence collection, proof harnesses, and npm package assembly under `wayland-nano/scripts/` and `wayland-nano/packaging/npm/scripts/`.
-- JavaScript (Node.js >=18) - Zero-dependency npm installer and command shim in `wayland-nano/packaging/npm/bin/install.js` and `wayland-nano/packaging/npm/bin/wayland-nano.js`.
-- YAML - GitHub Actions gate and release automation in `wayland-nano/.github/workflows/gate.yml` and `wayland-nano/.github/workflows/release.yml`.
-- JSON/NDJSON - Provider catalogs and durable/wire formats in `wayland-nano/crates/nano-model/data/providerCatalog.vendored.json`, `wayland-nano/crates/nano-session/`, and `wayland-nano/crates/nano-protocol/`.
+- PowerShell - Windows provisioning, proof harnesses, packaging, and release assembly in `scripts/` and `packaging/npm/scripts/pack.ps1`.
+- JavaScript/CommonJS on Node.js 18+ - npm launcher/install code and deterministic gate validators in `packaging/npm/bin/` and `gates/`.
+- Bash - Unix proof, soak, and CI support scripts in `scripts/`.
+- Python - focused CUA, cron, and sandbox smoke/proof scripts such as `scripts/s6-proof/f6_cron_create_proof.py` and `vendor/codex-windows-sandbox-rs/sandbox_smoketests.py`.
+- JSON, TOML, YAML, Markdown, NDJSON - contracts, provider catalog, policy, CI, fixtures, and protocol evidence throughout `contracts/`, `gates/`, `crates/nano-model/data/`, and `.github/workflows/`.
+- C/C++ (dependency build only) - bundled SQLite and the sqlite-vec extension are compiled locally through the Rust dependency build chain declared in `crates/nano-memory/Cargo.toml`.
 
 ## Runtime
 
 **Environment:**
-- Rust 1.95.0, pinned in `wayland-nano/rust-toolchain.toml`.
-- Native Windows target `x86_64-pc-windows-msvc` is the pinned local target; CI/release also cover Windows ARM64, macOS x64/ARM64, and Linux x64/ARM64 in `wayland-nano/.github/workflows/gate.yml` and `wayland-nano/.github/workflows/release.yml`.
-- Node.js 18+ is required only for the npm distribution wrapper; the release publisher uses Node.js 24 in `wayland-nano/.github/workflows/release.yml`.
+- Native Rust executables for Windows, Linux, and macOS; Windows x64 is release-blocking and uses native MSVC (`AGENTS.md`, `.github/workflows/gate.yml`).
+- Rust 1.95.0 is mandatory for development and CI (`rust-toolchain.toml`); workspace MSRV is declared as 1.85, while `nano-tui` declares 1.88 (`Cargo.toml`, `crates/nano-tui/Cargo.toml`).
+- Node.js >=18 is required only for the zero-dependency npm installer/launcher (`packaging/npm/package.json`); release CI currently uses Node 24 (`.github/workflows/release.yml`).
 
 **Package Manager:**
-- Cargo from Rust 1.95.0 - Builds the 19-member Rust workspace declared in `wayland-nano/Cargo.toml`.
-- Lockfile: present at `wayland-nano/Cargo.lock`; use locked dependency resolution for reproducible gates and releases.
-- npm - Publishes the zero-runtime-dependency `waylandnano` wrapper defined by `wayland-nano/packaging/npm/package.json`.
+- Cargo 1.95.0 for the Rust workspace; lockfile: `Cargo.lock` present and committed.
+- npm for distribution metadata and the native-binary launcher; package dependencies: none (`packaging/npm/package.json`).
+- `just` drives repository gates and release tasks from `justfile`.
 
 ## Frameworks
 
 **Core:**
-- Tokio 1 - Async runtime for model HTTP, MCP transports, tools, plugins, CLI hosting, and process coordination; feature sets are declared per crate, including `wayland-nano/crates/nano-model/Cargo.toml` and `wayland-nano/crates/nano-mcp/Cargo.toml`.
-- Serde 1 / serde_json 1 - Typed configuration, JSON APIs, JSON-RPC, NDJSON protocol frames, and append-only journal envelopes throughout `wayland-nano/crates/`.
-- Reqwest 0.12 with `rustls-tls` and default features disabled - Outbound HTTP transport used behind the `nano-egress` boundary by `wayland-nano/crates/nano-model/`, `wayland-nano/crates/nano-mcp/`, `wayland-nano/crates/nano-tools/`, and `wayland-nano/crates/nano-plugins/`.
-- thiserror 2 - Typed error definitions across the workspace, with the closed user-facing error vocabulary in `wayland-nano/crates/nano-session/src/error_kind.rs`.
+- Tokio 1.x - async agent turns, model/MCP HTTP, process control, hooks, protocol hosts, and TUI event handling across `crates/nano-agent`, `crates/nano-cli`, `crates/nano-mcp`, `crates/nano-model`, and `crates/nano-tui`.
+- Serde 1.x / serde_json 1.x - journal operations, provider/model wire formats, ACP/NDJSON, MCP JSON-RPC, receipts, config, and fixtures.
+- Reqwest 0.12 with rustls and default features disabled - HTTP transport behind `nano-egress`, used by model, MCP, plugin, and web-tool layers (`crates/nano-egress/Cargo.toml`).
+- Ratatui 0.30.2 + Crossterm 0.29.0 - terminal UI (`crates/nano-tui/Cargo.toml`).
+- Rusqlite 0.37 with bundled SQLite + sqlite-vec 0.1.9 - local persistent memory with FTS5 and vector KNN (`crates/nano-memory/Cargo.toml`).
+- Portable PTY 0.9 - Unix process/terminal integration and TUI PTY tests (`crates/nano-sandbox/Cargo.toml`, `crates/nano-tui/Cargo.toml`).
 
 **Testing:**
-- Rust built-in test harness (`cargo test`) - Unit and integration suites co-located under each crate's `src/` and `tests/` directories.
-- pretty_assertions 1 - Structured assertion diffs in crates including `wayland-nano/crates/nano-model/Cargo.toml` and `wayland-nano/crates/nano-mcp/Cargo.toml`.
-- Recorded integration fixtures - Network-independent Flux evidence under `shared/fixtures/flux/`; live suites are explicitly credential-gated by `wayland-nano/justfile`.
+- Rust built-in test harness - co-located unit tests and crate-level integration tests under `crates/*/tests/`.
+- `tempfile`, `pretty_assertions`, `insta`, `vt100`, and `portable-pty` - filesystem isolation, readable diffs, snapshot testing, terminal emulation, and PTY E2E tests.
+- Node's built-in test runner/assertions - adversarial gate contract tests in `gates/tests/`.
+- Scripted proof harnesses - external filesystem/process/network oracles under `scripts/c12-proof/`, `scripts/cua-proof/`, `scripts/soak/`, and `scripts/human-harness/`.
 
 **Build/Dev:**
-- Just - Canonical local and CI task runner in `wayland-nano/justfile`; use `just gate-all` for formatting, Clippy, workspace tests, and generated-artifact freshness.
-- rustfmt + Clippy - Formatting and lint gates; Clippy runs workspace-wide with `-D warnings` in `wayland-nano/justfile`.
-- cargo-deny - License, advisory, and dependency-policy gate configured by `wayland-nano/deny.toml`.
-- cargo-cyclonedx - Generates the release SBOM in `wayland-nano/.github/workflows/gate.yml`.
-- GitHub Actions - Six-target gate matrix and five-target tagged release pipeline in `wayland-nano/.github/workflows/`.
+- rustfmt and Clippy with `-D warnings` - enforced by `just gate-all` and `.github/workflows/gate.yml`.
+- cargo-deny - license, advisory, source, and dependency policy from `deny.toml`.
+- cargo-cyclonedx - SBOM generation in `.github/workflows/gate.yml`.
+- GitHub Actions - seven-target/platform gate matrix plus tagged release workflow (`.github/workflows/gate.yml`, `.github/workflows/release.yml`).
+- PowerShell packaging - stages prebuilt binaries and creates integrity metadata (`packaging/npm/scripts/pack.ps1`).
 
 ## Key Dependencies
 
 **Critical:**
-- `windows-sys` 0.52 - Pinned Windows API surface for sandboxing, process containment, Credential Manager, ConPTY/CUA, and setup; do not add a second version. Evidence: `wayland-nano/AGENTS.md`, `wayland-nano/crates/nano-mcp/Cargo.toml`, and `wayland-nano/crates/nano-cua/Cargo.toml`.
-- `image` =0.25.10 - Hardened image decoding with default features disabled and only PNG/JPEG/GIF/WebP enabled at the workspace link boundary in `wayland-nano/Cargo.toml`.
-- `jsonschema` =0.32.1 - Model/tool schema validation in `wayland-nano/crates/nano-model/Cargo.toml`.
-- `sha2` 0.10 - Integrity digests for provider/catalog evidence, plugins, sessions, attachments, and packaging-related flows across `wayland-nano/crates/`.
-- `base64` 0.22 - Model payloads, attachments, OAuth PKCE, and bounded image/tool handling; workspace-pinned in `wayland-nano/Cargo.toml`.
-- `tar` =0.4.46 and `flate2` 1 - Bounded plugin/package archive handling in `wayland-nano/crates/nano-plugins/Cargo.toml`.
+- `nano-egress` + Reqwest/rustls - the only sanctioned outbound HTTP path; preserve the deny-by-default policy in `crates/nano-egress/src/policy.rs`.
+- `nano-sandbox` + platform APIs - fail-closed OS containment: Windows restricted tokens/DACL/Job/WFP, Linux Landlock/seccomp/bubblewrap, and macOS seatbelt (`crates/nano-sandbox/`).
+- `nano-session` + SHA-256 - append-only operation journal, replay, torn-tail recovery, attachments, and compaction equivalence (`crates/nano-session/`).
+- Rusqlite/sqlite-vec - project- and agent-partitioned, bi-temporal memory store with FTS5, 384-dimensional local hashed embeddings, and schema-only KG tables (`crates/nano-memory/src/schema.rs`, `crates/nano-memory/src/embed.rs`).
+- `nano-model` + jsonschema 0.32.1 - validated, code-generated provider catalog and provider-neutral model boundary (`crates/nano-model/build.rs`, `crates/nano-model/data/providerCatalog.vendored.json`).
+- `windows-sys` 0.52 - pinned Win32 API binding used throughout security and process code; do not introduce another version (`AGENTS.md`).
+- `image` 0.25.10 with only png/jpeg/gif/webp - hardened image decoding; decoder features are locked at workspace level (`Cargo.toml`, `crates/nano-tools/src/image.rs`).
 
 **Infrastructure:**
-- `x11rb` 0.13 with XTest - Default Linux computer-use backend in `wayland-nano/crates/nano-cua/Cargo.toml`; the Wayland feature exists but carries no external crate dependency there.
-- `core-foundation` 0.10 and `core-graphics` 0.23 - macOS computer-use backend in `wayland-nano/crates/nano-cua/Cargo.toml`.
-- bubblewrap - Required external Linux sandbox executable on the modern runtime path; installation and user-namespace setup are explicit in `wayland-nano/.github/workflows/gate.yml`.
-- Native OS containment APIs - Windows restricted tokens/DACLs/Job Objects/WFP, macOS Seatbelt, and Linux bwrap/seccomp/Landlock are implemented under `wayland-nano/crates/nano-sandbox/`.
+- Git CLI - review diffs, verifier ancestry, checkpoints, and repository tooling in `crates/nano-cli` and `crates/nano-verify`.
+- Bubblewrap, Landlock, and seccomp - Linux sandbox enforcement (`crates/nano-sandbox/src/linux/`, `.github/workflows/gate.yml`).
+- Windows Filtering Platform and Job Objects - Windows network/process containment (`crates/nano-sandbox/src/`).
+- X11 XTest (`x11rb`), CoreGraphics, and Win32 UI/GDI - platform computer-use backends (`crates/nano-cua/`).
 
 ## Configuration
 
 **Environment:**
-- Provider selection and endpoints come from the embedded authority `wayland-nano/crates/nano-model/data/providerCatalog.vendored.json`; do not invent provider endpoints in callers.
-- Provider credentials resolve as injected bearer, canonical `<PROVIDER>_API_KEY`, then `<PROVIDER>_API_KEY_FILE`; Flux retains `FLUX_API_KEY`, `FLUX_TEST_KEY`, then `FLUX_API_KEY_FILE`. Implementations are `wayland-nano/crates/nano-cli/src/provider_key.rs` and `wayland-nano/crates/nano-cli/src/flux_key.rs`.
-- Unix credential files must be owner-only (0600 or stricter); resolved values are registered immediately with the egress redactor in `wayland-nano/crates/nano-cli/src/provider_key.rs`.
-- No `.env` contract is used as an authority. Never read or commit secret files; the owner-held Flux test credential path is documented in `wayland-nano/AGENTS.md`.
+- Runtime home and policy are rooted through `NANO_HOME`, `NANO_RULES_FILE`, and namespaced `NANO_*` settings; configuration entry points live in `crates/nano-cli/src/` and `crates/nano-core/src/`.
+- Model routing references only provider IDs from `WAYLAND_NANO_PROVIDERS`; endpoints and credential variable names come exclusively from `crates/nano-model/data/providerCatalog.vendored.json`.
+- Flux credentials resolve in order from `FLUX_API_KEY`, `FLUX_TEST_KEY`, then the file named by `FLUX_API_KEY_FILE` (`crates/nano-cli/src/flux_key.rs`). Other providers use injected bearer, catalog-named API-key env, then `<VAR>_FILE` (`crates/nano-cli/src/provider_key.rs`).
+- MCP servers are supplied by ACP session input and/or `NANO_MCP_SERVERS`; web-fetch hosts use `NANO_WEB_FETCH_HOSTS`; search backend selection uses `NANO_SEARCH_BACKEND` (`crates/nano-cli/src/acp_mode.rs`, `fetch_specs.rs`, `search_specs.rs`).
+- Never read or commit `.secrets/`; live-gated tests intentionally self-skip without credentials (`AGENTS.md`).
 
 **Build:**
-- Workspace/build profiles: `wayland-nano/Cargo.toml`.
-- Toolchain/target pin: `wayland-nano/rust-toolchain.toml`.
-- Lint policy: `wayland-nano/clippy.toml` and `wayland-nano/deny.toml`.
-- Gate recipes: `wayland-nano/justfile`.
-- npm platform staging and integrity manifest: `wayland-nano/packaging/npm/scripts/pack.ps1` and `wayland-nano/packaging/npm/package.json`.
+- `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `clippy.toml`, `deny.toml`, and `justfile` define the local build and quality gates.
+- `.github/workflows/gate.yml` defines the cross-platform validation matrix; `.github/workflows/release.yml` builds, signs, attests, packages, and publishes tagged releases.
+- `packaging/npm/package.json` and `packaging/npm/scripts/pack.ps1` define native binary distribution.
 
 ## Platform Requirements
 
 **Development:**
-- Install Rust 1.95.0 with rustfmt and Clippy, Cargo, and Just; use native MSVC for the release-blocking Windows x64 path (`wayland-nano/rust-toolchain.toml`).
-- Install `cargo-deny` for the dependency-policy gate; use PowerShell for packaging/provisioning scripts in `wayland-nano/scripts/` and `wayland-nano/packaging/npm/scripts/`.
-- Linux runtime tests require bubblewrap plus usable unprivileged user and network namespaces; see `wayland-nano/docs/COMPATIBILITY.md`.
-- Run `just gate-all` from `wayland-nano/` before claiming a verified change; run `just gate-deny` when dependency or supply-chain surfaces change.
+- Use the pinned Rust toolchain and Cargo lockfile; run `just gate-all` for fmt, Clippy, and workspace tests (`README.md`).
+- Windows development uses native MSVC and may require elevated provisioning for complete sandbox/WFP proofs (`scripts/provision/README.md`).
+- Linux runtime tests require bubblewrap and usable user namespaces; hosted CI installs/configures these explicitly (`.github/workflows/gate.yml`).
+- Live Flux/MCP/model tests require a credential source and otherwise skip by design; never make ordinary workspace tests network-dependent.
 
 **Production:**
-- Shipped as prebuilt native `wayland-nano` binaries wrapped by the public npm package defined in `wayland-nano/packaging/npm/package.json`.
-- Supported release artifacts target Windows x64, macOS x64/ARM64, and Linux x64/ARM64; Windows ARM64 is CI-gated but not included in the five-platform npm release matrix (`wayland-nano/docs/COMPATIBILITY.md`, `wayland-nano/.github/workflows/release.yml`).
-- Tagged `v*` releases publish npm provenance and GitHub release archives with SLSA attestations; binaries are not Authenticode-signed or Apple-notarized (`wayland-nano/.github/workflows/release.yml`, `wayland-nano/docs/COMPATIBILITY.md`).
+- Prebuilt package targets are Windows x64, Linux x64/arm64, and macOS x64/arm64 (`.github/workflows/release.yml`, `packaging/npm/bin/install.js`).
+- npm package `waylandnano` installs the matching native host; Unix packages also carry `wayland-nano-pty-guard` (`packaging/npm/`).
+- Windows releases can use Azure Trusted Signing and are verified before hashing/packaging; GitHub release archives receive build-provenance attestations (`.github/workflows/release.yml`).
 
 ---
 
-*Stack analysis: 2026-08-16*
+*Stack analysis: 2026-08-27*
