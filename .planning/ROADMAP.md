@@ -23,7 +23,7 @@ Four phases deliver the smallest useful agent: Desktop supplies trusted identity
 1. PR #8 is human-merged and fresh-checkout evidence retains recall@10 ≥0.90, zero project/agent leakage, kill rebuild/query equivalence, mediation, and seven CI legs.
 2. A signed manifest enumerates every source artifact/version/signature/disposition/precedence; Desktop owns product binding while Nano keeps only security enrollment needed for issuer and anti-remap enforcement.
 3. The amendment pins issuer/trust root, provisioning/rotation/revocation, immutable never-remap/reassignment policy and negative cases, plus wire `principal_id` as a 1:1 semantic alias of physical/schema/journal `agent_id` for v1.1.
-4. It names the protected MEM-SEC fixture amendment/owner, authoritative Desktop seam (`AcpConnection`), carrier/version/downgrade rules, merge order, exact Nano artifact-SHA test, and compatibility exit criteria.
+4. It names the protected MEM-SEC fixture amendment/owner, both Desktop ACP stacks converging through one shared Nano admission gate, carrier/version/downgrade rules, merge order, the exact Nano artifact triple (source commit, `Cargo.lock` SHA-256, executable SHA-256), and compatibility exit criteria.
 
 **Acceptance evidence**: Merge SHA/CI/fresh receipts; signed versioned contracts; owned fixture and compatibility matrix.
 **Anti-scope / tripwire**: Only foundation acceptance and contract ratification. Ambiguity, unsigned authority, or unowned fixture stops and re-roadmaps.
@@ -53,7 +53,8 @@ Plans:
 1. The versioned carrier contains principal/project, optional audit product ref, activation/session/idempotency, continuity, capabilities, budgets/deadline, replay protection, and a resume fingerprint limited to policy/tool/persona/module refs required to detect unsafe resume drift.
 2. Nano verifies issuer, freshness/replay and local ceilings; canonical activation/control receipts have frozen vocabulary, correlation fields and offline verification.
 3. Tamper, downgrade, replay, revoked issuer, remap, substitution, widening, unauthorized cancel/pause, and cancel/complete races follow pinned ordering and typed receipts; fingerprint drift fails closed or explicitly falls back to a fresh activation.
-4. Direct CLI uses a locally enrolled issuer and explicit `main` compatibility principal under the same trust/identity rules; the cross-repo fixture runs through `AcpConnection` against the exact Nano artifact SHA.
+4. Direct CLI uses a locally enrolled issuer and explicit `main` compatibility principal under the same trust/identity rules; both Desktop ACP stacks (`AcpConnection` and `AcpRuntime`/`AcpSession`) converge through one shared Nano admission gate and the exact-artifact fixture covers both.
+5. Before authenticated persistence can be enabled, negative gates prove every unauthenticated filesystem/T2-memory route and Nano cron/routine firing or model-visible scheduler surface is quarantined; existing jobs cannot auto-fire or auto-migrate, while legacy journal vocabulary remains replay-readable.
 
 **Acceptance evidence**: Fixture/schema vectors, positive receipt, negative matrix, exact-artifact cross-repo run and both CI systems.
 **Anti-scope / tripwire**: Stop, hand off, and replan if descriptor, receipts, or enrollment cannot land as bounded subdeliverables or grow a product registry, scheduler, unused composition framework, policy language, or Desktop edits here.
@@ -67,7 +68,7 @@ Plans:
 **Success Criteria** (what must be TRUE):
 
 1. MEM-SEC-1–6 pass at FTS, KNN, and final assembly under `(project, principal_id)` wire semantics with zero leakage and attribution preserved.
-2. CLI and authoritative Desktop `AcpConnection` activations traverse the same `nano-memory` seam; filesystem memory is migrated/disabled/subordinate and cannot bypass scope.
+2. CLI and both Desktop ACP activation stacks traverse the same `nano-memory` seam; the filesystem-memory path quarantined in Phase 2 is migrated, disabled, or made subordinate without regaining authority.
 3. Existing physical `agent_id` remains 1:1 with wire `principal_id`; old DB and journal rebuild produce query-equivalent rows and receipts including `agent_id`.
 4. Continuity modes are measured for quality/latency/tokens; `session_resume` fails closed on composition/policy drift, the report recommends defaults, and Desktop selects them.
 
@@ -82,13 +83,13 @@ Plans:
 **Requirements**: REQ-RUN-01, REQ-DOG-01
 **Success Criteria** (what must be TRUE):
 
-1. Existing Nano cron/scheduling authority is inventoried and migrated or disabled for Desktop-controlled activations; Nano timer/tool advertisement is removed/disabled and a negative test proves Desktop is the sole firing authority.
-2. Desktop derives a stable job-occurrence idempotency key and triggers through `AcpConnection`; Nano deduplicates activation admission, journal/memory/receipt commit, and effect-dispatch ID.
+1. Existing Nano cron/scheduling state quarantined in Phase 2 is inventoried and migrated or removed; the quarantine regression gate remains green and Desktop is the sole firing authority.
+2. Desktop derives a stable job-occurrence idempotency key and triggers through the shared Nano admission gate from either ACP stack; Nano deduplicates activation admission, journal/memory/receipt commit, and effect-dispatch ID.
 3. External effects use an intent ledger and return typed `unknown_outcome` plus manual reconciliation after ambiguous failure unless the provider proves an idempotent commit; no false exact-once claim is made.
 4. Nano enforces request binding, cost/deadline, cancel/pause, retry/retention, escalation and emergency refusal while storing no schedules/timers.
 5. Repeated interactive/scheduled dogfood proves scoped recall, denial/replay/remap resistance, cancellation, crash ambiguity handling, and issues an accept/revise/reject owner decision plus next-milestone choice.
 
-**Acceptance evidence**: Scheduler inventory/migration; sole-fire negative; occurrence derivation/dedup and intent-ledger tests; dogfood receipts/report; exact Nano artifact-SHA Desktop run and governing CI.
+**Acceptance evidence**: Scheduler inventory/migration; sole-fire negative; occurrence derivation/dedup and intent-ledger tests; dogfood receipts/report; exact Nano artifact identity exercised through both Desktop ACP stacks with both-stack admission regression and governing CI.
 **Anti-scope / tripwire**: Stop, hand off, and replan if scheduler retirement, bounded execution, ambiguity ledger, or dogfood cannot land independently. No provider, Nano timer/schedule, UI, unbounded retry, extraction, graph/KG, or cross-project work.
 **Plans**: TBD
 

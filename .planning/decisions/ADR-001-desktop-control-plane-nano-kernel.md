@@ -23,7 +23,7 @@ Nano stores no schedules or timers. Desktop alone fires activations. Idempotency
 
 - Trusted issuer/trust root and provisioning, rotation, overlap, revocation, recovery
 - Desktop bot→principal authority, immutable mapping, never-remap/reassignment rule, negative tests
-- Carrier/version/downgrade/replay rules through authoritative Desktop `AcpConnection`
+- Carrier/version/downgrade/replay rules with both Desktop ACP stacks (`AcpConnection` and `AcpRuntime`/`AcpSession`) converging through one shared Nano admission gate
 - Existing `agent_id` storage/journal compatibility, rebuild/query equivalence, receipt fields
 - Fixture owner, exact Nano artifact SHA, merge order, compatibility window and exit criteria
 - Inventory/migration/disablement of existing Nano cron and timer/tool advertisement

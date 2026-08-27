@@ -71,7 +71,7 @@ Task commits were not created by this executor because the fixed shared planning
 
 ## Files Created
 
-- `D:/Development/waylandnano/shared/reviews/research-0.2/specs/WORKABLE-AGENT-AUTHORITY-AMENDMENT-v1.0.md` — unsigned human-ratifiable amendment; SHA-256 `94FA973574DCD3E8738520A69E7897B3D2023CE2947EFAC102F5F62C210EBFC9`.
+- `D:/Development/waylandnano/shared/reviews/research-0.2/specs/WORKABLE-AGENT-AUTHORITY-AMENDMENT-v1.0.md` — unsigned human-ratifiable amendment. Cross-audit corrections superseded the original candidate bytes; current informational pre-sign SHA-256 is `A541BE1D80EC0E85855FA4E6C8D6004B825A14BC459630EA784B32A084275FCC`. Final signed bytes are hashed only in the detached ratification receipt.
 - `.planning/phases/01-ownership-contract-and-foundation/evidence/source-ratification-preflight.md` — reproducible source/signature/hash preflight; SHA-256 `D0494330847FF3AE575DA66D726E4119ED454CCBF47BC1C58894FBEAA6386B6F`.
 
 ## Decisions Made
