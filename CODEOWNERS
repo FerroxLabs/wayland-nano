@@ -1,3 +1,4 @@
 # Gate definitions and shipped agent prompt-code require human review.
+/CODEOWNERS @FerroxLabs @TradeCanyon
 /gates/** @FerroxLabs @TradeCanyon
 /agents/** @FerroxLabs @TradeCanyon
