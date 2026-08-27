@@ -53,7 +53,7 @@ status: complete
 
 # Phase 1 Plan 02: PR #8 Acceptance Evidence Summary
 
-**Immutable PR and local acceptance receipts prove seven green CI legs and all focused P-MEM bars at `f602ee7`, while human review remains explicitly pending.**
+**HISTORICAL/SUPERSEDED:** receipts prove the original P-MEM bars at `f602ee7`, but PR #10/CODEOWNERS changes moved PR #8 head. These artifacts cannot authorize final audit, signature, review, or merge; Plan 01-03 Task A regenerates canonical `head_sha`/`expected_run_id` receipts after protection.
 
 ## Performance
 
@@ -118,7 +118,7 @@ None. Human review and merge remain a later explicit checkpoint, not setup.
 
 ## Next Phase Readiness
 
-- PR #8 is ready for human review using immutable local and GitHub evidence.
+- Do not use these f602 artifacts for final review. Bootstrap PR #10, install protection, and regenerate both PR #8 receipts first.
 - REQ-FOUND-01 remains open until human merge and fresh-checkout post-merge verification.
 
 ## Self-Check: PASSED

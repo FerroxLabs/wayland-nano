@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-27
 **Artifact:** `D:/Development/waylandnano/shared/reviews/research-0.2/specs/WORKABLE-AGENT-AUTHORITY-AMENDMENT-v1.0.md`
-**Candidate SHA-256:** `A541BE1D80EC0E85855FA4E6C8D6004B825A14BC459630EA784B32A084275FCC` (informational; changes on signature)
+**Candidate SHA-256:** Dynamically discovered immediately before the bound audit. Every candidate SHA previously printed here is historical/superseded and cannot be used after signature.
 
 ## Reviewer convergence
 
@@ -27,14 +27,19 @@
 
 ## Remaining blocker
 
-PR #8 cannot currently satisfy independent CODEOWNER approval:
+PR #8 cannot yet satisfy the ratified compensated-control model:
 
-- `@FerroxLabs` is the PR author, only collaborator, and only CODEOWNER.
+- `@FerroxLabs` is the PR author/current CODEOWNER. `@TradeCanyon` is the designated non-author approval/merge account, but collaborator invitation/acceptance is not yet evidenced.
 - GitHub does not allow a PR author to approve their own PR.
 - `master` currently has no active protection/ruleset.
 
-Before approval/merge, an actual independent human or team must be granted appropriate repository access and added to the relevant `CODEOWNERS` entries. That changes PR #8 head, so the immutable head, CI run, and Plan 01-02 evidence must then be regenerated. No reviewer identity or access grant is inferred by the agent.
+PR #10 at `f23eed5fe195b76a862f87c4808a35d4a83448aa` is the one-time unprotected bootstrap for all three CODEOWNERS rules. After its exact seven CI pass, TradeCanyon may interactively merge it with explicit bootstrap evidence; then protection must be installed/verified. The separately reviewed fixture-correction PR must land and the P-MEM adversarial-audit fixes must pass before PR #8 proceeds. PR #8 must then synchronize with protected master, preserve the exact landed three-rule CODEOWNERS blob, and rerun all seven CI legs. Only the dynamically discovered post-synchronization head/run may populate regenerated receipts and the bounded audit. Every older PR #8 head/run is historical/superseded. The governance model is exactly `single-human-distinct-account`: `same_human_controller=true`, `independent_human_review=false`; it is separation of account credentials and ceremony, not human judgment. Cross-AI review is adversarial advisory evidence. Owner residual acceptance is mandatory.
+
+## Proof boundary
+
+- Live GitHub/API evidence can prove account, collaborator, reviewer, merger, PR head/base/review commit, CI, CODEOWNERS blob, ruleset, merge commit, and ancestry facts.
+- Interactive ceremony, MFA/passkey use, credential custody/inaccessibility to agents or automation, same-human control, residual Sybil/collusion-risk acceptance, and executor non-switch/non-review/non-merge are owner-signed attestations. Verifiers validate their presence, exact binding, hashes, timestamps, and consistency; they do not claim GitHub proves them.
 
 ## Verdict
 
-**NOT YET APPROVED.** The amendment is ready for owner ratification on content, but Phase 1 remains blocked on establishing real independent server-side review governance for PR #8.
+**NOT YET APPROVED.** Remaining sequence: fixture-correction merge and P-MEM audit-fix pass; TradeCanyon invite/accept; PR #10 CI and interactive bootstrap merge receipt; install/verify ruleset; synchronize PR #8 with protected master and exact landed CODEOWNERS; rerun seven CI; dynamically regenerate PR #8 receipts; strict bound-artifact audit; signed residual acceptance; protected TradeCanyon PR #8 review/merge.
