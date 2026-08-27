@@ -2,38 +2,35 @@
 
 ## Project State
 
-- `PROJECT.md`: present
-- `REQUIREMENTS.md`: present; 58 current requirements
-- `ROADMAP.md`: present; seven serial phases
-- `STATE.md`: present; Phase 1 ready to plan
+- `PROJECT.md`: present; active milestone `v1.1 Persistent Agent Program`
+- `REQUIREMENTS.md`: present; 16 current requirements mapped exactly once
+- `ROADMAP.md`: present; 13 bounded one-goal phases
+- `STATE.md`: present; Phase 1 awaiting human review, 0 active plans, 0% progress
+- `MILESTONES.md`: present; v1.0 completion recorded
 
 ## Codebase Context
 
 - Brownfield repository: yes
-- Codebase map: complete (`.planning/codebase/`)
-- Authoritative entry point: `../shared/reviews/research-0.2/NANO-BUILD-PLAN-V3.md`
-- Canonical interface contract: `../shared/reviews/research-0.2/specs/SPEC-WP-INTERFACES.md`
+- Codebase map: complete and refreshed 2026-08-27 (`.planning/codebase/`)
+- Governing source snapshots: `.planning/sources/`, byte-matched to the authoritative sibling documents by SHA-256
+- Synthesized decisions, constraints, requirements, and conflict report: `.planning/intel/` and `.planning/INGEST-CONFLICTS.md`
+- Prior v1.0 phase history: `docs/planning-archive/v1.0-phases/` (outside active Ferrox phase discovery)
 
-## Execution Order
+## Review State
 
-1. WP-0.4 frozen contracts
-2. WP-0.2 memory hardening
-3. WP-0.3 PDF intake
-4. WP-1 gate and receipt foundation
-5. WP-2 gated climb
-6. WP-3 verify CLI and CI surface
-7. WP-4 Gate Cards and dogfood
+- Document conflicts: 0 blockers, 0 warnings, 2 precedence-resolved informational items
+- Roadmap goal/coverage audit: PASS after convergence
+- Cross-phase integration audit: PASS after convergence
+- Lifecycle isolation audit: PASS; active Phase 1 resolves zero stale plans
+- Requirement coverage: 16/16
+- Promotion gates: 13/13
 
-WP-0.1 remains owner-host-run. Autonomous execution stops before WP-5/WP-6.
+## Execution Policy
 
-## Quality State
-
-- Kimi K3 and Claude Fable cross-audit: zero unresolved High findings
-- Ferrox roadmap plan gate: PASS
-- Requirement coverage: 58/58 exactly once
-- Promotion model: serial WP worktrees, `just gate-all`, detached `--no-ff`
-  integration, push, and CI-green confirmation
+- One active milestone phase/goal and promotion PR at a time
+- Technical dependency DAG remains explicit; eligible parallel workstreams are recorded but do not silently broaden an active goal
+- Every phase is discussed/planned against current code, checked, cross-AI reviewed to convergence, executed in an isolated worktree, verified, and required to pass seven-leg CI
 
 ## Recommended Next Step
 
-Plan and execute Phase 1 (WP-0.4) through the Ferrox phase workflow.
+Complete Phase 1 Foundation Acceptance: human review and merge of PR #8, then verify the merged foundation from a fresh checkout before planning Phase 2.
