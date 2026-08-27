@@ -1,52 +1,50 @@
-# Requirements: v1.1 Persistent Agent Program
+# Requirements: v1.1 Workable Persistent Agent
 
 **Defined:** 2026-08-27
-**Core Value:** A change earns trust only through independently rerunnable machine evidence.
-**Authority:** NANO-PROGRAM-PLAN plus signed MEMORY-CONTRACT v1.2, PROFILES-CONTRACT, and NANO-MODULE-CONTRACT.
-**Coverage rule:** Every current-milestone requirement maps to exactly one phase.
+**Coverage rule:** Every active requirement maps to exactly one phase.
 
-## Current Milestone Requirements
+## Active Requirements
 
-- [ ] **REQ-wp-0-contract-freeze** — Preserve signed MEMORY-CONTRACT v1.2 (2026-08-25) and verify human-review protection for `gates/**` and `agents/**`; PR #8 review, merge, and fresh-checkout evidence remain. *(WP-0)*
-- [ ] **REQ-p-mem-1-core-memory-store** — Land journal-authoritative SQLite/FTS5/sqlite-vec memory with scoped bi-temporal content, deterministic trust resolution, FTS+KNN RRF, mediation, retention, and unpopulated KG schema; prove recall, isolation, kill recovery, mediation, and seven-leg CI. *(P-MEM-1)*
-- [ ] **REQ-p-mem-sec-gate-pack** — Commit fixture rows for MEM-SEC-1 poisoned supersession, MEM-SEC-2 same-tier control, MEM-SEC-3 cross-project leak, MEM-SEC-4 extraction laundering/attribution, MEM-SEC-5 removed-scope escape, and MEM-SEC-6 cross-agent leak; assert pass-1 FTS, pass-2 KNN, and final output. *(P-MEM-SEC)*
-- [ ] **REQ-p-prof-profiles** — Owner-review/sign a version-stamped PROFILES-CONTRACT v1.1 overlay-only amendment before implementing closed profiles, narrow-only merge/selection, `Op::ProfileSet`, resume-narrows, and three built-ins. *(P-PROF)*
-- [ ] **REQ-p-mod-gap-manifest-integrity** — Owner-review/sign a version-stamped NANO-MODULE-CONTRACT v1.1 amendment for `contract_version`, digest pins/verification, receipts/provenance, and typed registry refusal before implementation. *(P-MOD-GAP)*
-- [ ] **REQ-p-bot-5a-agent-composition** — Ship named registry/config, identity-bearing spawn/usage, journaled composition, ceiling/persona/roster/scaffold/dogfood; module refs require verified installed provenance and receipts or fail closed. *(P-BOT-5a)*
-- [ ] **REQ-p-bot-5b-persistence** — Ship one shared memory-primary host seam: identity/current posture → open P-MEM → scoped recall → context → recall/mediated propose → receipt; enforce concurrency, ledger, rollback, and export-before-prune. *(P-BOT-5b)*
-- [ ] **REQ-p-bot-5c-proactivity** — Ship bounded agent-addressed routines, immutable prompt receipts, metering/denials, rate-limited attention, typed failure/retry, retention, and pause. *(P-BOT-5c)*
-- [ ] **REQ-p-exe-1-browser-backend** — Ship backend dispatch from resolution through capability intersection, executor/driver, supervisor/container, result, frame receipt, and journal/model observation; prove named-agent browser action, denial, provenance, lease, and historical frame. *(P-EXE-1)*
-- [ ] **REQ-p-exe-2-desktop-backend** — Ship hardened XFCE/VNC on the same seam with recreate-not-resume, AX-first named-agent action, denial, historical frame, who-is-driving, and Docker/Podman proof. *(P-EXE-2)*
-- [ ] **REQ-p-cons-memory-compaction** — Extract compacted facts/decisions through host mediation at ModelInference with receipts, retention, retrievability, and measured model-cost decision. *(P-CONS)*
-- [ ] **REQ-p-proc-procedure-extraction** — Mine repeated successful journal shapes into proposed, mediated, scoped procedures with receipts and later same-scope retrieval; never auto-execute. *(P-PROC)*
-- [ ] **REQ-p-graph-1-code-index** — Replace regex repomap with tree-sitter def/ref indexing, incremental/cache correctness, tracked-file scope, budget ranking, benchmark, and RSS limits. *(P-GRAPH-1)*
-- [ ] **REQ-p-graph-2-blast-radius** — Add Rust-only suggested blast radius labeled by measured precision; ship dark with documented negative result if it loses. *(P-GRAPH-2)*
-- [ ] **REQ-p-mem-kg-retrieval** — Build and measure bounded depth-2 KG-BFS RRF with attribution, provenance, config gate, and relation-poisoning defense; activate only if it wins. *(P-MEM-KG)*
-- [ ] **REQ-p-xproj-opt-in** — Built last, add only host-mediated per-query cross-project authorization that models cannot self-authorize, journaled/profile-tightenable with isolated defaults intact. *(P-XPROJ)*
+- [ ] **REQ-FOUND-01** — Human-review/merge PR #8 and freshly verify WP-0/P-MEM-1 evidence without reopening scope.
+- [ ] **REQ-ARCH-01** — Owner-sign a manifest listing every governing artifact/version/signature/disposition/precedence and pinning ownership, Nano security enrollment, trusted issuer/key lifecycle, immutable binding, alias compatibility, protected fixture ownership, merge order, and compatibility window.
+- [ ] **REQ-ACT-01** — Accept a minimal authenticated descriptor containing principal/project, optional audit product ref, activation/session/idempotency IDs, continuity, capabilities, budgets/deadline, replay protection, and a resume-context fingerprint limited to policy/tool/persona/module refs needed for resume safety.
+- [ ] **REQ-POL-01** — Verify the trusted issuer and intersect Nano ceilings; freeze canonical receipts; direct CLI uses an enrolled local issuer and explicit `main` compatibility mapping, never an identity bypass; tamper, replay, revoked issuer, remap, substitution, widening, and unauthorized controls fail typed.
+- [ ] **REQ-MEM-01** — Complete MEM-SEC-1–6 across FTS, KNN, and final assembly using `(project, principal_id)` semantics mapped 1:1 to existing physical `agent_id`.
+- [ ] **REQ-MEM-02** — Wire `nano-memory` into the actual shared CLI and ACP activation path; preserve old DB/journal rebuild and query equivalence including `agent_id` and receipts, with no silent filesystem-memory bypass.
+- [ ] **REQ-CONT-01** — Measure `fresh`, `session_resume`, and `memory_recall`; publish a recommendation while Desktop remains the default-setting authority.
+- [ ] **REQ-RUN-01** — Execute idempotent Desktop-triggered activations with immutable request binding, metering, deadline, cancel/pause, bounded retry/retention, escalation and emergency-refusal receipts; Nano stores no schedule or timer.
+- [ ] **REQ-DOG-01** — Immediately dogfood repeated interactive and scheduled activations and issue an evidence-based accept/revise/reject decision for the boundary and next milestone.
+
+## Deferred Program Inventory
+
+| Scope | Disposition |
+|---|---|
+| P-PROF, P-BOT-5a product registry/composition | Desktop-owned; not Nano work. |
+| P-MOD-GAP composition digests | Add only when a concrete Nano enforcement consumer exists. |
+| P-BOT-5b | Reframed as runtime wiring and measured continuity in Phase 3. |
+| P-BOT-5c | Split: Desktop schedules; Nano bounded execution in Phase 4. |
+| P-EXE-1 browser | Separate v1.2 milestone. |
+| P-EXE-2 desktop | Separate v1.3 milestone after browser provider. |
+| P-CONS, P-PROC | Evidence-gated future milestones. |
+| P-GRAPH-1/2, P-MEM-KG | Later code-intelligence program. |
+| P-XPROJ | Later security milestone. |
 
 ## Definition of Done
 
-Each phase satisfies its package evidence without weakening policy or gates, passes local touched-crate checks and seven-leg CI, preserves required identity/scope/provenance/receipts, and ends in reproducible evidence or a continuation handoff.
+Each phase meets observable criteria, passes governing local and CI gates, and ends in reproducible evidence or exact handoff. Three strikes and anti-scope tripwires stop the phase.
 
 ## Traceability
 
-| Requirement | Package | Phase | Status |
-|---|---|---:|---|
-| REQ-wp-0-contract-freeze | WP-0 | Phase 1 | Signed; awaiting PR review/merge |
-| REQ-p-mem-1-core-memory-store | P-MEM-1 | Phase 1 | Implemented on open PR #8 |
-| REQ-p-mem-sec-gate-pack | P-MEM-SEC | Phase 2 | Pending |
-| REQ-p-prof-profiles | P-PROF | Phase 2 | Pending |
-| REQ-p-mod-gap-manifest-integrity | P-MOD-GAP | Phase 2 | Pending |
-| REQ-p-bot-5a-agent-composition | P-BOT-5a | Phase 3 | Pending |
-| REQ-p-bot-5b-persistence | P-BOT-5b | Phase 4 | Pending |
-| REQ-p-bot-5c-proactivity | P-BOT-5c | Phase 5 | Pending |
-| REQ-p-exe-1-browser-backend | P-EXE-1 | Phase 6 | Pending |
-| REQ-p-exe-2-desktop-backend | P-EXE-2 | Phase 7 | Pending |
-| REQ-p-cons-memory-compaction | P-CONS | Phase 8 | Pending |
-| REQ-p-proc-procedure-extraction | P-PROC | Phase 9 | Pending |
-| REQ-p-graph-1-code-index | P-GRAPH-1 | Phase 10 | Pending |
-| REQ-p-graph-2-blast-radius | P-GRAPH-2 | Phase 11 | Pending |
-| REQ-p-mem-kg-retrieval | P-MEM-KG | Phase 12 | Pending |
-| REQ-p-xproj-opt-in | P-XPROJ | Phase 13 | Pending |
+| Requirement | Phase | Status |
+|---|---:|---|
+| REQ-FOUND-01 | 1 | PR #8 merge/fresh verification pending |
+| REQ-ARCH-01 | 1 | Owner ratification pending |
+| REQ-ACT-01 | 2 | Pending ratification |
+| REQ-POL-01 | 2 | Pending ratification |
+| REQ-MEM-01 | 3 | Pending ratification |
+| REQ-MEM-02 | 3 | Pending ratification |
+| REQ-CONT-01 | 3 | Pending ratification |
+| REQ-RUN-01 | 4 | Pending ratification |
+| REQ-DOG-01 | 4 | Pending ratification |
 
-**Coverage:** 16/16 current-milestone requirements mapped exactly once.
+**Coverage:** 9/9 exactly once.

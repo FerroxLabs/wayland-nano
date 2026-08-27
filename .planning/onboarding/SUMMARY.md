@@ -1,36 +1,29 @@
 # Onboarding Summary
 
-## Project State
+## Current State
 
-- `PROJECT.md`: present; active milestone `v1.1 Persistent Agent Program`
-- `REQUIREMENTS.md`: present; 16 current requirements mapped exactly once
-- `ROADMAP.md`: present; 13 bounded one-goal phases
-- `STATE.md`: present; Phase 1 awaiting human review, 0 active plans, 0% progress
-- `MILESTONES.md`: present; v1.0 completion recorded
+- Active milestone: v1.1 Workable Persistent Agent
+- Four focused phases, nine active requirements mapped exactly once, zero plans and 0% progress
+- Phase 1 waits for the owner ratification manifest and PR #8 human merge/fresh verification
+- Signed/hash-verified source status is explicit; snapshots remain untouched
 
-## Codebase Context
+## Architecture
 
-- Brownfield repository: yes
-- Codebase map: complete and refreshed 2026-08-27 (`.planning/codebase/`)
-- Governing source snapshots: `.planning/sources/`, byte-matched to the authoritative sibling documents by SHA-256
-- Synthesized decisions, constraints, requirements, and conflict report: `.planning/intel/` and `.planning/INGEST-CONFLICTS.md`
-- Prior v1.0 phase history: `docs/planning-archive/v1.0-phases/` (outside active Ferrox phase discovery)
+Desktop is the product control plane. Nano verifies a trusted issuer assertion, narrows authority, provides project/principal-scoped continuity, enforces bounds, and emits evidence. Wire `principal_id` maps 1:1 to existing immutable physical `agent_id` for v1.1. Nano security enrollment is allowed only for trust-root and anti-remap enforcement; it is not a bot registry.
 
-## Review State
+## Cross-Repo Boundary
 
-- Document conflicts: 0 blockers, 0 warnings, 2 precedence-resolved informational items
-- Roadmap goal/coverage audit: PASS after convergence
-- Cross-phase integration audit: PASS after convergence
-- Lifecycle isolation audit: PASS; active Phase 1 resolves zero stale plans
-- Requirement coverage: 16/16
-- Promotion gates: 13/13
+The Nano worktree cannot edit Desktop. Desktop integration through authoritative `AcpConnection` requires separate owner authorization/worktree/PR or exact handoff. Contract tests pin fixture owner, merge order, compatibility window, carrier/version/downgrade, job occurrence derivation, and exact Nano artifact SHA.
 
-## Execution Policy
+## Active Sequence
 
-- One active milestone phase/goal and promotion PR at a time
-- Technical dependency DAG remains explicit; eligible parallel workstreams are recorded but do not silently broaden an active goal
-- Every phase is discussed/planned against current code, checked, cross-AI reviewed to convergence, executed in an isolated worktree, verified, and required to pass seven-leg CI
+1. Ownership contract and foundation
+2. Minimal authenticated activation
+3. Runtime-integrated scoped continuity
+4. Bounded Desktop trigger and immediate dogfood decision
 
-## Recommended Next Step
+Browser and desktop providers are subsequent v1.2/v1.3 milestones with bypass-negative and Docker/Podman gates. Extraction, graph/KG, and cross-project reads remain evidence-gated.
 
-Complete Phase 1 Foundation Acceptance: human review and merge of PR #8, then verify the merged foundation from a fresh checkout before planning Phase 2.
+## Next Step
+
+Complete Phase 1 only: ratify the source/authority/identity/fixture/compatibility manifest, merge PR #8, and freshly verify its evidence.

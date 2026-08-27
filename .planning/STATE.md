@@ -1,30 +1,30 @@
 ---
 ferrox_state_version: 1.0
 milestone: v1.1
-milestone_name: Persistent Agent Program
+milestone_name: Workable Persistent Agent
 current_phase: 1
-current_phase_name: Foundation Acceptance
+current_phase_name: Ownership Contract and Foundation
 status: awaiting_human_review
-last_updated: "2026-08-27T06:11:47.911Z"
+last_updated: "2026-08-27T00:00:00Z"
 last_activity: 2026-08-27
-last_activity_desc: v1.1 roadmap installed; signed contract confirmed; PR #8 review, merge, and fresh-checkout evidence are next
+last_activity_desc: Roadmap compressed to four-phase workable-agent slice after cross-audit
 progress:
-  total_phases: 13
+  total_phases: 4
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
   percent: 0
-stopped_at: Awaiting human review/merge of open PR #8 and fresh-checkout evidence
+stopped_at: Awaiting owner ratification manifest and PR #8 merge/fresh verification
 ---
 
 # Project State
 
 ## Current Position
 
-Phase: 1 — Foundation Acceptance
+Phase: 1 — Ownership Contract and Foundation
 Plan: Not created
-Status: Awaiting human review
-Last activity: 2026-08-27 — New v1.1 milestone roadmap installed with no implementation plans
+Status: Awaiting human review and owner ratification
+Last activity: 2026-08-27 — Four-phase roadmap installed
 
 Progress: [----------] 0%
 
@@ -40,8 +40,6 @@ Progress: [----------] 0%
 
 | Phase | Plans | Total | Avg/Plan |
 |---:|---:|---:|---:|
-| 1–13 | 0 | - | - |
+| 1–4 | 0 | - | - |
 
 **Recent trend:** Not started
-
-**Historical note:** v1.0 contains 55 completed plan/summary pairs across seven archived phases under `docs/planning-archive/v1.0-phases/`; those counters are not included in v1.1 progress.
