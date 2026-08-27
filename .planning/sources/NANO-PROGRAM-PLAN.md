@@ -475,4 +475,3 @@ exposure of memory (MEMORY-CONTRACT §9).
 
 *End of plan. Signature of MEMORY-CONTRACT v1.2 + the two owner calls above unlock
 WP-0 → P-MEM-1.*
-

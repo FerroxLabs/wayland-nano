@@ -739,4 +739,3 @@ gated on preconditions." Every amendment below traces to the gate:
 AUDIT-5 (buildability: BUILDABLE-WITH-FIXES) with all sign-blocking fixes applied
 (§12 v1.2 changelog). Signature of v1.2 unlocks the memory program per the WP-6 gate
 as amended by the OWNER OVERRIDE. Per AUDIT-2 C7: v1.1 was never signed.
-

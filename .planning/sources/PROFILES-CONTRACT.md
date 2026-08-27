@@ -112,4 +112,3 @@ shipped profiles load and behave, `just gate-all` green.
 ## 8. Signature
 
 **Owner:** ______________ (date) — with MEMORY-CONTRACT signed, this unlocks P-PROF.
-

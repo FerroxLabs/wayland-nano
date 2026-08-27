@@ -86,4 +86,3 @@ the MCP/skill kinds.
 ## 7. Signature
 
 **Owner:** ______________ (date)
-
