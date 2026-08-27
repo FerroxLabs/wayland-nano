@@ -1,0 +1,61 @@
+{
+  "schema_version": "phase1-pr8-v1",
+  "captured_at_utc": "2026-08-27T08:31:39.6260977Z",
+  "pr_number": 8,
+  "url": "https://github.com/FerroxLabs/wayland-nano/pull/8",
+  "state": "OPEN",
+  "base_ref": "master",
+  "head_ref": "feat/p-mem-1-core",
+  "head_sha": "f602ee7dfb663a3d50cf36dd43cb172d5828b5cb",
+  "merge_state": "CLEAN",
+  "review_decision": "PENDING",
+  "expected_run_id": 32954434975,
+  "checks": [
+    {
+      "name": "gate (windows-latest, x64)",
+      "conclusion": "SUCCESS",
+      "status": "COMPLETED",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/32954434975/job/98132866332"
+    },
+    {
+      "name": "gate (windows-11-arm, arm64)",
+      "conclusion": "SUCCESS",
+      "status": "COMPLETED",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/32954434975/job/98132866406"
+    },
+    {
+      "name": "gate (macos-14, arm64)",
+      "conclusion": "SUCCESS",
+      "status": "COMPLETED",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/32954434975/job/98132866423"
+    },
+    {
+      "name": "gate (macos-15-intel, x64)",
+      "conclusion": "SUCCESS",
+      "status": "COMPLETED",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/32954434975/job/98132866407"
+    },
+    {
+      "name": "gate (ubuntu-22.04, x64)",
+      "conclusion": "SUCCESS",
+      "status": "COMPLETED",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/32954434975/job/98132866295"
+    },
+    {
+      "name": "gate (ubuntu-24.04-arm, arm64)",
+      "conclusion": "SUCCESS",
+      "status": "COMPLETED",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/32954434975/job/98132866285"
+    },
+    {
+      "name": "gate-cards",
+      "conclusion": "SUCCESS",
+      "status": "COMPLETED",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/32954434975/job/98132866188"
+    }
+  ],
+  "codeowners": {
+    "gates": true,
+    "agents": true
+  }
+}

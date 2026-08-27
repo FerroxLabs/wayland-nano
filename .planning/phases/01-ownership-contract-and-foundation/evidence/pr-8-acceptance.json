@@ -1,0 +1,135 @@
+{
+    "schema_version":  "pmem-acceptance-v1",
+    "repository":  "D:\\Development\\waylandnano\\wayland-nano\\.tmp-wt-pmem1",
+    "tested_sha":  "f602ee7dfb663a3d50cf36dd43cb172d5828b5cb",
+    "started_at_utc":  "2026-08-27T08:28:43.6932324Z",
+    "finished_at_utc":  "2026-08-27T08:29:31.3197168Z",
+    "include_workspace":  false,
+    "commands":  [
+                     {
+                         "id":  "retrieval_recall",
+                         "argv":  [
+                                      "cargo",
+                                      "test",
+                                      "-p",
+                                      "nano-memory",
+                                      "--test",
+                                      "retrieval_recall",
+                                      "--",
+                                      "--nocapture"
+                                  ],
+                         "working_directory":  "D:\\Development\\waylandnano\\wayland-nano\\.tmp-wt-pmem1",
+                         "pre_command_sha":  "f602ee7dfb663a3d50cf36dd43cb172d5828b5cb",
+                         "exit_code":  0,
+                         "stdout":  "\nrunning 2 tests\ntest explicit_agent_scope_never_widens_project ... ok\nmemory-retrieval-recall-v1 recall@10=1.000; cross-project=0; cross-agent=0\ntest memory_retrieval_recall_v1_bar ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.37s\n\n",
+                         "stderr":  "    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.82s\n     Running tests\\retrieval_recall.rs (F:\\CargoTarget\\wayland-nano\\debug\\deps\\retrieval_recall-7f56cca056e2a3c4.exe)\n"
+                     },
+                     {
+                         "id":  "durability",
+                         "argv":  [
+                                      "cargo",
+                                      "test",
+                                      "-p",
+                                      "nano-memory",
+                                      "--test",
+                                      "durability",
+                                      "--",
+                                      "--nocapture"
+                                  ],
+                         "working_directory":  "D:\\Development\\waylandnano\\wayland-nano\\.tmp-wt-pmem1",
+                         "pre_command_sha":  "f602ee7dfb663a3d50cf36dd43cb172d5828b5cb",
+                         "exit_code":  0,
+                         "stdout":  "\nrunning 3 tests\ntest rebuild_ignores_unreceipted_model_write ... ok\ntest reopen_keeps_journal_ids_collision_free ... ok\n\nrunning 1 test\nkill-mid-write rebuild query-equivalent; agent_id and current facts identical\ntest durability_kill_mid_write ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.54s\n\n",
+                         "stderr":  "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s\n     Running tests\\durability.rs (F:\\CargoTarget\\wayland-nano\\debug\\deps\\durability-69b194cbe5c6cd39.exe)\n"
+                     },
+                     {
+                         "id":  "write_mediation",
+                         "argv":  [
+                                      "cargo",
+                                      "test",
+                                      "-p",
+                                      "nano-memory",
+                                      "--test",
+                                      "write_mediation",
+                                      "--",
+                                      "--nocapture"
+                                  ],
+                         "working_directory":  "D:\\Development\\waylandnano\\wayland-nano\\.tmp-wt-pmem1",
+                         "pre_command_sha":  "f602ee7dfb663a3d50cf36dd43cb172d5828b5cb",
+                         "exit_code":  0,
+                         "stdout":  "\nrunning 1 test\ntest model_proposes_host_commits_and_receipts ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s\n\n",
+                         "stderr":  "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s\n     Running tests\\write_mediation.rs (F:\\CargoTarget\\wayland-nano\\debug\\deps\\write_mediation-41ae8d7a0ea581d7.exe)\n"
+                     },
+                     {
+                         "id":  "nano_memory",
+                         "argv":  [
+                                      "cargo",
+                                      "test",
+                                      "-p",
+                                      "nano-memory"
+                                  ],
+                         "working_directory":  "D:\\Development\\waylandnano\\wayland-nano\\.tmp-wt-pmem1",
+                         "pre_command_sha":  "f602ee7dfb663a3d50cf36dd43cb172d5828b5cb",
+                         "exit_code":  0,
+                         "stdout":  "\nrunning 2 tests\ntest resolver::tests::same_tier_uses_bias_and_ties_keep ... ok\ntest resolver::tests::tier_outranks_recency ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 3 tests\ntest rebuild_ignores_unreceipted_model_write ... ok\ntest reopen_keeps_journal_ids_collision_free ... ok\n\nrunning 1 test\ntest durability_kill_mid_write ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.45s\n\n\nrunning 2 tests\ntest explicit_agent_scope_never_widens_project ... ok\ntest memory_retrieval_recall_v1_bar ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.19s\n\n\nrunning 1 test\ntest model_proposes_host_commits_and_receipts ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+                         "stderr":  "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s\n     Running unittests src\\lib.rs (F:\\CargoTarget\\wayland-nano\\debug\\deps\\nano_memory-ecc1615d00868f90.exe)\n     Running tests\\durability.rs (F:\\CargoTarget\\wayland-nano\\debug\\deps\\durability-69b194cbe5c6cd39.exe)\n     Running tests\\retrieval_recall.rs (F:\\CargoTarget\\wayland-nano\\debug\\deps\\retrieval_recall-7f56cca056e2a3c4.exe)\n     Running tests\\write_mediation.rs (F:\\CargoTarget\\wayland-nano\\debug\\deps\\write_mediation-41ae8d7a0ea581d7.exe)\n   Doc-tests nano_memory\n"
+                     },
+                     {
+                         "id":  "nano_session",
+                         "argv":  [
+                                      "cargo",
+                                      "test",
+                                      "-p",
+                                      "nano-session"
+                                  ],
+                         "working_directory":  "D:\\Development\\waylandnano\\wayland-nano\\.tmp-wt-pmem1",
+                         "pre_command_sha":  "f602ee7dfb663a3d50cf36dd43cb172d5828b5cb",
+                         "exit_code":  0,
+                         "stdout":  "\nrunning 121 tests\ntest error_codes::tests::p4_pty_session_gone_is_pinned ... ok\ntest error_codes::tests::no_duplicate_wire_names ... ok\ntest error_codes::tests::all_kinds_count_is_pinned ... ok\ntest error_codes::tests::every_spec_is_internally_consistent ... ok\ntest error_codes::tests::mcp_transient_kinds_are_retryable_cards ... ok\ntest error_codes::tests::model_lacks_pdf_contract_is_pinned ... ok\ntest error_codes::tests::p3_wire_names_are_pinned ... ok\ntest error_codes::tests::p4_rule_kinds_are_pinned ... ok\ntest error_codes::tests::s3_session_busy_is_pinned ... ok\ntest error_codes::tests::s9_cua_kinds_are_pinned ... ok\ntest coordinator::tests::carry_is_none_without_hydration ... ok\ntest coordinator::tests::carry_captures_state_at_watermark ... ok\ntest coordinator::tests::carry_equals_replay_input_fold_under_prior_compaction ... ok\ntest coordinator::tests::carry_degrades_when_hydrated_union_exceeds_the_name_cap ... ok\ntest error_codes::tests::ts_rendering_is_deterministic_and_data_only ... ok\ntest error_codes::tests::json_artifact_matches_the_table ... ok\ntest error_codes::tests::unknown_kind_is_terminal ... ok\ntest error_kind::tests::unknown_kind_deserializes_to_the_unknown_variant ... ok\ntest error_kind::tests::wire_form_is_snake_case ... ok\ntest fork_tests::cron_lifecycle_folds_last_write_wins_and_imported_ops_are_suppressed ... ok\ntest attachment_store::tests::open_creates_the_layout_and_audits_it ... ok\ntest coordinator::tests::coordinator_serializes_appends_and_compaction_snapshot ... ok\ntest attachment_store::tests::unavailable_document_uses_attachment_missing_and_loud_placeholder ... ok\ntest attachment_store::tests::referenced_digests_cover_prompts_and_tool_results ... ok\ntest attachment_store::tests::malicious_digests_are_rejected_before_path_construction ... ok\ntest fork_tests::imported_cron_fired_never_touches_child_scheduler_state ... ok\ntest fork_tests::imported_region_overrun_is_typed_replay_error ... ok\ntest fork_tests::new_ops_round_trip_and_unknown_skips ... ok\ntest attachment_store::tests::weakened_dacl_fails_closed_at_open ... ok\ntest attachment_store::tests::put_read_roundtrip_and_content_dedup ... ok\ntest op::checkpoint_tests::checkpoint_ops_serialize_without_path_or_content_fields ... ok\ntest fork_tests::fork_under_held_lock_is_typed_busy ... ok\ntest op::checkpoint_tests::checkpoint_payload_bounds_are_pinned ... ok\ntest attachment_store::tests::missing_tampered_and_over_ceiling_blobs_fail_closed ... ok\ntest attachment_store::tests::sweep_grace_alone_protects_young_blobs ... ok\ntest op::document_ref_tests::document_ref_is_digest_only_closed_and_round_trips ... ok\ntest attachment_store::tests::sweep_skips_future_timestamps_and_sweeps_stale_staging ... ok\ntest op::document_ref_tests::document_ref_rejects_duplicate_known_fields_from_raw_json ... ok\ntest attachment_store::tests::sweep_skips_under_a_writer_lease ... ok\ntest op::document_ref_tests::document_ref_rejects_missing_required_fields_from_raw_json ... ok\ntest fork_tests::child_authored_op_ids_never_collide_with_imported ... ok\ntest attachment_store::tests::sweep_leaves_unknown_entries_and_keeps_young_staging ... ok\ntest lock::tests::session_browser_can_probe_the_exact_open_handle ... ok\ntest attachment_store::tests::sweep_never_deletes_referenced_blobs_even_past_grace ... ok\ntest lock::tests::second_acquire_is_typed_busy_until_release ... ok\ntest op::document_ref_tests::image_ref_wire_shape_is_unchanged ... ok\ntest lock::tests::shared_leases_coexist_and_block_exclusive ... ok\ntest op::op_vocabulary_tests::op_vocabulary_is_sorted_unique_exhaustive_and_matches_serde_tags ... ok\ntest fork_tests::goal_active_normalizes_to_paused_and_goal_less_fork_is_clean ... ok\ntest p3_tests::p3_bounds_validators_reject_over_cap_payloads ... ok\ntest fork_tests::fork_at_end_byte_identical_parent_and_child_identity ... ok\ntest fork_tests::fork_of_compacted_journal_replays_identically ... ok\ntest fork_tests::fork_with_active_goal_suppresses_control_ops_at_every_step ... ok\ntest p3_tests::p3_elicitation_bounds ... ok\ntest attachment_store::tests::document_reference_retains_blob_and_orphan_is_swept ... ok\ntest p3_tests::p3_elicitation_replay_is_audit_only ... ok\ntest p3_tests::p3_oauth_grant_replay_latest_wins ... ok\ntest fork_tests::fork_at_turn_truncates_at_turn_end ... ok\ntest attachment_store::tests::reparse_store_entries_are_rejected ... ok\ntest p3_tests::p3_ops_wire_shapes_pinned ... ok\ntest attachment_store::tests::swap_between_validate_and_open_fails_closed ... ok\ntest p3_tests::p3_payloads_carry_no_content ... ok\ntest p3_tests::p3_replay_carry_installs_then_later_ops_fold ... ok\ntest p3_tests::p3_replay_hydration_fold_and_window_cap ... ok\ntest p3_tests::p3_schema_version_stays_one ... ok\ntest p3_tests::p3_unknown_future_op_skips_on_replay ... ok\ntest reader::tail_tests::tail_read_fails_closed_when_the_journal_shrinks ... ok\ntest redaction::tests::hits_carry_no_payload ... ok\ntest reader::tail_tests::tail_read_reports_integrity_error_on_corrupt_terminated_line ... ok\ntest redaction::tests::corpus_negatives_all_pass ... ok\ntest redaction::tests::lookalikes_do_not_trip ... ok\ntest redaction::tests::corpus_positives_all_trip ... ok\ntest redaction::tests::oversized_input_fails_closed ... ok\ntest reader::tail_tests::tail_read_leaves_unterminated_final_line_unconsumed ... ok\ntest redaction::tests::redact_clears_every_corpus_positive ... ok\ntest redaction::tests::redact_leaves_corpus_negatives_byte_identical ... ok\ntest redaction::tests::redact_oversized_fails_closed ... ok\ntest redaction::tests::redact_pem_block_replaces_the_whole_span ... ok\ntest reader::tail_tests::tail_read_consumes_each_byte_once_and_matches_full_read ... ok\ntest replay::hook_tests::hook_decision_is_conversation_neutral_on_replay ... ok\ntest s9_tests::cua_fold_is_idempotent_on_duplicate_envelopes ... ok\ntest s9_tests::cua_ops_are_context_neutral_on_replay ... ok\ntest s9_tests::cua_ops_carry_no_raw_payload_fields ... ok\ntest s9_tests::cua_ops_round_trip_and_stay_byte_minimal ... ok\ntest s9_tests::cua_outcome_is_forward_tolerant ... ok\ntest s9_tests::pre_s9_journal_lines_round_trip_byte_identical ... ok\ntest s9_tests::s9_schema_version_stays_one ... ok\ntest s9_tests::unpaired_cua_action_marks_the_tail_interrupted ... ok\ntest tests::append_and_replay_round_trip ... ok\ntest tests::compaction_cancel_reason_is_bounded_and_back_compatible ... ok\ntest tests::compaction_replay_is_actionably_equivalent ... ok\ntest tests::crash_mid_turn_marks_interrupted_without_duplicate_effects ... ok\ntest tests::duplicate_ids_never_double_apply ... ok\ntest tests::malformed_middle_line_is_an_integrity_error ... ok\ntest tests::mode_set_from_a_newer_build_with_extra_fields_still_parses ... ok\ntest tests::mode_set_round_trips_and_is_context_neutral_on_replay ... ok\ntest tests::open_tool_call_survives_to_resume_surface ... ok\ntest tests::p1_economy::add_sum_merges_provenance ... ok\ntest tests::p1_economy::estimated_usage_carries_provenance_through_replay ... ok\ntest tests::p1_economy::p1_ops_round_trip_numbers_only ... ok\ntest tests::p1_economy::replay_dedupes_retried_rollup_append ... ok\ntest tests::p1_economy::replay_folds_usage_rollups_and_grants ... ok\ntest tests::p1_economy::turn_end_usage_is_serde_defaulted_and_round_trips ... ok\ntest tests::p1_economy::usage_source_is_forward_tolerant ... ok\ntest tests::p2a_image_influenced_serde_default_and_skip ... ok\ntest tests::p2a_input_block_wire_shape_pinned ... ok\ntest tests::p2a_new_journal_still_readable_via_projection ... ok\ntest tests::p2a_old_journal_turn_begin_round_trips_byte_identical ... ok\ntest tests::p2b_tool_result_image_refs_are_additive_optional_and_digest_only ... ok\ntest tests::plan_set_is_journaled_but_never_replayed_into_state ... ok\ntest tests::stranded_compaction_running_resets_to_idle ... ok\ntest tests::todo_set_replays_last_write_wins ... ok\ntest tests::todo_set_unknown_future_status_is_tolerated ... ok\ntest tests::torn_tail_is_dropped_and_middle_stays_authoritative ... ok\ntest tests::unknown_ops_are_skipped_without_failing_replay ... ok\ntest tests::p2a_op_never_denies_unknown_fields ... ok\ntest tests::writer_is_idempotent_across_reopen ... ok\ntest tests::writer_never_truncates_integrity_broken_middle ... ok\ntest tests::writer_open_truncation_removes_only_torn_bytes ... ok\ntest tests::writer_open_truncates_torn_tail_so_retry_stays_recoverable ... ok\ntest tests::writer_retry_of_committed_record_after_truncate_still_noops ... ok\n\ntest result: ok. 121 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s\n\n\nrunning 13 tests\ntest out_of_order_ops_fold_without_panic_into_safe_states ... ok\ntest p3_hostile_payloads_fold_without_panic ... ok\ntest p4_shell_rule_amended_round_trips_audit_only ... ok\ntest crafted_duplicate_ids_on_disk_first_wins_never_double_applies ... ok\ntest unknown_future_op_lines_survive_neighbor_tail_corruption ... ok\ntest interleaved_valid_corrupt_valid_is_always_an_integrity_error ... ok\ntest corrupted_final_line_is_dropped_never_partially_recovered ... ok\ntest truncation_at_every_offset_drops_partial_tail_and_keeps_prefix_exact ... ok\ntest writer_append_after_torn_tail_must_stay_recoverable ... ok\ntest writer_duplicate_id_with_different_payload_is_a_noop ... ok\ntest writer_on_middle_corrupt_journal_stays_fail_loud ... ok\ntest seeded_fuzz_1000_corruptions_never_panic_and_never_resurrect ... ok\ntest four_mib_garbage_append_is_a_torn_tail_not_fatal ... ok\n\ntest result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+                         "stderr":  "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s\n     Running unittests src\\lib.rs (F:\\CargoTarget\\wayland-nano\\debug\\deps\\nano_session-afd543e8f8c3d755.exe)\n     Running tests\\adversarial_journal.rs (F:\\CargoTarget\\wayland-nano\\debug\\deps\\adversarial_journal-45e700dc5a3d87a2.exe)\n   Doc-tests nano_session\n"
+                     },
+                     {
+                         "id":  "fmt",
+                         "argv":  [
+                                      "cargo",
+                                      "fmt",
+                                      "--all",
+                                      "--",
+                                      "--check"
+                                  ],
+                         "working_directory":  "D:\\Development\\waylandnano\\wayland-nano\\.tmp-wt-pmem1",
+                         "pre_command_sha":  "f602ee7dfb663a3d50cf36dd43cb172d5828b5cb",
+                         "exit_code":  0,
+                         "stdout":  "",
+                         "stderr":  ""
+                     },
+                     {
+                         "id":  "clippy",
+                         "argv":  [
+                                      "cargo",
+                                      "clippy",
+                                      "-p",
+                                      "nano-memory",
+                                      "-p",
+                                      "nano-session",
+                                      "--all-targets",
+                                      "--",
+                                      "-D",
+                                      "warnings"
+                                  ],
+                         "working_directory":  "D:\\Development\\waylandnano\\wayland-nano\\.tmp-wt-pmem1",
+                         "pre_command_sha":  "f602ee7dfb663a3d50cf36dd43cb172d5828b5cb",
+                         "exit_code":  0,
+                         "stdout":  "",
+                         "stderr":  "    Checking nano-session v0.2.0 (D:\\Development\\waylandnano\\wayland-nano\\.tmp-wt-pmem1\\crates\\nano-session)\n    Checking nano-memory v0.2.0 (D:\\Development\\waylandnano\\wayland-nano\\.tmp-wt-pmem1\\crates\\nano-memory)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.63s\n"
+                     }
+                 ],
+    "metrics":  {
+                    "recall_at_10":  1,
+                    "cross_project_rows":  0,
+                    "cross_agent_rows":  0,
+                    "kill_rebuild_query_equivalent":  true,
+                    "kill_rebuild_includes_agent_id":  true,
+                    "mediation_receipt_visible":  true
+                }
+}
