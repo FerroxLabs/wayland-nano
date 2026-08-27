@@ -1,58 +1,47 @@
 ---
 ferrox_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-current_phase: 7
-current_phase_name: WP-4 Gate Cards and Dogfood
-status: complete
-last_updated: "2026-08-22T20:15:00.000Z"
-last_activity: 2026-08-22
-last_activity_desc: Phase 7 complete; WP-4 promoted with exact-SHA seven-job CI green; autonomous execution stops
+milestone: v1.1
+milestone_name: Persistent Agent Program
+current_phase: 1
+current_phase_name: Foundation Acceptance
+status: awaiting_human_review
+last_updated: "2026-08-27T06:11:47.911Z"
+last_activity: 2026-08-27
+last_activity_desc: v1.1 roadmap installed; signed contract confirmed; PR #8 review, merge, and fresh-checkout evidence are next
 progress:
-  total_phases: 7
-  completed_phases: 7
-  total_plans: 36
-  completed_plans: 36
-stopped_at: WP-4 promoted and CI-proven; program handed to owner per stop boundary
+  total_phases: 13
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
+stopped_at: Awaiting human review/merge of open PR #8 and fresh-checkout evidence
 ---
 
 # Project State
 
 ## Current Position
 
-Phase: 7 — WP-4 Gate Cards and Dogfood
-Plan: Complete
-Status: Complete
-Last activity: 2026-08-22 — WP-4 promoted; exact-SHA seven-job CI green; program stops after WP-4
+Phase: 1 — Foundation Acceptance
+Plan: Not created
+Status: Awaiting human review
+Last activity: 2026-08-27 — New v1.1 milestone roadmap installed with no implementation plans
 
-Progress: [██████████] 100%
+Progress: [----------] 0%
 
 ## Performance Metrics
 
-**Velocity:**
+**Current milestone velocity:**
 
-- Total plans completed: 36
-- Average duration: 0 min
-- Total execution time: 0.0 hours
+- Plans completed: 0
+- Average duration: -
+- Execution time: 0.0 hours
 
-**By Phase:**
+**Current milestone phases:**
 
 | Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 1 | 3 | - | - |
-| 2 | 6 | - | - |
-| 3 | 13 | - | - |
-| 4 | 9 | - | - |
-| 5 | 5 | - | - |
+|---:|---:|---:|---:|
+| 1–13 | 0 | - | - |
 
-**Recent Trend:**
+**Recent trend:** Not started
 
-- Last 5 plans: -
-- Trend: Stable
-
-*Updated after each plan completion*
-**Per-Plan Metrics:**
-
-| Plan | Duration | Tasks | Files |
-|------|----------|-------|-------|
-| Phase 04 P01 | 8 | 2 tasks | 8 files |
+**Historical note:** v1.0 contains 55 completed plan/summary pairs across seven archived phases under `docs/planning-archive/v1.0-phases/`; those counters are not included in v1.1 progress.

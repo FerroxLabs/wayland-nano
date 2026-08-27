@@ -1,0 +1,40 @@
+{
+  "source_path": "D:/Development/waylandnano/wayland-nano/.tmp-wt-agent-program-plan/.planning/sources/NANO-PROGRAM-PLAN.md",
+  "type": "PRD",
+  "confidence": "high",
+  "manifest_override": true,
+  "title": "NANO-PROGRAM-PLAN.md — the memory + persistent-agents master build plan",
+  "summary": "Defines governed work packages, dependencies, acceptance evidence, tripwires, owner decisions, and anti-scope for Nano memory and persistent-agent capabilities.",
+  "scope": [
+    "nano-memory",
+    "memory security",
+    "profiles",
+    "module manifests",
+    "named agents",
+    "persistent agents",
+    "proactive routines",
+    "browser containers",
+    "desktop containers",
+    "memory consolidation",
+    "procedure extraction",
+    "code-structure index",
+    "blast radius",
+    "knowledge-graph retrieval",
+    "cross-project reads"
+  ],
+  "cross_refs": [
+    "WP6-DECISION-GATE.md",
+    "specs/MEMORY-CONTRACT.md",
+    "PROFILES-CONTRACT v1.0",
+    "NANO-MODULE-CONTRACT v1.0",
+    "MEMO-multi-bot-memory.md",
+    "bots/MEMO-graph-engineering.md",
+    "bots/DESIGN-persistent-subagents.md",
+    "bots/MEMO-grokbot-hermes-bots.md",
+    "bots/MEMO-openbot-openmausbot.md",
+    "fork.rs"
+  ],
+  "locked": false,
+  "precedence": 3,
+  "notes": ""
+}

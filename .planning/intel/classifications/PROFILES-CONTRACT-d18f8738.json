@@ -1,0 +1,23 @@
+{
+  "source_path": "D:/Development/waylandnano/wayland-nano/.tmp-wt-agent-program-plan/.planning/sources/PROFILES-CONTRACT.md",
+  "type": "SPEC",
+  "confidence": "high",
+  "manifest_override": true,
+  "title": "PROFILES-CONTRACT.md — the P-PROF interface freeze (2026-08-20)",
+  "summary": "Defines the P-PROF profile schema, merge semantics, selection, journaling, trust constraints, shipped profiles, ownership, and acceptance requirements.",
+  "scope": [
+    "P-PROF",
+    "profiles",
+    "profile resolution",
+    "permission posture",
+    "Op::ProfileSet",
+    "workspace trust"
+  ],
+  "cross_refs": [
+    "research-0.2/MEMO-profiles.md",
+    "MEMORY-CONTRACT §5"
+  ],
+  "locked": false,
+  "precedence": 1,
+  "notes": ""
+}

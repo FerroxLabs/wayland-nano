@@ -1,118 +1,82 @@
-# Wayland Nano Verified Change
-
-## Authority
-
-This file is a Ferrox navigation projection. It does not replace the program
-documents. The single entry point is
-`../shared/reviews/research-0.2/NANO-BUILD-PLAN-V3.md`. Its standing execution
-rules are binding. For WP-1 through WP-4, the authority order is:
-
-1. `../shared/reviews/research-0.2/specs/SPEC-WP-INTERFACES.md`
-2. The work-package spec referenced by the master document
-3. `../shared/reviews/research-0.2/NANO-BUILD-PLAN-V3.md`
-4. `../shared/reviews/research-0.2/GOALS.md`
-
-Any contradiction is resolved by the higher authority. A boundary conflict
-stops that sub-task and produces the required deviation note; it never licenses
-an improvised workaround.
-
-## What This Is
-
-Wayland Nano is a small native Rust execution runtime whose current product
-program turns its proof discipline into `wayland-nano verify`: executable gates
-that reject fluent-but-wrong agent changes plus independently rerunnable
-red-green receipts. The customer is an engineering organization allowing agents
-to modify real repositories and needing an enforceable merge condition.
+# Wayland Nano
 
 ## Core Value
 
-A change earns trust only through independently rerunnable machine evidence;
-model confidence and self-report never substitute for a green gate.
+A change earns trust only through independently rerunnable machine evidence; model confidence and self-report never substitute for a green gate.
 
-## Business Context
+## Validated Foundation
 
-- **Customer**: Engineering teams allowing coding agents to change real repositories.
-- **Success metric**: At least two external teams voluntarily require the Wayland receipt as a merge condition.
-- **Strategy notes**: `../shared/reviews/research-0.2/NANO-FINAL-PLAN-V2.md`
+- Native cross-platform Rust runtime with fail-closed containment, typed policy seams, append-only journals, and provider-neutral execution.
+- Attested multi-target release pipeline consumed by Wayland Desktop.
+- `just gate-all`, generated-artifact drift checks, `wayland-nano verify`, red-green receipts, gated climb, and sealed Gate Card dogfood were completed in archived milestone v1.0.
+- The old seven phase directories and their evidence are archived under `docs/planning-archive/v1.0-phases/`; they are outside Ferrox's active `.planning/` discovery tree and cannot contaminate v1.1 progress.
 
-## Requirements
+## Current Milestone: v1.1 Persistent Agent Program
 
-### Validated
+**Goal:** A named Wayland Nano agent can be configured and safely activated repeatedly with memory-primary continuity, project- and agent-scoped accumulation, bounded proactive routines/escalations, and hardened browser and desktop execution backends. Every promoted phase has executable acceptance evidence and seven-leg CI green.
 
-- ✓ Native Rust runtime, fail-closed containment, typed policy seams, append-only session journal, and provider-neutral execution loop — existing v0.1.1 product.
-- ✓ Attested multi-target release pipeline consumed by Wayland Desktop — existing v0.1.1 release.
-- ✓ Full workspace quality gate: `just gate-all` — formatting, clippy with warnings denied, workspace tests, and generated-artifact drift checks — existing repository contract.
+**Target features:**
 
-### Active
+- Safe memory/profile/module composition substrate
+- Named agents with never-recycled identity and receipt-bound modules
+- One shared memory-primary runtime bootstrap across interactive hosts
+- Bounded routines, escalation, retry, and pause controls
+- Hardened browser and desktop execution behind one backend seam
+- Mediated compaction and procedure extraction
+- Measured code structure, blast-radius suggestions, and gated KG retrieval
+- Explicit host-authorized cross-project reads built last
 
-- [ ] Complete Phase 0 hardening: WP-0.2, WP-0.3, and WP-0.4.
-- [ ] Build the gate runner and red-green receipt foundation in WP-1.
-- [ ] Build the budgeted gated-climb engine in WP-2.
-- [ ] Build the `wayland-nano verify` CLI, CI consumer, and offline verifier in WP-3.
-- [ ] Build and dogfood the three sealed Gate Card packs in WP-4.
-- [ ] Produce canary-clean, reproducible evidence for every promoted claim.
+## Authority
 
-### Owner-Led / External Gates
+This file is a Ferrox navigation projection, not a replacement for the governing sources. Precedence for v1.1 is:
 
-- WP-0.1 is an interactive host-run proof requiring the owner's Windows desktop and manual 100%/150% display scaling.
-- WP-5 partner demo/onboarding and WP-6 adoption decision are owner-led and are not autonomous build phases.
+1. `.planning/sources/MEMORY-CONTRACT.md` v1.2 for memory, identity, persona, activation, and security semantics
+2. `.planning/sources/NANO-PROGRAM-PLAN.md` for owner decisions, package scope, evidence, dependencies, and tripwires
+3. `.planning/sources/PROFILES-CONTRACT.md` and `.planning/sources/NANO-MODULE-CONTRACT.md`, narrowed by the higher authorities
+4. The active `.planning/` navigation artifacts
 
-### Out of Scope
+MEMORY-CONTRACT v1.2 is owner-signed as of 2026-08-25. Any conflict stops execution and corrects the projection.
 
-- WP-5 and WP-6 execution — stop after WP-4 and hand control to the owner.
-- P-MEM, P-PROF, P-MOD, MCP server mode, self-evolution, and subscription bridging — frozen until WP-6 succeeds.
-- Writes to `../nano/` or `../resources/upstreams/` — immutable/read-only boundaries.
-- Speculative features, drive-by refactors, dependency upgrades, unrelated cleanup, and sidequests — every changed line must trace to the active WP.
+## Current Foundation Gate
 
-## Execution Model
+- WP-0 mechanical CODEOWNERS protection and P-MEM-1 are implemented on open PR #8 (`feat/p-mem-1-core`). Reported evidence is recall@10 1.000, zero partition leakage, kill recovery, mediated writes, and seven green CI legs.
+- PR #8 is not merged. Phase 1 awaits only human review, merge, and fresh-checkout evidence.
 
-- Execute one WP promotion at a time in the master document's dependency order.
-- Before every WP, fetch and resolve current `origin/master`, record its exact SHA,
-  and create a clean dedicated worktree and canonical branch `feat/wp-<id>` at
-  that SHA. The historical `466f030` plan baseline is provenance, not a frozen
-  execution base; stale `.tmp-wt-*` worktrees are never source truth.
-- Use parallel subagent swarms only for independent research, planning, audits,
-  verification, or explicitly disjoint owned files.
-- Serialize edits to hot seams including `acp_mode.rs`, `crates/nano-verify/**`,
-  generated artifacts, and integration state.
-- Give every builder explicit file ownership and an isolated worktree. Builders
-  never merge or push.
-- Ferrox `git.branching_strategy` remains `none` intentionally: the integrator creates
-  each canonical `feat/wp-<id>` branch and worktree manually at the recorded
-  `origin/master` SHA because generic Ferrox phase branches do not satisfy the WP card.
-- Per WP: implement within OWNS/NEVER-TOUCH, run one Critical/High audit, one fix
-  round, fix verification, and the complete local `just gate-all` gate, including
-  `gate-gen-check`.
-- Integrate one branch at a time through detached `.tmp-wt-integ` using
-  `--no-ff`; re-run `just gate-all`, push `HEAD:master`, and require CI green before
-  promoting the next dependency.
-- Report one line per WP: WP, commits, local/integration gate, and CI result.
+## Locked Decisions
 
-## Constraints
+| Decision | Locked outcome |
+|---|---|
+| Contract precedence | MEMORY-CONTRACT v1.2 governs memory, persona, identity, and activation over lower sources. |
+| Continuity | All interactive and routine activations are memory-primary: fresh context plus scoped recall; journals are audit/fallback only. |
+| Agent identity | IDs are never recycled; retired IDs remain tombstoned and reuse is a typed error. |
+| Build versus activation | Packages are built thin and measured; weak evidence may keep a capability dark but never erases the package. |
+| Execution | Browser and desktop containers ship behind one `host | browser-container | desktop-container` seam. |
+| Procedure learning | Learn-from-doing is mediated procedure extraction, never automatic execution. |
+| Blast radius | Suggested heuristic labeled with measured confidence, never asserted fact. |
+| Cross-project reads | Explicit host-authorized per-query opt-in, promoted last; no sticky Global or cross-agent widening. |
 
-- **Security**: Fail closed; never weaken a security invariant or test to pass.
-- **Secrets**: The Flux key is path-only at `../.secrets/flux-test-key`; never read, echo, copy, or embed it. Canary-scan captured evidence.
-- **Generated artifacts**: Regenerate error tables with `cargo run -p nano-cli --bin gen_error_table`; never hand-edit them or change their mirror without regeneration.
-- **Dependencies**: No new dependency without a cargo-deny-clean justification.
-- **Evidence**: Keep Implemented, Reachable, and Live-proven claims separate.
-- **Platform gate**: Three Windows `SetNamedSecurityInfoW` ACL failures may be environmental; report them and never weaken or chase the tests.
-- **Baseline truth**: Build from current `origin/master`; stale `.tmp-wt-*` worktrees are never source truth.
+## Dependency DAG and Promotion Policy
 
-## Key Decisions
+Hard dependencies determine technical eligibility. The numbered roadmap is the owner/user's one-active-goal promotion policy and does not invent extra dependencies.
 
-| Decision | Rationale | Outcome |
-|----------|-----------|---------|
-| Lead with verified change rather than memory | Trust and production accountability are the wedge; adoption must earn the broader roadmap | — Pending WP-6 |
-| Canonical interface contract wins | Prevents independently authored WP surfaces from drifting | — Binding |
-| Parallelize analysis, serialize hot seams and promotion | Gains swarm speed without semantic merge guesses or branch chaos | — Binding |
-| Stop autonomous execution after WP-4 | Demo partnerships and the adoption decision require owner leadership | — Binding |
+- P-MEM-SEC and P-PROF require P-MEM-1; P-MOD-GAP requires WP-0.
+- P-BOT-5a requires P-PROF and P-MOD-GAP; P-BOT-5b requires P-BOT-5a and P-MEM-1; P-BOT-5c requires P-BOT-5b.
+- P-EXE-1 is eligible after P-BOT-5a; P-EXE-2 requires P-EXE-1.
+- P-CONS and P-PROC are eligible after P-MEM-1.
+- P-GRAPH-1 is eligible after WP-0; P-GRAPH-2 requires P-GRAPH-1; P-MEM-KG requires P-MEM-1, the extended fixture, and graph-lane ordering after P-GRAPH-2.
+- P-XPROJ requires P-MEM-1 and P-MEM-SEC and is promoted last.
 
-## Evolution
+## Execution Discipline
 
-This projection changes only when the authoritative program changes. Phase
-completion may update requirement status and evidence pointers but may not add
-scope. New capabilities require an explicit master-plan amendment before they
-enter the roadmap.
+- One active phase goal, isolated worktree/branch, and promotion PR at a time; internal parallel waves only where the roadmap explicitly permits them.
+- Carry forward no-side-quests, three-strikes, tripwire, secrets, human-review, and handoff-on-stop discipline.
+- Never self-merge or push tags. `gates/**` and `agents/**` changes require human review.
+- Touched-crate fmt, Clippy, and tests pass locally; promoted work requires all seven CI legs including Windows ARM64.
+- Never read or print `.secrets`; Flux tests use only `FLUX_API_KEY_FILE` and self-skip when absent.
+
+## Product Boundary and Out of Scope
+
+Nano remains the existing Rust engine driven through ACP/TUI/Desktop/config. Desktop owns roster UI, group chats, creation flows, and marketplace UX. Excluded: replacement architecture, hosted memory/embeddings, runtime plugin ABI, hidden installers, registry-governance design, webhook platform, teach-by-demonstration, procedure auto-execution, remote/cloud backends, new policy language, dynamic-language blast radius, LSP/SCIP, community detection, LLM entity resolution, cross-agent reads, sticky Global scope, unrelated cleanup, and dependency upgrades.
 
 ---
-*Last updated: 2026-08-16 after WP-0.4 promotion and six-job CI verification*
+*Milestone v1.1 installed 2026-08-27; v1.0 history retained in the milestone archive.*
