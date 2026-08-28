@@ -22,6 +22,8 @@ pub enum MemoryError {
     NetworkFilesystem,
     #[error("memory writer contention: {0}")]
     Contention(String),
+    #[error("unsupported memory policy: {0}")]
+    UnsupportedPolicy(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,7 +98,7 @@ impl AgentScope {
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReadScope {
     Session,
     SessionAndProject,
@@ -113,22 +115,22 @@ impl ReadScope {
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WriteScope {
     Off,
     SessionOnly,
     SessionAndProject,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EmbedderChoice {
     HashedLocal,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeletionRule {
     Never,
     HardDelete,
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RetentionCaps {
     pub episodes: u64,
     pub facts: u64,
@@ -143,7 +145,7 @@ impl Default for RetentionCaps {
         }
     }
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryPolicy {
     pub enabled: bool,
     pub write: WriteScope,
@@ -152,6 +154,9 @@ pub struct MemoryPolicy {
     pub embedding_backend: EmbedderChoice,
     pub deletion: DeletionRule,
     pub min_tier: SourceTrust,
+    /// Required context for narrowed session-only reads or writes. It is
+    /// journaled with the resolved policy and never inferred from a path.
+    pub session_id: Option<String>,
 }
 impl Default for MemoryPolicy {
     fn default() -> Self {
@@ -163,6 +168,7 @@ impl Default for MemoryPolicy {
             embedding_backend: EmbedderChoice::HashedLocal,
             deletion: DeletionRule::Never,
             min_tier: SourceTrust::ModelInference,
+            session_id: None,
         }
     }
 }
@@ -269,12 +275,145 @@ pub struct FactState {
 }
 
 pub(crate) fn reject_network_path(path: &std::path::Path) -> MemoryResult<()> {
-    let text = path.to_string_lossy();
-    if text.starts_with("\\\\") || text.starts_with("//") {
+    platform_reject_network_path(path)
+}
+
+fn existing_canonical_ancestor(path: &std::path::Path) -> MemoryResult<std::path::PathBuf> {
+    let mut candidate = path;
+    while !candidate.exists() {
+        candidate = candidate.parent().ok_or(MemoryError::NetworkFilesystem)?;
+    }
+    candidate
+        .canonicalize()
+        .map_err(|_| MemoryError::NetworkFilesystem)
+}
+
+#[cfg(windows)]
+fn platform_reject_network_path(path: &std::path::Path) -> MemoryResult<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumePathNameW};
+
+    let canonical = existing_canonical_ancestor(path)?;
+    let input: Vec<u16> = canonical.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut root = vec![0u16; 32_768];
+    // Resolving the existing ancestor first prevents a local-looking reparse point
+    // from hiding a UNC target. GetVolumePathNameW also handles extended UNC paths.
+    if unsafe { GetVolumePathNameW(input.as_ptr(), root.as_mut_ptr(), root.len() as u32) } == 0 {
         return Err(MemoryError::NetworkFilesystem);
     }
-    Ok(())
+    let drive_type = unsafe { GetDriveTypeW(root.as_ptr()) };
+    // WinBase.h constants; windows-sys 0.52 does not expose them in this feature set.
+    if matches!(drive_type, 3 | 6) {
+        Ok(())
+    } else {
+        Err(MemoryError::NetworkFilesystem)
+    }
 }
+
+#[cfg(target_os = "linux")]
+fn platform_reject_network_path(path: &std::path::Path) -> MemoryResult<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let canonical = existing_canonical_ancestor(path)?;
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")
+        .map_err(|_| MemoryError::NetworkFilesystem)?;
+    let mut best: Option<(usize, &str)> = None;
+    for line in mountinfo.lines() {
+        let (left, right) = line
+            .split_once(" - ")
+            .ok_or(MemoryError::NetworkFilesystem)?;
+        let fields = left.split_whitespace().collect::<Vec<_>>();
+        let fs_fields = right.split_whitespace().collect::<Vec<_>>();
+        if fields.len() < 5 || fs_fields.is_empty() {
+            return Err(MemoryError::NetworkFilesystem);
+        }
+        let mount = unescape_mountinfo(fields[4]);
+        let mount_path = std::path::Path::new(std::ffi::OsStr::from_bytes(&mount));
+        if canonical.starts_with(mount_path)
+            && best.as_ref().is_none_or(|(len, _)| mount.len() > *len)
+        {
+            best = Some((mount.len(), fs_fields[0]));
+        }
+    }
+    let (_, fs_type) = best.ok_or(MemoryError::NetworkFilesystem)?;
+    if is_network_fs(fs_type) {
+        Err(MemoryError::NetworkFilesystem)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn unescape_mountinfo(value: &str) -> Vec<u8> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\'
+            && i + 3 < bytes.len()
+            && bytes[i + 1..i + 4].iter().all(u8::is_ascii_digit)
+        {
+            let octal =
+                (bytes[i + 1] - b'0') * 64 + (bytes[i + 2] - b'0') * 8 + bytes[i + 3] - b'0';
+            out.push(octal);
+            i += 4;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn platform_reject_network_path(path: &std::path::Path) -> MemoryResult<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let canonical = existing_canonical_ancestor(path)?;
+    let c_path = CString::new(canonical.as_os_str().as_bytes())
+        .map_err(|_| MemoryError::NetworkFilesystem)?;
+    let mut info = std::mem::MaybeUninit::<libc::statfs>::zeroed();
+    if unsafe { libc::statfs(c_path.as_ptr(), info.as_mut_ptr()) } != 0 {
+        return Err(MemoryError::NetworkFilesystem);
+    }
+    let info = unsafe { info.assume_init() };
+    let raw = info.f_fstypename;
+    let len = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
+    let bytes = raw[..len].iter().map(|&c| c as u8).collect::<Vec<_>>();
+    let fs_type = std::str::from_utf8(&bytes).map_err(|_| MemoryError::NetworkFilesystem)?;
+    if is_network_fs(fs_type) {
+        Err(MemoryError::NetworkFilesystem)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn is_network_fs(fs_type: &str) -> bool {
+    matches!(
+        fs_type.to_ascii_lowercase().as_str(),
+        "9p" | "afs"
+            | "cifs"
+            | "davfs"
+            | "fuse.sshfs"
+            | "gcsfuse"
+            | "lustre"
+            | "ncpfs"
+            | "nfs"
+            | "nfs4"
+            | "smbfs"
+            | "sshfs"
+            | "ceph"
+            | "glusterfs"
+    )
+}
+
+#[cfg(not(any(unix, windows)))]
+fn platform_reject_network_path(_path: &std::path::Path) -> MemoryResult<()> {
+    Err(MemoryError::NetworkFilesystem)
+}
+
 pub(crate) fn memory_db_path(home: &std::path::Path) -> std::path::PathBuf {
     home.join("memory").join("memory.db")
 }

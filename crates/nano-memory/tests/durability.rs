@@ -185,6 +185,7 @@ fn rebuild_ignores_unreceipted_model_write() {
                 source_trust: "ModelInference".into(),
                 project: "p".into(),
                 agent_id: "main".into(),
+                session_id: None,
                 resolver_outcome: "coexist".into(),
             },
         ))
