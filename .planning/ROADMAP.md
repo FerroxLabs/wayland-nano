@@ -50,15 +50,48 @@ Plans:
 **Requirements**: REQ-ACT-01, REQ-POL-01
 **Success Criteria** (what must be TRUE):
 
-1. The versioned carrier contains principal/project, optional audit product ref, activation/session/idempotency, continuity, capabilities, budgets/deadline, replay protection, and a resume fingerprint limited to policy/tool/persona/module refs required to detect unsafe resume drift.
+1. The versioned carrier contains mandatory signed opaque `product_subject_id`, principal/project, activation/session/idempotency, continuity, capabilities, budgets/deadline, replay protection, and a resume fingerprint limited to policy/tool/persona/module refs required to detect unsafe resume drift.
 2. Nano verifies issuer, freshness/replay and local ceilings; canonical activation/control receipts have frozen vocabulary, correlation fields and offline verification.
 3. Tamper, downgrade, replay, revoked issuer, remap, substitution, widening, unauthorized cancel/pause, and cancel/complete races follow pinned ordering and typed receipts; fingerprint drift fails closed or explicitly falls back to a fresh activation.
 4. Direct CLI uses a locally enrolled issuer and explicit `main` compatibility principal under the same trust/identity rules; both Desktop ACP stacks (`AcpConnection` and `AcpRuntime`/`AcpSession`) converge through one shared Nano admission gate and the exact-artifact fixture covers both.
 5. Before authenticated persistence can be enabled, negative gates prove every unauthenticated filesystem/T2-memory route and Nano cron/routine firing or model-visible scheduler surface is quarantined; existing jobs cannot auto-fire or auto-migrate, while legacy journal vocabulary remains replay-readable.
 
 **Acceptance evidence**: Fixture/schema vectors, positive receipt, negative matrix, exact-artifact cross-repo run and both CI systems.
-**Anti-scope / tripwire**: Stop, hand off, and replan if descriptor, receipts, or enrollment cannot land as bounded subdeliverables or grow a product registry, scheduler, unused composition framework, policy language, or Desktop edits here.
-**Plans**: TBD
+**Anti-scope / tripwire**: Desktop edits are authorized only in the exact Phase 2 Desktop worktree and owned Phase 2 paths. Stop, hand off, and replan on any primary/unowned Desktop edit, product-control-plane expansion, registry/scheduler/UI/provider work, unused composition framework, generalized policy language, or Phase 3 memory wiring.
+**Plans**: 15 plans
+**Progress**: 15 plans authored and validated; 0 executed; Phase 2 is planned, not complete.
+
+Plans:
+
+**Wave 0 — exact implementation worktrees**
+
+- [ ] 02-11-PLAN.md — Freeze the post-PR9 Nano worktree/base and owner-authorized Desktop lane/worktree/base.
+
+**Wave 1 — frozen Nano contracts**
+
+- [ ] 02-01-PLAN.md — Freeze raw-byte schemas/JCS/crypto/receipt/error vectors and trusted crate shell.
+
+**Wave 2 — package decision and Nano authority**
+
+- [ ] 02-02-PLAN.md — Review and approve the exact Desktop JCS package without installing it.
+
+- [ ] 02-03-PLAN.md — Build journal-first immutable authority and administrator lifecycle.
+
+**Waves 3–8 — Nano first**
+- [ ] 02-04-PLAN.md — Build admission, policy intersection, replay/effects, controls and offline receipts.
+- [ ] 02-13-PLAN.md — Bind compiled artifact/default-off enablement and actual tool/effect dispatch lifecycle.
+- [ ] 02-14-PLAN.md — Close MCP and child-task effect-dispatch bypasses with downward authority.
+- [ ] 02-05-PLAN.md — Gate raw ACP and direct CLI before all persistent session work.
+- [ ] 02-06-PLAN.md — Quarantine filesystem/T2 memory, Nano cron, hooks and legacy bypasses.
+- [ ] 02-07-PLAN.md — Run Nano gates, protected review/merge and freeze source+lock identity.
+
+**Waves 9–13 — Desktop second and independent closure**
+
+- [ ] 02-08-PLAN.md — Build the one Desktop signer, explicit binding and strict key custody in its authorized worktree.
+- [ ] 02-09-PLAN.md — Resolve the explicit binding and thread the shared producer through the legacy ACP stack.
+- [ ] 02-15-PLAN.md — Thread the resolved producer through the newer AcpRuntime/AcpSession chain and final SDK frames.
+- [ ] 02-10-PLAN.md — Run exact-binary dual-stack/CLI E2E and negative/crash matrix, then merge Desktop second through disclosed governance.
+- [ ] 02-12-PLAN.md — Dispatch an independent Ferrox verifier and update ledgers only on PASS.
 
 ### Phase 3: Runtime-Integrated Scoped Continuity
 
@@ -124,6 +157,6 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |---|---:|---|---|
 | 1. Ownership Contract and Foundation | 4/4 | Complete | 2026-08-29 |
-| 2. Minimal Authenticated Activation | 0/TBD | Not started | - |
+| 2. Minimal Authenticated Activation | 0/15 | Planned | - |
 | 3. Runtime-Integrated Scoped Continuity | 0/TBD | Not started | - |
 | 4. Bounded Trigger and Immediate Dogfood | 0/TBD | Not started | - |
