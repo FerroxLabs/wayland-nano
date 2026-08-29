@@ -47,7 +47,7 @@ impl AuthorityStore {
         })
     }
 
-    pub fn bootstrap_for_test(
+    pub(crate) fn bootstrap_initial(
         nano_home: &Path,
         snapshot: AuthoritySnapshot,
     ) -> Result<Self, AuthorityError> {

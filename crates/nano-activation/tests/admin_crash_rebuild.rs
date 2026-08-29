@@ -1,14 +1,28 @@
 use nano_activation::authority::{AuthorityCommand, AuthorityError, AuthoritySnapshot, KeyRole};
+use nano_activation::journal::AuthorityRecord;
 use nano_activation::store::AuthorityStore;
 
 fn snapshot() -> AuthoritySnapshot {
     AuthoritySnapshot::empty("root-1", [7; 32])
 }
 
+fn bootstrapped(home: &std::path::Path, snapshot: AuthoritySnapshot) -> AuthorityStore {
+    let activation = home.join("activation");
+    std::fs::create_dir_all(&activation).unwrap();
+    let mut bytes = serde_jcs::to_vec(&AuthorityRecord::Bootstrap {
+        sequence: 1,
+        snapshot,
+    })
+    .unwrap();
+    bytes.push(b'\n');
+    std::fs::write(activation.join("authority.jsonl"), bytes).unwrap();
+    AuthorityStore::open(home).unwrap()
+}
+
 #[test]
 fn journal_rebuild_preserves_immutable_authority_and_revocation() {
     let home = tempfile::tempdir().unwrap();
-    let mut store = AuthorityStore::bootstrap_for_test(home.path(), snapshot()).unwrap();
+    let mut store = bootstrapped(home.path(), snapshot());
     store
         .commit(AuthorityCommand::EnrollIssuer {
             operation_id: "op-enroll".into(),
@@ -77,7 +91,7 @@ fn journal_rebuild_preserves_immutable_authority_and_revocation() {
 #[test]
 fn immutable_bindings_retirement_and_conflicting_duplicates_fail_closed() {
     let home = tempfile::tempdir().unwrap();
-    let mut store = AuthorityStore::bootstrap_for_test(home.path(), snapshot()).unwrap();
+    let mut store = bootstrapped(home.path(), snapshot());
     let enroll = AuthorityCommand::EnrollIssuer {
         operation_id: "op-1".into(),
         issuer_id: "desktop".into(),
@@ -132,7 +146,7 @@ fn immutable_bindings_retirement_and_conflicting_duplicates_fail_closed() {
 #[test]
 fn nonce_uniqueness_and_projection_failure_are_journal_authoritative() {
     let home = tempfile::tempdir().unwrap();
-    let mut store = AuthorityStore::bootstrap_for_test(home.path(), snapshot()).unwrap();
+    let mut store = bootstrapped(home.path(), snapshot());
     store
         .consume_nonce("nonce-1", "tuple-a", 4_102_444_800)
         .unwrap();
@@ -157,7 +171,7 @@ fn nonce_uniqueness_and_projection_failure_are_journal_authoritative() {
 #[test]
 fn lock_excludes_concurrent_writer() {
     let home = tempfile::tempdir().unwrap();
-    let store = AuthorityStore::bootstrap_for_test(home.path(), snapshot()).unwrap();
+    let store = bootstrapped(home.path(), snapshot());
     assert!(matches!(
         AuthorityStore::open(home.path()),
         Err(AuthorityError::Contention)
@@ -169,7 +183,7 @@ fn lock_excludes_concurrent_writer() {
 #[test]
 fn journal_flush_before_projection_rebuilds_after_injected_abort() {
     let home = tempfile::tempdir().unwrap();
-    let mut store = AuthorityStore::bootstrap_for_test(home.path(), snapshot()).unwrap();
+    let mut store = bootstrapped(home.path(), snapshot());
     let command = AuthorityCommand::EnrollIssuer {
         operation_id: "crash-op".into(),
         issuer_id: "desktop".into(),

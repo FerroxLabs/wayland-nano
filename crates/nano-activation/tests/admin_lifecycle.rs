@@ -4,6 +4,7 @@ use nano_activation::admin::{
     AdminError, BootstrapError, BootstrapRequest, apply_signed_admin, bootstrap,
 };
 use nano_activation::authority::{AuthorityCommand, AuthoritySnapshot, KeyRole};
+use nano_activation::journal::AuthorityRecord;
 use nano_activation::key_provider::{KeyProviderError, load_key_reference};
 use nano_activation::store::AuthorityStore;
 use serde_json::json;
@@ -86,12 +87,18 @@ fn signed_admin_lifecycle_checks_epoch_digests_nonce_and_root_recovery() {
     let home = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[3; 32]);
     let recovery = SigningKey::from_bytes(&[6; 32]);
-    let mut store = AuthorityStore::bootstrap_for_test(
-        home.path(),
-        AuthoritySnapshot::empty("root-1", root.verifying_key().to_bytes())
-            .with_recovery_key(recovery.verifying_key().to_bytes()),
-    )
+    let snapshot = AuthoritySnapshot::empty("root-1", root.verifying_key().to_bytes())
+        .with_recovery_key(recovery.verifying_key().to_bytes());
+    let activation = home.path().join("activation");
+    std::fs::create_dir_all(&activation).unwrap();
+    let mut bytes = serde_jcs::to_vec(&AuthorityRecord::Bootstrap {
+        sequence: 1,
+        snapshot,
+    })
     .unwrap();
+    bytes.push(b'\n');
+    std::fs::write(activation.join("authority.jsonl"), bytes).unwrap();
+    let mut store = AuthorityStore::open(home.path()).unwrap();
     let enroll = AuthorityCommand::EnrollIssuer {
         operation_id: "admin-op-1".into(),
         issuer_id: "desktop".into(),

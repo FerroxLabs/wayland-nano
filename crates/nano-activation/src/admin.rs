@@ -63,7 +63,7 @@ fn bootstrap_attested(
         return Err(BootstrapError::AlreadyBootstrapped);
     }
     verify_secure_home(nano_home)?;
-    AuthorityStore::bootstrap_for_test(
+    AuthorityStore::bootstrap_initial(
         nano_home,
         AuthoritySnapshot::empty(request.admin_id, request.admin_public_key)
             .with_recovery_key(request.recovery_public_key),

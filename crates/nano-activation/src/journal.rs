@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "record_type", rename_all = "snake_case", deny_unknown_fields)]
@@ -25,14 +25,13 @@ pub enum AuthorityRecord {
     },
 }
 
-pub struct AuthorityJournal {
+pub(crate) struct AuthorityJournal {
     file: File,
-    path: PathBuf,
     next_sequence: u64,
 }
 
 impl AuthorityJournal {
-    pub fn open(path: &Path) -> Result<Self, AuthorityError> {
+    pub(crate) fn open(path: &Path) -> Result<Self, AuthorityError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -44,30 +43,31 @@ impl AuthorityJournal {
             .open(path)?;
         Ok(Self {
             file,
-            path: path.to_owned(),
             next_sequence: sequence + 1,
         })
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    pub fn append_bootstrap(&mut self, snapshot: AuthoritySnapshot) -> Result<(), AuthorityError> {
+    pub(crate) fn append_bootstrap(
+        &mut self,
+        snapshot: AuthoritySnapshot,
+    ) -> Result<(), AuthorityError> {
         self.append(AuthorityRecord::Bootstrap {
             sequence: self.next_sequence,
             snapshot,
         })
     }
 
-    pub fn append_command(&mut self, command: AuthorityCommand) -> Result<(), AuthorityError> {
+    pub(crate) fn append_command(
+        &mut self,
+        command: AuthorityCommand,
+    ) -> Result<(), AuthorityError> {
         self.append(AuthorityRecord::Command {
             sequence: self.next_sequence,
             command,
         })
     }
 
-    pub fn append_transaction(
+    pub(crate) fn append_transaction(
         &mut self,
         command: AuthorityCommand,
         nonce_command: AuthorityCommand,
@@ -89,7 +89,7 @@ impl AuthorityJournal {
     }
 }
 
-pub fn replay(path: &Path) -> Result<(Option<AuthoritySnapshot>, u64), AuthorityError> {
+pub(crate) fn replay(path: &Path) -> Result<(Option<AuthoritySnapshot>, u64), AuthorityError> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((None, 0)),
