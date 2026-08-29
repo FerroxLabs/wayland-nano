@@ -5,6 +5,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repo = 'FerroxLabs/wayland-nano'
+$collaborator = gh api "repos/$repo/collaborators/TradeCanyon/permission" | ConvertFrom-Json
+if ($collaborator.user.login -ne 'TradeCanyon' -or $collaborator.permission -ne 'write' -or -not $collaborator.user.permissions.push) { throw 'TradeCanyon collaborator acceptance/write permission is not live' }
 $expectedChecks = @('gate (windows-latest, x64)','gate (windows-11-arm, arm64)','gate (macos-14, arm64)','gate (macos-15-intel, x64)','gate (ubuntu-22.04, x64)','gate (ubuntu-24.04-arm, arm64)','gate-cards')
 function Get-PrEvidence([int]$Number) {
   $pr = gh pr view $Number --repo $repo --json number,state,headRefOid,baseRefName,author,reviews,mergeCommit,mergedAt,mergedBy,statusCheckRollup,url | ConvertFrom-Json
@@ -30,6 +32,11 @@ function Get-PrEvidence([int]$Number) {
     governance_model = 'single-human-distinct-account'; same_human_controller = $true
     independent_human_review = $false; owner_directed_agent_operated_review = $true
     executor_did_switch_review_merge = $true
+    collaborator = [ordered]@{
+      invitation_id = 330736811; invitation_accepted = $true
+      login = $collaborator.user.login; permission = $collaborator.permission
+      push = [bool]$collaborator.user.permissions.push
+    }
     checks = @($checks | Where-Object name -in $expectedChecks | Sort-Object name | ForEach-Object { [ordered]@{name=$_.name;status=$_.status;conclusion=$_.conclusion;details_url=$_.detailsUrl} })
   }
 }
@@ -41,6 +48,12 @@ $rules = @($codeowners -split "`n" | ForEach-Object {$_.Trim()} | Where-Object {
 if ($rules.Count -ne 3 -or (Compare-Object $rules $expected)) { throw 'PR #10 merge does not contain the exact three CODEOWNERS rules' }
 $pr10.codeowners_blob_sha = (git rev-parse "$($pr10.merge_commit_sha):CODEOWNERS").Trim()
 $pr10.codeowners_rules = $rules
+$fixturePath='gates/fixtures/memory-retrieval-recall-v1/fixture.json'
+$validatorPath='gates/validate-memory-recall-fixture.cjs'
+foreach($path in @($fixturePath,$validatorPath)){git cat-file -e "$($pr11.head_sha):$path";if($LASTEXITCODE){throw "PR #11 is missing $path"}}
+$pr11.fixture_path=$fixturePath
+$pr11.fixture_blob_sha=(git rev-parse "$($pr11.head_sha):$fixturePath").Trim()
+$pr11.validator=[ordered]@{path=$validatorPath;blob_sha=(git rev-parse "$($pr11.head_sha):$validatorPath").Trim();command=@('node','gates/validate-memory-recall-fixture.cjs','gates/fixtures/memory-retrieval-recall-v1/fixture.json')}
 New-Item -ItemType Directory -Force -Path (Split-Path $ReceiptPath) | Out-Null
 $pr10 | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ReceiptPath -Encoding utf8
 $pr11 | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $Pr11ReceiptPath -Encoding utf8

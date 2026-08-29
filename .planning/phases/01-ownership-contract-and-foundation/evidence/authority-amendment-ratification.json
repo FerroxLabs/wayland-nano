@@ -1,5 +1,6 @@
 {
   "schema_version": "wayland.nano.amendment-ratification/v1",
+  "amendment_candidate_sha256": "9107e3c7b55748c484557d0c090b95c2f9c808ec62d99bf76587e08e8c3b34b3",
   "artifact_path": "D:/Development/waylandnano/shared/reviews/research-0.2/specs/WORKABLE-AGENT-AUTHORITY-AMENDMENT-v1.0.md",
   "amendment_version": "v1.0",
   "artifact_sha256": "9107e3c7b55748c484557d0c090b95c2f9c808ec62d99bf76587e08e8c3b34b3",
@@ -8,7 +9,7 @@
   "owner_name": "FerroxLabs owner",
   "owner_signature": "Approved by explicit owner directive via authenticated Codex session",
   "signature_date": "2026-08-29",
-  "receipt_time_utc": "2026-08-29T08:27:00Z",
+  "receipt_time_utc": "2026-08-29T09:17:00Z",
   "executor_identity": "Codex via FerroxLabs/TradeCanyon authenticated GitHub accounts",
   "governance_model": "single-human-distinct-account",
   "author_account": "FerroxLabs",
@@ -37,13 +38,48 @@
       "raw_output_sha256": "b96e132c519cfe3757a6ca82cd6c94a49febaba9282ff079ce9e6f65973b099f",
       "verdict": "PASS",
       "findings": []
+    },
+    {
+      "id": "claude-final",
+      "provider": "Anthropic",
+      "model": "Claude CLI configured model",
+      "provider_lineage": "anthropic",
+      "invoked_at_utc": "2026-08-29T08:45:00Z",
+      "completed_at_utc": "2026-08-29T08:54:00Z",
+      "status": "completed",
+      "raw_output_path": ".planning/phases/01-ownership-contract-and-foundation/evidence/cross-ai/raw/claude-final.txt",
+      "raw_output_sha256": "f41c6a197be9271d3e78a18849a1778b2eaf944233afa50ffede92b3d89f97b5",
+      "verdict": "NOT_PASS_REMEDIATED",
+      "findings": [
+        {"id": "CLAUDE-QUORUM", "severity": "CRITICAL", "disposition": "fixed_reaudited"},
+        {"id": "CLAUDE-CHRONOLOGY", "severity": "HIGH", "disposition": "fixed_reaudited"}
+      ]
+    },
+    {
+      "id": "claude-postfix",
+      "provider": "Anthropic",
+      "model": "Claude CLI configured model",
+      "provider_lineage": "anthropic",
+      "invoked_at_utc": "2026-08-29T09:10:00Z",
+      "completed_at_utc": "2026-08-29T09:16:48.4054782Z",
+      "status": "completed",
+      "raw_output_path": ".planning/phases/01-ownership-contract-and-foundation/evidence/cross-ai/raw/claude-postfix.txt",
+      "raw_output_sha256": "82e84501d3f8552b7dcf76f5f1edeca1c10c28798483b5b12f6057bc282add8c",
+      "verdict": "NOT_PASS_EVIDENCE_ARTIFACT_ONLY",
+      "findings": [
+        {"id": "POSTFIX-ARTIFACT", "severity": "HIGH", "disposition": "owner_accepted"}
+      ]
     }
   ],
-  "completed_distinct_provider_lineages": ["nvidia"],
+  "completed_distinct_provider_lineages": ["nvidia", "anthropic"],
   "disqualified_reviews": [
     {"provider": "Gemini", "reason": "IneligibleTierError", "counted": false},
     {"provider": "OpenAI", "reason": "caller_and_implementation_lineage", "counted": false}
   ],
-  "critical_high_dispositions": [],
+  "critical_high_dispositions": [
+    {"id": "CLAUDE-QUORUM", "status": "fixed_reaudited", "re_audit_review_id": "claude-postfix", "evidence": "Post-fix review confirms NVIDIA and Anthropic are the two completed noncaller lineages."},
+    {"id": "CLAUDE-CHRONOLOGY", "status": "fixed_reaudited", "re_audit_review_id": "claude-postfix", "evidence": "Post-fix review confirms monotone chronology and enforced ordering."},
+    {"id": "POSTFIX-ARTIFACT", "status": "owner_accepted", "rationale": "The finding is self-referential: preserving this exact output resolves the absence it reports.", "compensating_control": "Raw output SHA is verified by Test-AuthorityRatification.", "owner_acceptance_signature": "Approved by explicit owner directive via authenticated Codex session"}
+  ],
   "owner_acceptance_signature": "Approved by explicit owner directive via authenticated Codex session"
 }

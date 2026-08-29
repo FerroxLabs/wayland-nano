@@ -5,8 +5,8 @@
 
 ## Active Requirements
 
-- [ ] **REQ-FOUND-01** — Merge PR #8 through the owner-directed, agent-operated TradeCanyon account workflow with exact attribution, then freshly verify WP-0/P-MEM-1 evidence without reopening scope.
-- [ ] **REQ-ARCH-01** — Owner-sign a manifest listing every governing artifact/version/signature/disposition/precedence and pinning ownership, Nano security enrollment, trusted issuer/key lifecycle, immutable binding, alias compatibility, protected fixture ownership, merge order, and compatibility window.
+- [x] **REQ-FOUND-01** — Merge PR #8 through the owner-directed, agent-operated TradeCanyon account workflow with exact attribution, then freshly verify WP-0/P-MEM-1 evidence without reopening scope.
+- [x] **REQ-ARCH-01** — Owner-sign a manifest listing every governing artifact/version/signature/disposition/precedence and pinning ownership, Nano security enrollment, trusted issuer/key lifecycle, immutable binding, alias compatibility, protected fixture ownership, merge order, and compatibility window.
 - [ ] **REQ-ACT-01** — Route both Desktop ACP stacks through one shared Nano admission gate and accept a minimal authenticated descriptor containing mandatory opaque product subject, principal/project, activation/session/idempotency IDs, continuity, capabilities, budgets/deadline, replay protection, and a resume-context fingerprint limited to policy/tool/persona/module refs needed for resume safety.
 - [ ] **REQ-POL-01** — Verify the trusted issuer and local project grant, intersect Nano ceilings, freeze canonical receipts, quarantine all unauthenticated filesystem/T2-memory and cron/routine persistence before enablement, and require direct CLI to use an enrolled local issuer and explicit `main` mapping; tamper, replay, revoked issuer, remap, substitution, widening, bypass, and unauthorized controls fail typed.
 - [ ] **REQ-MEM-01** — Complete MEM-SEC-1–6 across FTS, KNN, and final assembly using `(project, principal_id)` semantics mapped 1:1 to existing physical `agent_id`.
@@ -37,8 +37,8 @@ Each phase meets observable criteria, passes governing local and CI gates, and e
 
 | Requirement | Phase | Status |
 |---|---:|---|
-| REQ-FOUND-01 | 1 | PR #8 merge/fresh verification pending |
-| REQ-ARCH-01 | 1 | Owner ratification pending |
+| REQ-FOUND-01 | 1 | Complete — PR #8 merged at `5bd5451`; full fresh eight-command receipt passed |
+| REQ-ARCH-01 | 1 | Complete — signed amendment SHA `9107e3c7…`; strict authority/governance gates passed |
 | REQ-ACT-01 | 2 | Pending ratification |
 | REQ-POL-01 | 2 | Pending ratification |
 | REQ-MEM-01 | 3 | Pending ratification |

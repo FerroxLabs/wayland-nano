@@ -18,10 +18,13 @@
   "independent_human_review": false,
   "owner_directed_agent_operated_review": true,
   "executor_did_switch_review_merge": true,
-  "collaborator_invitation_id": 330736811,
-  "collaborator_login": "TradeCanyon",
-  "collaborator_invitation_accepted": true,
-  "collaborator_effective_permission": "write",
+  "collaborator": {
+    "invitation_id": 330736811,
+    "invitation_accepted": true,
+    "login": "TradeCanyon",
+    "permission": "write",
+    "push": true
+  },
   "checks": [
     {
       "name": "gate (macos-14, arm64)",

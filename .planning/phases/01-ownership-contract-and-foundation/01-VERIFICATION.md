@@ -1,60 +1,26 @@
 ---
 phase: 01-ownership-contract-and-foundation
-verified: 2026-08-29T08:10:00Z
-status: gaps_found
-score: 5/8 must-haves verified
+verified: 2026-08-29T09:22:00Z
+status: passed
+score: 8/8 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
-gaps:
-  - truth: "The authority/compatibility amendment is validly ratified under its own exact audit and receipt contract."
-    status: failed
-    reason: "The artifact still declares itself UNSIGNED; its audit counts the OpenAI caller/implementation lineage as a qualifying reviewer; and the detached receipt omits fields the amendment says MUST be present exactly."
-    artifacts:
-      - path: "D:/Development/waylandnano/shared/reviews/research-0.2/specs/WORKABLE-AGENT-AUTHORITY-AMENDMENT-v1.0.md"
-        issue: "Line 3 says UNSIGNED and pending owner ratification despite completed signature fields in section 14."
-      - path: ".planning/phases/01-ownership-contract-and-foundation/evidence/cross-ai-audit-receipt.json"
-        issue: "caller_lineage and implementation_lineage are openai, yet openai is counted in completed_distinct_provider_lineages; the prompt audits only 01-03-PLAN.md, not the amendment candidate."
-      - path: ".planning/phases/01-ownership-contract-and-foundation/evidence/authority-amendment-ratification.json"
-        issue: "Missing required cross_ai_reviews, disqualified_reviews, critical_high_dispositions, and per-review invocation/completion evidence."
-      - path: "scripts/phase1/Test-AuthorityRatification.ps1"
-        issue: "Missing; the plan-mandated strict ratification verifier cannot be rerun."
-    missing:
-      - "Run a contract-conformant bounded audit with two eligible non-OpenAI provider lineages over the exact amendment candidate, or amend and re-sign the audit contract honestly before relying on a different quorum."
-      - "Regenerate the exact detached receipt with every mandatory field and independently verify it."
-      - "Make the signed artifact status internally consistent and rehash/re-ratify the resulting final bytes."
-  - truth: "A fresh detached origin/master checkout reproduces every P-MEM-1 acceptance bar."
-    status: failed
-    reason: "The exact eight-command P-MEM receipt ran in .tmp-wt-pmem1 at the reviewed head. The fresh detached checkout ran only cargo test --workspace. Tree equality is strong equivalence evidence but does not satisfy the explicit fresh-checkout reproduction requirement."
-    artifacts:
-      - path: ".planning/phases/01-ownership-contract-and-foundation/evidence/foundation-acceptance.json"
-        issue: "Records only cargo test --workspace from the fresh checkout; recall, durability, mediation, fmt, and clippy metrics are imported from the reviewed-head receipt."
-      - path: "scripts/phase1/Invoke-FoundationAcceptance.ps1"
-        issue: "Missing; the planned fresh-checkout acceptance wrapper cannot be rerun."
-      - path: ".planning/phases/01-ownership-contract-and-foundation/evidence/foundation-prerequisites.json"
-        issue: "Missing; no single strict prerequisite receipt binds live governance, signed bytes, ancestry, source pairs, corrective lanes, and CI."
-    missing:
-      - "Run the exact P-MEM acceptance manifest, including fmt, clippy, and workspace tests, from a fresh detached origin/master checkout and preserve/verifiably bind its outputs."
-      - "Create and run the planned prerequisite and fresh-acceptance verifiers."
-  - truth: "Planning state marks Phase 1 complete only after the evidence passes and stops before Phase 2 implementation."
-    status: failed
-    reason: "The stop boundary is respected, but STATE.md still says Phase 1 awaiting human review with 0/0 plans, ROADMAP Phase 1 remains unchecked, and both Phase 1 requirements remain unchecked."
-    artifacts:
-      - path: ".planning/STATE.md"
-        issue: "current_phase remains 1, status awaiting_human_review, completed_plans 0."
-      - path: ".planning/ROADMAP.md"
-        issue: "Phase 1 and all four plans remain unchecked and progress remains incomplete."
-      - path: ".planning/REQUIREMENTS.md"
-        issue: "REQ-FOUND-01 and REQ-ARCH-01 remain unchecked/pending."
-    missing:
-      - "After the two evidence gaps close, update STATE, ROADMAP, and REQUIREMENTS from verified evidence only."
+re_verification:
+  previous_status: gaps_found
+  previous_score: 7/8
+  gaps_closed:
+    - "Distinct post-fix Anthropic review confirms the prior Critical/High corrections; its self-referential artifact finding is explicitly owner-accepted with rationale, compensating control, and signature."
+    - "STATE, ROADMAP, and REQUIREMENTS now consistently mark Phase 1 complete and Phase 2 planning-only."
+  gaps_remaining: []
+  regressions: []
 ---
 
 # Phase 1: Ownership Contract and Foundation Verification Report
 
 **Phase Goal:** A signed authority/compatibility contract and freshly verified P-MEM-1 foundation make later work unambiguous.
-**Verified:** 2026-08-29T08:10:00Z
-**Status:** gaps_found
-**Re-verification:** No — initial verification
+**Verified:** 2026-08-29T09:22:00Z
+**Status:** passed
+**Re-verification:** Yes — all prior gaps closed
 
 ## Goal Achievement
 
@@ -62,75 +28,71 @@ gaps:
 
 | # | Truth | Status | Evidence |
 |---:|---|---|---|
-| 1 | PR #8 is merged through the disclosed TradeCanyon workflow with seven exact CI legs. | VERIFIED | Live GitHub: PR #8 head `146fe699127e5f53544e3ec57d4e785f99e04e8c`, review `PRR_kwDOTz7gT88AAAABLW-Mlg`, merge `5bd545195ceba2c61383a913298612b73f7bd17a`; run `33239162169` has exactly seven successful jobs. |
-| 2 | Fresh origin/master reproduces every P-MEM-1 bar. | FAILED | Fresh SHA and tree equality are proven, but only `cargo test --workspace` ran in the fresh checkout. The eight-command receipt was produced in `.tmp-wt-pmem1`. |
-| 3 | Source snapshots remain immutable and the amendment enumerates their version/hash/signature/disposition/precedence. | VERIFIED | Four source/snapshot SHA-256 pairs recomputed equal; hashes match the manifest. |
-| 4 | The amendment is validly signed and ratified under its exact receipt/audit rules. | FAILED | Internal UNSIGNED status, caller-lineage quorum violation, incomplete detached receipt, and missing strict verifier. |
-| 5 | Desktop/Nano ownership and principal_id-to-agent_id compatibility are pinned. | VERIFIED | Amendment sections 2–4 explicitly assign ownership, forbid a second registry, and preserve physical/schema/journal `agent_id`. |
-| 6 | Issuer lifecycle, carrier, fixture governance, merge order, artifact identity, and compatibility exit are explicit. | VERIFIED | Amendment sections 5–13 contain the named controls and promotion rules. |
-| 7 | Exact-head ancestry/tree equality and governance controls are independently observable. | VERIFIED | Live branch protection requires seven checks, one CODEOWNER approval, stale/last-push dismissal, conversations, admins, no force push/deletion. `git merge-base --is-ancestor` passed; reviewed-head and master trees both equal `e74e03eca533fa4600c57178b7c86418496bd636`. |
-| 8 | Phase 1 planning state closes from evidence and no Phase 2 implementation starts. | FAILED | No Phase 2 source changes were found, but planning state and requirements remain open/stale. |
+| 1 | PR #8 is merged through the disclosed owner-directed TradeCanyon workflow with exactly seven successful CI legs. | VERIFIED | Live GitHub: reviewed head `146fe699127e5f53544e3ec57d4e785f99e04e8c`, review `PRR_kwDOTz7gT88AAAABLW-Mlg`, merge `5bd545195ceba2c61383a913298612b73f7bd17a`, run `33239162169`. |
+| 2 | A fresh detached origin/master checkout reproduces every P-MEM-1 acceptance bar. | VERIFIED | `foundation-acceptance-full.json` records all eight exact commands at merge SHA: recall@10 1.0, project/agent leakage 0/0, kill/rebuild identity equivalence, mediation receipt, crate tests, fmt, clippy, and workspace tests; strict verifier passed. |
+| 3 | Source snapshots remain immutable and the signed manifest records version/hash/signature/disposition/precedence. | VERIFIED | Four source/snapshot SHA-256 pairs recomputed equal; `foundation-prerequisites.json` binds them. |
+| 4 | The authority amendment is internally signed and exactly ratified. | VERIFIED | Signed v1.0 bytes SHA-256 `9107e3c7b55748c484557d0c090b95c2f9c808ec62d99bf76587e08e8c3b34b3`, length 22523; strict authority verifier passed. |
+| 5 | Desktop/Nano ownership and principal_id-to-agent_id compatibility are pinned. | VERIFIED | Signed amendment sections 2–4 assign product control to Desktop, kernel enforcement to Nano, forbid a second registry, and preserve immutable physical/schema/journal `agent_id`. |
+| 6 | Issuer lifecycle, shared carrier/gate, fixture governance, merge order, artifact identity, and compatibility exit are explicit. | VERIFIED | Signed amendment sections 5–13 contain each required authority and compatibility rule. |
+| 7 | Cross-AI and governance controls are honest, complete, and rerunnable. | VERIFIED | NVIDIA and Anthropic are eligible noncaller lineages; OpenAI/Gemini are disqualified. A distinct later `claude-postfix` review confirms prior fixes. The remaining self-referential preservation finding is owner-accepted with required controls. Strict authority, governance, corrective-lane, and prerequisite scripts all pass against live GitHub. |
+| 8 | Phase 1 closes consistently and stops before Phase 2 implementation. | VERIFIED | STATE points to Phase 2 `ready_to_plan`; ROADMAP shows Phase 1 and 4/4 plans complete; both Phase 1 requirements are checked. No changed source path under `crates/`, `desktop/`, or `src/` indicates Phase 2 implementation. |
 
-**Score:** 5/8 truths verified (0 present-but-behavior-unverified)
+**Score:** 8/8 truths verified
 
 ### Required Artifacts
 
-| Artifact | Expected | Status | Details |
-|---|---|---|---|
-| Authority amendment | Internally consistent signed v1.0 contract | STUB/BLOCKER | Signature block filled and SHA matches receipt, but header still explicitly denies governing authority. |
-| Source preflight | Four exact source/snapshot pairs | VERIFIED | All four pairs recomputed equal. |
-| PR #8 and CI evidence | Exact live reviewed head, merge, seven legs | VERIFIED | Independently queried from GitHub. |
-| P-MEM acceptance receipt | Exact eight commands with required metrics | VERIFIED (reviewed head) | Strict receipt verifier passed: recall 1.0, leakage 0/0, durability and mediation true, all exits zero. |
-| Fresh foundation acceptance | Same complete acceptance from detached master | PARTIAL | Fresh workspace test passed; full manifest did not run there. |
-| Ratification/governance verifiers | Rerunnable fail-closed scripts and prerequisite receipt | MISSING | `Test-AuthorityRatification.ps1`, `Test-HumanGovernance.ps1`, `Test-FoundationPrerequisites.ps1`, `Invoke-FoundationAcceptance.ps1`, and prerequisite/bootstrap/corrective receipts are absent. |
-| Planning closeout | STATE/ROADMAP/REQUIREMENTS complete | FAILED | All still report Phase 1 pending. |
+| Artifact | Status | Details |
+|---|---|---|
+| Signed authority amendment | VERIFIED | Signed header, complete section 14, exact hash/length receipt. |
+| Source ratification preflight | VERIFIED | Four source/snapshot pairs byte-equal. |
+| Cross-AI raw outputs and receipt | VERIFIED | NVIDIA, initial Anthropic, and distinct post-fix Anthropic outputs preserved and hash-bound; findings dispositioned. |
+| Human governance and bootstrap receipts | VERIFIED | PR #10/#11 bootstrap, PR #8 protected review/merge, exact CODEOWNERS and branch protection verified live. |
+| Fresh foundation receipt | VERIFIED | Eight-command master acceptance with all exit codes zero. |
+| Foundation prerequisite receipt | VERIFIED | Binds source, authority, governance, CI, ancestry, corrective lanes, and acceptance hashes. |
+| Planning ledgers | VERIFIED | STATE/ROADMAP/REQUIREMENTS agree on Phase 1 completion and planning-only next state. |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 |---|---|---|---|---|
-| Reviewed PR head | origin/master | merge ancestry and identical tree | VERIFIED | Head is ancestor; tree SHAs identical. |
-| CI run | reviewed PR head | GitHub run `headSha` | VERIFIED | Run `33239162169` is successful at the exact head. |
-| Signed bytes | detached receipt | SHA-256/length | PARTIAL | Hash `5501d2...83be` and length 22594 match, but receipt schema is incomplete and artifact says UNSIGNED. |
-| Cross-AI receipt | ratification authority | eligible noncaller quorum | NOT_WIRED | OpenAI cannot count when caller and implementation lineages are both OpenAI; only Anthropic is eligible. |
-| Fresh checkout | all P-MEM bars | exact command manifest | NOT_WIRED | Only workspace tests were rerun fresh. |
-| Evidence | planning completion | state transition | NOT_WIRED | State files were not advanced. |
+| Reviewed PR head | origin/master | merge ancestry and tree equality | VERIFIED | `merge-base --is-ancestor` exit 0; both trees `e74e03eca533fa4600c57178b7c86418496bd636`. |
+| CI run | reviewed head | GitHub run head SHA | VERIFIED | Seven exact successful checks at `146fe699...`. |
+| Signed bytes | ratification receipt | SHA-256 and byte length | VERIFIED | `9107e3c7...b34b3`, 22523 bytes. |
+| Audit fixes | later confirmation/disposition | `claude-postfix` plus owner acceptance | VERIFIED | Distinct post-fix review id used; all Critical/High findings have permitted dispositions. |
+| Fresh checkout | P-MEM contract | exact eight-command manifest | VERIFIED | Strict P-MEM receipt verifier passed at origin/master. |
+| Evidence | planning completion | three consistent ledgers | VERIFIED | Phase 1 complete, Phase 2 ready to plan only. |
 
 ### Behavioral Spot-Checks
 
-| Behavior | Command | Result | Status |
-|---|---|---|---|
-| Strict reviewed-head P-MEM receipt validation | `Test-PmemAcceptanceReceipt.ps1 ... -RequireWorkspace` | Verified eight exact commands | PASS |
-| PR head ancestry | `git merge-base --is-ancestor 146fe699... origin/master` | exit 0 | PASS |
-| Tree equality | `git rev-parse <head>^{tree}` and `origin/master^{tree}` | both `e74e03e...636` | PASS |
-| Source snapshot integrity | Four `Get-FileHash` comparisons | all equal | PASS |
+| Behavior | Result | Status |
+|---|---|---|
+| `Test-AuthorityRatification.ps1` | PASS | PASS |
+| `Test-HumanGovernance.ps1` against live GitHub | PASS | PASS |
+| `Test-FoundationCorrectiveLanes.ps1` | PASS | PASS |
+| `Test-FoundationPrerequisites.ps1` | PASS | PASS |
+| `Test-PmemAcceptanceReceipt.ps1 -RequireWorkspace` | Eight exact commands verified | PASS |
+| Live reviewed-head ancestry and tree equality | exit 0; identical trees | PASS |
 
 ### Requirements Coverage
 
-| Requirement | Source Plans | Status | Evidence |
-|---|---|---|---|
-| REQ-FOUND-01 | 01-02, 01-03, 01-04 | BLOCKED | Merge/CI/review and reviewed-head tests pass, but the complete acceptance manifest was not reproduced from a fresh checkout. |
-| REQ-ARCH-01 | 01-01, 01-03, 01-04 | BLOCKED | Amendment content is substantive, but its own ratification/audit contract is violated and its status remains UNSIGNED. |
+| Requirement | Status | Evidence |
+|---|---|---|
+| REQ-FOUND-01 | SATISFIED | Protected PR #8 merge, exact seven-leg CI, and full fresh-master P-MEM acceptance. |
+| REQ-ARCH-01 | SATISFIED | Signed manifest, eligible cross-provider audit/dispositions, strict ratification and governance gates. |
 
 ### Anti-Patterns Found
 
-| File | Pattern | Severity | Impact |
-|---|---|---|---|
-| Authority amendment | Filled signature block under explicit `Status: UNSIGNED` | BLOCKER | The document denies the authority claimed by Phase 1. |
-| Cross-AI receipt | `quorum_met: true` while counting caller lineage | BLOCKER | Advisory quorum is false under the signed rules. |
-| Cross-AI prompt | Audits only `01-03-PLAN.md` | BLOCKER | It does not adversarially review the exact amendment candidate it purports to bind. |
-| Plan 04 artifacts | Required scripts/receipts missing | BLOCKER | Acceptance and governance evidence cannot be independently rerun end to end. |
-| Planning state | Completion summaries coexist with pending state | BLOCKER | Phase transition is inconsistent and unauditable. |
+No blocking debt markers, stubs, orphaned required artifacts, dishonest governance claims, or Phase 2 implementation were found in the verified Phase 1 surface.
 
 ### Human Verification Required
 
-None. The gaps are deterministic and should be corrected before any human acceptance decision.
+None. Owner ratification and residual-risk acceptance are already explicit, exact, and receipt-bound.
 
 ### Gaps Summary
 
-P-MEM-1 itself has compelling evidence and appears technically healthy, and the protected merge lineage is real. Phase 1 nevertheless fails its goal because the authority artifact is not validly ratified under its own rules, the complete P-MEM manifest was not executed from the required fresh checkout, and planning closeout was not performed. No Phase 2 implementation was detected.
+No remaining gaps. The signed contract, protected merge, fresh technical evidence, audit dispositions, and planning ledgers converge on the same Phase 1 outcome.
 
 ---
 
-_Verified: 2026-08-29T08:10:00Z_
+_Verified: 2026-08-29T09:22:00Z_
 _Verifier: the agent (ferrox-verifier)_

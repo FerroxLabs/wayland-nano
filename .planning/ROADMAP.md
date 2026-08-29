@@ -6,7 +6,7 @@ Four phases deliver the smallest useful agent: Desktop supplies trusted identity
 
 ## Phases
 
-- [ ] **Phase 1: Ownership Contract and Foundation** - Ratify exact authority/compatibility rules and accept PR #8.
+- [x] **Phase 1: Ownership Contract and Foundation** - Complete 2026-08-29: ratified authority contract and merged/freshly verified PR #8.
 - [ ] **Phase 2: Minimal Authenticated Activation** - Establish the smallest fail-closed Desktop→Nano request.
 - [ ] **Phase 3: Runtime-Integrated Scoped Continuity** - Secure and wire real memory, then measure continuity.
 - [ ] **Phase 4: Bounded Trigger and Immediate Dogfood** - Retire Nano scheduling, run Desktop-triggered work, and decide from evidence.
@@ -32,16 +32,16 @@ Four phases deliver the smallest useful agent: Desktop supplies trusted identity
 Plans:
 **Wave 1**
 
-- [ ] 01-01-PLAN.md — Prepare the hash-backed owner authority amendment.
-- [ ] 01-02-PLAN.md — Freeze PR #8 pre-merge and focused local evidence.
+- [x] 01-01-PLAN.md — Prepare the hash-backed owner authority amendment.
+- [x] 01-02-PLAN.md — Freeze PR #8 pre-merge and focused local evidence.
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 01-03-PLAN.md — Obtain owner signature and human PR merge.
+- [x] 01-03-PLAN.md — Ratify the amendment and merge PR #8 through the disclosed owner-directed account workflow.
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 01-04-PLAN.md — Freshly verify merged master and close Phase 1.
+- [x] 01-04-PLAN.md — Freshly verify merged master and close Phase 1.
 
 ### Phase 2: Minimal Authenticated Activation
 
@@ -123,7 +123,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |---|---:|---|---|
-| 1. Ownership Contract and Foundation | 0/TBD | Awaiting ratification/merge | - |
+| 1. Ownership Contract and Foundation | 4/4 | Complete | 2026-08-29 |
 | 2. Minimal Authenticated Activation | 0/TBD | Not started | - |
 | 3. Runtime-Integrated Scoped Continuity | 0/TBD | Not started | - |
 | 4. Bounded Trigger and Immediate Dogfood | 0/TBD | Not started | - |

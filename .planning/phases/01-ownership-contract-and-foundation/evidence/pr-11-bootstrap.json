@@ -18,13 +18,13 @@
   "independent_human_review": false,
   "owner_directed_agent_operated_review": true,
   "executor_did_switch_review_merge": true,
-  "collaborator_invitation_id": 330736811,
-  "collaborator_login": "TradeCanyon",
-  "collaborator_invitation_accepted": true,
-  "collaborator_effective_permission": "write",
-  "fixture_path": "gates/fixtures/memory-retrieval-recall-v1/fixture.json",
-  "fixture_blob_sha": "68c5630e59deaab4fb7d2c1f533f3c2169c8820c",
-  "fixture_honesty_validator": "gates/validate-memory-recall-fixture.cjs",
+  "collaborator": {
+    "invitation_id": 330736811,
+    "invitation_accepted": true,
+    "login": "TradeCanyon",
+    "permission": "write",
+    "push": true
+  },
   "checks": [
     {
       "name": "gate (macos-14, arm64)",
@@ -68,5 +68,16 @@
       "conclusion": "SUCCESS",
       "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/33102184403/job/98622501482"
     }
-  ]
+  ],
+  "fixture_path": "gates/fixtures/memory-retrieval-recall-v1/fixture.json",
+  "fixture_blob_sha": "68c5630e59deaab4fb7d2c1f533f3c2169c8820c",
+  "validator": {
+    "path": "gates/validate-memory-recall-fixture.cjs",
+    "blob_sha": "00774677e5ee44165c82dcefaa9872c3598b37f0",
+    "command": [
+      "node",
+      "gates/validate-memory-recall-fixture.cjs",
+      "gates/fixtures/memory-retrieval-recall-v1/fixture.json"
+    ]
+  }
 }

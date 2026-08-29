@@ -1,6 +1,10 @@
 Provider: Anthropic
 Model: Claude CLI configured model
 Provider lineage: anthropic
-Verdict: PASS
+Initial verdict: NOT PASS
 
-PASS. No blocking-human tasks remain; all three tasks are automatic. The stale forbid-agent-merge mitigation and no-agent-switch success criterion are gone. Owner-directed agent-operated attribution is required throughout. No remaining Critical or High finding.
+CRITICAL: cross-AI receipt contained only NVIDIA and declared quorum false. Required fix: append this Anthropic review, preserve and hash it, set completed noncaller lineages to NVIDIA plus Anthropic, and rerun closure.
+
+HIGH: human-checkpoints captured_at_utc preceded authority, cross-AI, and fresh-acceptance evidence. Required fix: restamp after all bound evidence and enforce chronology in Test-HumanGovernance.ps1.
+
+All other inspected bindings were clean: signed SHA/length, prompt/NVIDIA hashes, PR ancestry and tree, exact CODEOWNERS/protection, full eight-command fresh-master acceptance, bootstrap receipts, and governance disclosure.
