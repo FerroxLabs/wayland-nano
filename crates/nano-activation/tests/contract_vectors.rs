@@ -1,5 +1,5 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use nano_activation::{
     RejectReason, verify_activation_frame, verify_admin_request, verify_control, verify_receipt,
 };
@@ -191,4 +191,95 @@ fn every_negative_vector_refuses_before_trusted_construction() {
         let error = verify_activation_frame(&raw, &key).unwrap_err();
         assert_eq!(error.reason(), case.reason, "negative vector {}", case.name);
     }
+}
+
+#[test]
+fn cryptographic_and_resource_boundaries_fail_closed() {
+    let positive: Positive =
+        serde_json::from_slice(&fs::read(vectors().join("positive.json")).unwrap()).unwrap();
+    let key = hex_array(&positive.activation.public_key_hex);
+    let raw = &positive.activation.raw_frame_utf8;
+
+    let invalid_signature = raw.replace(
+        "RATpLIeYiK-GIx9anHUhEki7HScOkRnR5DtNPP2iQLEsxQ3IuluvymXV_wr2MEaqg80RdoWYvM_raoCgR6NNDg",
+        &"A".repeat(86),
+    );
+    assert_eq!(
+        verify_activation_frame(invalid_signature.as_bytes(), &key)
+            .unwrap_err()
+            .reason(),
+        RejectReason::InvalidSignature
+    );
+
+    let wrong_key = hex_array(&positive.rfc8032.public_key_hex);
+    assert_eq!(
+        verify_activation_frame(raw.as_bytes(), &wrong_key)
+            .unwrap_err()
+            .reason(),
+        RejectReason::InvalidSignature
+    );
+
+    let noncanonical = raw.replacen(
+        "\"waylandNanoActivation\":{",
+        "\"waylandNanoActivation\":{ ",
+        1,
+    );
+    assert_eq!(
+        verify_activation_frame(noncanonical.as_bytes(), &key)
+            .unwrap_err()
+            .reason(),
+        RejectReason::NoncanonicalPayload
+    );
+
+    let mut oversized = raw.clone();
+    oversized.push_str(&" ".repeat(32 * 1024));
+    assert_eq!(
+        verify_activation_frame(oversized.as_bytes(), &key)
+            .unwrap_err()
+            .reason(),
+        RejectReason::CarrierOversized
+    );
+
+    let deep = format!("{}0{}", "[".repeat(10), "]".repeat(10));
+    assert_eq!(
+        verify_activation_frame(deep.as_bytes(), &key)
+            .unwrap_err()
+            .reason(),
+        RejectReason::MalformedJson
+    );
+    let wide = format!(
+        "{{{}}}",
+        (0..257)
+            .map(|index| format!("\"k{index}\":0"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    assert_eq!(
+        verify_activation_frame(wide.as_bytes(), &key)
+            .unwrap_err()
+            .reason(),
+        RejectReason::MalformedJson
+    );
+
+    // Signing the activation payload under the receipt domain proves domain separation.
+    let frame: serde_json::Value = serde_json::from_str(raw).unwrap();
+    let mut payload = frame["params"]["_meta"]["waylandNanoActivation"].clone();
+    payload.as_object_mut().unwrap().remove("signature");
+    let canonical = serde_jcs::to_vec(&payload).unwrap();
+    let mut wrong_domain_message = b"WAYLAND-NANO-RECEIPT\0v1\0".to_vec();
+    wrong_domain_message.extend_from_slice(&canonical);
+    let wrong_domain_signature =
+        SigningKey::from_bytes(&std::array::from_fn(|i| (i + 1) as u8)).sign(&wrong_domain_message);
+    let encoded =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(wrong_domain_signature.to_bytes());
+    let wrong_domain = raw.replace(
+        "RATpLIeYiK-GIx9anHUhEki7HScOkRnR5DtNPP2iQLEsxQ3IuluvymXV_wr2MEaqg80RdoWYvM_raoCgR6NNDg",
+        &encoded,
+    );
+    assert_eq!(
+        verify_activation_frame(wrong_domain.as_bytes(), &key)
+            .unwrap_err()
+            .reason(),
+        RejectReason::InvalidSignature
+    );
 }
