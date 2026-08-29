@@ -640,7 +640,8 @@ impl SessionState {
             | Op::MemoryWriteDecision { .. }
             | Op::MemoryWriteEpisode { .. }
             | Op::MemoryWriteProcedure { .. }
-            | Op::MemoryWriteReceipt { .. } => {}
+            | Op::MemoryWriteReceipt { .. }
+            | Op::MemoryPolicyResolved { .. } => {}
             Op::Unknown => {}
         }
     }

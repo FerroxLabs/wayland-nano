@@ -16,7 +16,10 @@ struct Query {
     agent_id: String,
 }
 fn load() -> Fixture {
-    serde_json::from_str(include_str!("../fixtures/memory-retrieval-recall-v1.json")).unwrap()
+    serde_json::from_str(include_str!(
+        "../../../gates/fixtures/memory-retrieval-recall-v1/fixture.json"
+    ))
+    .unwrap()
 }
 fn write_fact(store: &mut MemoryStore, f: FactWrite) {
     if f.source_trust == SourceTrust::ModelInference {
@@ -185,6 +188,7 @@ fn rebuild_ignores_unreceipted_model_write() {
                 source_trust: "ModelInference".into(),
                 project: "p".into(),
                 agent_id: "main".into(),
+                session_id: None,
                 resolver_outcome: "coexist".into(),
             },
         ))

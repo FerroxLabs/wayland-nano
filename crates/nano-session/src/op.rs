@@ -1713,6 +1713,8 @@ pub enum Op {
         source_trust: String,
         project: String,
         agent_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
         resolver_outcome: String,
     },
     /// Journal-authoritative decision write.
@@ -1728,6 +1730,8 @@ pub enum Op {
         source_trust: String,
         project: String,
         agent_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
     },
     /// Journal-authoritative episode write.
     MemoryWriteEpisode {
@@ -1740,6 +1744,8 @@ pub enum Op {
         source_trust: String,
         project: String,
         agent_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
     },
     /// Journal-authoritative procedure write.
     MemoryWriteProcedure {
@@ -1752,12 +1758,28 @@ pub enum Op {
         source_trust: String,
         project: String,
         agent_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
     },
     /// User-visible confirmation emitted by the host mediation point.
     MemoryWriteReceipt {
         write_id: String,
         agent_id: String,
         message: String,
+    },
+    /// Resolved memory policy at session start. Rebuild consumes this audit
+    /// record without applying runtime enable/write/mediation gates.
+    MemoryPolicyResolved {
+        enabled: bool,
+        write: String,
+        read_scope: String,
+        episode_cap: u64,
+        fact_cap: u64,
+        byte_cap: u64,
+        deletion: String,
+        min_tier: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
     },
     /// Forward tolerance: any Op type this build does not know. Skipped on
     /// replay; the raw line stays in the journal for future readers.
@@ -1789,6 +1811,7 @@ pub const OP_VOCABULARY: &[&str] = &[
     "mcp_elicitation",
     "mcp_oauth_grant",
     "mcp_tool_hydration",
+    "memory_policy_resolved",
     "memory_write_decision",
     "memory_write_episode",
     "memory_write_fact",
@@ -1943,6 +1966,7 @@ mod op_vocabulary_tests {
             Op::MemoryWriteEpisode { .. } => "memory_write_episode",
             Op::MemoryWriteProcedure { .. } => "memory_write_procedure",
             Op::MemoryWriteReceipt { .. } => "memory_write_receipt",
+            Op::MemoryPolicyResolved { .. } => "memory_policy_resolved",
             Op::Unknown => "unknown",
         }
     }
@@ -2187,6 +2211,7 @@ mod op_vocabulary_tests {
                 source_trust: "User".into(),
                 project: "project".into(),
                 agent_id: "main".into(),
+                session_id: None,
                 resolver_outcome: "coexist".into(),
             },
             Op::MemoryWriteDecision {
@@ -2201,6 +2226,7 @@ mod op_vocabulary_tests {
                 source_trust: "User".into(),
                 project: "project".into(),
                 agent_id: "main".into(),
+                session_id: None,
             },
             Op::MemoryWriteEpisode {
                 episode_id: "episode".into(),
@@ -2212,6 +2238,7 @@ mod op_vocabulary_tests {
                 source_trust: "User".into(),
                 project: "project".into(),
                 agent_id: "main".into(),
+                session_id: None,
             },
             Op::MemoryWriteProcedure {
                 procedure_id: "procedure".into(),
@@ -2223,11 +2250,23 @@ mod op_vocabulary_tests {
                 source_trust: "User".into(),
                 project: "project".into(),
                 agent_id: "main".into(),
+                session_id: None,
             },
             Op::MemoryWriteReceipt {
                 write_id: "write".into(),
                 agent_id: "main".into(),
                 message: "memory updated for main".into(),
+            },
+            Op::MemoryPolicyResolved {
+                enabled: true,
+                write: "SessionAndProject".into(),
+                read_scope: "SessionAndProject".into(),
+                episode_cap: 10_000,
+                fact_cap: 50_000,
+                byte_cap: 256 * 1024 * 1024,
+                deletion: "Never".into(),
+                min_tier: "ModelInference".into(),
+                session_id: None,
             },
             Op::Unknown,
         ];

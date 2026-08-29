@@ -1728,6 +1728,7 @@ dependencies = [
 name = "nano-memory"
 version = "0.2.0"
 dependencies = [
+ "libc",
  "nano-session",
  "rusqlite",
  "serde",
@@ -1735,6 +1736,7 @@ dependencies = [
  "sqlite-vec",
  "tempfile",
  "thiserror 2.0.20",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

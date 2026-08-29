@@ -19,6 +19,7 @@ pub struct MemoryStore {
 impl MemoryStore {
     pub fn open(nano_home: &Path, journal_path: &Path, policy: MemoryPolicy) -> MemoryResult<Self> {
         reject_network_path(nano_home)?;
+        validate_policy(&policy)?;
         crate::register_sqlite_vec();
         let path = memory_db_path(nano_home);
         if let Some(parent) = path.parent() {
@@ -29,14 +30,16 @@ impl MemoryStore {
         let next_op = next_op_id(journal_path)?;
         let db = Connection::open(path)?;
         schema::migrate(&db)?;
-        Ok(Self {
+        let mut store = Self {
             db,
             journal: JournalWriter::open(journal_path)?,
             embedder: HashedEmbedder,
             policy,
             next_op,
             _writer_lock: writer_lock,
-        })
+        };
+        store.append_resolved_policy()?;
+        Ok(store)
     }
 
     pub fn open_at(
@@ -45,6 +48,7 @@ impl MemoryStore {
         policy: MemoryPolicy,
     ) -> MemoryResult<Self> {
         reject_network_path(db_path)?;
+        validate_policy(&policy)?;
         crate::register_sqlite_vec();
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -54,14 +58,16 @@ impl MemoryStore {
         let next_op = next_op_id(journal_path)?;
         let db = Connection::open(db_path)?;
         schema::migrate(&db)?;
-        Ok(Self {
+        let mut store = Self {
             db,
             journal: JournalWriter::open(journal_path)?,
             embedder: HashedEmbedder,
             policy,
             next_op,
             _writer_lock: writer_lock,
-        })
+        };
+        store.append_resolved_policy()?;
+        Ok(store)
     }
 
     pub fn write_fact(&mut self, fact: FactWrite) -> MemoryResult<ContradictionResolution> {
@@ -117,15 +123,16 @@ impl MemoryStore {
             source_trust: fact.source_trust.as_str().into(),
             project: fact.project.clone(),
             agent_id: fact.agent_id.clone(),
+            session_id: self.write_session_id()?,
             resolver_outcome: format!("{resolution:?}").to_lowercase(),
         };
-        self.append(op)?;
+        let system_time = self.append(op)?;
         if mediated {
             let message = format!("memory updated for {}", fact.agent_id);
             self.append_receipt(&fact.id, &fact.agent_id, &message)?;
         }
         hook();
-        self.apply_fact(&fact, resolution)?;
+        self.apply_fact_at(&fact, resolution, &system_time)?;
         Ok(resolution)
     }
 
@@ -136,7 +143,7 @@ impl MemoryStore {
         self.check_write()?;
         validate_partition(&value.project, &value.agent_id)?;
         self.ensure_id_available(&value.id)?;
-        self.append(Op::MemoryWriteDecision {
+        let system_time = self.append(Op::MemoryWriteDecision {
             decision_id: value.id.clone(),
             summary: value.summary.clone(),
             why: value.why.clone(),
@@ -148,8 +155,9 @@ impl MemoryStore {
             source_trust: value.source_trust.as_str().into(),
             project: value.project.clone(),
             agent_id: value.agent_id.clone(),
+            session_id: self.write_session_id()?,
         })?;
-        self.apply_decision(&value)
+        self.apply_decision_at(&value, &system_time)
     }
     pub(crate) fn commit_mediated_decision(
         &mut self,
@@ -159,7 +167,7 @@ impl MemoryStore {
         self.check_write()?;
         validate_partition(&value.project, &value.agent_id)?;
         self.ensure_id_available(&value.id)?;
-        self.append(Op::MemoryWriteDecision {
+        let system_time = self.append(Op::MemoryWriteDecision {
             decision_id: value.id.clone(),
             summary: value.summary.clone(),
             why: value.why.clone(),
@@ -171,10 +179,11 @@ impl MemoryStore {
             source_trust: value.source_trust.as_str().into(),
             project: value.project.clone(),
             agent_id: value.agent_id.clone(),
+            session_id: self.write_session_id()?,
         })?;
         let message = format!("memory updated for {}", value.agent_id);
         self.append_receipt(&value.id, &value.agent_id, &message)?;
-        self.apply_decision(&value)
+        self.apply_decision_at(&value, &system_time)
     }
     pub fn write_episode(&mut self, value: EpisodeWrite) -> MemoryResult<()> {
         if value.source_trust == SourceTrust::ModelInference {
@@ -183,7 +192,7 @@ impl MemoryStore {
         self.check_write()?;
         validate_partition(&value.project, &value.agent_id)?;
         self.ensure_id_available(&value.id)?;
-        self.append(Op::MemoryWriteEpisode {
+        let system_time = self.append(Op::MemoryWriteEpisode {
             episode_id: value.id.clone(),
             content: value.content.clone(),
             source: value.source.clone(),
@@ -193,15 +202,16 @@ impl MemoryStore {
             source_trust: value.source_trust.as_str().into(),
             project: value.project.clone(),
             agent_id: value.agent_id.clone(),
+            session_id: self.write_session_id()?,
         })?;
-        self.apply_episode(&value)
+        self.apply_episode_at(&value, &system_time)
     }
     pub(crate) fn commit_mediated_episode(&mut self, mut value: EpisodeWrite) -> MemoryResult<()> {
         value.source_trust = SourceTrust::ModelInference;
         self.check_write()?;
         validate_partition(&value.project, &value.agent_id)?;
         self.ensure_id_available(&value.id)?;
-        self.append(Op::MemoryWriteEpisode {
+        let system_time = self.append(Op::MemoryWriteEpisode {
             episode_id: value.id.clone(),
             content: value.content.clone(),
             source: value.source.clone(),
@@ -211,10 +221,11 @@ impl MemoryStore {
             source_trust: value.source_trust.as_str().into(),
             project: value.project.clone(),
             agent_id: value.agent_id.clone(),
+            session_id: self.write_session_id()?,
         })?;
         let message = format!("memory updated for {}", value.agent_id);
         self.append_receipt(&value.id, &value.agent_id, &message)?;
-        self.apply_episode(&value)
+        self.apply_episode_at(&value, &system_time)
     }
     pub fn write_procedure(&mut self, value: ProcedureWrite) -> MemoryResult<()> {
         if value.source_trust == SourceTrust::ModelInference {
@@ -223,7 +234,7 @@ impl MemoryStore {
         self.check_write()?;
         validate_partition(&value.project, &value.agent_id)?;
         self.ensure_id_available(&value.id)?;
-        self.append(Op::MemoryWriteProcedure {
+        let system_time = self.append(Op::MemoryWriteProcedure {
             procedure_id: value.id.clone(),
             title: value.title.clone(),
             steps: value.steps.clone(),
@@ -233,8 +244,9 @@ impl MemoryStore {
             source_trust: value.source_trust.as_str().into(),
             project: value.project.clone(),
             agent_id: value.agent_id.clone(),
+            session_id: self.write_session_id()?,
         })?;
-        self.apply_procedure(&value)
+        self.apply_procedure_at(&value, &system_time)
     }
     pub(crate) fn commit_mediated_procedure(
         &mut self,
@@ -244,7 +256,7 @@ impl MemoryStore {
         self.check_write()?;
         validate_partition(&value.project, &value.agent_id)?;
         self.ensure_id_available(&value.id)?;
-        self.append(Op::MemoryWriteProcedure {
+        let system_time = self.append(Op::MemoryWriteProcedure {
             procedure_id: value.id.clone(),
             title: value.title.clone(),
             steps: value.steps.clone(),
@@ -254,10 +266,11 @@ impl MemoryStore {
             source_trust: value.source_trust.as_str().into(),
             project: value.project.clone(),
             agent_id: value.agent_id.clone(),
+            session_id: self.write_session_id()?,
         })?;
         let message = format!("memory updated for {}", value.agent_id);
         self.append_receipt(&value.id, &value.agent_id, &message)?;
-        self.apply_procedure(&value)
+        self.apply_procedure_at(&value, &system_time)
     }
 
     pub(crate) fn append_receipt(
@@ -270,11 +283,12 @@ impl MemoryStore {
             write_id: write_id.into(),
             agent_id: agent_id.into(),
             message: message.into(),
-        })
+        })?;
+        Ok(())
     }
 
     fn check_write(&self) -> MemoryResult<()> {
-        if !self.policy.enabled || self.policy.write != WriteScope::SessionAndProject {
+        if !self.policy.enabled || self.policy.write == WriteScope::Off {
             Err(MemoryError::Disabled)
         } else {
             Ok(())
@@ -291,18 +305,51 @@ impl MemoryStore {
             Ok(())
         }
     }
-    fn append(&mut self, op: Op) -> MemoryResult<()> {
+    fn append(&mut self, op: Op) -> MemoryResult<String> {
         self.next_op += 1;
         let id = format!("memory-{}", self.next_op);
-        if !self.journal.append(&OpEnvelope::new(id, now(), op))? {
+        let system_time = now();
+        if !self
+            .journal
+            .append(&OpEnvelope::new(id, system_time.clone(), op))?
+        {
             return Err(MemoryError::JournalIntegrity(
                 "duplicate memory op id".into(),
             ));
         }
+        Ok(system_time)
+    }
+    fn write_session_id(&self) -> MemoryResult<Option<String>> {
+        match self.policy.write {
+            WriteScope::SessionOnly => self.policy.session_id.clone().map(Some).ok_or_else(|| {
+                MemoryError::UnsupportedPolicy("SessionOnly requires session_id".into())
+            }),
+            WriteScope::SessionAndProject => Ok(None),
+            WriteScope::Off => Err(MemoryError::Disabled),
+        }
+    }
+    fn write_session_key(&self) -> &str {
+        match self.policy.write {
+            WriteScope::SessionOnly => self.policy.session_id.as_deref().unwrap_or(""),
+            WriteScope::SessionAndProject | WriteScope::Off => "",
+        }
+    }
+    fn append_resolved_policy(&mut self) -> MemoryResult<()> {
+        self.append(Op::MemoryPolicyResolved {
+            enabled: self.policy.enabled,
+            write: format!("{:?}", self.policy.write),
+            read_scope: format!("{:?}", self.policy.read_scope),
+            episode_cap: self.policy.retention.episodes,
+            fact_cap: self.policy.retention.facts,
+            byte_cap: self.policy.retention.bytes,
+            deletion: format!("{:?}", self.policy.deletion),
+            min_tier: self.policy.min_tier.as_str().into(),
+            session_id: self.policy.session_id.clone(),
+        })?;
         Ok(())
     }
     fn fact_resolution(&self, new: &FactWrite) -> MemoryResult<ContradictionResolution> {
-        let old=self.db.query_row("SELECT object,confidence,source_trust FROM facts WHERE project=?1 AND agent_id=?2 AND subject=?3 AND predicate=?4 AND valid_to IS NULL ORDER BY system_time DESC LIMIT 1",params![new.project,new.agent_id,new.subject,new.predicate],|r|Ok((r.get::<_,String>(0)?,r.get::<_,f64>(1)?,r.get::<_,String>(2)?))).optional()?;
+        let old=self.db.query_row("SELECT object,confidence,source_trust FROM facts WHERE project=?1 AND agent_id=?2 AND session_id=?3 AND subject=?4 AND predicate=?5 AND valid_to IS NULL ORDER BY system_time DESC LIMIT 1",params![new.project,new.agent_id,self.write_session_key(),new.subject,new.predicate],|r|Ok((r.get::<_,String>(0)?,r.get::<_,f64>(1)?,r.get::<_,String>(2)?))).optional()?;
         match old {
             None => Ok(ContradictionResolution::Coexist),
             Some((object, confidence, tier)) => Ok(resolve_contradiction(
@@ -319,18 +366,24 @@ impl MemoryStore {
             )),
         }
     }
-    fn apply_fact(&mut self, v: &FactWrite, res: ContradictionResolution) -> MemoryResult<()> {
+    fn apply_fact_at(
+        &mut self,
+        v: &FactWrite,
+        res: ContradictionResolution,
+        system_time: &str,
+    ) -> MemoryResult<()> {
         self.ensure_id_available(&v.id)?;
         let mut stored = v.clone();
         if res == ContradictionResolution::KeepExisting && stored.valid_to.is_none() {
             stored.valid_to = Some(stored.valid_from.clone());
         }
+        let session_key = self.write_session_key().to_owned();
         let tx = self.db.transaction()?;
         if res == ContradictionResolution::Supersede {
-            tx.execute("UPDATE facts SET valid_to=?1,superseded_by=?2 WHERE project=?3 AND agent_id=?4 AND subject=?5 AND predicate=?6 AND valid_to IS NULL",params![v.valid_from,v.id,v.project,v.agent_id,v.subject,v.predicate])?;
+            tx.execute("UPDATE facts SET valid_to=?1,superseded_by=?2 WHERE project=?3 AND agent_id=?4 AND session_id=?5 AND subject=?6 AND predicate=?7 AND valid_to IS NULL",params![v.valid_from,v.id,v.project,v.agent_id,session_key,v.subject,v.predicate])?;
         }
         tx.execute(
-            "INSERT OR IGNORE INTO facts VALUES(?1,?2,?3,?4,?5,?6,NULL,?7,?8,?9,?10,?11,?12)",
+            "INSERT OR IGNORE INTO facts VALUES(?1,?2,?3,?4,?5,?6,NULL,?7,?8,?9,?10,?11,?12,?13)",
             params![
                 stored.id,
                 stored.subject,
@@ -340,10 +393,11 @@ impl MemoryStore {
                 stored.source_episode,
                 stored.valid_from,
                 stored.valid_to,
-                now(),
+                system_time,
                 stored.source_trust.as_str(),
                 stored.project,
-                stored.agent_id
+                stored.agent_id,
+                session_key
             ],
         )?;
         let text = format!("{} {} {}", v.subject, v.predicate, v.object);
@@ -353,17 +407,19 @@ impl MemoryStore {
             "fact",
             &v.project,
             &v.agent_id,
+            &session_key,
             &text,
             &self.embedder,
         )?;
         tx.commit()?;
         self.enforce_caps(&v.project, &v.agent_id)
     }
-    fn apply_decision(&mut self, v: &DecisionWrite) -> MemoryResult<()> {
+    fn apply_decision_at(&mut self, v: &DecisionWrite, system_time: &str) -> MemoryResult<()> {
         self.ensure_id_available(&v.id)?;
+        let session_key = self.write_session_key().to_owned();
         let tx = self.db.transaction()?;
         tx.execute(
-            "INSERT OR IGNORE INTO decisions VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            "INSERT OR IGNORE INTO decisions VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
             params![
                 v.id,
                 v.summary,
@@ -373,10 +429,11 @@ impl MemoryStore {
                 v.source_episode,
                 v.valid_from,
                 v.valid_to,
-                now(),
+                system_time,
                 v.source_trust.as_str(),
                 v.project,
-                v.agent_id
+                v.agent_id,
+                session_key
             ],
         )?;
         let text = format!(
@@ -392,17 +449,19 @@ impl MemoryStore {
             "decision",
             &v.project,
             &v.agent_id,
+            &session_key,
             &text,
             &self.embedder,
         )?;
         tx.commit()?;
         self.enforce_caps(&v.project, &v.agent_id)
     }
-    fn apply_episode(&mut self, v: &EpisodeWrite) -> MemoryResult<()> {
+    fn apply_episode_at(&mut self, v: &EpisodeWrite, system_time: &str) -> MemoryResult<()> {
         self.ensure_id_available(&v.id)?;
+        let session_key = self.write_session_key().to_owned();
         let tx = self.db.transaction()?;
         tx.execute(
-            "INSERT OR IGNORE INTO episodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            "INSERT OR IGNORE INTO episodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             params![
                 v.id,
                 v.content,
@@ -410,10 +469,11 @@ impl MemoryStore {
                 v.source_product,
                 v.valid_from,
                 v.valid_to,
-                now(),
+                system_time,
                 v.source_trust.as_str(),
                 v.project,
-                v.agent_id
+                v.agent_id,
+                session_key
             ],
         )?;
         index(
@@ -422,17 +482,19 @@ impl MemoryStore {
             "episode",
             &v.project,
             &v.agent_id,
+            &session_key,
             &v.content,
             &self.embedder,
         )?;
         tx.commit()?;
         self.enforce_caps(&v.project, &v.agent_id)
     }
-    fn apply_procedure(&mut self, v: &ProcedureWrite) -> MemoryResult<()> {
+    fn apply_procedure_at(&mut self, v: &ProcedureWrite, system_time: &str) -> MemoryResult<()> {
         self.ensure_id_available(&v.id)?;
+        let session_key = self.write_session_key().to_owned();
         let tx = self.db.transaction()?;
         tx.execute(
-            "INSERT OR IGNORE INTO procedures VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            "INSERT OR IGNORE INTO procedures VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             params![
                 v.id,
                 v.title,
@@ -440,10 +502,11 @@ impl MemoryStore {
                 v.created_by,
                 v.valid_from,
                 v.valid_to,
-                now(),
+                system_time,
                 v.source_trust.as_str(),
                 v.project,
-                v.agent_id
+                v.agent_id,
+                session_key
             ],
         )?;
         let text = format!("{} {}", v.title, v.steps);
@@ -453,6 +516,7 @@ impl MemoryStore {
             "procedure",
             &v.project,
             &v.agent_id,
+            &session_key,
             &text,
             &self.embedder,
         )?;
@@ -501,8 +565,13 @@ impl MemoryStore {
     }
 
     pub fn retrieve(&self, q: &RetrieveQuery) -> MemoryResult<Vec<RetrieveHit>> {
-        if !self.policy.enabled || self.policy.read_scope != ReadScope::SessionAndProject {
+        if !self.policy.enabled {
             return Err(MemoryError::Disabled);
+        }
+        if self.policy.read_scope == ReadScope::Session && self.policy.session_id.is_none() {
+            return Err(MemoryError::UnsupportedPolicy(
+                "Session read scope requires session_id".into(),
+            ));
         }
         validate_partition(&q.project, &q.agent_id)?;
         if matches!(q.agent_scope, AgentScope::Explicit(_)) {
@@ -517,6 +586,15 @@ impl MemoryStore {
         }
         let agents = serde_json::to_string(&ids)
             .map_err(|e| MemoryError::JournalIntegrity(e.to_string()))?;
+        let mut session_keys = vec![String::new()];
+        if let Some(session_id) = &self.policy.session_id {
+            if self.policy.read_scope == ReadScope::Session {
+                session_keys.clear();
+            }
+            session_keys.push(session_id.clone());
+        }
+        let session_keys_json = serde_json::to_string(&session_keys)
+            .map_err(|e| MemoryError::JournalIntegrity(e.to_string()))?;
         let match_query = q
             .text
             .split(|c: char| !c.is_alphanumeric())
@@ -526,11 +604,12 @@ impl MemoryStore {
             .join(" OR ");
         let mut scores: HashMap<String, f64> = HashMap::new();
         if !match_query.is_empty() {
-            let mut s=self.db.prepare("SELECT id FROM memory_fts WHERE memory_fts MATCH ?1 AND project=?2 AND agent_id IN(SELECT value FROM json_each(?3)) ORDER BY bm25(memory_fts) LIMIT 100")?;
+            let mut s=self.db.prepare("SELECT id FROM memory_fts WHERE memory_fts MATCH ?1 AND project=?2 AND agent_id IN(SELECT value FROM json_each(?3)) AND session_id IN(SELECT value FROM json_each(?4)) ORDER BY bm25(memory_fts) LIMIT 100")?;
             for (rank, id) in s
-                .query_map(params![match_query, q.project, agents], |r| {
-                    r.get::<_, String>(0)
-                })?
+                .query_map(
+                    params![match_query, q.project, agents, session_keys_json],
+                    |r| r.get::<_, String>(0),
+                )?
                 .collect::<Result<Vec<_>, _>>()?
                 .into_iter()
                 .enumerate()
@@ -541,13 +620,15 @@ impl MemoryStore {
         let vector = vector_json(&self.embedder.embed(&q.text));
         let mut knn = Vec::new();
         for agent in &ids {
-            let mut s=self.db.prepare("SELECT record_id,distance FROM memory_vec WHERE embedding MATCH ?1 AND k=100 AND project=?2 AND agent_id=?3 ORDER BY distance")?;
-            knn.extend(
-                s.query_map(params![vector, q.project, agent], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
-                })?
-                .collect::<Result<Vec<_>, _>>()?,
-            );
+            for session_key in &session_keys {
+                let mut s=self.db.prepare("SELECT record_id,distance FROM memory_vec WHERE embedding MATCH ?1 AND k=100 AND project=?2 AND agent_id=?3 AND session_id=?4 ORDER BY distance")?;
+                knn.extend(
+                    s.query_map(params![vector, q.project, agent, session_key], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?,
+                );
+            }
         }
         knn.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         for (rank, (id, _)) in knn.into_iter().enumerate() {
@@ -555,10 +636,15 @@ impl MemoryStore {
         }
         let mut hits = Vec::new();
         for (id, score) in scores {
-            if let Some(mut hit) = self.load_hit(&id)? {
+            if let Some((mut hit, session_id)) = self.load_hit(&id)? {
                 if hit.project != q.project || !ids.contains(&hit.agent_id) {
                     return Err(MemoryError::JournalIntegrity(
                         "partition assertion failed".into(),
+                    ));
+                }
+                if !session_keys.contains(&session_id) {
+                    return Err(MemoryError::JournalIntegrity(
+                        "session partition assertion failed".into(),
                     ));
                 }
                 let floor = self.policy.min_tier.rank().max(q.min_tier.rank());
@@ -589,8 +675,8 @@ impl MemoryStore {
         hits.truncate(q.limit);
         Ok(hits)
     }
-    fn load_hit(&self, id: &str) -> MemoryResult<Option<RetrieveHit>> {
-        self.db.query_row("SELECT id,kind,text,confidence,source_episode,valid_from,valid_to,source_trust,project,agent_id FROM (SELECT id,'fact' kind,subject||' '||predicate||' '||object text,confidence,source_episode,valid_from,valid_to,source_trust,project,agent_id FROM facts UNION ALL SELECT id,'decision',summary||' '||why||' '||how_to_apply,1.0,source_episode,valid_from,valid_to,source_trust,project,agent_id FROM decisions UNION ALL SELECT id,'episode',content,1.0,NULL,valid_from,valid_to,source_trust,project,agent_id FROM episodes UNION ALL SELECT id,'procedure',title||' '||steps,1.0,NULL,valid_from,valid_to,source_trust,project,agent_id FROM procedures) WHERE id=?1",[id],|r|Ok(RetrieveHit{id:r.get(0)?,kind:r.get(1)?,text:r.get(2)?,score:0.0,confidence:r.get(3)?,source_episode:r.get(4)?,valid_from:r.get(5)?,valid_to:r.get(6)?,source_trust:SourceTrust::parse(&r.get::<_,String>(7)?).map_err(|_|rusqlite::Error::InvalidQuery)?,project:r.get(8)?,agent_id:r.get(9)?})).optional().map_err(Into::into)
+    fn load_hit(&self, id: &str) -> MemoryResult<Option<(RetrieveHit, String)>> {
+        self.db.query_row("SELECT id,kind,text,confidence,source_episode,valid_from,valid_to,source_trust,project,agent_id,session_id FROM (SELECT id,'fact' kind,subject||' '||predicate||' '||object text,confidence,source_episode,valid_from,valid_to,source_trust,project,agent_id,session_id FROM facts UNION ALL SELECT id,'decision',summary||' '||why||' '||how_to_apply,1.0,source_episode,valid_from,valid_to,source_trust,project,agent_id,session_id FROM decisions UNION ALL SELECT id,'episode',content,1.0,NULL,valid_from,valid_to,source_trust,project,agent_id,session_id FROM episodes UNION ALL SELECT id,'procedure',title||' '||steps,1.0,NULL,valid_from,valid_to,source_trust,project,agent_id,session_id FROM procedures) WHERE id=?1",[id],|r|Ok((RetrieveHit{id:r.get(0)?,kind:r.get(1)?,text:r.get(2)?,score:0.0,confidence:r.get(3)?,source_episode:r.get(4)?,valid_from:r.get(5)?,valid_to:r.get(6)?,source_trust:SourceTrust::parse(&r.get::<_,String>(7)?).map_err(|_|rusqlite::Error::InvalidQuery)?,project:r.get(8)?,agent_id:r.get(9)?}, r.get(10)?))).optional().map_err(Into::into)
     }
 
     pub fn current_facts(&self) -> MemoryResult<Vec<FactState>> {
@@ -611,22 +697,24 @@ impl MemoryStore {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn index(
     db: &Connection,
     id: &str,
     kind: &str,
     project: &str,
     agent: &str,
+    session_id: &str,
     text: &str,
     embedder: &dyn Embedder,
 ) -> MemoryResult<()> {
     db.execute(
-        "INSERT INTO memory_fts(id,kind,project,agent_id,text) VALUES(?1,?2,?3,?4,?5)",
-        params![id, kind, project, agent, text],
+        "INSERT INTO memory_fts(id,kind,project,agent_id,session_id,text) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![id, kind, project, agent, session_id, text],
     )?;
     db.execute(
-        "INSERT INTO memory_vec(record_id,project,agent_id,embedding) VALUES(?1,?2,?3,?4)",
-        params![id, project, agent, vector_json(&embedder.embed(text))],
+        "INSERT INTO memory_vec(record_id,project,agent_id,session_id,embedding) VALUES(?1,?2,?3,?4,?5)",
+        params![id, project, agent, session_id, vector_json(&embedder.embed(text))],
     )?;
     Ok(())
 }
@@ -653,23 +741,102 @@ pub fn rebuild_from_journals(
     journals: &[PathBuf],
     policy: MemoryPolicy,
 ) -> MemoryResult<()> {
-    if db_path.exists() {
-        std::fs::remove_file(db_path)?;
+    reject_network_path(db_path)?;
+    validate_policy(&policy)?;
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
     }
-    let temp_journal = db_path.with_extension("rebuild.jsonl");
-    let mut store = MemoryStore::open_at(db_path, &temp_journal, policy)?;
+    // Acquire the authoritative target lock before creating, removing, or
+    // replacing any database artifact. Contention therefore cannot mutate the
+    // original database by even one byte.
+    let _target_lock = FileLock::try_acquire(&db_path.with_extension("memory.lock"))
+        .map_err(|e| MemoryError::Contention(e.to_string()))?;
+    let suffix = format!("rebuild-{}", std::process::id());
+    let temp_db = db_path.with_extension(format!("{suffix}.db"));
+    let temp_journal = db_path.with_extension(format!("{suffix}.jsonl"));
+    let temp_lock = temp_db.with_extension("memory.lock");
+    if temp_db.exists() || temp_journal.exists() {
+        return Err(MemoryError::Contention(
+            "stale rebuild sibling exists".into(),
+        ));
+    }
+    let result = rebuild_into_sibling(&temp_db, &temp_journal, journals, policy);
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&temp_db);
+        let _ = std::fs::remove_file(&temp_journal);
+        let _ = std::fs::remove_file(&temp_lock);
+        return Err(error);
+    }
+    let synced_db = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&temp_db)
+        .map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("open rebuilt database for sync: {error}"),
+            )
+        })?;
+    synced_db.sync_all().map_err(|error| {
+        std::io::Error::new(error.kind(), format!("sync rebuilt database: {error}"))
+    })?;
+    drop(synced_db);
+    if let Err(error) = platform_replace(&temp_db, db_path) {
+        let _ = std::fs::remove_file(&temp_db);
+        let _ = std::fs::remove_file(&temp_journal);
+        let _ = std::fs::remove_file(&temp_lock);
+        return Err(error);
+    }
+    sync_parent(db_path)?;
+    let _ = std::fs::remove_file(&temp_journal);
+    let _ = std::fs::remove_file(&temp_lock);
+    Ok(())
+}
+
+fn rebuild_into_sibling(
+    temp_db: &Path,
+    temp_journal: &Path,
+    journals: &[PathBuf],
+    policy: MemoryPolicy,
+) -> MemoryResult<()> {
+    let mut store = MemoryStore::open_at(temp_db, temp_journal, policy)?;
     for path in journals {
         let report = read_journal(path)?;
-        let receipts: HashSet<String> = report
+        let receipts: HashSet<(String, String)> = report
             .envelopes
             .iter()
             .filter_map(|e| match &e.op {
-                Op::MemoryWriteReceipt { write_id, .. } => Some(write_id.clone()),
+                Op::MemoryWriteReceipt {
+                    write_id, agent_id, ..
+                } => Some((write_id.clone(), agent_id.clone())),
                 _ => None,
             })
             .collect();
         for envelope in report.envelopes {
             match envelope.op {
+                Op::MemoryPolicyResolved {
+                    enabled,
+                    write,
+                    read_scope,
+                    episode_cap,
+                    fact_cap,
+                    byte_cap,
+                    deletion,
+                    min_tier,
+                    session_id,
+                } => {
+                    store.policy = policy_from_journal(
+                        enabled,
+                        &write,
+                        &read_scope,
+                        episode_cap,
+                        fact_cap,
+                        byte_cap,
+                        &deletion,
+                        &min_tier,
+                        session_id,
+                    )?;
+                }
                 Op::MemoryWriteFact {
                     fact_id,
                     subject,
@@ -682,17 +849,22 @@ pub fn rebuild_from_journals(
                     source_trust,
                     project,
                     agent_id,
+                    session_id,
                     resolver_outcome,
                 } => {
-                    if source_trust == "ModelInference" && !receipts.contains(&fact_id) {
+                    validate_recovery_partition(&project, &agent_id, session_id.as_deref())?;
+                    if source_trust == "ModelInference"
+                        && !receipts.contains(&(fact_id.clone(), agent_id.clone()))
+                    {
                         continue;
                     }
+                    set_recovery_session(&mut store.policy, session_id);
                     let r = match resolver_outcome.as_str() {
                         "supersede" => ContradictionResolution::Supersede,
                         "keepexisting" | "keep_existing" => ContradictionResolution::KeepExisting,
                         _ => ContradictionResolution::Coexist,
                     };
-                    store.apply_fact(
+                    store.apply_fact_at(
                         &FactWrite {
                             id: fact_id,
                             subject,
@@ -707,6 +879,7 @@ pub fn rebuild_from_journals(
                             agent_id,
                         },
                         r,
+                        &envelope.ts,
                     )?;
                 }
                 Op::MemoryWriteDecision {
@@ -721,23 +894,31 @@ pub fn rebuild_from_journals(
                     source_trust,
                     project,
                     agent_id,
+                    session_id,
                 } => {
-                    if source_trust == "ModelInference" && !receipts.contains(&decision_id) {
+                    validate_recovery_partition(&project, &agent_id, session_id.as_deref())?;
+                    if source_trust == "ModelInference"
+                        && !receipts.contains(&(decision_id.clone(), agent_id.clone()))
+                    {
                         continue;
                     }
-                    store.apply_decision(&DecisionWrite {
-                        id: decision_id,
-                        summary,
-                        why,
-                        how_to_apply,
-                        tags,
-                        source_episode,
-                        valid_from,
-                        valid_to,
-                        source_trust: SourceTrust::parse(&source_trust)?,
-                        project,
-                        agent_id,
-                    })?
+                    set_recovery_session(&mut store.policy, session_id);
+                    store.apply_decision_at(
+                        &DecisionWrite {
+                            id: decision_id,
+                            summary,
+                            why,
+                            how_to_apply,
+                            tags,
+                            source_episode,
+                            valid_from,
+                            valid_to,
+                            source_trust: SourceTrust::parse(&source_trust)?,
+                            project,
+                            agent_id,
+                        },
+                        &envelope.ts,
+                    )?
                 }
                 Op::MemoryWriteEpisode {
                     episode_id,
@@ -749,21 +930,29 @@ pub fn rebuild_from_journals(
                     source_trust,
                     project,
                     agent_id,
+                    session_id,
                 } => {
-                    if source_trust == "ModelInference" && !receipts.contains(&episode_id) {
+                    validate_recovery_partition(&project, &agent_id, session_id.as_deref())?;
+                    if source_trust == "ModelInference"
+                        && !receipts.contains(&(episode_id.clone(), agent_id.clone()))
+                    {
                         continue;
                     }
-                    store.apply_episode(&EpisodeWrite {
-                        id: episode_id,
-                        content,
-                        source,
-                        source_product,
-                        valid_from,
-                        valid_to,
-                        source_trust: SourceTrust::parse(&source_trust)?,
-                        project,
-                        agent_id,
-                    })?
+                    set_recovery_session(&mut store.policy, session_id);
+                    store.apply_episode_at(
+                        &EpisodeWrite {
+                            id: episode_id,
+                            content,
+                            source,
+                            source_product,
+                            valid_from,
+                            valid_to,
+                            source_trust: SourceTrust::parse(&source_trust)?,
+                            project,
+                            agent_id,
+                        },
+                        &envelope.ts,
+                    )?
                 }
                 Op::MemoryWriteProcedure {
                     procedure_id,
@@ -775,27 +964,190 @@ pub fn rebuild_from_journals(
                     source_trust,
                     project,
                     agent_id,
+                    session_id,
                 } => {
-                    if source_trust == "ModelInference" && !receipts.contains(&procedure_id) {
+                    validate_recovery_partition(&project, &agent_id, session_id.as_deref())?;
+                    if source_trust == "ModelInference"
+                        && !receipts.contains(&(procedure_id.clone(), agent_id.clone()))
+                    {
                         continue;
                     }
-                    store.apply_procedure(&ProcedureWrite {
-                        id: procedure_id,
-                        title,
-                        steps,
-                        created_by,
-                        valid_from,
-                        valid_to,
-                        source_trust: SourceTrust::parse(&source_trust)?,
-                        project,
-                        agent_id,
-                    })?
+                    set_recovery_session(&mut store.policy, session_id);
+                    store.apply_procedure_at(
+                        &ProcedureWrite {
+                            id: procedure_id,
+                            title,
+                            steps,
+                            created_by,
+                            valid_from,
+                            valid_to,
+                            source_trust: SourceTrust::parse(&source_trust)?,
+                            project,
+                            agent_id,
+                        },
+                        &envelope.ts,
+                    )?
                 }
                 _ => {}
             }
         }
     }
     drop(store);
-    let _ = std::fs::remove_file(temp_journal);
+    Ok(())
+}
+
+fn set_recovery_session(policy: &mut MemoryPolicy, session_id: Option<String>) {
+    policy.session_id = session_id;
+}
+
+fn validate_recovery_partition(
+    project: &str,
+    agent: &str,
+    session: Option<&str>,
+) -> MemoryResult<()> {
+    validate_partition(project, agent)?;
+    if let Some(session) = session {
+        if session.is_empty() || session.len() > 128 || session.chars().any(char::is_control) {
+            return Err(MemoryError::InvalidValue {
+                field: "session_id",
+                value: session.into(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_policy(policy: &MemoryPolicy) -> MemoryResult<()> {
+    if policy.deletion == DeletionRule::HardDelete {
+        return Err(MemoryError::UnsupportedPolicy(
+            "HardDelete requires a journaled explicit delete op, which P-MEM-1 does not expose"
+                .into(),
+        ));
+    }
+    if matches!(policy.write, WriteScope::SessionOnly)
+        || matches!(policy.read_scope, ReadScope::Session)
+    {
+        validate_recovery_partition("policy", "main", policy.session_id.as_deref())?;
+        if policy.session_id.is_none() {
+            return Err(MemoryError::UnsupportedPolicy(
+                "session scope requires session_id".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn policy_from_journal(
+    enabled: bool,
+    write: &str,
+    read_scope: &str,
+    episodes: u64,
+    facts: u64,
+    bytes: u64,
+    deletion: &str,
+    min_tier: &str,
+    session_id: Option<String>,
+) -> MemoryResult<MemoryPolicy> {
+    let write = match write {
+        "Off" => WriteScope::Off,
+        "SessionOnly" => WriteScope::SessionOnly,
+        "SessionAndProject" => WriteScope::SessionAndProject,
+        other => {
+            return Err(MemoryError::InvalidValue {
+                field: "write_scope",
+                value: other.into(),
+            });
+        }
+    };
+    let deletion = match deletion {
+        "Never" => DeletionRule::Never,
+        "HardDelete" => {
+            return Err(MemoryError::UnsupportedPolicy(
+                "journal requests unsupported HardDelete".into(),
+            ));
+        }
+        other => {
+            return Err(MemoryError::InvalidValue {
+                field: "deletion",
+                value: other.into(),
+            });
+        }
+    };
+    let policy = MemoryPolicy {
+        enabled,
+        write,
+        read_scope: ReadScope::parse(read_scope)?,
+        retention: RetentionCaps {
+            episodes,
+            facts,
+            bytes,
+        },
+        embedding_backend: EmbedderChoice::HashedLocal,
+        deletion,
+        min_tier: SourceTrust::parse(min_tier)?,
+        session_id,
+    };
+    validate_policy(&policy)?;
+    Ok(policy)
+}
+
+#[cfg(windows)]
+fn platform_replace(source: &Path, target: &Path) -> MemoryResult<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        let error = std::io::Error::last_os_error();
+        return Err(std::io::Error::new(
+            error.kind(),
+            format!("atomically replace rebuilt database: {error}"),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn platform_replace(source: &Path, target: &Path) -> MemoryResult<()> {
+    std::fs::rename(source, target)?;
+    Ok(())
+}
+
+#[cfg(not(any(windows, unix)))]
+fn platform_replace(_source: &Path, _target: &Path) -> MemoryResult<()> {
+    Err(MemoryError::UnsupportedPolicy(
+        "no atomic replacement primitive".into(),
+    ))
+}
+
+#[cfg(unix)]
+fn sync_parent(path: &Path) -> MemoryResult<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_parent(_path: &Path) -> MemoryResult<()> {
     Ok(())
 }

@@ -17,7 +17,10 @@ struct Query {
 }
 
 fn load() -> Fixture {
-    serde_json::from_str(include_str!("../fixtures/memory-retrieval-recall-v1.json")).unwrap()
+    serde_json::from_str(include_str!(
+        "../../../gates/fixtures/memory-retrieval-recall-v1/fixture.json"
+    ))
+    .unwrap()
 }
 fn ingest(store: &mut MemoryStore, fixture: &Fixture) {
     for d in &fixture.decisions {
