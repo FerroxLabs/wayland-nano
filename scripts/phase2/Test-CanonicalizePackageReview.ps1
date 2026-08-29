@@ -175,8 +175,8 @@ for (const name of Object.keys(subjects)) {
 }
 const activationHash = crypto.createHash('sha256').update(canonicalize(unsigned(subjects.activation))).digest('hex');
 if (activationHash !== vectors.activation.canonical_payload_sha256) throw new Error('activation hash mismatch');
-const rfcInput = {'€':'Euro Sign','\r':'Carriage Return','דּ':'Hebrew Letter Dalet With Dagesh','1':'One','😀':'Emoji: Grinning Face','\u0080':'Control','ö':'Latin Small Letter O With Diaeresis'};
-const rfcExpected = '{"\\r":"Carriage Return","1":"One","":"Control","ö":"Latin Small Letter O With Diaeresis","€":"Euro Sign","😀":"Emoji: Grinning Face","דּ":"Hebrew Letter Dalet With Dagesh"}';
+const rfcInput = {'\u20ac':'Euro Sign','\r':'Carriage Return','\ufb33':'Hebrew Letter Dalet With Dagesh','1':'One','\ud83d\ude00':'Emoji: Grinning Face','\u0080':'Control','\u00f6':'Latin Small Letter O With Diaeresis'};
+const rfcExpected = '{"\\r":"Carriage Return","1":"One","\u0080":"Control","\u00f6":"Latin Small Letter O With Diaeresis","\u20ac":"Euro Sign","\ud83d\ude00":"Emoji: Grinning Face","\ufb33":"Hebrew Letter Dalet With Dagesh"}';
 if (canonicalize(rfcInput) !== rfcExpected) throw new Error('RFC 8785 UTF-16 property ordering mismatch');
 process.stdout.write(JSON.stringify({exportType: typeof canonicalize, rfc8785: true, activation: true, receipt: true, control: true, admin: true}));
 '@

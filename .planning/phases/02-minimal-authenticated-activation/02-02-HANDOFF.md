@@ -1,5 +1,7 @@
 # Plan 02-02 continuation handoff
 
+**Status: RESOLVED on 2026-08-30.** The ASCII-only RFC vector correction passed the exact Windows PowerShell 5 verifier. The independently re-downloaded artifact matched the approved integrity, SHA-256, tag, and peeled commit. The exact dependency was then consumed in the authorized Desktop worktree with frozen-lock, Node/Bun vector, formatting, and typecheck gates passing. See `02-02-SUMMARY.md`.
+
 ## Exact completion state
 
 - The exact `canonicalize@2.1.0` receipt, closed schema, and independent redownload verifier are written in the planning worktree.
