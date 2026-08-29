@@ -1665,10 +1665,16 @@ version = "0.2.0"
 dependencies = [
  "base64",
  "ed25519-dalek",
+ "libc",
+ "nano-session",
+ "rusqlite",
  "serde",
  "serde_jcs",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.20",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
