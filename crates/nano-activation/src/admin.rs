@@ -245,7 +245,13 @@ mod tests {
         // GitHub's RUNNER_TEMP and checkout ancestry can be writable by other
         // principals, which production correctly rejects as an insecure home.
         #[cfg(unix)]
-        let home = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let home = {
+            use std::os::unix::fs::PermissionsExt;
+            tempfile::Builder::new()
+                .permissions(std::fs::Permissions::from_mode(0o700))
+                .tempdir_in(std::env::var_os("HOME").unwrap())
+                .unwrap()
+        };
         #[cfg(windows)]
         let home = tempfile::tempdir().unwrap();
         #[cfg(windows)]
