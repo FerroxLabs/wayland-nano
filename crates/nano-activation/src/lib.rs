@@ -6,7 +6,9 @@
 pub mod admin;
 pub mod admission;
 pub mod authority;
+pub mod build_identity;
 pub mod control;
+pub mod enablement;
 pub mod journal;
 pub mod key_provider;
 pub mod policy;

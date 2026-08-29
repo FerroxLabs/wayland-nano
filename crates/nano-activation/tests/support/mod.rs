@@ -95,6 +95,11 @@ pub fn artifact() -> ArtifactIdentity {
         executable_sha256: "2".repeat(64),
     }
 }
+pub fn artifact_with_exe(value: char) -> ArtifactIdentity {
+    let mut artifact = artifact();
+    artifact.executable_sha256 = value.to_string().repeat(64);
+    artifact
+}
 pub fn gate(home: &std::path::Path, signer: TestSigner) -> AdmissionGate {
     AdmissionGate::open(home, Box::new(signer), ceiling(), artifact()).unwrap()
 }
