@@ -1473,12 +1473,16 @@ fn acquire_session_ownership(
 /// would silently drop a decision at fold time.
 async fn run_session_lifecycle_hook(
     hooks: &nano_hooks::HookEngine,
+    phase2_quarantined: bool,
     event: nano_hooks::HookEvent,
     matcher: Option<&str>,
     payload: serde_json::Value,
     session_id: &str,
     coordinator: &nano_session::JournalCoordinator,
 ) {
+    if phase2_quarantined {
+        return;
+    }
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let run = hooks.run(event, matcher, &payload).await;
     let event_op = match event {
@@ -1702,6 +1706,7 @@ where
 {
     #[cfg(feature = "mem-stats")]
     let mut mem_stats = MemStatsWriter::from_env()?;
+    let phase2_persistence_quarantined = activation.is_some();
     let out = Arc::new(Mutex::new(writer));
     let pending: PendingMap = Arc::new(Mutex::new(std::collections::HashMap::new()));
     // P5 §5/S1: the production tool-capability catalog — vendored (parse-
@@ -1803,8 +1808,9 @@ where
     // C11: the session-alive-only cron runner ticks here (30s, wcore
     // TICK_INTERVAL parity). A corrupt job store disables the scheduler for
     // the process lifetime (fail-closed, Q6) — the session is unaffected.
-    let mut cron_interval = config
-        .cron_home
+    let mut cron_interval = (!phase2_persistence_quarantined)
+        .then_some(config.cron_home)
+        .flatten()
         .map(|_| tokio::time::interval(std::time::Duration::from_secs(30)));
     let mut cron_disabled = false;
     #[allow(clippy::type_complexity)]
@@ -1827,6 +1833,7 @@ where
                 let ended_id = active.id.clone();
                 run_session_lifecycle_hook(
                     config.hooks,
+                    phase2_persistence_quarantined,
                     nano_hooks::HookEvent::SessionEnd,
                     Some("host_exit"),
                     serde_json::json!({"hook_event_name":"SessionEnd", "session_id":ended_id, "reason":"host_exit"}),
@@ -1880,7 +1887,9 @@ where
                             // between steps and the approval gate polls it while
                             // waiting on a permission response. C6: cascades to
                             // children (their own flags + kill handles).
-                            if control.is_some() && let Some(active) = &session {
+                            if (control.is_some() || !phase2_persistence_quarantined)
+                                && let Some(active) = &session
+                            {
                                 active.cancel.store(true, Ordering::SeqCst);
                                 active.tasks.cancel_all();
                             }
@@ -2047,6 +2056,7 @@ where
                             // (context-neutral) decisions too.
                             run_session_lifecycle_hook(
                                 config.hooks,
+                                phase2_persistence_quarantined,
                                 nano_hooks::HookEvent::SessionStart,
                                 Some("startup"),
                                 serde_json::json!({"hook_event_name":"SessionStart", "session_id":session_id, "source":"startup"}),
@@ -2119,6 +2129,7 @@ where
                                 // session, best-effort.
                                 run_session_lifecycle_hook(
                                     config.hooks,
+                                    phase2_persistence_quarantined,
                                     nano_hooks::HookEvent::SessionEnd,
                                     Some("session_replaced"),
                                     serde_json::json!({"hook_event_name":"SessionEnd", "session_id":old.id, "reason":"session_replaced"}),
@@ -2360,6 +2371,7 @@ where
                                 // "resume" fires below).
                                 run_session_lifecycle_hook(
                                     config.hooks,
+                                    phase2_persistence_quarantined,
                                     nano_hooks::HookEvent::SessionEnd,
                                     Some("session_replaced"),
                                     serde_json::json!({"hook_event_name":"SessionEnd", "session_id":old.id, "reason":"session_replaced"}),
@@ -2455,6 +2467,7 @@ where
                             // (context-neutral) decisions too.
                             run_session_lifecycle_hook(
                                 config.hooks,
+                                phase2_persistence_quarantined,
                                 nano_hooks::HookEvent::SessionStart,
                                 Some("resume"),
                                 serde_json::json!({"hook_event_name":"SessionStart", "session_id":session_id, "source":"resume"}),
@@ -2621,6 +2634,7 @@ where
                                 // session, best-effort.
                                 run_session_lifecycle_hook(
                                     config.hooks,
+                                    phase2_persistence_quarantined,
                                     nano_hooks::HookEvent::SessionEnd,
                                     Some("session_replaced"),
                                     serde_json::json!({"hook_event_name":"SessionEnd", "session_id":old.id, "reason":"session_replaced"}),
@@ -3341,7 +3355,7 @@ where
                             // turn N is visible from turn N+1. Read errors
                             // fail open (no block). The ACP seam has no
                             // skills block, so skills_chars is 0 here.
-                            if let Some(memory_block) =
+                            if active.activation.is_none() && let Some(memory_block) =
                                 nano_agent::memory::prepare_memory_context(
                                     &nano_agent::memory::MemoryStore::from_dir(
                                         config.memory.dir.clone(),
@@ -4228,14 +4242,18 @@ where
                                 // caps). Read tools always; write tools only
                                 // behind the operator opt-in — the listing the
                                 // model sees reflects exactly that.
-                                let memory_executor = nano_agent::memory::MemoryToolExecutor::new(
-                                    nano_agent::memory::MemoryStore::from_dir(memory_dir),
-                                    memory_write,
-                                    &mcp_executor,
-                                );
-                                tool_definitions.extend(
-                                    nano_agent::memory::memory_tool_definitions(memory_write),
-                                );
+                                let memory_executor = if activation_token.is_some() {
+                                    nano_agent::memory::MemoryToolExecutor::quarantined(&mcp_executor)
+                                } else {
+                                    tool_definitions.extend(
+                                        nano_agent::memory::memory_tool_definitions(memory_write),
+                                    );
+                                    nano_agent::memory::MemoryToolExecutor::new(
+                                        nano_agent::memory::MemoryStore::from_dir(memory_dir),
+                                        memory_write,
+                                        &mcp_executor,
+                                    )
+                                };
                                 // S9 §3 (Q3 RULED, strictest-wins): the eight
                                 // CUA tools register ONLY when the session
                                 // bridge is wired, the turn's mode registers
@@ -4328,14 +4346,23 @@ where
                                 let cron_store = nano_agent::cron::JsonCronStore::new(
                                     config.attachment_home,
                                 );
-                                let executor = nano_agent::cron::CronjobExecutor::new(
-                                    &executor,
-                                    &cron_store,
-                                    session_id.clone(),
-                                    &turn_coordinator,
-                                );
-                                tool_definitions
-                                    .push(nano_agent::cron::cronjob_tool_definition());
+                                let executor = if activation_token.is_some() {
+                                    nano_agent::cron::CronjobExecutor::quarantined(
+                                        &executor,
+                                        &cron_store,
+                                        session_id.clone(),
+                                        &turn_coordinator,
+                                    )
+                                } else {
+                                    tool_definitions
+                                        .push(nano_agent::cron::cronjob_tool_definition());
+                                    nano_agent::cron::CronjobExecutor::new(
+                                        &executor,
+                                        &cron_store,
+                                        session_id.clone(),
+                                        &turn_coordinator,
+                                    )
+                                };
                                 // S7 (the integrator seam, locked design
                                 // item 4): the workspace checkpoint tools —
                                 // journal-first through the session's
@@ -4447,6 +4474,12 @@ where
                                         obs_out.lock().unwrap_or_else(|p| p.into_inner());
                                     let _ = write_json(&mut *guard, &notice);
                                 };
+                                let quarantined_hooks = nano_hooks::HookEngine::empty();
+                                let turn_hooks = if activation_token.is_some() {
+                                    &quarantined_hooks
+                                } else {
+                                    config.hooks
+                                };
                                 let engine = TurnEngine {
                                     model: &driver,
                                     tools: &executor,
@@ -4479,13 +4512,11 @@ where
                                             .map(|s| s as &dyn nano_agent::cua::CuaBridge),
                                     },
                                 }
-                                // S4 (F-46): the process-wide hook engine —
-                                // PreToolUse blocks after approval,
-                                // PostToolUse/PreCompact/PostCompact notify,
-                                // UserPromptSubmit and Stop block per the S4
-                                // design; decisions journal through the turn
-                                // sink like exec/host.
-                                .with_hooks(config.hooks);
+                                // Legacy lifecycle hooks are intentionally
+                                // unavailable to authenticated Phase-2
+                                // activations. The debug-only compatibility
+                                // harness retains the pre-Phase-2 behavior.
+                                .with_hooks(turn_hooks);
                                 let sink_session = session_id.clone();
                                 let sink_coordinator = turn_coordinator.clone();
                                 let journal_failer = config.journal_append_failer;
@@ -4874,7 +4905,7 @@ where
                                 // session value directly (r5).
                                 image_influenced_before,
                                 &mut emit,
-                                Some(config.hooks),
+                                active.activation.is_none().then_some(config.hooks),
                                 "compaction",
                                 "manual",
                             )
@@ -5775,7 +5806,7 @@ fn reader_loop<R: BufRead>(
                 }
             }
             (Some(method), None) => {
-                if method == "session/cancel" && control.is_some() {
+                if method == "session/cancel" && (control.is_some() || activation.is_none()) {
                     // Fire the flag right here: the main loop may be mid-poll
                     // inside the turn and unable to relay it for whole steps.
                     // C6: cascade to children too — every child flag set and
