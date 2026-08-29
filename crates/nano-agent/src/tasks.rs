@@ -30,6 +30,7 @@
 //!   until process exit; KILL_ON_JOB_CLOSE is the final backstop).
 
 use crate::loop_protection::ProgressSignals;
+use crate::mcp::DelegatedEffectAuthority;
 use crate::turn::{
     ApprovalDecision, ApprovalGate, ModelDriver, ToolExecutor, ToolOutcome, TurnEngine, TurnState,
 };
@@ -90,6 +91,8 @@ pub enum TaskError {
     NotInInventory(String),
     #[error("invalid path: {0}")]
     InvalidPath(String),
+    #[error("activation authority denied task spawn: {0}")]
+    ActivationDenied(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +197,7 @@ pub struct TaskRegistry {
     rollup_sink: Option<RollupSink>,
     session_id: Option<String>,
     image_influenced: Arc<std::sync::atomic::AtomicBool>,
+    activation: Option<DelegatedEffectAuthority>,
 }
 
 impl std::fmt::Debug for TaskRegistry {
@@ -229,7 +233,16 @@ impl TaskRegistry {
             rollup_sink: None,
             session_id: None,
             image_influenced: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            activation: None,
         }
+    }
+
+    /// Bind child creation to the admitted parent activation. The actual
+    /// spawn adapter consumes this authority before workspace copy or
+    /// thread creation.
+    pub fn with_activation_authority(mut self, authority: DelegatedEffectAuthority) -> Self {
+        self.activation = Some(authority);
+        self
     }
 
     /// P1 (D12): attach the session's resolved web_search chain AND the
@@ -354,7 +367,7 @@ impl TaskRegistry {
     /// child thread, register the record, return the id. Every failure
     /// mode fails CLOSED: no half-copied tree, no half-started task.
     pub fn spawn(&self, prompt: &str, label: Option<&str>) -> Result<String, TaskError> {
-        self.spawn_inner(prompt, label, ChildKind::Task)
+        self.spawn_authorized(prompt, label, ChildKind::Task, "direct-task-spawn")
     }
 
     /// P4 §3.1: `/review` spawns a REVIEW CHILD through this same C6
@@ -363,7 +376,50 @@ impl TaskRegistry {
     /// assembled host-side via `review_prompt::review_seed`, read-only
     /// policy/executor/gate, no task tools, 8-step budget).
     pub fn spawn_review(&self, prompt: &str, label: Option<&str>) -> Result<String, TaskError> {
-        self.spawn_inner(prompt, label, ChildKind::Review)
+        self.spawn_authorized(prompt, label, ChildKind::Review, "direct-review-spawn")
+    }
+
+    fn spawn_from_tool(
+        &self,
+        prompt: &str,
+        label: Option<&str>,
+        call_id: &str,
+    ) -> Result<String, TaskError> {
+        self.spawn_authorized(prompt, label, ChildKind::Task, call_id)
+    }
+
+    fn spawn_authorized(
+        &self,
+        prompt: &str,
+        label: Option<&str>,
+        kind: ChildKind,
+        effect_identity: &str,
+    ) -> Result<String, TaskError> {
+        let permit = match &self.activation {
+            Some(authority) => Some(
+                authority
+                    .begin_task_spawn(effect_identity, prompt, label)
+                    .map_err(|outcome| TaskError::ActivationDenied(outcome.output))?,
+            ),
+            None => None,
+        };
+        let child_budget = permit.as_ref().and_then(|permit| permit.child_budget());
+        let child_capabilities = permit
+            .as_ref()
+            .and_then(|permit| permit.child_capabilities());
+        let task_id = self.spawn_inner(prompt, label, kind, child_budget, child_capabilities)?;
+        if let Some(permit) = permit {
+            let outcome = ToolOutcome {
+                ok: true,
+                output: task_id.clone(),
+                progress: ProgressSignals::default(),
+                error_kind: None,
+            };
+            permit
+                .complete(&outcome)
+                .map_err(|denial| TaskError::ActivationDenied(denial.output))?;
+        }
+        Ok(task_id)
     }
 
     fn spawn_inner(
@@ -371,6 +427,10 @@ impl TaskRegistry {
         prompt: &str,
         label: Option<&str>,
         kind: ChildKind,
+        delegated_budget: Option<crate::loop_protection::TurnBudget>,
+        delegated_capabilities: Option<
+            std::collections::BTreeSet<nano_activation::policy::EffectiveCapability>,
+        >,
     ) -> Result<String, TaskError> {
         if self.spawn_depth >= MAX_SPAWN_DEPTH {
             return Err(TaskError::DepthLimit);
@@ -462,6 +522,8 @@ impl TaskRegistry {
             // lands in the ONE session meter.
             meter: self.meter.clone(),
             image_influenced: self.image_influenced.clone(),
+            delegated_budget,
+            delegated_capabilities,
             done_tx,
         };
         let join = std::thread::Builder::new()
@@ -848,6 +910,9 @@ struct ChildContext {
     /// P1 §3.3: the session meter clone (live path).
     meter: Option<crate::cost::CostMeter>,
     image_influenced: Arc<std::sync::atomic::AtomicBool>,
+    delegated_budget: Option<crate::loop_protection::TurnBudget>,
+    delegated_capabilities:
+        Option<std::collections::BTreeSet<nano_activation::policy::EffectiveCapability>>,
     done_tx: std::sync::mpsc::Sender<ChildOutcome>,
 }
 
@@ -971,6 +1036,7 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
         policy,
         cwd: ctx.workspace_copy.clone(),
         image_influenced: ctx.image_influenced.clone(),
+        delegated_capabilities: ctx.delegated_capabilities.clone(),
     };
     // P4 §3.1: the review gate approves only read-only-classified names,
     // PermissionMode-independent.
@@ -979,7 +1045,12 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
         Some(executor) => executor,
         None => task_executor.as_ref().expect("task executor present"),
     };
-    let gate: &dyn ApprovalGate = if review { &review_gate } else { &task_gate };
+    let base_gate: &dyn ApprovalGate = if review { &review_gate } else { &task_gate };
+    let delegated_gate = DelegatedApproval {
+        inner: base_gate,
+        capabilities: ctx.delegated_capabilities.as_ref(),
+    };
+    let gate: &dyn ApprovalGate = &delegated_gate;
     let engine = TurnEngine {
         model: ctx.driver.as_ref(),
         tools,
@@ -988,12 +1059,25 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
         // keep the default budget.
         budget: if review {
             crate::loop_protection::TurnBudget {
-                max_steps: crate::review::REVIEW_MAX_STEPS,
-                max_wall_time: crate::review::REVIEW_WALL_TIME,
-                ..Default::default()
+                max_steps: ctx
+                    .delegated_budget
+                    .as_ref()
+                    .map_or(crate::review::REVIEW_MAX_STEPS, |budget| {
+                        budget.max_steps.min(crate::review::REVIEW_MAX_STEPS)
+                    }),
+                max_tool_calls: ctx.delegated_budget.as_ref().map_or_else(
+                    || crate::loop_protection::TurnBudget::default().max_tool_calls,
+                    |budget| budget.max_tool_calls,
+                ),
+                max_wall_time: ctx
+                    .delegated_budget
+                    .as_ref()
+                    .map_or(crate::review::REVIEW_WALL_TIME, |budget| {
+                        budget.max_wall_time.min(crate::review::REVIEW_WALL_TIME)
+                    }),
             }
         } else {
-            crate::loop_protection::TurnBudget::default()
+            ctx.delegated_budget.clone().unwrap_or_default()
         },
         model_name: ctx.model_name.clone(),
         // Depth limit (tested invariant): the task family is ABSENT from
@@ -1002,11 +1086,14 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
         // when the session resolved a backend — the same backend-aware
         // construction as the parent surface. §3.2: the review set is the
         // explicit {fs_read, search, glob} allow-list, nothing else.
-        tool_definitions: if review {
-            crate::wiring::review_tool_definitions()
-        } else {
-            v1_tool_definitions(ctx.web_search.is_some(), false)
-        },
+        tool_definitions: delegated_tool_definitions(
+            if review {
+                crate::wiring::review_tool_definitions()
+            } else {
+                v1_tool_definitions(ctx.web_search.is_some(), false)
+            },
+            ctx.delegated_capabilities.as_ref(),
+        ),
         approval: Some(gate),
         compaction: None,
         // Children run the pre-C9 engine posture: no steer queue, no
@@ -1072,6 +1159,27 @@ async fn run_child_inner(ctx: &ChildContext) -> ChildOutcome {
             failure: Some(format!("{other:?}")),
             usage,
         },
+    }
+}
+
+#[derive(Debug)]
+struct DelegatedApproval<'a> {
+    inner: &'a dyn ApprovalGate,
+    capabilities:
+        Option<&'a std::collections::BTreeSet<nano_activation::policy::EffectiveCapability>>,
+}
+
+impl ApprovalGate for DelegatedApproval<'_> {
+    fn approve(&self, call: &ToolCall) -> ApprovalDecision {
+        if delegated_capability_allows(self.capabilities, &call.name) {
+            self.inner.approve(call)
+        } else {
+            ApprovalDecision::Deny
+        }
+    }
+
+    fn denial_reason(&self) -> Option<&'static str> {
+        Some("delegated activation authority does not permit this child effect")
     }
 }
 
@@ -1335,10 +1443,15 @@ pub struct TaskApproval {
     policy: nano_core::permissions::FileSystemSandboxPolicy,
     cwd: PathBuf,
     image_influenced: Arc<std::sync::atomic::AtomicBool>,
+    delegated_capabilities:
+        Option<std::collections::BTreeSet<nano_activation::policy::EffectiveCapability>>,
 }
 
 impl ApprovalGate for TaskApproval {
     fn approve(&self, call: &ToolCall) -> ApprovalDecision {
+        if !delegated_capability_allows(self.delegated_capabilities.as_ref(), &call.name) {
+            return ApprovalDecision::Deny;
+        }
         if self.image_influenced.load(Ordering::SeqCst) && task_protected_mutation(call) {
             return ApprovalDecision::Deny;
         }
@@ -1374,6 +1487,35 @@ impl ApprovalGate for TaskApproval {
     fn denial_reason(&self) -> Option<&'static str> {
         Some("background tasks cannot request interactive approval")
     }
+}
+
+fn delegated_capability_allows(
+    capabilities: Option<&std::collections::BTreeSet<nano_activation::policy::EffectiveCapability>>,
+    name: &str,
+) -> bool {
+    let Some(capabilities) = capabilities else {
+        return true;
+    };
+    let required = match name {
+        name if is_read_only_tool(name) || matches!(name, "fs_list" | "view_image") => {
+            nano_activation::policy::EffectiveCapability::FilesystemRead
+        }
+        "fs_write" | "fs_edit" => nano_activation::policy::EffectiveCapability::FilesystemWrite,
+        "shell" => nano_activation::policy::EffectiveCapability::ShellExecute,
+        "web_fetch" | "web_search" => nano_activation::policy::EffectiveCapability::NetworkEgress,
+        _ => return false,
+    };
+    capabilities.contains(&required)
+}
+
+fn delegated_tool_definitions(
+    definitions: Vec<ToolDefinition>,
+    capabilities: Option<&std::collections::BTreeSet<nano_activation::policy::EffectiveCapability>>,
+) -> Vec<ToolDefinition> {
+    definitions
+        .into_iter()
+        .filter(|definition| delegated_capability_allows(capabilities, &definition.name))
+        .collect()
 }
 
 fn task_protected_mutation(call: &ToolCall) -> bool {
@@ -1497,7 +1639,10 @@ impl ToolExecutor for TaskToolExecutor<'_> {
         let arg = |key: &str| call.arguments.get(key).and_then(|v| v.as_str());
         match call.name.as_str() {
             "task_spawn" => match arg("prompt") {
-                Some(prompt) => match self.registry.spawn(prompt, arg("label")) {
+                Some(prompt) => match self
+                    .registry
+                    .spawn_from_tool(prompt, arg("label"), &call.id)
+                {
                     Ok(task_id) => Self::ok(format!("spawned {task_id}")),
                     Err(err) => Self::error(err.to_string()),
                 },
@@ -1771,6 +1916,7 @@ mod tests {
                 .file_system_sandbox_policy(),
             cwd: copy.clone(),
             image_influenced: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            delegated_capabilities: None,
         };
         let call = |name: &str, args: serde_json::Value| ToolCall {
             id: "c".into(),

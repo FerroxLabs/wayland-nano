@@ -21,14 +21,328 @@
 use crate::loop_protection::ProgressSignals;
 use crate::turn::ToolExecutor;
 use crate::turn::ToolOutcome;
+use nano_activation::{
+    admission::AdmittedToken, enablement::EnablementStore, policy::EffectiveCapability,
+    receipt::ArtifactIdentity, store::AuthorityStore,
+};
 use nano_mcp::client::{McpClient, McpError};
 use nano_mcp::dispatcher::{ConnectionOptions, ServerRequestHandler, SlotRetired};
 use nano_mcp::protocol::{McpResourceDescriptor, McpToolDescriptor, NegotiatedCapabilities};
 use nano_model::types::{ToolCall, ToolDefinition};
+use nano_session::FileLock;
 use nano_session::{HydrationEntry, NanoErrorKind};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Admitted authority carried to delegated adapters which sit outside the
+/// base tool executor (MCP transports and background-task creation).
+#[derive(Debug, Clone)]
+pub struct DelegatedEffectAuthority {
+    token: AdmittedToken,
+    home: PathBuf,
+    artifact: ArtifactIdentity,
+    epochs: [u64; 4],
+    now_utc: String,
+    fault_after_dispatch: bool,
+}
+
+impl DelegatedEffectAuthority {
+    pub fn new(
+        token: AdmittedToken,
+        home: &Path,
+        artifact: ArtifactIdentity,
+        epochs: [u64; 4],
+        now_utc: impl Into<String>,
+    ) -> Self {
+        Self {
+            token,
+            home: home.to_owned(),
+            artifact,
+            epochs,
+            now_utc: now_utc.into(),
+            fault_after_dispatch: false,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn with_fault_after_dispatch(mut self) -> Self {
+        self.fault_after_dispatch = true;
+        self
+    }
+
+    pub(crate) fn begin(
+        &self,
+        capability: EffectiveCapability,
+        kind: &str,
+        identity: &serde_json::Value,
+    ) -> Result<DelegatedEffectPermit, ToolOutcome> {
+        if !self.token.policy().capabilities().contains(&capability) {
+            return Err(delegated_refused("delegated activation capability denied"));
+        }
+        if self.now_utc.as_str() > self.token.policy().deadline_utc() {
+            return Err(delegated_refused("delegated activation deadline expired"));
+        }
+        let enablement = EnablementStore::open(&self.home)
+            .map_err(|_| delegated_refused("activation enablement unavailable"))?;
+        enablement
+            .require_enabled(&self.artifact, self.epochs, &self.now_utc)
+            .map_err(|_| delegated_refused("activation enablement is not current"))?;
+        drop(enablement);
+        self.recheck_live_authority()?;
+
+        let canonical = serde_json::to_vec(&serde_json::json!({
+            "activation_id": self.token.activation_id(),
+            "identity": identity,
+            "kind": kind,
+        }))
+        .map_err(|_| delegated_refused("delegated effect identity is invalid"))?;
+        let effect_id = sha256_hex(&canonical);
+        let lock = FileLock::try_acquire(&self.home.join("activation/effects.lock"))
+            .map_err(|_| delegated_refused("activation effect ledger unavailable"))?;
+        let path = self.home.join("activation/effects.jsonl");
+        let records = std::fs::read(&path).unwrap_or_default();
+        let mut pending = false;
+        let mut terminal = false;
+        for line in records
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+        {
+            let record: serde_json::Value = serde_json::from_slice(line)
+                .map_err(|_| delegated_refused("activation effect ledger ambiguous"))?;
+            if record.get("effect_id").and_then(|value| value.as_str()) != Some(&effect_id) {
+                continue;
+            }
+            match record.get("state").and_then(|value| value.as_str()) {
+                Some("intent") => pending = true,
+                Some("result" | "unknown_outcome") => terminal = true,
+                _ => return Err(delegated_refused("activation effect ledger ambiguous")),
+            }
+        }
+        if terminal {
+            return Err(delegated_refused("delegated effect is already terminal"));
+        }
+        if pending {
+            append_delegated(
+                &path,
+                &DelegatedEffectRecord::UnknownOutcome {
+                    effect_id: effect_id.clone(),
+                },
+            )
+            .map_err(|_| delegated_refused("delegated effect ledger unavailable"))?;
+            return Err(delegated_refused(
+                "delegated effect outcome is unknown; reconciliation required",
+            ));
+        }
+        append_delegated(
+            &path,
+            &DelegatedEffectRecord::Intent {
+                effect_id: effect_id.clone(),
+                activation_id: self.token.activation_id().to_owned(),
+                tool: kind.to_owned(),
+            },
+        )
+        .map_err(|_| delegated_refused("delegated effect intent was not durable"))?;
+        Ok(DelegatedEffectPermit {
+            effect_id,
+            path,
+            fault_after_dispatch: self.fault_after_dispatch,
+            child_budget: None,
+            child_capabilities: None,
+            _lock: lock,
+        })
+    }
+
+    pub(crate) fn begin_task_spawn(
+        &self,
+        call_id: &str,
+        prompt: &str,
+        label: Option<&str>,
+    ) -> Result<DelegatedEffectPermit, ToolOutcome> {
+        let parent = self.token.policy();
+        let budgets = parent.budgets();
+        if budgets.max_turns == 0
+            || budgets.max_tool_calls == 0
+            || budgets.max_input_tokens == 0
+            || budgets.max_output_tokens == 0
+            || budgets.max_cost_microcents == 0
+            || budgets.wall_clock_ms == 0
+        {
+            return Err(delegated_refused(
+                "parent budget cannot delegate a strict subset",
+            ));
+        }
+        let capabilities: Vec<_> = parent
+            .capabilities()
+            .iter()
+            .copied()
+            .filter(|capability| *capability != EffectiveCapability::TaskSpawn)
+            .collect();
+        let prompt_digest = sha256_hex(prompt.as_bytes());
+        let mut permit = self.begin(
+            EffectiveCapability::TaskSpawn,
+            "task.spawn",
+            &serde_json::json!({
+                "call_id": call_id,
+                "delegated_budgets": {
+                    "max_cost_microcents": budgets.max_cost_microcents - 1,
+                    "max_input_tokens": budgets.max_input_tokens - 1,
+                    "max_output_tokens": budgets.max_output_tokens - 1,
+                    "max_tool_calls": budgets.max_tool_calls - 1,
+                    "max_turns": budgets.max_turns - 1,
+                    "wall_clock_ms": budgets.wall_clock_ms - 1,
+                },
+                "delegated_capabilities": capabilities,
+                "label": label,
+                "parent_activation_id": self.token.activation_id(),
+                "prompt_sha256": prompt_digest,
+            }),
+        )?;
+        permit.child_budget = Some(crate::loop_protection::TurnBudget {
+            max_steps: u32::try_from(budgets.max_turns - 1).unwrap_or(u32::MAX),
+            max_tool_calls: u32::try_from(budgets.max_tool_calls - 1).unwrap_or(u32::MAX),
+            max_wall_time: std::time::Duration::from_millis(budgets.wall_clock_ms - 1),
+        });
+        permit.child_capabilities = Some(capabilities.into_iter().collect());
+        Ok(permit)
+    }
+
+    fn recheck_live_authority(&self) -> Result<(), ToolOutcome> {
+        let receipt: serde_json::Value = serde_json::from_slice(self.token.receipt().as_bytes())
+            .map_err(|_| delegated_refused("activation receipt is invalid"))?;
+        let issuer_id = receipt["issuer_id"]
+            .as_str()
+            .ok_or_else(|| delegated_refused("activation receipt is incomplete"))?;
+        let key_id = receipt["key_id"]
+            .as_str()
+            .ok_or_else(|| delegated_refused("activation receipt is incomplete"))?;
+        let store = AuthorityStore::open(&self.home)
+            .map_err(|_| delegated_refused("activation authority unavailable"))?;
+        let snapshot = store
+            .snapshot()
+            .map_err(|_| delegated_refused("activation authority unavailable"))?;
+        let issuer = snapshot
+            .issuers
+            .get(issuer_id)
+            .filter(|issuer| !issuer.revoked)
+            .ok_or_else(|| delegated_refused("activation issuer is revoked"))?;
+        let key = issuer
+            .keys
+            .get(key_id)
+            .filter(|key| !key.revoked)
+            .ok_or_else(|| delegated_refused("activation key is revoked"))?;
+        if snapshot.admin_epoch != self.epochs[0]
+            || issuer.epoch != self.epochs[1]
+            || key.epoch > self.epochs[1]
+            || issuer.principal_id != self.token.principal_id()
+            || !issuer.projects.contains(self.token.project_id())
+        {
+            return Err(delegated_refused("activation authority epochs changed"));
+        }
+        drop(store);
+        let admission = std::fs::read(self.home.join("activation/admission.jsonl"))
+            .map_err(|_| delegated_refused("activation control state unavailable"))?;
+        for line in admission
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+        {
+            let record: serde_json::Value = serde_json::from_slice(line)
+                .map_err(|_| delegated_refused("activation control state ambiguous"))?;
+            if record.get("activation_id").and_then(|value| value.as_str())
+                == Some(self.token.activation_id())
+                && matches!(
+                    record.get("record_type").and_then(|value| value.as_str()),
+                    Some("control" | "result")
+                )
+            {
+                return Err(delegated_refused("activation is controlled or terminal"));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+enum DelegatedEffectRecord {
+    Intent {
+        effect_id: String,
+        activation_id: String,
+        tool: String,
+    },
+    Result {
+        effect_id: String,
+        digest: String,
+    },
+    UnknownOutcome {
+        effect_id: String,
+    },
+}
+
+pub(crate) struct DelegatedEffectPermit {
+    effect_id: String,
+    path: PathBuf,
+    fault_after_dispatch: bool,
+    child_budget: Option<crate::loop_protection::TurnBudget>,
+    child_capabilities: Option<std::collections::BTreeSet<EffectiveCapability>>,
+    _lock: FileLock,
+}
+
+impl DelegatedEffectPermit {
+    pub(crate) fn child_budget(&self) -> Option<crate::loop_protection::TurnBudget> {
+        self.child_budget.clone()
+    }
+    pub(crate) fn child_capabilities(
+        &self,
+    ) -> Option<std::collections::BTreeSet<EffectiveCapability>> {
+        self.child_capabilities.clone()
+    }
+    pub(crate) fn complete(self, outcome: &ToolOutcome) -> Result<ToolOutcome, ToolOutcome> {
+        if self.fault_after_dispatch {
+            append_delegated(
+                &self.path,
+                &DelegatedEffectRecord::UnknownOutcome {
+                    effect_id: self.effect_id,
+                },
+            )
+            .map_err(|_| delegated_refused("delegated outcome could not be journaled"))?;
+            return Err(delegated_refused("injected crash after delegated effect"));
+        }
+        append_delegated(
+            &self.path,
+            &DelegatedEffectRecord::Result {
+                effect_id: self.effect_id,
+                digest: sha256_hex(outcome.output.as_bytes()),
+            },
+        )
+        .map_err(|_| delegated_refused("delegated effect result was not durable"))?;
+        Ok(outcome.clone())
+    }
+}
+
+fn append_delegated(path: &Path, record: &DelegatedEffectRecord) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut bytes = serde_json::to_vec(record).map_err(std::io::Error::other)?;
+    bytes.push(b'\n');
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    file.write_all(&bytes)?;
+    file.sync_data()
+}
+
+fn delegated_refused(message: &str) -> ToolOutcome {
+    ToolOutcome {
+        ok: false,
+        output: message.to_owned(),
+        progress: ProgressSignals::default(),
+        error_kind: Some(NanoErrorKind::ApprovalDenied),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // §3.1 thresholds — one place, pinned by test. Overrides (when they land)
@@ -1420,6 +1734,7 @@ fn namespaced_definition(server: &str, tool: &McpToolDescriptor) -> ToolDefiniti
 pub struct McpToolExecutor<'a> {
     registry: std::sync::Arc<std::sync::Mutex<McpRegistry>>,
     inner: &'a dyn ToolExecutor,
+    activation: Option<DelegatedEffectAuthority>,
 }
 
 impl<'a> McpToolExecutor<'a> {
@@ -1427,6 +1742,7 @@ impl<'a> McpToolExecutor<'a> {
         Self {
             registry: std::sync::Arc::new(std::sync::Mutex::new(registry)),
             inner,
+            activation: None,
         }
     }
 
@@ -1437,7 +1753,18 @@ impl<'a> McpToolExecutor<'a> {
         registry: std::sync::Arc<std::sync::Mutex<McpRegistry>>,
         inner: &'a dyn ToolExecutor,
     ) -> Self {
-        Self { registry, inner }
+        Self {
+            registry,
+            inner,
+            activation: None,
+        }
+    }
+
+    /// Bind remote calls to one admitted activation. Persistent activation
+    /// hosts must install this before exposing any MCP tool.
+    pub fn with_activation_authority(mut self, authority: DelegatedEffectAuthority) -> Self {
+        self.activation = Some(authority);
+        self
     }
 
     /// The namespaced MCP tool definitions from the registry.
@@ -1530,6 +1857,21 @@ impl<'a> McpToolExecutor<'a> {
             Ok(resolved) => resolved,
             Err(outcome) => return outcome,
         };
+        let permit = match &self.activation {
+            Some(authority) => match authority.begin(
+                EffectiveCapability::McpInvoke,
+                "mcp.invoke",
+                &serde_json::json!({
+                    "arguments": call.arguments,
+                    "call_id": call.id,
+                    "server_tool": call.name,
+                }),
+            ) {
+                Ok(permit) => Some(permit),
+                Err(outcome) => return outcome,
+            },
+            None => None,
+        };
         // Elicitation interrupted-call attribution (§5.6): the cell names
         // the in-flight call for the journal record; cleared after.
         *interrupted_call.lock().unwrap() = Some(call.id.clone());
@@ -1538,7 +1880,11 @@ impl<'a> McpToolExecutor<'a> {
             None => client.call_tool(&tool, call.arguments.clone()),
         };
         *interrupted_call.lock().unwrap() = None;
-        Self::outcome_of_mcp(result)
+        let outcome = Self::outcome_of_mcp(result);
+        match permit {
+            Some(permit) => permit.complete(&outcome).unwrap_or_else(|denial| denial),
+            None => outcome,
+        }
     }
 }
 
