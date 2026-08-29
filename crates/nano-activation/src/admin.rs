@@ -256,29 +256,25 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         #[cfg(windows)]
         {
-            let user = std::env::var("USERNAME").unwrap();
+            let script = r#"
+$directory = [System.IO.DirectoryInfo]::new($env:NANO_TEST_SECURE_HOME)
+$acl = $directory.GetAccessControl()
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+  $sid,
+  [System.Security.AccessControl.FileSystemRights]::FullControl,
+  [System.Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit',
+  [System.Security.AccessControl.PropagationFlags]::None,
+[System.Security.AccessControl.AccessControlType]::Allow)
+[void]$acl.AddAccessRule($rule)
+$directory.SetAccessControl($acl)
+"#;
             assert!(
-                std::process::Command::new("icacls")
-                    .arg(home.path())
-                    .arg("/inheritance:r")
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-            assert!(
-                std::process::Command::new("icacls")
-                    .arg(home.path())
-                    .arg("/remove:g")
-                    .args(["*S-1-1-0", "*S-1-5-11", "*S-1-5-32-545"])
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-            assert!(
-                std::process::Command::new("icacls")
-                    .arg(home.path())
-                    .arg("/grant:r")
-                    .arg(format!("{user}:(OI)(CI)(F)"))
+                std::process::Command::new("powershell.exe")
+                    .args(["-NoProfile", "-Command", script])
+                    .env("NANO_TEST_SECURE_HOME", home.path())
                     .status()
                     .unwrap()
                     .success()
