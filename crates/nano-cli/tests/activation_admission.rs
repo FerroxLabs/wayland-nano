@@ -84,10 +84,135 @@ fn raw_admission_precedes_transport_serde_and_side_effects() {
             .reason(),
         RejectReason::CarrierOversized,
     );
+
+    // A canonical decoy elsewhere in the envelope must not make the actual
+    // carrier canonical, and NDJSON framing must preserve all non-delimiter
+    // bytes rather than trimming them before authentication.
+    let parsed: serde_json::Value = serde_json::from_slice(&valid).unwrap();
+    let canonical_carrier =
+        serde_jcs::to_string(&parsed["params"]["_meta"]["waylandNanoActivation"]).unwrap();
+    let text = String::from_utf8(valid.clone()).unwrap();
+    let noncanonical_actual = text.replacen(
+        "\"waylandNanoActivation\":{",
+        "\"waylandNanoActivation\":{ ",
+        1,
+    );
+    let decoy = noncanonical_actual.replacen(
+        "\"id\":1,",
+        &format!("\"decoy\":{canonical_carrier},\"id\":1,"),
+        1,
+    );
+    assert_eq!(
+        gate.admit_transport(decoy.as_bytes(), "2026-08-30T10:00:00Z")
+            .unwrap_err()
+            .reason(),
+        RejectReason::NoncanonicalPayload,
+    );
+    for framed in [format!(" {text}"), format!("{text} ")] {
+        assert_eq!(
+            gate.admit_transport(framed.as_bytes(), "2026-08-30T10:00:00Z")
+                .unwrap_err()
+                .reason(),
+            RejectReason::NoncanonicalPayload
+        );
+    }
+    assert_eq!(
+        gate.admit_transport(format!("{text}\n{{}}").as_bytes(), "2026-08-30T10:00:00Z")
+            .unwrap_err()
+            .reason(),
+        RejectReason::MalformedJson,
+    );
     assert!(!home.path().join("sessions").exists());
     assert!(!home.path().join("hook-canary").exists());
     assert!(!home.path().join("tool-canary").exists());
     assert!(!home.path().join("fire-canary").exists());
+}
+
+#[test]
+fn production_gate_is_default_off_and_rechecks_exact_enablement() {
+    let home = tempfile::tempdir().unwrap();
+    let issuer = SigningKey::from_bytes(&[1; 32]);
+    let receipt = SigningKey::from_bytes(&[9; 32]);
+    bootstrap(home.path(), &issuer, &receipt);
+    let raw = signed_frame(&issuer, "nonce-enabled", "idem-enabled");
+    let mut gate = AdmissionGate::open_enabled(
+        home.path(),
+        Box::new(TestReceiptSigner(receipt)),
+        ceiling(),
+        artifact(),
+    )
+    .unwrap();
+    assert_eq!(
+        gate.admit_raw(&raw, "2026-08-30T10:00:00Z", None)
+            .unwrap_err()
+            .reason(),
+        RejectReason::ContinuityNotEnabled,
+    );
+    let command = nano_activation::enablement::EnablementCommand {
+        operation_id: "enable-test".into(),
+        enabled: true,
+        artifact: artifact(),
+        admin_epoch: 1,
+        issuer_epoch: 1,
+        grant_epoch: 1,
+        revocation_epoch: 1,
+        not_after: "2026-08-30T10:30:00Z".into(),
+    };
+    let mut journal = serde_jcs::to_vec(&command).unwrap();
+    journal.push(b'\n');
+    std::fs::write(home.path().join("activation/enablement.jsonl"), journal).unwrap();
+    std::fs::write(
+        home.path().join("activation/enablement.anchor"),
+        command.digest(),
+    )
+    .unwrap();
+    let token = gate.admit_raw(&raw, "2026-08-30T10:00:00Z", None).unwrap();
+    gate.bind_session(token.activation_id(), "session-enabled", &"a".repeat(64))
+        .unwrap();
+    let disabled = nano_activation::enablement::EnablementCommand {
+        enabled: false,
+        operation_id: "disable-test".into(),
+        ..command
+    };
+    let mut journal = serde_jcs::to_vec(&disabled).unwrap();
+    journal.push(b'\n');
+    std::fs::write(home.path().join("activation/enablement.jsonl"), journal).unwrap();
+    std::fs::write(
+        home.path().join("activation/enablement.anchor"),
+        disabled.digest(),
+    )
+    .unwrap();
+    assert_eq!(
+        gate.session_binding_at("session-enabled", "2026-08-30T10:00:01Z")
+            .unwrap_err()
+            .reason(),
+        RejectReason::ContinuityNotEnabled,
+    );
+}
+
+#[test]
+fn control_carrier_is_exact_and_bound_to_outer_method() {
+    let issuer = SigningKey::from_bytes(&[1; 32]);
+    let cancel = signed_control_frame(&issuer, "session/cancel", "cancel");
+    assert!(matches!(
+        nano_activation::inspect_transport_frame(&cancel).unwrap(),
+        nano_activation::TransportDocument::Control(_)
+    ));
+    let mismatched = signed_control_frame(&issuer, "session/pause", "cancel");
+    assert_eq!(
+        nano_activation::inspect_transport_frame(&mismatched)
+            .unwrap_err()
+            .reason(),
+        RejectReason::ControlUnauthorized,
+    );
+    let text = String::from_utf8(cancel).unwrap();
+    let noncanonical = text.replacen("\"waylandNanoControl\":{", "\"waylandNanoControl\":{ ", 1);
+    assert_eq!(
+        nano_activation::inspect_transport_frame(noncanonical.as_bytes())
+            .unwrap_err()
+            .reason(),
+        RejectReason::NoncanonicalPayload,
+    );
 }
 
 fn ceiling() -> PolicyCeiling {
@@ -192,4 +317,24 @@ fn signed_frame_with(
         json!(URL_SAFE_NO_PAD.encode(key.sign(&message).to_bytes())),
     );
     serde_jcs::to_vec(&json!({"id":1,"jsonrpc":"2.0","method":method,"params":{"sessionId":session_id,"_meta":{"waylandNanoActivation":carrier}}})).unwrap()
+}
+
+fn signed_control_frame(key: &SigningKey, method: &str, action: &str) -> Vec<u8> {
+    let mut control = json!({
+        "activation_id":"act-control","alg":"Ed25519","control":action,
+        "issued_at":"2026-08-30T10:00:00Z","issuer_id":"desktop","key_id":"desktop-key-1",
+        "nonce":"control-nonce","not_after":"2026-08-30T10:05:00Z","principal_id":"main",
+        "project_id":"project-a","schema":"wayland.nano.control/v1","session_id":"session-a"
+    });
+    let payload = serde_jcs::to_vec(&control).unwrap();
+    let mut message = b"WAYLAND-NANO-CONTROL\0v1\0".to_vec();
+    message.extend_from_slice(&payload);
+    control.as_object_mut().unwrap().insert(
+        "signature".into(),
+        json!(URL_SAFE_NO_PAD.encode(key.sign(&message).to_bytes())),
+    );
+    serde_jcs::to_vec(
+        &json!({"jsonrpc":"2.0","method":method,"params":{"_meta":{"waylandNanoControl":control}}}),
+    )
+    .unwrap()
 }

@@ -70,6 +70,7 @@ async fn authorized_effect_is_journaled_and_ambiguous_effect_never_redispatches(
     let token = gate
         .admit_raw(&frame(&issuer), "2026-08-30T10:00:00Z", None)
         .unwrap();
+    gate.mark_dispatch_eligible(token.activation_id()).unwrap();
     let enable = EnablementStore::open(home.path()).unwrap();
     let command = EnablementCommand {
         operation_id: "enable-1".into(),
@@ -109,6 +110,18 @@ async fn authorized_effect_is_journaled_and_ambiguous_effect_never_redispatches(
     assert_eq!(count.load(Ordering::SeqCst), 1);
     assert!(!executor.execute(&call).await.ok);
     assert_eq!(count.load(Ordering::SeqCst), 1);
+    let mut second = call.clone();
+    second.id = "call-2".into();
+    assert!(!executor.execute(&second).await.ok);
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+    let mut exhausted = call.clone();
+    exhausted.id = "call-3".into();
+    assert!(!executor.execute(&exhausted).await.ok);
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        2,
+        "budget refusal precedes dispatch"
+    );
     let journal = std::fs::read_to_string(home.path().join("activation/effects.jsonl")).unwrap();
     assert!(journal.contains("\"state\":\"intent\""));
     assert!(journal.contains("\"state\":\"unknown_outcome\""));
@@ -129,6 +142,7 @@ async fn missing_enablement_and_capability_refuse_before_dispatch() {
     let token = gate
         .admit_raw(&frame(&issuer), "2026-08-30T10:00:00Z", None)
         .unwrap();
+    gate.mark_dispatch_eligible(token.activation_id()).unwrap();
     let count = Arc::new(AtomicUsize::new(0));
     let executor = ActivationEffectExecutor::new(
         Counter(count.clone()),

@@ -1886,7 +1886,19 @@ where
                             }
                         }
                     }
-                    Inbound::Request { id, method, params, admitted } => match method.as_str() {
+                    Inbound::Request { id, method, params, admitted } => {
+                        if !matches!(method.as_str(), "initialize" | "authenticate" | "session/new" | "session/load")
+                            && let (Some(gate), Some(active)) = (&activation, session.as_ref())
+                            && gate.recheck_session(&active.id).is_err()
+                        {
+                            write_out(&out, &JsonRpcResponse::err_typed(
+                                id, NanoErrorKind::InvalidParams,
+                                "activation authority changed",
+                                NanoErrorExtras::default(),
+                            ))?;
+                            continue;
+                        }
+                        match method.as_str() {
                         "initialize" => {
                             // P2a §6.4/D4: image capability advertises from
                             // the configured STARTUP leaf — initialize-scoped,
@@ -1937,6 +1949,39 @@ where
                                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
                             let session_id = new_session_id();
                             let journal = config.sessions_dir.join(format!("{session_id}.jsonl"));
+                            // Activation binding is itself journaled in the trusted
+                            // activation ledger. It must be durable before the first
+                            // session lock, file, hook, registry, or SessionBegin.
+                            let resume_fingerprint = match (&activation, admitted.as_deref()) {
+                                (Some(gate), Some(token)) => match gate.bind_session(token, &session_id) {
+                                    Ok(value) => {
+                                        if gate.recheck_session(&session_id).is_err()
+                                            || gate.mark_dispatch_eligible(token).is_err()
+                                        {
+                                            write_out(&out, &JsonRpcResponse::err_typed(
+                                                id, NanoErrorKind::InvalidParams,
+                                                "activation authority changed",
+                                                NanoErrorExtras::default(),
+                                            ))?;
+                                            continue;
+                                        }
+                                        Some(value)
+                                    },
+                                    Err(error) => {
+                                        write_out(
+                                            &out,
+                                            &JsonRpcResponse::err_typed(
+                                                id,
+                                                NanoErrorKind::InvalidParams,
+                                                format!("activation binding refused: {}", error.reason()),
+                                                NanoErrorExtras::default(),
+                                            ),
+                                        )?;
+                                        continue;
+                                    }
+                                },
+                                _ => None,
+                            };
                             // F-P4-3: take lifetime single-writer ownership
                             // BEFORE the first append — a session this host
                             // cannot own is never journaled half-open.
@@ -1996,24 +2041,6 @@ where
                                 )?;
                                 continue;
                             }
-                            let resume_fingerprint = match (&activation, admitted.as_deref()) {
-                                (Some(gate), Some(token)) => match gate.bind_session(token, &session_id) {
-                                    Ok(value) => Some(value),
-                                    Err(error) => {
-                                        write_out(
-                                            &out,
-                                            &JsonRpcResponse::err_typed(
-                                                id,
-                                                NanoErrorKind::InvalidParams,
-                                                format!("activation binding refused: {}", error.reason()),
-                                                NanoErrorExtras::default(),
-                                            ),
-                                        )?;
-                                        continue;
-                                    }
-                                },
-                                _ => None,
-                            };
                             // S4 (F-46): SessionStart (startup) — notify,
                             // journaled BEFORE the fold offset is taken
                             // below so the offset sits past these
@@ -2284,6 +2311,17 @@ where
                                         NanoErrorExtras::default(),
                                     ),
                                 )?;
+                                continue;
+                            }
+                            if let (Some(gate), Some(token)) = (&activation, admitted.as_deref())
+                                && (gate.recheck_session(session_id).is_err()
+                                    || gate.mark_dispatch_eligible(token).is_err())
+                            {
+                                write_out(&out, &JsonRpcResponse::err_typed(
+                                    id, NanoErrorKind::InvalidParams,
+                                    "activation authority changed",
+                                    NanoErrorExtras::default(),
+                                ))?;
                                 continue;
                             }
                             let cwd = params
@@ -4121,13 +4159,12 @@ where
                                             }
                                         };
                                         activation_effect_tools =
-                                            nano_agent::activation_effects::ActivationEffectExecutor::new(
+                                            nano_agent::activation_effects::ActivationEffectExecutor::new_live(
                                                 tools,
                                                 token.clone(),
                                                 config.attachment_home,
                                                 artifact,
                                                 epochs,
-                                                crate::activation::now_utc(),
                                             );
                                         &activation_effect_tools
                                     } else {
@@ -5374,6 +5411,7 @@ where
                         other => {
                             write_out(&out, &JsonRpcResponse::method_not_found(id, other))?;
                         }
+                        }
                     },
                 }
             }
@@ -5639,14 +5677,20 @@ fn reader_loop<R: BufRead>(
         if n == 0 {
             break;
         }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        // `read_line` owns only the NDJSON delimiter. Preserve every other
+        // byte so admission can reject leading/trailing whitespace or a
+        // second value instead of silently normalizing the signed frame.
+        let frame = line
+            .strip_suffix("\r\n")
+            .or_else(|| line.strip_suffix('\n'))
+            .unwrap_or(&line);
+        if frame.is_empty() {
             continue;
         }
         let mut admitted = None;
         let mut control = None;
         if let Some(gate) = &activation {
-            match gate.admit_transport(trimmed.as_bytes(), &crate::activation::now_utc()) {
+            match gate.admit_transport(frame.as_bytes(), &crate::activation::now_utc()) {
                 Ok(crate::activation::TransportAdmission::Activation(token)) => {
                     admitted = Some(token);
                 }
@@ -5657,7 +5701,7 @@ fn reader_loop<R: BufRead>(
                 Err(error) => {
                     // Parsing here occurs only after the duplicate-preserving gate has
                     // refused the frame and is used solely to correlate the safe error.
-                    let id = serde_json::from_str::<serde_json::Value>(trimmed)
+                    let id = serde_json::from_str::<serde_json::Value>(frame)
                         .ok()
                         .and_then(|value| value.get("id").cloned())
                         .unwrap_or(serde_json::Value::Null);
@@ -5678,7 +5722,7 @@ fn reader_loop<R: BufRead>(
                 }
             }
         }
-        let value: serde_json::Value = match serde_json::from_str(trimmed) {
+        let value: serde_json::Value = match serde_json::from_str(frame) {
             Ok(v) => v,
             Err(err) => {
                 if tx.send(Inbound::Malformed(err.to_string())).is_err() {

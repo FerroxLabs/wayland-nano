@@ -2,6 +2,7 @@
 
 use crate::authority::{AuthorityError, AuthoritySnapshot};
 use crate::control::{ControlKind, ControlOutcome};
+use crate::enablement::EnablementStore;
 use crate::policy::{EffectivePolicy, PolicyCeiling, intersect};
 use crate::receipt::{
     ArtifactIdentity, Decision, IntentState, ReceiptFields, ReceiptSigner, ResultState,
@@ -52,6 +53,9 @@ pub struct SessionBinding {
 
 #[derive(Debug, Clone)]
 pub struct AdmittedToken {
+    issuer_id: String,
+    key_id: String,
+    product_subject_id: String,
     principal_id: String,
     project_id: String,
     activation_id: String,
@@ -96,6 +100,15 @@ impl ControlDecision {
 }
 
 impl AdmittedToken {
+    pub fn issuer_id(&self) -> &str {
+        &self.issuer_id
+    }
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+    pub fn product_subject_id(&self) -> &str {
+        &self.product_subject_id
+    }
     pub fn principal_id(&self) -> &str {
         &self.principal_id
     }
@@ -140,6 +153,7 @@ pub struct AdmissionGate {
     signer: Box<dyn ReceiptSigner>,
     ceiling: PolicyCeiling,
     artifact: ArtifactIdentity,
+    require_enablement: bool,
 }
 
 impl AdmissionGate {
@@ -163,7 +177,23 @@ impl AdmissionGate {
             signer,
             ceiling,
             artifact,
+            require_enablement: false,
         })
+    }
+
+    /// Production constructor: admission remains default-off until the
+    /// journaled enablement command matches this exact artifact and the live
+    /// authority epochs. The plain constructor is retained for isolated
+    /// contract tests which exercise the gate below the operator ceremony.
+    pub fn open_enabled(
+        nano_home: &Path,
+        signer: Box<dyn ReceiptSigner>,
+        ceiling: PolicyCeiling,
+        artifact: ArtifactIdentity,
+    ) -> Result<Self, GateOpenError> {
+        let mut gate = Self::open(nano_home, signer, ceiling, artifact)?;
+        gate.require_enablement = true;
+        Ok(gate)
     }
 
     pub fn admit_raw(
@@ -254,6 +284,7 @@ impl AdmissionGate {
             issuer_epoch,
         )?;
         let policy = intersect(carrier, &self.ceiling)?;
+        self.require_enabled(&snapshot, issuer_epoch, now_utc)?;
 
         let raw_hash = hex(&Sha256::digest(raw_frame));
         let immutable_hash = verified.canonical_payload_sha256().to_owned();
@@ -427,6 +458,33 @@ impl AdmissionGate {
         self.session_binding_with_snapshot(session_id, &snapshot)
     }
 
+    pub fn session_binding_at(
+        &self,
+        session_id: &str,
+        now_utc: &str,
+    ) -> Result<SessionBinding, ActivationError> {
+        let authority = AuthorityStore::open(&self.nano_home).map_err(map_authority_error)?;
+        let snapshot = authority.snapshot().map_err(map_authority_error)?;
+        let binding = self.session_binding_with_snapshot(session_id, &snapshot)?;
+        let issuer = snapshot
+            .issuers
+            .get(&binding.issuer_id)
+            .ok_or_else(|| ActivationError::new(RejectReason::ResumeDrift))?;
+        drop(authority);
+        self.require_enabled(&snapshot, issuer.epoch, now_utc)?;
+        let activation = self
+            .open_ledger()?
+            .state
+            .activations
+            .get(&binding.activation_id)
+            .cloned()
+            .ok_or_else(|| ActivationError::new(RejectReason::ResumeDrift))?;
+        if now_utc > activation.policy.deadline_utc() {
+            return Err(ActivationError::new(RejectReason::AssertionExpired));
+        }
+        Ok(binding)
+    }
+
     fn session_binding_with_snapshot(
         &self,
         session_id: &str,
@@ -535,6 +593,7 @@ impl AdmissionGate {
         if now_utc < control.issued_at.as_str() || now_utc > control.not_after.as_str() {
             return Err(ActivationError::new(RejectReason::ClockOutOfBounds));
         }
+        self.require_enabled(&snapshot, issuer.epoch, now_utc)?;
         let mut ledger = self.open_ledger()?;
         let activation = ledger
             .state
@@ -656,6 +715,30 @@ impl AdmissionGate {
         ActivationLedger::open(&self.nano_home)
             .map_err(|_| ActivationError::new(RejectReason::AuthorityStoreUnavailable))
     }
+
+    fn require_enabled(
+        &self,
+        snapshot: &AuthoritySnapshot,
+        issuer_epoch: u64,
+        now_utc: &str,
+    ) -> Result<(), ActivationError> {
+        if !self.require_enablement {
+            return Ok(());
+        }
+        EnablementStore::open(&self.nano_home)
+            .map_err(ActivationError::from)?
+            .require_enabled(
+                &self.artifact,
+                [
+                    snapshot.admin_epoch,
+                    issuer_epoch,
+                    issuer_epoch,
+                    issuer_epoch,
+                ],
+                now_utc,
+            )
+            .map_err(ActivationError::from)
+    }
 }
 
 impl SessionBinding {
@@ -679,6 +762,9 @@ fn token_from(
     receipt: SignedReceipt,
 ) -> AdmittedToken {
     AdmittedToken {
+        issuer_id: carrier.issuer_id.clone(),
+        key_id: carrier.key_id.clone(),
+        product_subject_id: carrier.product_subject_id.clone(),
         principal_id: carrier.principal_id.clone(),
         project_id: carrier.project_id.clone(),
         activation_id: carrier.activation_id.clone(),
@@ -686,6 +772,64 @@ fn token_from(
         policy,
         receipt,
     }
+}
+
+/// Revalidate the complete live authority used by every persistent effect.
+/// Callers supply the current UTC second at the effect boundary; construction
+/// timestamps are never authority.
+pub fn validate_live_effect_authority(
+    token: &AdmittedToken,
+    home: &Path,
+    artifact: &ArtifactIdentity,
+    epochs: [u64; 4],
+    now_utc: &str,
+) -> Result<(), ActivationError> {
+    if now_utc > token.policy.deadline_utc() {
+        return Err(ActivationError::new(RejectReason::AssertionExpired));
+    }
+    let store = AuthorityStore::open(home).map_err(map_authority_error)?;
+    let snapshot = store.snapshot().map_err(map_authority_error)?;
+    let issuer = snapshot
+        .issuers
+        .get(&token.issuer_id)
+        .filter(|issuer| !issuer.revoked)
+        .ok_or_else(|| ActivationError::new(RejectReason::RevokedIssuer))?;
+    let key = issuer
+        .keys
+        .get(&token.key_id)
+        .filter(|key| !key.revoked)
+        .ok_or_else(|| ActivationError::new(RejectReason::RevokedKey))?;
+    if issuer.subject_id != token.product_subject_id
+        || issuer.principal_id != token.principal_id
+        || !issuer.projects.contains(&token.project_id)
+        || key.epoch > issuer.epoch
+        || epochs
+            != [
+                snapshot.admin_epoch,
+                issuer.epoch,
+                issuer.epoch,
+                issuer.epoch,
+            ]
+    {
+        return Err(ActivationError::new(RejectReason::ResumeDrift));
+    }
+    drop(store);
+    EnablementStore::open(home)
+        .map_err(ActivationError::from)?
+        .require_enabled(artifact, epochs, now_utc)
+        .map_err(ActivationError::from)?;
+    let ledger = ActivationLedger::open(home)
+        .map_err(|_| ActivationError::new(RejectReason::AuthorityStoreUnavailable))?;
+    if ledger.state.results.contains_key(token.activation_id())
+        || ledger.state.controls.contains_key(token.activation_id())
+        || !ledger
+            .state
+            .dispatch_eligible
+            .contains(token.activation_id())
+    {
+        return Err(ActivationError::new(RejectReason::AmbiguousRecovery));
+    }
+    Ok(())
 }
 
 fn authorize(

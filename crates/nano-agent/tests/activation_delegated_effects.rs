@@ -283,6 +283,7 @@ impl Fixture {
         let token = gate
             .admit_raw(&frame(&issuer), "2026-08-30T10:00:00Z", None)
             .unwrap();
+        gate.mark_dispatch_eligible(token.activation_id()).unwrap();
         Self {
             root,
             token,

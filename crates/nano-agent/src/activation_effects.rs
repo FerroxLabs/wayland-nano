@@ -3,7 +3,8 @@
 use crate::loop_protection::ProgressSignals;
 use crate::turn::{LiveImageToolResult, ToolExecutor, ToolOutcome};
 use nano_activation::{
-    admission::AdmittedToken, enablement::EnablementStore, policy::EffectiveCapability,
+    admission::{AdmittedToken, validate_live_effect_authority},
+    policy::EffectiveCapability,
     receipt::ArtifactIdentity,
 };
 use nano_model::types::{ToolCall, ToolDefinition};
@@ -30,6 +31,7 @@ pub struct ActivationEffectExecutor<T> {
     artifact: ArtifactIdentity,
     epochs: [u64; 4],
     now_utc: String,
+    live_clock: bool,
     fault: EffectFault,
 }
 
@@ -49,6 +51,25 @@ impl<T> ActivationEffectExecutor<T> {
             artifact,
             epochs,
             now_utc: now_utc.into(),
+            live_clock: false,
+            fault: EffectFault::None,
+        }
+    }
+    pub fn new_live(
+        inner: T,
+        token: AdmittedToken,
+        home: &Path,
+        artifact: ArtifactIdentity,
+        epochs: [u64; 4],
+    ) -> Self {
+        Self {
+            inner,
+            token,
+            home: home.into(),
+            artifact,
+            epochs,
+            now_utc: String::new(),
+            live_clock: true,
             fault: EffectFault::None,
         }
     }
@@ -91,17 +112,22 @@ impl<T: ToolExecutor> ToolExecutor for ActivationEffectExecutor<T> {
         if !self.token.policy().capabilities().contains(&capability) {
             return refused("activation capability denied");
         }
-        let enablement = match EnablementStore::open(&self.home) {
-            Ok(v) => v,
-            Err(_) => return refused("activation enablement unavailable"),
+        let now = if self.live_clock {
+            current_utc()
+        } else {
+            self.now_utc.clone()
         };
-        if enablement
-            .require_enabled(&self.artifact, self.epochs, &self.now_utc)
-            .is_err()
+        if validate_live_effect_authority(
+            &self.token,
+            &self.home,
+            &self.artifact,
+            self.epochs,
+            &now,
+        )
+        .is_err()
         {
-            return refused("activation enablement is not current");
+            return refused("activation authority is not current");
         }
-        drop(enablement);
         let id = effect_id(self.token.activation_id(), call);
         let _lock = match FileLock::try_acquire(&self.home.join("activation/effects.lock")) {
             Ok(v) => v,
@@ -111,10 +137,16 @@ impl<T: ToolExecutor> ToolExecutor for ActivationEffectExecutor<T> {
         let existing = std::fs::read(&path).unwrap_or_default();
         let mut pending = false;
         let mut terminal = false;
+        let mut activation_intents = 0u64;
         for line in existing.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
             let Ok(record) = serde_json::from_slice::<EffectRecord>(line) else {
                 return refused("activation effect ledger ambiguous");
             };
+            if let EffectRecord::Intent { activation_id, .. } = &record
+                && activation_id == self.token.activation_id()
+            {
+                activation_intents += 1;
+            }
             match record {
                 EffectRecord::Intent { effect_id, .. } if effect_id == id => pending = true,
                 EffectRecord::Result { effect_id, .. }
@@ -132,6 +164,9 @@ impl<T: ToolExecutor> ToolExecutor for ActivationEffectExecutor<T> {
         if pending {
             let _ = append(&path, &EffectRecord::UnknownOutcome { effect_id: id });
             return refused("activation effect outcome is unknown; reconciliation required");
+        }
+        if activation_intents >= self.token.policy().budgets().max_tool_calls {
+            return refused("activation tool-call budget exhausted");
         }
         if append(
             &path,
@@ -172,6 +207,15 @@ impl<T: ToolExecutor> ToolExecutor for ActivationEffectExecutor<T> {
     fn current_mcp_tool_definitions(&self) -> Option<Vec<ToolDefinition>> {
         self.inner.current_mcp_tool_definitions()
     }
+}
+
+pub(crate) fn current_utc() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    chrono::DateTime::from_timestamp(seconds as i64, 0).map_or_else(String::new, |dt| {
+        dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    })
 }
 
 fn capability_for(name: &str) -> Option<EffectiveCapability> {

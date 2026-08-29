@@ -151,7 +151,15 @@ pub fn inspect_transport_frame(raw_frame: &[u8]) -> Result<TransportDocument, Ac
     match method {
         Some("session/new" | "session/load") => Ok(TransportDocument::Activation),
         Some("session/cancel" | "session/pause") => {
-            let control = raw::locate_control(&frame)?;
+            let control = raw::locate_control(raw_frame, &frame)?;
+            let expected = if method == Some("session/cancel") {
+                "cancel"
+            } else {
+                "pause"
+            };
+            if control.get("control").and_then(Value::as_str) != Some(expected) {
+                return Err(ActivationError::new(RejectReason::ControlUnauthorized));
+            }
             let canonical = serde_jcs::to_vec(control)
                 .map_err(|_| ActivationError::new(RejectReason::NoncanonicalPayload))?;
             Ok(TransportDocument::Control(canonical))

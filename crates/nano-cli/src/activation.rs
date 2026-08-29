@@ -32,8 +32,13 @@ impl SharedAdmission {
         let artifact = nano_activation::build_identity::compiled()
             .bind_executable(&hex(&Sha256::digest(executable)))
             .map_err(|_| "compiled activation identity invalid".to_string())?;
-        let gate = AdmissionGate::open(nano_home, Box::new(signer), production_ceiling(), artifact)
-            .map_err(|_| "activation gate unavailable".to_string())?;
+        let gate = AdmissionGate::open_enabled(
+            nano_home,
+            Box::new(signer),
+            production_ceiling(),
+            artifact,
+        )
+        .map_err(|_| "activation gate unavailable".to_string())?;
         Ok(Self::from_gate(gate))
     }
 
@@ -95,8 +100,15 @@ impl SharedAdmission {
         self.0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .session_binding(session_id)
+            .session_binding_at(session_id, &now_utc())
             .map(|_| ())
+    }
+
+    pub fn mark_dispatch_eligible(&self, token: &AdmittedToken) -> Result<(), ActivationError> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .mark_dispatch_eligible(token.activation_id())
     }
 }
 
@@ -161,6 +173,14 @@ impl TransportRefusal {
 
 pub fn now_utc() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+pub fn emit_receipt(receipt: &[u8]) {
+    use std::io::Write as _;
+    let mut stderr = std::io::stderr().lock();
+    let _ = stderr.write_all(b"wayland-nano-activation-receipt: ");
+    let _ = stderr.write_all(receipt);
+    let _ = stderr.write_all(b"\n");
 }
 
 pub fn mint_local_cli_request(
@@ -388,12 +408,11 @@ pub fn delegated_authority(
     nano_home: &std::path::Path,
 ) -> Result<nano_agent::mcp::DelegatedEffectAuthority, &'static str> {
     let (artifact, epochs) = runtime_authority(token)?;
-    Ok(nano_agent::mcp::DelegatedEffectAuthority::new(
+    Ok(nano_agent::mcp::DelegatedEffectAuthority::new_live(
         token.clone(),
         nano_home,
         artifact,
         epochs,
-        now_utc(),
     ))
 }
 

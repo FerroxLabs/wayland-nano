@@ -68,6 +68,36 @@ where
             return 2;
         }
     };
+    // Reserve and durably bind a fresh id, or live-recheck an existing
+    // binding, before bootstrap can lock or append any session journal.
+    let bound_fresh_id = if matches!(seed, nano_agent::bootstrap::SessionSeed::New) {
+        let id = nano_agent::bootstrap::new_session_id();
+        if let Some((gate, token)) = activation.as_ref()
+            && (gate.bind_session(token, &id).is_err()
+                || gate.recheck_session(&id).is_err()
+                || gate.mark_dispatch_eligible(token).is_err())
+        {
+            eprintln!("wayland-nano: activation session binding failed");
+            return 2;
+        }
+        Some(id)
+    } else {
+        if let (Some((gate, _)), nano_agent::bootstrap::SessionSeed::Resume(id)) =
+            (activation.as_ref(), &seed)
+            && gate.recheck_session(id).is_err()
+        {
+            eprintln!("wayland-nano: activation authority changed");
+            return 2;
+        }
+        if let (Some((gate, token)), nano_agent::bootstrap::SessionSeed::Resume(_)) =
+            (activation.as_ref(), &seed)
+            && gate.mark_dispatch_eligible(token).is_err()
+        {
+            eprintln!("wayland-nano: activation dispatch state unavailable");
+            return 2;
+        }
+        None
+    };
     // F-P4-3: a RESUMED session is owned BEFORE bootstrap appends the
     // resume marker — resuming a session another host owns is a typed
     // refusal, never a second writer. (Id validation/existence stay with
@@ -92,18 +122,18 @@ where
         }
         nano_agent::bootstrap::SessionSeed::New => None,
     };
-    let session = match bootstrap_session(sessions_dir, workspace, seed) {
+    let session_result = match bound_fresh_id {
+        Some(id) => nano_agent::bootstrap::bootstrap_bound_session(sessions_dir, workspace, id),
+        None => bootstrap_session(sessions_dir, workspace, seed),
+    };
+    let session = match session_result {
         Ok(session) => session,
         Err(err) => {
             eprintln!("wayland-nano: {err}");
             return 2;
         }
     };
-    let activation_token = if let Some((gate, token)) = activation {
-        if !resumed && gate.bind_session(&token, &session.session_id).is_err() {
-            eprintln!("wayland-nano: activation session binding failed");
-            return 2;
-        }
+    let activation_token = if let Some((_gate, token)) = activation {
         Some(token)
     } else {
         None
@@ -276,17 +306,15 @@ where
         auto_plan = Some(plan);
     }
 
-    // 3. Executor stack: core tools → cronjob store tool → MCP merge.
+    // 3. Executor stack: core tools → Phase-2 cron quarantine → MCP merge.
     //    (The goal control channel wraps this per-goal below; without a
     //    goal the `goal_complete` definition is never advertised.)
     let (tools, policy) = make_tools(workspace, params.mode);
     let cron_store = nano_agent::cron::JsonCronStore::new(nano_home);
-    // F-6: journal-first create/delete ride the session's coordinator. The
-    // exec GATE typed-denies every cronjob action on this non-interactive
-    // surface (create/delete would prompt; list stays out of v1 headless
-    // scope) — the executor is wired so the denial is a gate decision, not
-    // an unwired-tool hole.
-    let with_cron = nano_agent::cron::CronjobExecutor::new(
+    // Persistent scheduling is not part of Phase 2. Retain a forced-call
+    // denial in front of the unchanged legacy implementation without
+    // reading or mutating the jobs cache.
+    let with_cron = nano_agent::cron::CronjobExecutor::quarantined(
         &tools,
         &cron_store,
         session.session_id.clone(),
@@ -321,14 +349,14 @@ where
                     return 2;
                 }
             };
-            activation_effect_tools = nano_agent::activation_effects::ActivationEffectExecutor::new(
-                with_cron,
-                token.clone(),
-                nano_home,
-                artifact,
-                epochs,
-                crate::activation::now_utc(),
-            );
+            activation_effect_tools =
+                nano_agent::activation_effects::ActivationEffectExecutor::new_live(
+                    with_cron,
+                    token.clone(),
+                    nano_home,
+                    artifact,
+                    epochs,
+                );
             &activation_effect_tools
         } else {
             with_cron
@@ -400,7 +428,7 @@ where
         session.session_id.clone(),
         &with_mcp,
     );
-    let mut extra_definitions = vec![nano_agent::cron::cronjob_tool_definition()];
+    let mut extra_definitions = Vec::new();
     // S7: the checkpoint definitions advertise exactly when the store
     // opened — the executor wrap above is the servicing half of the same
     // condition.
@@ -781,12 +809,18 @@ pub async fn run_with_local_activation(
             }
         };
         match gate.admit_transport(&raw, &crate::activation::now_utc()) {
-            Ok(crate::activation::TransportAdmission::Activation(token)) => Some((gate, *token)),
+            Ok(crate::activation::TransportAdmission::Activation(token)) => {
+                crate::activation::emit_receipt(token.receipt().as_bytes());
+                Some((gate, *token))
+            }
             Ok(_) => {
                 eprintln!("wayland-nano: activation request has the wrong transport method");
                 return 2;
             }
             Err(error) => {
+                if let Some(receipt) = error.receipt() {
+                    crate::activation::emit_receipt(receipt);
+                }
                 eprintln!("wayland-nano: activation refused: {}", error.reason());
                 return 2;
             }

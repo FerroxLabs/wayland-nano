@@ -22,8 +22,10 @@ use crate::loop_protection::ProgressSignals;
 use crate::turn::ToolExecutor;
 use crate::turn::ToolOutcome;
 use nano_activation::{
-    admission::AdmittedToken, enablement::EnablementStore, policy::EffectiveCapability,
-    receipt::ArtifactIdentity, store::AuthorityStore,
+    admission::{AdmittedToken, validate_live_effect_authority},
+    policy::EffectiveCapability,
+    receipt::ArtifactIdentity,
+    store::AuthorityStore,
 };
 use nano_mcp::client::{McpClient, McpError};
 use nano_mcp::dispatcher::{ConnectionOptions, ServerRequestHandler, SlotRetired};
@@ -48,6 +50,7 @@ pub struct DelegatedEffectAuthority {
     artifact: ArtifactIdentity,
     epochs: [u64; 4],
     now_utc: String,
+    live_clock: bool,
     fault_after_dispatch: bool,
 }
 
@@ -65,6 +68,24 @@ impl DelegatedEffectAuthority {
             artifact,
             epochs,
             now_utc: now_utc.into(),
+            live_clock: false,
+            fault_after_dispatch: false,
+        }
+    }
+
+    pub fn new_live(
+        token: AdmittedToken,
+        home: &Path,
+        artifact: ArtifactIdentity,
+        epochs: [u64; 4],
+    ) -> Self {
+        Self {
+            token,
+            home: home.to_owned(),
+            artifact,
+            epochs,
+            now_utc: String::new(),
+            live_clock: true,
             fault_after_dispatch: false,
         }
     }
@@ -84,15 +105,13 @@ impl DelegatedEffectAuthority {
         if !self.token.policy().capabilities().contains(&capability) {
             return Err(delegated_refused("delegated activation capability denied"));
         }
-        if self.now_utc.as_str() > self.token.policy().deadline_utc() {
-            return Err(delegated_refused("delegated activation deadline expired"));
-        }
-        let enablement = EnablementStore::open(&self.home)
-            .map_err(|_| delegated_refused("activation enablement unavailable"))?;
-        enablement
-            .require_enabled(&self.artifact, self.epochs, &self.now_utc)
-            .map_err(|_| delegated_refused("activation enablement is not current"))?;
-        drop(enablement);
+        let now = if self.live_clock {
+            crate::activation_effects::current_utc()
+        } else {
+            self.now_utc.clone()
+        };
+        validate_live_effect_authority(&self.token, &self.home, &self.artifact, self.epochs, &now)
+            .map_err(|_| delegated_refused("activation authority is not current"))?;
         self.recheck_live_authority()?;
 
         let canonical = serde_json::to_vec(&serde_json::json!({
@@ -108,6 +127,7 @@ impl DelegatedEffectAuthority {
         let records = std::fs::read(&path).unwrap_or_default();
         let mut pending = false;
         let mut terminal = false;
+        let mut activation_intents = 0u64;
         for line in records
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
@@ -115,10 +135,19 @@ impl DelegatedEffectAuthority {
             let record: serde_json::Value = serde_json::from_slice(line)
                 .map_err(|_| delegated_refused("activation effect ledger ambiguous"))?;
             if record.get("effect_id").and_then(|value| value.as_str()) != Some(&effect_id) {
+                if record.get("activation_id").and_then(|value| value.as_str())
+                    == Some(self.token.activation_id())
+                    && record.get("state").and_then(|value| value.as_str()) == Some("intent")
+                {
+                    activation_intents += 1;
+                }
                 continue;
             }
             match record.get("state").and_then(|value| value.as_str()) {
-                Some("intent") => pending = true,
+                Some("intent") => {
+                    pending = true;
+                    activation_intents += 1;
+                }
                 Some("result" | "unknown_outcome") => terminal = true,
                 _ => return Err(delegated_refused("activation effect ledger ambiguous")),
             }
@@ -137,6 +166,9 @@ impl DelegatedEffectAuthority {
             return Err(delegated_refused(
                 "delegated effect outcome is unknown; reconciliation required",
             ));
+        }
+        if activation_intents >= self.token.policy().budgets().max_tool_calls {
+            return Err(delegated_refused("activation tool-call budget exhausted"));
         }
         append_delegated(
             &path,
