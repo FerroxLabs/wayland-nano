@@ -28,6 +28,25 @@ pub(crate) fn parse_frame(raw: &[u8]) -> Result<Value, ActivationError> {
     Ok(value)
 }
 
+pub(crate) fn parse_transport_frame(raw: &[u8]) -> Result<Value, ActivationError> {
+    parse_frame(raw)
+}
+
+pub(crate) fn locate_control(frame: &Value) -> Result<&Value, ActivationError> {
+    let control = frame
+        .as_object()
+        .and_then(|object| object.get("params"))
+        .and_then(Value::as_object)
+        .and_then(|object| object.get("_meta"))
+        .and_then(Value::as_object)
+        .and_then(|object| object.get("waylandNanoControl"))
+        .ok_or_else(|| ActivationError::new(RejectReason::CarrierMissing))?;
+    if !control.is_object() {
+        return Err(ActivationError::new(RejectReason::MalformedJson));
+    }
+    Ok(control)
+}
+
 pub(crate) fn locate_activation<'a>(
     raw: &'a [u8],
     frame: &'a Value,

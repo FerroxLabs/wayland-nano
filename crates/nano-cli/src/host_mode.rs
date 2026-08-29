@@ -27,7 +27,42 @@ fn executor_tool_definitions(
 pub async fn run(
     nano_home: &std::path::Path,
     workspace: &std::path::Path,
+    activation_request: Option<&std::path::Path>,
 ) -> std::io::Result<HostExit> {
+    let Some(request_path) = activation_request else {
+        return Ok(HostExit::Fatal(
+            "protocol-host requires --activation-request".into(),
+        ));
+    };
+    let raw = match std::fs::read(request_path) {
+        Ok(value) => value,
+        Err(_) => return Ok(HostExit::Fatal("activation request unavailable".into())),
+    };
+    let activation_gate = match nano_cli::activation::SharedAdmission::open_production(nano_home) {
+        Ok(value) => value,
+        Err(error) => return Ok(HostExit::Fatal(error)),
+    };
+    let activation_token =
+        match activation_gate.admit_transport(&raw, &nano_cli::activation::now_utc()) {
+            Ok(nano_cli::activation::TransportAdmission::Activation(token)) => *token,
+            Ok(_) => {
+                return Ok(HostExit::Fatal(
+                    "activation request has wrong method".into(),
+                ));
+            }
+            Err(error) => {
+                return Ok(HostExit::Fatal(format!(
+                    "activation refused: {}",
+                    error.reason()
+                )));
+            }
+        };
+    if activation_gate
+        .bind_session(&activation_token, "protocol-host")
+        .is_err()
+    {
+        return Ok(HostExit::Fatal("activation session binding failed".into()));
+    }
     let Some(api_key) = nano_cli::flux_key::flux_api_key() else {
         eprintln!(
             "wayland-nano: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for protocol-host mode"
@@ -157,8 +192,25 @@ pub async fn run(
             eprintln!("wayland-nano: {warning}");
         }
     }
+    let (artifact, epochs) = match nano_cli::activation::runtime_authority(&activation_token) {
+        Ok(value) => value,
+        Err(_) => return Ok(HostExit::Fatal("activation receipt incomplete".into())),
+    };
+    let activation_effects = nano_agent::activation_effects::ActivationEffectExecutor::new(
+        executor,
+        activation_token.clone(),
+        nano_home,
+        artifact,
+        epochs,
+        nano_cli::activation::now_utc(),
+    );
+    let delegated = match nano_cli::activation::delegated_authority(&activation_token, nano_home) {
+        Ok(value) => value,
+        Err(_) => return Ok(HostExit::Fatal("activation receipt incomplete".into())),
+    };
     let mcp_executor =
-        nano_agent::mcp::McpToolExecutor::from_shared(mcp_registry.clone(), &executor);
+        nano_agent::mcp::McpToolExecutor::from_shared(mcp_registry.clone(), &activation_effects)
+            .with_activation_authority(delegated);
     let mcp_definitions = if executor_has_registry(&mcp_executor) {
         executor_tool_definitions(&mcp_executor)
     } else {

@@ -29,6 +29,10 @@ pub async fn run_exec_with<W, FD, FD2, FT, D, T>(
     nano_home: &Path,
     workspace: &Path,
     params: &ExecParams,
+    activation: Option<(
+        crate::activation::SharedAdmission,
+        nano_activation::admission::AdmittedToken,
+    )>,
     model_name: &str,
     make_driver: FD,
     // P5 §4: the ladder's per-candidate factory — SAME driver output type,
@@ -94,6 +98,15 @@ where
             eprintln!("wayland-nano: {err}");
             return 2;
         }
+    };
+    let activation_token = if let Some((gate, token)) = activation {
+        if !resumed && gate.bind_session(&token, &session.session_id).is_err() {
+            eprintln!("wayland-nano: activation session binding failed");
+            return 2;
+        }
+        Some(token)
+    } else {
+        None
     };
     let _ownership = match pre_ownership {
         Some(ownership) => ownership,
@@ -298,6 +311,28 @@ where
         }
         None => &with_cron,
     };
+    let activation_effect_tools;
+    let with_cron: &dyn nano_agent::turn::ToolExecutor =
+        if let Some(token) = activation_token.as_ref() {
+            let (artifact, epochs) = match crate::activation::runtime_authority(token) {
+                Ok(value) => value,
+                Err(_) => {
+                    eprintln!("wayland-nano: activation receipt is incomplete");
+                    return 2;
+                }
+            };
+            activation_effect_tools = nano_agent::activation_effects::ActivationEffectExecutor::new(
+                with_cron,
+                token.clone(),
+                nano_home,
+                artifact,
+                epochs,
+                crate::activation::now_utc(),
+            );
+            &activation_effect_tools
+        } else {
+            with_cron
+        };
     // P3: the registry is SHARED (executor + session-tool wrapper), the
     // elicitation bridge auto-declines on this non-interactive surface
     // (§5.2: would-prompt ⇒ deny), and the journaled hydration state is
@@ -347,7 +382,18 @@ where
             eprintln!("wayland-nano: {notice}");
         }
     }
-    let with_mcp = nano_agent::mcp::McpToolExecutor::from_shared(mcp_registry.clone(), with_cron);
+    let mut with_mcp =
+        nano_agent::mcp::McpToolExecutor::from_shared(mcp_registry.clone(), with_cron);
+    if let Some(token) = activation_token.as_ref() {
+        let delegated = match crate::activation::delegated_authority(token, nano_home) {
+            Ok(value) => value,
+            Err(_) => {
+                eprintln!("wayland-nano: activation receipt is incomplete");
+                return 2;
+            }
+        };
+        with_mcp = with_mcp.with_activation_authority(delegated);
+    }
     let with_mcp = nano_agent::mcp_session_tools::McpSessionToolExecutor::new(
         (!mcp_specs.is_empty()).then(|| mcp_registry.clone()),
         journal.clone(),
@@ -692,6 +738,39 @@ fn finish_exec<W: Write + Send>(
 /// Production entry: Flux driver + real tools, JSONL on stdout. Requires
 /// the Flux key via the standard resolution chain (never embedded).
 pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32 {
+    let activation = if let Some(path) = &params.activation_request {
+        let raw = match std::fs::read(path) {
+            Ok(value) => value,
+            Err(_) => {
+                eprintln!("wayland-nano: activation request unavailable");
+                return 2;
+            }
+        };
+        let gate = match crate::activation::SharedAdmission::open_production(nano_home) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("wayland-nano: {error}");
+                return 2;
+            }
+        };
+        match gate.admit_transport(&raw, &crate::activation::now_utc()) {
+            Ok(crate::activation::TransportAdmission::Activation(token)) => Some((gate, *token)),
+            Ok(_) => {
+                eprintln!("wayland-nano: activation request has the wrong transport method");
+                return 2;
+            }
+            Err(error) => {
+                eprintln!("wayland-nano: activation refused: {}", error.reason());
+                return 2;
+            }
+        }
+    } else {
+        if params.resume.is_some() {
+            eprintln!("wayland-nano: persistent resume requires --activation-request");
+            return 2;
+        }
+        None
+    };
     let Some(api_key) = crate::flux_key::flux_api_key() else {
         eprintln!("wayland-nano: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for exec mode");
         return 2;
@@ -855,6 +934,7 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
         nano_home,
         workspace,
         params,
+        activation,
         &routing.reference,
         make_driver,
         make_ladder_driver,

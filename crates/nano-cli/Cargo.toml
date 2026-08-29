@@ -29,6 +29,7 @@ async-trait = "0.1"
 base64 = "0.22"
 dirs-next = "2"
 nano-agent = { version = "0.2.0", path = "../nano-agent" }
+nano-activation = { version = "0.2.0", path = "../nano-activation" }
 # S7 seam: the checkpoint store is opened at session bootstrap (recovery
 # sweep) and shared into the per-turn CheckpointToolExecutor wrap.
 nano-checkpoints = { version = "0.2.0", path = "../nano-checkpoints" }
@@ -50,6 +51,7 @@ nano-tools = { version = "0.2.0", path = "../nano-tools" }
 nano-verify = { version = "0.2.0", path = "../nano-verify" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # P5 §7: the candidate snapshot's catalog/proof digest (0.10, the in-tree
 # version — nano-session/nano-model).
 sha2 = "0.10"
@@ -58,6 +60,8 @@ tokio = { version = "1", features = ["macros", "rt", "sync"] }
 
 [dev-dependencies]
 serde_json = "1"
+ed25519-dalek = "2"
+serde_jcs = "0.1"
 async-trait = "0.1"
 nano-agent = { version = "0.2.0", path = "../nano-agent" }
 nano-model = { version = "0.2.0", path = "../nano-model" }

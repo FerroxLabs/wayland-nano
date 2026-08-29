@@ -34,7 +34,15 @@ fn main() {
                 .expect("tokio runtime");
             let home = nano_home();
             let workspace = std::env::current_dir().expect("cwd");
-            match runtime.block_on(host_mode::run(&home, &workspace)) {
+            let activation_request = args
+                .windows(2)
+                .find(|pair| pair[0] == "--activation-request")
+                .map(|pair| std::path::PathBuf::from(&pair[1]));
+            match runtime.block_on(host_mode::run(
+                &home,
+                &workspace,
+                activation_request.as_deref(),
+            )) {
                 Ok(host_mode::HostExit::StdinClosed) => 0,
                 Ok(host_mode::HostExit::ShutdownCommand) => 0,
                 Ok(host_mode::HostExit::Fatal(reason)) => {
@@ -161,6 +169,7 @@ fn parse_exec_args(args: &[String]) -> Result<nano_cli::exec_mode::ExecParams, i
     // P5 §1: the explicit model pin and the Auto opt-in.
     let mut model = None;
     let mut auto = false;
+    let mut activation_request = None;
     let mut positional = Vec::new();
     let mut index = 0;
     let take_value = |args: &[String], index: &mut usize, flag: &str| -> Result<String, i32> {
@@ -199,6 +208,13 @@ fn parse_exec_args(args: &[String]) -> Result<nano_cli::exec_mode::ExecParams, i
             // `flux-auto`; a pin above wins over the opt-in — precedence).
             "--auto" => {
                 auto = true;
+            }
+            "--activation-request" => {
+                activation_request = Some(std::path::PathBuf::from(take_value(
+                    args,
+                    &mut index,
+                    "--activation-request",
+                )?));
             }
             "--resume" => {
                 let value = take_value(args, &mut index, "--resume")?;
@@ -256,6 +272,7 @@ fn parse_exec_args(args: &[String]) -> Result<nano_cli::exec_mode::ExecParams, i
         goal,
         model,
         auto,
+        activation_request,
     })
 }
 

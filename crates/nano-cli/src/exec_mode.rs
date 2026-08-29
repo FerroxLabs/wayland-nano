@@ -75,6 +75,9 @@ pub struct ExecParams {
     pub model: Option<String>,
     /// P5 §1: the explicit `--auto` opt-in (or NANO_ROUTING_AUTO).
     pub auto: bool,
+    /// Explicit owner-produced signed activation frame. No environment or
+    /// implicit `main` trust is accepted.
+    pub activation_request: Option<PathBuf>,
 }
 
 /// P5 §1: the routing decision for this exec run, resolved by the caller

@@ -33,6 +33,23 @@ pub struct ResumeBinding {
     pub issuer_epoch: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionBinding {
+    pub issuer_id: String,
+    pub product_subject_id: String,
+    pub principal_id: String,
+    pub project_id: String,
+    pub session_id: String,
+    pub fingerprint: String,
+    pub admin_epoch: u64,
+    pub issuer_epoch: u64,
+    pub activation_id: String,
+    pub receipt_id: String,
+    pub canonical_payload_sha256: String,
+    pub artifact: ArtifactIdentity,
+}
+
 #[derive(Debug, Clone)]
 pub struct AdmittedToken {
     principal_id: String,
@@ -155,7 +172,26 @@ impl AdmissionGate {
         let verified = verify_activation_frame(raw_frame, &public_key)?;
         let carrier = verified.carrier();
         validate_time(carrier, now_utc)?;
-        validate_continuity(carrier, resume, &snapshot, issuer_epoch)?;
+        let owned_resume = if matches!(
+            carrier.continuity.strategy,
+            ContinuityStrategy::SessionResume
+        ) && resume.is_none()
+        {
+            let session_id = carrier
+                .session_id
+                .as_deref()
+                .ok_or_else(|| ActivationError::new(RejectReason::ResumeDrift))?;
+            Some(self.session_binding_with_snapshot(session_id, &snapshot)?)
+        } else {
+            None
+        };
+        let resolved_resume = owned_resume.as_ref().map(SessionBinding::as_resume);
+        validate_continuity(
+            carrier,
+            resume.or(resolved_resume.as_ref()),
+            &snapshot,
+            issuer_epoch,
+        )?;
         let policy = intersect(carrier, &self.ceiling)?;
 
         let raw_hash = hex(&Sha256::digest(raw_frame));
@@ -252,6 +288,111 @@ impl AdmissionGate {
             activation_id: activation_id.to_owned(),
         })?;
         Ok(())
+    }
+
+    pub fn bind_session(
+        &mut self,
+        activation_id: &str,
+        session_id: &str,
+        fingerprint: &str,
+    ) -> Result<SessionBinding, ActivationError> {
+        if fingerprint.len() != 64
+            || !fingerprint
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(ActivationError::new(RejectReason::ResumeDrift));
+        }
+        let authority = AuthorityStore::open(&self.nano_home).map_err(map_authority_error)?;
+        let snapshot = authority.snapshot().map_err(map_authority_error)?;
+        drop(authority);
+        let mut ledger = self.open_ledger()?;
+        let activation = ledger
+            .state
+            .activations
+            .get(activation_id)
+            .cloned()
+            .ok_or_else(|| ActivationError::new(RejectReason::ResumeDrift))?;
+        if session_id.is_empty()
+            || session_id.len() > 128
+            || !session_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            || activation
+                .session_id
+                .as_deref()
+                .is_some_and(|asserted| asserted != session_id)
+        {
+            return Err(ActivationError::new(RejectReason::ResumeDrift));
+        }
+        let session_id = session_id.to_owned();
+        let issuer = snapshot
+            .issuers
+            .get(&activation.issuer_id)
+            .filter(|issuer| !issuer.revoked)
+            .ok_or_else(|| ActivationError::new(RejectReason::ResumeDrift))?;
+        let binding = SessionBinding {
+            issuer_id: activation.issuer_id,
+            product_subject_id: activation.product_subject_id,
+            principal_id: activation.principal_id,
+            project_id: activation.project_id,
+            session_id: session_id.clone(),
+            fingerprint: fingerprint.to_owned(),
+            admin_epoch: snapshot.admin_epoch,
+            issuer_epoch: issuer.epoch,
+            activation_id: activation_id.to_owned(),
+            receipt_id: activation.receipt_id,
+            canonical_payload_sha256: activation.canonical_payload_sha256,
+            artifact: activation.artifact,
+        };
+        if let Some(existing) = ledger.state.sessions.get(&session_id) {
+            return if existing == &binding {
+                Ok(existing.clone())
+            } else {
+                Err(ActivationError::new(RejectReason::ResumeDrift))
+            };
+        }
+        ledger.append(ActivationRecord::SessionBound {
+            sequence: 0,
+            binding: Box::new(binding.clone()),
+        })?;
+        Ok(binding)
+    }
+
+    pub fn session_binding(&self, session_id: &str) -> Result<SessionBinding, ActivationError> {
+        let authority = AuthorityStore::open(&self.nano_home).map_err(map_authority_error)?;
+        let snapshot = authority.snapshot().map_err(map_authority_error)?;
+        drop(authority);
+        self.session_binding_with_snapshot(session_id, &snapshot)
+    }
+
+    fn session_binding_with_snapshot(
+        &self,
+        session_id: &str,
+        snapshot: &AuthoritySnapshot,
+    ) -> Result<SessionBinding, ActivationError> {
+        let binding = self
+            .open_ledger()?
+            .state
+            .sessions
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| ActivationError::new(RejectReason::ResumeDrift))?;
+        let issuer = snapshot
+            .issuers
+            .get(&binding.issuer_id)
+            .filter(|issuer| !issuer.revoked)
+            .ok_or_else(|| ActivationError::new(RejectReason::ResumeDrift))?;
+        if binding.admin_epoch != snapshot.admin_epoch
+            || binding.issuer_epoch != issuer.epoch
+            || binding.product_subject_id != issuer.subject_id
+            || binding.principal_id != issuer.principal_id
+            || !issuer.projects.contains(&binding.project_id)
+            || binding.artifact != self.artifact
+        {
+            return Err(ActivationError::new(RejectReason::ResumeDrift));
+        }
+        Ok(binding)
     }
 
     pub fn record_result(
@@ -456,6 +597,21 @@ impl AdmissionGate {
     }
 }
 
+impl SessionBinding {
+    fn as_resume(&self) -> ResumeBinding {
+        ResumeBinding {
+            issuer_id: self.issuer_id.clone(),
+            product_subject_id: self.product_subject_id.clone(),
+            principal_id: self.principal_id.clone(),
+            project_id: self.project_id.clone(),
+            session_id: self.session_id.clone(),
+            fingerprint: self.fingerprint.clone(),
+            admin_epoch: self.admin_epoch,
+            issuer_epoch: self.issuer_epoch,
+        }
+    }
+}
+
 fn token_from(
     carrier: &ActivationCarrier,
     policy: EffectivePolicy,
@@ -625,6 +781,10 @@ enum ActivationRecord {
         outcome: ControlOutcome,
         receipt: String,
     },
+    SessionBound {
+        sequence: u64,
+        binding: Box<SessionBinding>,
+    },
 }
 
 impl ActivationRecord {
@@ -634,7 +794,8 @@ impl ActivationRecord {
             | Self::Decision { sequence, .. }
             | Self::DispatchEligible { sequence, .. }
             | Self::Result { sequence, .. }
-            | Self::Control { sequence, .. } => *sequence,
+            | Self::Control { sequence, .. }
+            | Self::SessionBound { sequence, .. } => *sequence,
         }
     }
     fn set_sequence(&mut self, value: u64) {
@@ -643,7 +804,8 @@ impl ActivationRecord {
             | Self::Decision { sequence, .. }
             | Self::DispatchEligible { sequence, .. }
             | Self::Result { sequence, .. }
-            | Self::Control { sequence, .. } => *sequence = value,
+            | Self::Control { sequence, .. }
+            | Self::SessionBound { sequence, .. } => *sequence = value,
         }
     }
 }
@@ -656,11 +818,15 @@ struct TupleState {
 
 #[derive(Debug, Clone)]
 struct ActivationIdentity {
+    issuer_id: String,
     product_subject_id: String,
     principal_id: String,
     project_id: String,
     session_id: Option<String>,
     policy: EffectivePolicy,
+    receipt_id: String,
+    canonical_payload_sha256: String,
+    artifact: ArtifactIdentity,
 }
 
 #[derive(Debug, Clone)]
@@ -678,6 +844,7 @@ struct LedgerState {
     controls: BTreeMap<String, ControlKind>,
     dispatch_eligible: std::collections::BTreeSet<String>,
     control_nonces: BTreeMap<String, ControlNonceState>,
+    sessions: BTreeMap<String, SessionBinding>,
 }
 
 struct ActivationLedger {
@@ -832,6 +999,7 @@ fn reduce(state: &mut LedgerState, record: &ActivationRecord) -> Result<(), Acti
             state.activations.insert(
                 activation_id.into(),
                 ActivationIdentity {
+                    issuer_id: value["issuer_id"].as_str().unwrap_or_default().into(),
                     product_subject_id: value["product_subject_id"]
                         .as_str()
                         .unwrap_or_default()
@@ -841,6 +1009,25 @@ fn reduce(state: &mut LedgerState, record: &ActivationRecord) -> Result<(), Acti
                     session_id: value["session_id"].as_str().map(str::to_owned),
                     policy: serde_json::from_value(value["effective_policy"].clone())
                         .map_err(|_| ActivationError::new(RejectReason::AmbiguousRecovery))?,
+                    receipt_id: value["receipt_id"].as_str().unwrap_or_default().into(),
+                    canonical_payload_sha256: value["canonical_payload_sha256"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .into(),
+                    artifact: ArtifactIdentity {
+                        source_commit_sha: value["source_commit_sha"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .into(),
+                        cargo_lock_sha256: value["cargo_lock_sha256"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .into(),
+                        executable_sha256: value["executable_sha256"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .into(),
+                    },
                 },
             );
         }
@@ -887,6 +1074,35 @@ fn reduce(state: &mut LedgerState, record: &ActivationRecord) -> Result<(), Acti
             state.controls.insert(activation_id.clone(), *kind);
             if *outcome != ControlOutcome::RaceLost {
                 state.results.insert(activation_id.clone(), *result);
+            }
+        }
+        ActivationRecord::SessionBound { binding, .. } => {
+            let activation = state
+                .activations
+                .get(&binding.activation_id)
+                .ok_or_else(|| ActivationError::new(RejectReason::AmbiguousRecovery))?;
+            if activation.issuer_id != binding.issuer_id
+                || activation.product_subject_id != binding.product_subject_id
+                || activation.principal_id != binding.principal_id
+                || activation.project_id != binding.project_id
+                || activation
+                    .session_id
+                    .as_deref()
+                    .is_some_and(|asserted| asserted != binding.session_id)
+                || activation.receipt_id != binding.receipt_id
+                || activation.canonical_payload_sha256 != binding.canonical_payload_sha256
+                || activation.artifact != binding.artifact
+            {
+                return Err(ActivationError::new(RejectReason::AmbiguousRecovery));
+            }
+            if let Some(existing) = state.sessions.get(&binding.session_id) {
+                if existing != binding.as_ref() {
+                    return Err(ActivationError::new(RejectReason::AmbiguousRecovery));
+                }
+            } else {
+                state
+                    .sessions
+                    .insert(binding.session_id.clone(), binding.as_ref().clone());
             }
         }
     }

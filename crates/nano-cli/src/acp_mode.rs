@@ -336,12 +336,18 @@ enum Inbound {
         id: serde_json::Value,
         method: String,
         params: Option<serde_json::Value>,
+        admitted: Option<Box<nano_activation::admission::AdmittedToken>>,
     },
     Notification {
         method: String,
+        control: Option<nano_activation::control::ControlOutcome>,
     },
     /// A line that is not valid JSON (the parse error text).
     Malformed(String),
+    ActivationRefused {
+        id: serde_json::Value,
+        reason: nano_activation::RejectReason,
+    },
 }
 
 /// Permission waiters keyed by the JSON-RPC id we sent; the reader thread
@@ -355,6 +361,9 @@ type PendingMap =
 type CurrentMode = Arc<Mutex<Option<Arc<Mutex<PermissionMode>>>>>;
 
 struct Session {
+    /// Private trusted activation state. Transport parameters/session ids can
+    /// never construct this token.
+    activation: Option<nano_activation::admission::AdmittedToken>,
     id: String,
     workspace: std::path::PathBuf,
     cancel: Arc<std::sync::atomic::AtomicBool>,
@@ -1230,7 +1239,14 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
         hooks: &hooks,
         routing: &routing_config,
     };
-    serve(reader, writer, &config, make_driver, make_tools).await
+    let activation = match crate::activation::SharedAdmission::open_production(nano_home) {
+        Ok(gate) => gate,
+        Err(error) => {
+            eprintln!("wayland-nano: {error}; persistent ACP activation remains disabled");
+            return Ok(2);
+        }
+    };
+    serve_admitted(reader, writer, &config, make_driver, make_tools, activation).await
 }
 
 /// P2a §5.4 (F-34): the host-startup attachment-store GC sweep. Hygiene
@@ -1564,6 +1580,91 @@ where
     D: ModelDriver + 'static,
     T: ToolExecutor,
 {
+    serve_inner(reader, writer, config, make_driver, make_tools, None).await
+}
+
+fn attach_activation_receipt(
+    result: &mut serde_json::Value,
+    admitted: Option<&nano_activation::admission::AdmittedToken>,
+    resume_fingerprint: Option<&str>,
+) {
+    let Some(token) = admitted else { return };
+    let Ok(receipt) = serde_json::from_slice::<serde_json::Value>(token.receipt().as_bytes())
+    else {
+        return;
+    };
+    if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "_meta".into(),
+            serde_json::json!({
+                "waylandNanoActivationReceipt": receipt,
+                "waylandNanoResumeFingerprint": resume_fingerprint,
+            }),
+        );
+    }
+}
+
+pub async fn serve_admitted<R, W, FD, FT, D, T>(
+    reader: R,
+    writer: W,
+    config: &ServeConfig<'_>,
+    make_driver: FD,
+    make_tools: FT,
+    activation: crate::activation::SharedAdmission,
+) -> std::io::Result<i32>
+where
+    R: BufRead + Send + 'static,
+    W: Write + Send + 'static,
+    FD: Fn(&crate::provider_router::ProviderBinding) -> D + Send + Sync + 'static,
+    FT: Fn(
+            &std::path::Path,
+            PermissionMode,
+            &std::path::Path,
+            Option<DiffHook>,
+            Option<Arc<dyn nano_model::metering::UsageSink>>,
+            Option<Arc<dyn nano_tools::image::ImageReadApprover>>,
+        ) -> (T, nano_core::permissions::FileSystemSandboxPolicy)
+        + Send
+        + Sync,
+    D: ModelDriver + 'static,
+    T: ToolExecutor,
+{
+    serve_inner(
+        reader,
+        writer,
+        config,
+        make_driver,
+        make_tools,
+        Some(activation),
+    )
+    .await
+}
+
+async fn serve_inner<R, W, FD, FT, D, T>(
+    reader: R,
+    writer: W,
+    config: &ServeConfig<'_>,
+    make_driver: FD,
+    make_tools: FT,
+    activation: Option<crate::activation::SharedAdmission>,
+) -> std::io::Result<i32>
+where
+    R: BufRead + Send + 'static,
+    W: Write + Send + 'static,
+    FD: Fn(&crate::provider_router::ProviderBinding) -> D + Send + Sync + 'static,
+    FT: Fn(
+            &std::path::Path,
+            PermissionMode,
+            &std::path::Path,
+            Option<DiffHook>,
+            Option<Arc<dyn nano_model::metering::UsageSink>>,
+            Option<Arc<dyn nano_tools::image::ImageReadApprover>>,
+        ) -> (T, nano_core::permissions::FileSystemSandboxPolicy)
+        + Send
+        + Sync,
+    D: ModelDriver + 'static,
+    T: ToolExecutor,
+{
     #[cfg(feature = "mem-stats")]
     let mut mem_stats = MemStatsWriter::from_env()?;
     let out = Arc::new(Mutex::new(writer));
@@ -1641,11 +1742,13 @@ where
     // resolves IMMEDIATELY with the ack.
     let current_steer: Arc<Mutex<Option<SteerHandle>>> = Arc::new(Mutex::new(None));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Inbound>();
+    let reader_activation = activation.clone();
     std::thread::spawn({
         let pending = pending.clone();
         let current_cancel = current_cancel.clone();
         let current_mode = current_mode.clone();
         let current_tasks = current_tasks.clone();
+        let activation = reader_activation;
         move || {
             reader_loop(
                 reader,
@@ -1654,6 +1757,7 @@ where
                 current_cancel,
                 current_mode,
                 current_tasks,
+                activation,
             )
         }
     });
@@ -1720,19 +1824,30 @@ where
                             ),
                         )?;
                     }
-                    Inbound::Notification { method } => {
+                    Inbound::ActivationRefused { id, reason } => {
+                        write_out(
+                            &out,
+                            &JsonRpcResponse::err_typed(
+                                id,
+                                NanoErrorKind::InvalidParams,
+                                format!("activation refused: {reason}"),
+                                NanoErrorExtras::default(),
+                            ),
+                        )?;
+                    }
+                    Inbound::Notification { method, control } => {
                         if method == "session/cancel" {
                             // Step-boundary cancel: the engine checks the flag
                             // between steps and the approval gate polls it while
                             // waiting on a permission response. C6: cascades to
                             // children (their own flags + kill handles).
-                            if let Some(active) = &session {
+                            if control.is_some() && let Some(active) = &session {
                                 active.cancel.store(true, Ordering::SeqCst);
                                 active.tasks.cancel_all();
                             }
                         }
                     }
-                    Inbound::Request { id, method, params } => match method.as_str() {
+                    Inbound::Request { id, method, params, admitted } => match method.as_str() {
                         "initialize" => {
                             // P2a §6.4/D4: image capability advertises from
                             // the configured STARTUP leaf — initialize-scoped,
@@ -1757,6 +1872,12 @@ where
                             )?;
                         }
                         "session/new" => {
+                            if activation.is_some() && admitted.is_none() {
+                                write_out(&out, &JsonRpcResponse::err_typed(
+                                    id, NanoErrorKind::InvalidParams, "activation admission missing", NanoErrorExtras::default(),
+                                ))?;
+                                continue;
+                            }
                             if turn.is_some() {
                                 write_out(
                                     &out,
@@ -1836,6 +1957,24 @@ where
                                 )?;
                                 continue;
                             }
+                            let resume_fingerprint = match (&activation, admitted.as_deref()) {
+                                (Some(gate), Some(token)) => match gate.bind_session(token, &session_id) {
+                                    Ok(value) => Some(value),
+                                    Err(error) => {
+                                        write_out(
+                                            &out,
+                                            &JsonRpcResponse::err_typed(
+                                                id,
+                                                NanoErrorKind::InvalidParams,
+                                                format!("activation binding refused: {}", error.reason()),
+                                                NanoErrorExtras::default(),
+                                            ),
+                                        )?;
+                                        continue;
+                                    }
+                                },
+                                _ => None,
+                            };
                             // S4 (F-46): SessionStart (startup) — notify,
                             // journaled BEFORE the fold offset is taken
                             // below so the offset sits past these
@@ -1942,6 +2081,23 @@ where
                                 make_task_driver_factory(config.default_model),
                             )
                             .with_image_influence(image_influenced.clone());
+                            if let Some(token) = admitted.as_deref() {
+                                let delegated = match crate::activation::delegated_authority(
+                                    token,
+                                    config.attachment_home,
+                                ) {
+                                    Ok(value) => value,
+                                    Err(_) => {
+                                        write_out(&out, &JsonRpcResponse::err_typed(
+                                            id, NanoErrorKind::InvalidParams,
+                                            "activation receipt is incomplete",
+                                            NanoErrorExtras::default(),
+                                        ))?;
+                                        continue;
+                                    }
+                                };
+                                registry = registry.with_activation_authority(delegated);
+                            }
                             // P1 (D12): children inherit the session search
                             // chain — advertised exactly like the parent
                             // surface and metered by the SESSION CostMeter
@@ -2000,6 +2156,7 @@ where
                                 &[],
                             );
                             session = Some(Session {
+                                activation: admitted.as_deref().cloned(),
                                 id: session_id.clone(),
                                 workspace: cwd,
                                 cancel,
@@ -2032,19 +2189,25 @@ where
                                 cua: cua_session_for(config.attachment_home, false),
                                 checkpoints,
                             });
-                            write_out(
-                                &out,
-                                &JsonRpcResponse::ok(
-                                    id,
-                                    session_new_result(
-                                        &session_id,
-                                        config.default_model,
-                                        config.available_models,
-                                    ),
-                                ),
-                            )?;
+                            let mut result = session_new_result(
+                                &session_id,
+                                config.default_model,
+                                config.available_models,
+                            );
+                            attach_activation_receipt(
+                                &mut result,
+                                admitted.as_deref(),
+                                resume_fingerprint.as_deref(),
+                            );
+                            write_out(&out, &JsonRpcResponse::ok(id, result))?;
                         }
                         "session/load" => {
+                            if activation.is_some() && admitted.is_none() {
+                                write_out(&out, &JsonRpcResponse::err_typed(
+                                    id, NanoErrorKind::InvalidParams, "activation admission missing", NanoErrorExtras::default(),
+                                ))?;
+                                continue;
+                            }
                             if turn.is_some() {
                                 write_out(
                                     &out,
@@ -2421,6 +2584,23 @@ where
                                 make_task_driver_factory(config.default_model),
                             )
                             .with_image_influence(image_influenced.clone());
+                            if let Some(token) = admitted.as_deref() {
+                                let delegated = match crate::activation::delegated_authority(
+                                    token,
+                                    config.attachment_home,
+                                ) {
+                                    Ok(value) => value,
+                                    Err(_) => {
+                                        write_out(&out, &JsonRpcResponse::err_typed(
+                                            id, NanoErrorKind::InvalidParams,
+                                            "activation receipt is incomplete",
+                                            NanoErrorExtras::default(),
+                                        ))?;
+                                        continue;
+                                    }
+                                };
+                                registry = registry.with_activation_authority(delegated);
+                            }
                             // P1 (D12): children inherit the session search
                             // chain — advertised exactly like the parent
                             // surface and metered by the SESSION CostMeter
@@ -2476,6 +2656,7 @@ where
                                 &report.envelopes,
                             );
                             session = Some(Session {
+                                activation: admitted.as_deref().cloned(),
                                 id: session_id.to_string(),
                                 workspace: cwd,
                                 cancel,
@@ -2527,13 +2708,10 @@ where
                                 ),
                                 checkpoints,
                             });
-                            write_out(
-                                &out,
-                                &JsonRpcResponse::ok(
-                                    id,
-                                    session_load_result(config.default_model, config.available_models),
-                                ),
-                            )?;
+                            let mut result =
+                                session_load_result(config.default_model, config.available_models);
+                            attach_activation_receipt(&mut result, admitted.as_deref(), None);
+                            write_out(&out, &JsonRpcResponse::ok(id, result))?;
                         }
                         // Desktop's model picker sends session/set_model
                         // (AcpConnection.ts `setModel`, params {sessionId,
@@ -2552,6 +2730,20 @@ where
                                 )?;
                                 continue;
                             };
+                            if let Some(gate) = &activation
+                                && gate.recheck_session(&active.id).is_err()
+                            {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::InvalidParams,
+                                        "activation authority changed",
+                                        NanoErrorExtras::default(),
+                                    ),
+                                )?;
+                                continue;
+                            }
                             let params = params.unwrap_or_default();
                             let model_id = params
                                 .get("modelId")
@@ -2906,6 +3098,20 @@ where
                                 )?;
                                 continue;
                             };
+                            if let Some(gate) = &activation
+                                && gate.recheck_session(&active.id).is_err()
+                            {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::InvalidParams,
+                                        "activation authority changed",
+                                        NanoErrorExtras::default(),
+                                    ),
+                                )?;
+                                continue;
+                            }
                             let params = params.unwrap_or_default();
                             // P2a §2.3: the text-only extractor (which
                             // silently dropped non-text blocks) is REPLACED
@@ -3697,6 +3903,7 @@ where
                             // The session's task registry (C6): the turn's
                             // executor routes task_* calls through it.
                             let turn_tasks = active.tasks.clone();
+                            let activation_token = active.activation.clone();
                             // P1 §3.2/§4.2: the session meter, rebound per
                             // turn to the resolved binding's pricing
                             // provider (an absent row prices unpriced —
@@ -3859,11 +4066,58 @@ where
                                     search_sink,
                                     image_approver,
                                 );
+                                let activation_effect_tools;
+                                let tools: &dyn nano_agent::turn::ToolExecutor =
+                                    if let Some(token) = activation_token.as_ref() {
+                                        let (artifact, epochs) = match crate::activation::runtime_authority(token) {
+                                            Ok(value) => value,
+                                            Err(_) => {
+                                                return (
+                                                    String::new(),
+                                                    TurnAnswer::Typed(TypedError::new(
+                                                        NanoErrorKind::InvalidParams,
+                                                        "activation receipt is incomplete",
+                                                    )),
+                                                );
+                                            }
+                                        };
+                                        activation_effect_tools =
+                                            nano_agent::activation_effects::ActivationEffectExecutor::new(
+                                                tools,
+                                                token.clone(),
+                                                config.attachment_home,
+                                                artifact,
+                                                epochs,
+                                                crate::activation::now_utc(),
+                                            );
+                                        &activation_effect_tools
+                                    } else {
+                                        &tools
+                                    };
                                 // MCP-merged executor: mcp__ names route to the
                                 // session registry, everything else to the core
                                 // tools; the model sees both tool sets.
-                                let mcp_executor =
-                                    McpToolExecutor::from_shared(turn_mcp.clone(), &tools);
+                                let mut mcp_executor =
+                                    McpToolExecutor::from_shared(turn_mcp.clone(), tools);
+                                if let Some(token) = activation_token.as_ref() {
+                                    let delegated = match crate::activation::delegated_authority(
+                                        token,
+                                        config.attachment_home,
+                                    ) {
+                                        Ok(value) => value,
+                                        Err(_) => {
+                                            return (
+                                                String::new(),
+                                                TurnAnswer::Typed(TypedError::new(
+                                                    NanoErrorKind::InvalidParams,
+                                                    "activation receipt is incomplete",
+                                                )),
+                                            );
+                                        }
+                                    };
+                                    mcp_executor =
+                                        mcp_executor.with_activation_authority(delegated);
+                                }
                                 let mut tool_definitions = v1_tool_definitions(
                                     config.search.is_some(),
                                     vision_backed && tools.image_results_backed(),
@@ -5334,6 +5588,7 @@ fn reader_loop<R: BufRead>(
     current_cancel: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>>,
     current_mode: CurrentMode,
     current_tasks: Arc<Mutex<Option<Arc<nano_agent::tasks::TaskRegistry>>>>,
+    activation: Option<crate::activation::SharedAdmission>,
 ) {
     let mut line = String::new();
     loop {
@@ -5348,6 +5603,37 @@ fn reader_loop<R: BufRead>(
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
+        }
+        let mut admitted = None;
+        let mut control = None;
+        if let Some(gate) = &activation {
+            match gate.admit_transport(trimmed.as_bytes(), &crate::activation::now_utc()) {
+                Ok(crate::activation::TransportAdmission::Activation(token)) => {
+                    admitted = Some(token);
+                }
+                Ok(crate::activation::TransportAdmission::Control(outcome)) => {
+                    control = Some(outcome);
+                }
+                Ok(crate::activation::TransportAdmission::Other) => {}
+                Err(error) => {
+                    // Parsing here occurs only after the duplicate-preserving gate has
+                    // refused the frame and is used solely to correlate the safe error.
+                    let id = serde_json::from_str::<serde_json::Value>(trimmed)
+                        .ok()
+                        .and_then(|value| value.get("id").cloned())
+                        .unwrap_or(serde_json::Value::Null);
+                    if tx
+                        .send(Inbound::ActivationRefused {
+                            id,
+                            reason: error.reason(),
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
+            }
         }
         let value: serde_json::Value = match serde_json::from_str(trimmed) {
             Ok(v) => v,
@@ -5398,10 +5684,11 @@ fn reader_loop<R: BufRead>(
                     id,
                     method,
                     params: value.get("params").cloned(),
+                    admitted,
                 }
             }
             (Some(method), None) => {
-                if method == "session/cancel" {
+                if method == "session/cancel" && control.is_some() {
                     // Fire the flag right here: the main loop may be mid-poll
                     // inside the turn and unable to relay it for whole steps.
                     // C6: cascade to children too — every child flag set and
@@ -5421,7 +5708,7 @@ fn reader_loop<R: BufRead>(
                         tasks.cancel_all();
                     }
                 }
-                Inbound::Notification { method }
+                Inbound::Notification { method, control }
             }
             (None, Some(id)) => {
                 if let Some(key) = id.as_u64() {
@@ -9366,6 +9653,7 @@ mod tests {
             current_cancel,
             current_mode.clone(),
             current_tasks,
+            None,
         );
         // reader_loop returns at EOF; everything it sent is queued on rx.
         let mut forwarded = Vec::new();

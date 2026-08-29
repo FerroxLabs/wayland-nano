@@ -14,6 +14,7 @@ pub mod key_provider;
 pub mod policy;
 mod raw;
 pub mod receipt;
+pub mod signer_provider;
 pub mod store;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -83,6 +84,33 @@ impl fmt::Display for RejectReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationError {
     reason: RejectReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransportDocument {
+    Activation,
+    Control(Vec<u8>),
+    Other,
+}
+
+/// Duplicate-preserving, resource-bounded classification for an entire ACP line.
+/// Callers use this before ordinary `serde_json::Value` deserialization.
+pub fn inspect_transport_frame(raw_frame: &[u8]) -> Result<TransportDocument, ActivationError> {
+    let frame = raw::parse_transport_frame(raw_frame)?;
+    let method = frame
+        .as_object()
+        .and_then(|object| object.get("method"))
+        .and_then(Value::as_str);
+    match method {
+        Some("session/new" | "session/load") => Ok(TransportDocument::Activation),
+        Some("session/cancel" | "session/pause") => {
+            let control = raw::locate_control(&frame)?;
+            let canonical = serde_jcs::to_vec(control)
+                .map_err(|_| ActivationError::new(RejectReason::NoncanonicalPayload))?;
+            Ok(TransportDocument::Control(canonical))
+        }
+        _ => Ok(TransportDocument::Other),
+    }
 }
 
 impl ActivationError {
