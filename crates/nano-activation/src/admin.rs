@@ -268,6 +268,15 @@ mod tests {
             assert!(
                 std::process::Command::new("icacls")
                     .arg(home.path())
+                    .arg("/remove:g")
+                    .args(["*S-1-1-0", "*S-1-5-11", "*S-1-5-32-545"])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            assert!(
+                std::process::Command::new("icacls")
+                    .arg(home.path())
                     .arg("/grant:r")
                     .arg(format!("{user}:(OI)(CI)(F)"))
                     .status()
