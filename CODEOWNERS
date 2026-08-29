@@ -1,4 +1,6 @@
-# Gate definitions and shipped agent prompt-code require human review.
+# Account-separated owner review. Both accounts are controlled by the same
+# disclosed human owner; this is accountable owner self-review, not independent
+# human review or separation of duties.
 /CODEOWNERS @FerroxLabs @TradeCanyon
 /gates/** @FerroxLabs @TradeCanyon
 /agents/** @FerroxLabs @TradeCanyon
