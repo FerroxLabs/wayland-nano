@@ -10,13 +10,15 @@ param(
     [switch] $RequireDefaultOff
 )
 $ErrorActionPreference = 'Stop'
+$gitExe=(Get-Command git -CommandType Application -ErrorAction Stop|Select-Object -First 1).Source
+$ghExe=(Get-Command gh -CommandType Application -ErrorAction Stop|Select-Object -First 1).Source
 $requiredChecks = @('gate (windows-latest, x64)','gate (windows-11-arm, arm64)','gate (macos-14, arm64)','gate (macos-15-intel, x64)','gate (ubuntu-22.04, x64)','gate (ubuntu-24.04-arm, arm64)','gate-cards')
 $requiredCodeowners = @('/CODEOWNERS @FerroxLabs @TradeCanyon','/gates/** @FerroxLabs @TradeCanyon','/agents/** @FerroxLabs @TradeCanyon')
 function Assert([bool]$Condition,[string]$Message){if(-not $Condition){throw $Message}}
-function Gh([string[]]$Arguments){$o=& gh @Arguments 2>&1;if($LASTEXITCODE){throw "gh failed ($LASTEXITCODE): $($o -join [Environment]::NewLine)"};($o -join [Environment]::NewLine)|ConvertFrom-Json}
-function Git([string[]]$Arguments){$o=& git @Arguments 2>&1;if($LASTEXITCODE){throw "git failed ($LASTEXITCODE): $($o -join [Environment]::NewLine)"};($o -join "`n").Trim()}
+function Gh([string[]]$Arguments){$o=& $script:ghExe @Arguments 2>&1;if($LASTEXITCODE){throw "gh failed ($LASTEXITCODE): $($o -join [Environment]::NewLine)"};($o -join [Environment]::NewLine)|ConvertFrom-Json}
+function Git([string[]]$Arguments){$o=& $script:gitExe @Arguments 2>&1;if($LASTEXITCODE){throw "git failed ($LASTEXITCODE): $($o -join [Environment]::NewLine)"};($o -join "`n").Trim()}
 function Hash-GitBlob([string]$Object){
-    $psi=New-Object Diagnostics.ProcessStartInfo;$psi.FileName='git';$psi.Arguments="cat-file blob $Object";$psi.UseShellExecute=$false;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
+    $psi=New-Object Diagnostics.ProcessStartInfo;$psi.FileName=$script:gitExe;$psi.Arguments="cat-file blob $Object";$psi.UseShellExecute=$false;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
     $p=[Diagnostics.Process]::Start($psi);$s=[Security.Cryptography.SHA256]::Create()
     try{$h=$s.ComputeHash($p.StandardOutput.BaseStream);$p.WaitForExit();if($p.ExitCode-ne 0){throw "git cat-file failed: $($p.StandardError.ReadToEnd())"};-join($h|ForEach-Object{$_.ToString('x2')})}finally{$s.Dispose();$p.Dispose()}
 }

@@ -11,6 +11,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$gitExe = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $requiredChecks = @(
     'gate (windows-latest, x64)',
     'gate (windows-11-arm, arm64)',
@@ -33,13 +34,13 @@ function Invoke-GhJson([string[]] $Arguments) {
 }
 function Assert([bool] $Condition, [string] $Message) { if (-not $Condition) { throw $Message } }
 function Git([string[]] $Arguments) {
-    $output = & git @Arguments 2>&1
+    $output = & $script:gitExe @Arguments 2>&1
     if ($LASTEXITCODE -ne 0) { throw "git failed ($LASTEXITCODE): $($output -join [Environment]::NewLine)" }
     ($output -join "`n").Trim()
 }
 function Hash-GitBlob([string] $Object) {
     $psi = New-Object Diagnostics.ProcessStartInfo
-    $psi.FileName = 'git'; $psi.Arguments = "cat-file blob $Object"
+    $psi.FileName = $script:gitExe; $psi.Arguments = "cat-file blob $Object"
     $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
     $process = [Diagnostics.Process]::Start($psi)
     $sha = [Security.Cryptography.SHA256]::Create()
