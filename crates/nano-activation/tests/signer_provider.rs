@@ -135,20 +135,25 @@ fn secure(path: &Path) {
 
 #[cfg(windows)]
 fn secure(path: &Path) {
-    let user = std::env::var("USERNAME").unwrap();
+    let script = r#"
+$file = [System.IO.FileInfo]::new($env:NANO_TEST_SECURE_FILE)
+$acl = $file.GetAccessControl()
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
+if ($owner -ne $sid) { $acl.SetOwner($sid) }
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+  $sid,
+  [System.Security.AccessControl.FileSystemRights]::FullControl,
+  [System.Security.AccessControl.AccessControlType]::Allow)
+[void]$acl.AddAccessRule($rule)
+$file.SetAccessControl($acl)
+"#;
     assert!(
-        std::process::Command::new("icacls")
-            .arg(path)
-            .arg("/inheritance:r")
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        std::process::Command::new("icacls")
-            .arg(path)
-            .arg("/grant:r")
-            .arg(format!("{user}:(F)"))
+        std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", script])
+            .env("NANO_TEST_SECURE_FILE", path)
             .status()
             .unwrap()
             .success()
