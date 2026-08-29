@@ -769,12 +769,73 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
     run_with_local_activation(nano_home, workspace, params, None).await
 }
 
+fn resolve_exec_routing(params: &ExecParams) -> Result<crate::exec_mode::ExecRouting, i32> {
+    let bare_only = |value: &str, flag: &str| -> Result<String, i32> {
+        match crate::provider_router::ProviderRouter::parse_model_id(value) {
+            Ok(crate::provider_router::ModelRef::Flux(_)) => Ok(value.to_string()),
+            _ => {
+                eprintln!(
+                    "wayland-nano: {flag} accepts bare Flux model ids only in exec mode, got {value:?}"
+                );
+                Err(2)
+            }
+        }
+    };
+    let auto_opt_in = crate::auto_routing::parse_auto_opt_in(
+        std::env::var(crate::auto_routing::AUTO_ROUTING_ENV).ok(),
+    )
+    .map_err(|err| {
+        eprintln!("wayland-nano: {err}");
+        2
+    })?;
+    let configured_default = crate::auto_routing::parse_configured_default(
+        std::env::var(crate::auto_routing::DEFAULT_MODEL_ENV).ok(),
+    )
+    .map_err(|err| {
+        eprintln!("wayland-nano: {err}");
+        2
+    })?;
+    let tools_probe = crate::auto_routing::parse_tools_probe(
+        std::env::var(crate::auto_routing::AUTO_TOOLS_PROBE_ENV).ok(),
+    )
+    .map_err(|err| {
+        eprintln!("wayland-nano: {err}");
+        2
+    })?;
+    let (source, reference) = match (&params.model, &configured_default) {
+        (Some(model), _) => (
+            crate::auto_routing::ModelSource::ExplicitPin,
+            bare_only(model, "--model")?,
+        ),
+        (None, Some(default)) => (
+            crate::auto_routing::ModelSource::ConfiguredDefault,
+            bare_only(default, crate::auto_routing::DEFAULT_MODEL_ENV)?,
+        ),
+        (None, None) => (
+            crate::auto_routing::ModelSource::ImplicitDefault,
+            crate::auto_routing::FLUX_AUTO.to_string(),
+        ),
+    };
+    Ok(crate::exec_mode::ExecRouting {
+        mode: crate::auto_routing::resolve_routing(source, &reference, params.auto || auto_opt_in)
+            .mode,
+        reference,
+        tools_probe,
+    })
+}
+
 pub async fn run_with_local_activation(
     nano_home: &Path,
     workspace: &Path,
     params: &ExecParams,
     local: Option<&crate::exec_mode::LocalActivationParams>,
 ) -> i32 {
+    // Pure argument/config validation has no authority, state, or effect;
+    // retain typed usage errors before the persistent activation boundary.
+    let routing = match resolve_exec_routing(params) {
+        Ok(routing) => routing,
+        Err(code) => return code,
+    };
     let local_raw = if let Some(local) = local {
         match crate::activation::mint_local_cli_request(nano_home, local, params.mode) {
             Ok(raw) => Some(raw),
@@ -832,71 +893,6 @@ pub async fn run_with_local_activation(
     let Some(api_key) = crate::flux_key::flux_api_key() else {
         eprintln!("wayland-nano: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for exec mode");
         return 2;
-    };
-    // P5 §1: exec routing — explicit `--model` pin > configured
-    // NANO_DEFAULT_MODEL pin > explicit Auto opt-in (`--auto` /
-    // NANO_ROUTING_AUTO) > implicit `flux-auto` passthrough. Malformed env
-    // values are typed config errors (exit 2), never silent defaults. Exec
-    // dispatches on the Flux wire only: namespaced references are a typed
-    // usage error here (the acp-host owns the C8 namespaced surface).
-    let bare_only = |value: &str, flag: &str| -> Result<String, i32> {
-        match crate::provider_router::ProviderRouter::parse_model_id(value) {
-            Ok(crate::provider_router::ModelRef::Flux(_)) => Ok(value.to_string()),
-            _ => {
-                eprintln!(
-                    "wayland-nano: {flag} accepts bare Flux model ids only in exec mode, got {value:?}"
-                );
-                Err(2)
-            }
-        }
-    };
-    let auto_opt_in = match crate::auto_routing::parse_auto_opt_in(
-        std::env::var(crate::auto_routing::AUTO_ROUTING_ENV).ok(),
-    ) {
-        Ok(env_value) => params.auto || env_value,
-        Err(err) => {
-            eprintln!("wayland-nano: {err}");
-            return 2;
-        }
-    };
-    let configured_default = match crate::auto_routing::parse_configured_default(
-        std::env::var(crate::auto_routing::DEFAULT_MODEL_ENV).ok(),
-    ) {
-        Ok(value) => value,
-        Err(err) => {
-            eprintln!("wayland-nano: {err}");
-            return 2;
-        }
-    };
-    // S1 evidence-capture arm (NANO_AUTO_TOOLS_PROBE): same fail-closed
-    // typed parse discipline — malformed is a config error, never a default.
-    let tools_probe = match crate::auto_routing::parse_tools_probe(
-        std::env::var(crate::auto_routing::AUTO_TOOLS_PROBE_ENV).ok(),
-    ) {
-        Ok(value) => value,
-        Err(err) => {
-            eprintln!("wayland-nano: {err}");
-            return 2;
-        }
-    };
-    let (source, reference) = match (&params.model, &configured_default) {
-        (Some(model), _) => match bare_only(model, "--model") {
-            Ok(model) => (crate::auto_routing::ModelSource::ExplicitPin, model),
-            Err(code) => return code,
-        },
-        (None, Some(default)) => match bare_only(default, crate::auto_routing::DEFAULT_MODEL_ENV) {
-            Ok(default) => (crate::auto_routing::ModelSource::ConfiguredDefault, default),
-            Err(code) => return code,
-        },
-        (None, None) => (
-            crate::auto_routing::ModelSource::ImplicitDefault,
-            crate::auto_routing::FLUX_AUTO.to_string(),
-        ),
-    };
-    let routing = crate::exec_mode::ExecRouting {
-        mode: crate::auto_routing::resolve_routing(source, &reference, auto_opt_in).mode,
-        reference: reference.clone(),
-        tools_probe,
     };
     let sessions_dir = nano_home.join("sessions");
     let home = nano_home.to_path_buf();

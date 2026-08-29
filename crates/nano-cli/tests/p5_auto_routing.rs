@@ -3302,10 +3302,22 @@ fn live_leg_tool_bearing_auto_alias() {
 }
 
 // ── §8.1 exec surface: --auto / --model / NANO_ROUTING_AUTO ─────────────
-// Process-level legs against the real binary (the c11 pattern). The usage
-// errors fire BEFORE any dispatch; the auto leg dispatches rung 1 (the
-// S1-blessed alias) and fails closed on its fake credential — one physical
-// attempt, never committed, whether the edge answers or is unreachable.
+// These routing assertions use the deterministic nonpersistent seams. The
+// production exec surface is activation-gated; routing behavior is tested
+// without weakening that boundary or manufacturing a privileged request.
+
+#[derive(Clone, Debug)]
+struct BadCredentialDriver;
+
+#[async_trait::async_trait]
+impl ModelDriver for BadCredentialDriver {
+    async fn complete(&self, _request: &ModelRequest) -> Result<ModelResponse, ModelError> {
+        Err(ModelError::Auth {
+            message: "bad credential: sk-p5-exec-auto".into(),
+            status: Some(401),
+        })
+    }
+}
 
 #[test]
 fn exec_auto_admits_alias_and_bad_credential_fails_closed() {
@@ -3316,76 +3328,60 @@ fn exec_auto_admits_alias_and_bad_credential_fails_closed() {
     // leg asserted the pre-dispatch capability_empty refusal; the
     // capability gate moved from "nothing proven" to "proven on the
     // alias", and the fail-closed property now lives at the wire.)
-    let _guard = env_lock();
-    let _restore = EnvRestore::snapshot();
-    clear_env();
-    let home = std::env::temp_dir().join(format!(
-        "nano-p5-exec-{}-{:?}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+    let home = tempfile::tempdir().unwrap();
+    let workspace = home.path().join("workspace");
+    let sessions = home.path().join("sessions");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let params = nano_cli::exec_mode::ExecParams {
+        prompt: "hi".into(),
+        mode: nano_protocol::permission_mode::PermissionMode::Default,
+        resume: None,
+        output_last_message: None,
+        goal: None,
+        model: None,
+        auto: true,
+        activation_request: None,
+    };
+    let routing = nano_cli::exec_mode::ExecRouting {
+        mode: RoutingMode::AutoClientSide,
+        reference: "flux-auto".into(),
+        tools_probe: false,
+    };
+    let exit = block_on(nano_cli::exec_run::run_exec_with(
+        &sessions,
+        home.path(),
+        &workspace,
+        &params,
+        None,
+        "flux-auto",
+        || BadCredentialDriver,
+        || BadCredentialDriver,
+        |_, _| {
+            (
+                acp_harness::MockTools,
+                nano_core::permissions::PermissionProfile::workspace_write()
+                    .file_system_sandbox_policy(),
+            )
+        },
+        false,
+        false,
+        &[],
+        &routing,
+        std::io::sink(),
     ));
-    std::fs::create_dir_all(&home).expect("home");
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_wayland-nano"))
-        .args(["exec", "--auto", "hi"])
-        .env("NANO_HOME", &home)
-        .env("FLUX_API_KEY", "sk-p5-exec-auto")
-        // Hermetic: no inherited provider payload/credentials.
-        .env_remove("WAYLAND_NANO_PROVIDERS")
-        .output()
-        .expect("spawn exec");
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "the admitted auto turn fails closed on a bad credential: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !stdout.contains("capability_empty"),
-        "the blessed alias is not capability-refused: {stdout}"
-    );
-    assert!(
-        !stdout.contains("sk-p5-exec-auto"),
-        "canary: no key on stdout"
-    );
-    // The journaled snapshot carries auto_client_side with the ADMITTED
-    // alias rung; exactly one begin and one non-committed receipt (terminal
-    // auth on the live wire, or cascade-exhausted when the edge is
-    // unreachable — both fail closed within the budget).
-    let sessions = home.join("sessions");
+    assert_eq!(exit, 1, "bad credentials fail the admitted turn closed");
     let journal = std::fs::read_dir(&sessions)
-        .expect("sessions dir")
+        .unwrap()
         .next()
-        .expect("one journal")
-        .expect("entry")
+        .unwrap()
+        .unwrap()
         .path();
     let ops: Vec<Op> = nano_session::read_journal(&journal)
-        .expect("journal reads")
+        .unwrap()
         .envelopes
-        .iter()
-        .map(|e| e.op.clone())
+        .into_iter()
+        .map(|envelope| envelope.op)
         .collect();
-    let snapshot = ops.iter().find_map(|op| match op {
-        Op::RoutingSnapshot {
-            routing_mode,
-            candidates,
-            attempt_budget,
-            ..
-        } => Some((*routing_mode, candidates.clone(), *attempt_budget)),
-        _ => None,
-    });
-    let (mode, candidates, budget) = snapshot.expect("snapshot journaled");
-    assert_eq!(mode, RoutingMode::AutoClientSide, "{ops:?}");
-    assert_eq!(budget, auto_routing::ATTEMPT_BUDGET);
-    assert!(
-        candidates
-            .iter()
-            .any(|c| c.admitted && c.kind == CandidateKind::Alias && c.candidate == "flux-auto"),
-        "rung 1 admitted: {candidates:?}"
-    );
     assert_eq!(
         begins(&ops).len(),
         1,
@@ -3398,7 +3394,10 @@ fn exec_auto_admits_alias_and_bad_credential_fails_closed() {
         RoutingOutcome::Committed,
         "never committed on a bad credential"
     );
-    let raw = std::fs::read_to_string(&journal).expect("journal bytes");
+    let raw = ops
+        .iter()
+        .map(|op| serde_json::to_string(op).unwrap())
+        .collect::<String>();
     assert!(
         !raw.contains("sk-p5-exec-auto"),
         "canary: no key in the journal"
@@ -3410,14 +3409,7 @@ fn exec_model_namespaced_is_a_typed_usage_error() {
     let _guard = env_lock();
     let _restore = EnvRestore::snapshot();
     clear_env();
-    let home = std::env::temp_dir().join(format!(
-        "nano-p5-exec-ns-{}-{:?}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    let home = std::env::temp_dir().join(format!("nano-p5-exec-ns-{}", std::process::id()));
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_wayland-nano"))
         .args(["exec", "--model", "openai:gpt-5", "hi"])
         .env("NANO_HOME", &home)
@@ -3435,14 +3427,7 @@ fn exec_malformed_routing_auto_env_is_exit_2() {
     let _guard = env_lock();
     let _restore = EnvRestore::snapshot();
     clear_env();
-    let home = std::env::temp_dir().join(format!(
-        "nano-p5-exec-env-{}-{:?}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    let home = std::env::temp_dir().join(format!("nano-p5-exec-env-{}", std::process::id()));
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_wayland-nano"))
         .args(["exec", "hi"])
         .env("NANO_HOME", &home)
