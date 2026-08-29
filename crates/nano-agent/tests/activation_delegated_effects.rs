@@ -76,7 +76,8 @@ impl ModelDriver for CompleteDriver {
 async fn mcp_ambiguous_dispatch_is_not_replayed_after_rebuild() {
     let fixture = Fixture::new();
     fixture.enable();
-    let marker = fixture.root.path().join("mcp-count.txt");
+    let wire_root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let marker = wire_root.path().join("mcp-count.txt");
     let registry = Arc::new(std::sync::Mutex::new(fake_mcp_registry(&marker)));
     let authority = fixture.authority().with_fault_after_dispatch();
     let executor =
@@ -230,15 +231,7 @@ while ($true) {
     let (command, args) = {
         let script = r#"
 while IFS= read -r line; do
- rest=${line#*\"id\":}
- id=
- while test -n "$rest"; do
-  c=${rest%"${rest#?}"}
-  case "$c" in
-   [0-9]) id=${id}${c}; rest=${rest#?} ;;
-   *) break ;;
-  esac
- done
+ id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
  case "$line" in
   *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"fake","version":"0"}}}\n' "$id" ;;
   *'"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"echoes"}]}}\n' "$id" ;;
