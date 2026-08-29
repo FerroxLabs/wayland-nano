@@ -70,20 +70,63 @@ fn symlink_or_reparse_reference_is_refused_in_real_child_process() {
 }
 
 #[test]
-fn bootstrap_requires_confirmation_tty_and_empty_store() {
+fn broad_permissions_are_refused_in_real_child_process() {
+    if std::env::var_os("NANO_ACTIVATION_BROAD_ACL_CHILD").is_some() {
+        let path = std::env::var_os("NANO_ACTIVATION_KEYREF_PATH").unwrap();
+        std::process::exit(
+            if matches!(
+                load_key_reference(std::path::Path::new(&path), KeyRole::AdminRoot),
+                Err(KeyProviderError::InsecurePermissions)
+            ) {
+                0
+            } else {
+                9
+            },
+        );
+    }
     let home = tempfile::tempdir().unwrap();
-    let paths = BootstrapKeyPaths {
-        admin_root: home.path().join("missing-admin"),
-        recovery_root: home.path().join("missing-recovery"),
-        receipt_signer: home.path().join("missing-receipt"),
-        local_cli_issuer: home.path().join("missing-cli"),
-    };
-    let keys = BootstrapPublicKeys {
-        admin_root: [1; 32],
-        recovery_root: [2; 32],
-        receipt_signer: [3; 32],
-        local_cli_issuer: [4; 32],
-    };
+    let path = home.path().canonicalize().unwrap().join("broad.keyref");
+    std::fs::write(
+        &path,
+        br#"{"provider":"file","reference":"opaque","role":"admin_root"}"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let status = Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("broad_permissions_are_refused_in_real_child_process")
+        .arg("--nocapture")
+        .env("NANO_ACTIVATION_BROAD_ACL_CHILD", "1")
+        .env("NANO_ACTIVATION_KEYREF_PATH", &path)
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn bootstrap_requires_confirmation_tty_and_empty_store() {
+    if std::env::var_os("NANO_ACTIVATION_DETACHED_CHILD").is_some() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = missing_paths(home.path());
+        let keys = test_public_keys();
+        std::process::exit(
+            if matches!(
+                bootstrap(home.path(), &paths, keys, "root-1", true),
+                Err(BootstrapError::NoControllingTty)
+            ) {
+                0
+            } else {
+                9
+            },
+        );
+    }
+    let home = tempfile::tempdir().unwrap();
+    let paths = missing_paths(home.path());
+    let keys = test_public_keys();
     assert!(matches!(
         bootstrap(home.path(), &paths, keys.clone(), "root-1", false),
         Err(BootstrapError::ConfirmationRequired)
@@ -92,6 +135,33 @@ fn bootstrap_requires_confirmation_tty_and_empty_store() {
         bootstrap(home.path(), &paths, keys, "root-1", true),
         Err(BootstrapError::NoControllingTty)
     ));
+    let status = Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("bootstrap_requires_confirmation_tty_and_empty_store")
+        .arg("--nocapture")
+        .env("NANO_ACTIVATION_DETACHED_CHILD", "1")
+        .stdin(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+fn missing_paths(home: &std::path::Path) -> BootstrapKeyPaths {
+    BootstrapKeyPaths {
+        admin_root: home.join("missing-admin"),
+        recovery_root: home.join("missing-recovery"),
+        receipt_signer: home.join("missing-receipt"),
+        local_cli_issuer: home.join("missing-cli"),
+    }
+}
+
+fn test_public_keys() -> BootstrapPublicKeys {
+    BootstrapPublicKeys {
+        admin_root: [1; 32],
+        recovery_root: [2; 32],
+        receipt_signer: [3; 32],
+        local_cli_issuer: [4; 32],
+    }
 }
 
 #[test]
