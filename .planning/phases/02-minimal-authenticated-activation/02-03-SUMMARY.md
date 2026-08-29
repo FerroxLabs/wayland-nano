@@ -88,6 +88,7 @@ status: complete
 3. **Task 2 GREEN: enforce authenticated authority lifecycle** - `3a46a10`
 4. **Security hardening: remove unchecked bootstrap surface** - `6a42b8f`
 5. **Custody hardening: require role-bound bootstrap references** - `d785d9e`
+6. **Negative proof hardening: detached and broad-ACL child processes** - `ef135a5`
 
 Planning metadata is left for the parent orchestrator because the summary lives in the separate planning worktree.
 
@@ -185,10 +186,10 @@ None.
 ## Self-Check: PASSED
 
 - All seven planned source/test files and dependency updates exist.
-- TDD and hardening commits `19074ac`, `d31cf7e`, `3a46a10`, `6a42b8f` and `d785d9e` exist on `feat/p2-minimal-authenticated-activation`.
-- `cargo test -p nano-activation -- --test-threads=1` passes all 15 unit/integration/contract tests.
+- TDD and hardening commits `19074ac`, `d31cf7e`, `3a46a10`, `6a42b8f`, `d785d9e` and `ef135a5` exist on `feat/p2-minimal-authenticated-activation`.
+- `cargo test -p nano-activation -- --test-threads=1` passes all 16 unit/integration/contract tests.
 - `cargo clippy -p nano-activation --all-targets -- -D warnings` and `cargo fmt --all -- --check` pass.
-- Nano implementation worktree is clean at `d785d9e0ec0df1bb4e4f0ad54d8643e9c18750dc`.
+- Nano implementation worktree is clean at `ef135a5f8f2bc08c10932b80f7f1d852a4e37fd7`.
 
 ---
 *Phase: 02-minimal-authenticated-activation*
