@@ -242,10 +242,10 @@ mod tests {
     use super::*;
     #[test]
     fn attested_bootstrap_is_exactly_once() {
-        // GitHub's Unix RUNNER_TEMP ancestry can be writable without the
-        // sticky bit, which production correctly rejects as an insecure home.
+        // GitHub's RUNNER_TEMP and checkout ancestry can be writable by other
+        // principals, which production correctly rejects as an insecure home.
         #[cfg(unix)]
-        let home = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let home = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
         #[cfg(windows)]
         let home = tempfile::tempdir().unwrap();
         #[cfg(windows)]
