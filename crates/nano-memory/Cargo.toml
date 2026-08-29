@@ -12,3 +12,16 @@ rust-version.workspace = true
 # build is green on every gate target (Windows ARM64 is the known risk).
 rusqlite = { version = "0.37", features = ["bundled"] }
 sqlite-vec = "0.1.9"
+nano-session = { version = "0.2.0", path = "../nano-session" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tempfile = "3"

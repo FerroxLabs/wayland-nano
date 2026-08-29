@@ -636,6 +636,12 @@ impl SessionState {
             Op::CuaResult { call_id, .. } => {
                 self.cua_pending.remove(call_id);
             }
+            Op::MemoryWriteFact { .. }
+            | Op::MemoryWriteDecision { .. }
+            | Op::MemoryWriteEpisode { .. }
+            | Op::MemoryWriteProcedure { .. }
+            | Op::MemoryWriteReceipt { .. }
+            | Op::MemoryPolicyResolved { .. } => {}
             Op::Unknown => {}
         }
     }
