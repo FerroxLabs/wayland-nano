@@ -84,10 +84,33 @@ fn vectors() -> PathBuf {
 }
 
 fn hex_array<const N: usize>(encoded: &str) -> [u8; N] {
-    let bytes = hex::decode(encoded).expect("valid fixture hex");
+    let bytes = decode_hex(encoded);
     bytes
         .try_into()
         .unwrap_or_else(|_| panic!("expected {N} bytes"))
+}
+
+fn decode_hex(encoded: &str) -> Vec<u8> {
+    assert_eq!(encoded.len() % 2, 0, "fixture hex must have even length");
+    encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = (pair[0] as char).to_digit(16).expect("valid fixture hex");
+            let low = (pair[1] as char).to_digit(16).expect("valid fixture hex");
+            ((high << 4) | low) as u8
+        })
+        .collect()
+}
+
+fn encode_hex(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.as_ref().len() * 2);
+    for byte in bytes.as_ref() {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 #[test]
@@ -101,7 +124,7 @@ fn manifest_is_complete_and_hash_bound() {
     assert_eq!(manifest.files.len(), 2);
     for entry in manifest.files {
         let bytes = fs::read(root.join(entry.path)).unwrap();
-        assert_eq!(hex::encode(Sha256::digest(bytes)), entry.sha256);
+        assert_eq!(encode_hex(Sha256::digest(bytes)), entry.sha256);
     }
 }
 
@@ -112,10 +135,7 @@ fn published_and_fixture_signatures_verify() {
     let rfc_key = VerifyingKey::from_bytes(&hex_array(&positive.rfc8032.public_key_hex)).unwrap();
     let rfc_signature = Signature::from_bytes(&hex_array(&positive.rfc8032.signature_hex));
     rfc_key
-        .verify(
-            &hex::decode(&positive.rfc8032.message_hex).unwrap(),
-            &rfc_signature,
-        )
+        .verify(&decode_hex(&positive.rfc8032.message_hex), &rfc_signature)
         .unwrap();
 
     let key = hex_array(&positive.activation.public_key_hex);
