@@ -262,6 +262,8 @@ $acl = $directory.GetAccessControl()
 $acl.SetAccessRuleProtection($true, $false)
 foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
+if ($owner -ne $sid) { $acl.SetOwner($sid) }
 $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
   $sid,
   [System.Security.AccessControl.FileSystemRights]::FullControl,
