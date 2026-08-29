@@ -1,10 +1,10 @@
 {
   "schema": "wayland.nano.activation-vector-manifest/v1",
-  "positive_count": 3,
+  "positive_count": 5,
   "negative_count": 26,
   "subject_families": ["presence", "duplicate", "framing", "ijson", "decoy", "shape", "schema", "crypto"],
   "files": [
-    {"path": "positive.json", "sha256": "42f56f0b6904b3ad3e82c4f5510a8973179b6838423adace6c3361670f167839"},
+    {"path": "positive.json", "sha256": "3bd1eb9b9d251ed04a165cc375848bdb1f84bbf7f9a42e2e6a0ef3a407b384fc"},
     {"path": "negative.json", "sha256": "313f5b5e769746fe26891186d1709e4700ebe03c0bf0d3e32b5067d365a03311"}
   ]
 }
