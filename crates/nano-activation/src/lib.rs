@@ -4,6 +4,9 @@
 //! validates raw transport ambiguity, the frozen carrier, JCS bytes and Ed25519 proof.
 
 mod raw;
+pub mod authority;
+pub mod journal;
+pub mod store;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -233,13 +236,21 @@ struct ControlCarrier {
 
 #[derive(Debug, Clone)]
 pub struct VerifiedAdminRequest {
-    operation: AdminOperation,
+    request: AdminRequest,
 }
 
 impl VerifiedAdminRequest {
     pub fn operation(&self) -> &'static str {
-        self.operation.as_str()
+        self.request.operation.as_str()
     }
+
+    pub fn admin_id(&self) -> &str { &self.request.admin_id }
+    pub fn admin_epoch(&self) -> u64 { self.request.admin_epoch }
+    pub fn operation_id(&self) -> &str { &self.request.operation_id }
+    pub fn issued_at(&self) -> &str { &self.request.issued_at }
+    pub fn not_after(&self) -> &str { &self.request.not_after }
+    pub fn before_digest(&self) -> &str { &self.request.before_digest }
+    pub fn after_digest(&self) -> &str { &self.request.after_digest }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -407,9 +418,7 @@ pub fn verify_admin_request(
         &request.signature,
         public_key,
     )?;
-    Ok(VerifiedAdminRequest {
-        operation: request.operation,
-    })
+    Ok(VerifiedAdminRequest { request })
 }
 
 fn strict_canonical_document(raw: &[u8]) -> Result<Value, ActivationError> {
