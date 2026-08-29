@@ -1,11 +1,12 @@
-# Plan 02-13 continuation
+# Plan 02-13 resolved handoff
 
-Nano worktree `D:/Development/waylandnano/wayland-nano/.tmp-wt-phase2` is on `feat/p2-minimal-authenticated-activation` at committed HEAD `a405a4d` with Task 2 changes preserved uncommitted.
+Nano worktree `D:/Development/waylandnano/wayland-nano/.tmp-wt-phase2` is on `feat/p2-minimal-authenticated-activation`; Task 2 is complete at `066037d`.
 
 Completed commits:
 
 - `3470035 feat(02-13): bind authenticated activation enablement`
 - `a405a4d docs(02-13): define activation operator lifecycle`
+- `066037d feat(02-13): bind durable runtime effects`
 
 Strike history for `cargo test -p nano-agent --test activation_effects -- --test-threads=1`:
 
@@ -13,13 +14,13 @@ Strike history for `cargo test -p nano-agent --test activation_effects -- --test
 2. Integration test lacked direct dev dependencies `ed25519-dalek` and `serde_jcs`; `cargo metadata` isolated that they were locked workspace packages but not direct `nano-agent` dependencies, then direct dev dependencies were added.
 3. Test-only namespace collision: imported trait `ed25519_dalek::Signer` conflicts with helper `struct Signer`.
 
-Exact next edit on a fresh run: in `crates/nano-agent/tests/activation_effects.rs`, rename helper `Signer` to `TestReceiptSigner` and update its two construction sites plus its `ReceiptSigner` impl. Do not change production behavior. Then run:
+The fresh continuation renamed the test helper to `TestReceiptSigner` without changing production behavior. The exact focused test passed 2/2, followed by formatting, scoped clippy, enablement 4/4, operator-document validation, and offline receipt 2/2.
 
 ```powershell
 cargo test -p nano-agent --test activation_effects -- --test-threads=1
 ```
 
-If green, commit Task 2 atomically, then run:
+Verification completed with:
 
 ```powershell
 cargo fmt --all -- --check
