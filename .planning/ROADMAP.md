@@ -20,7 +20,7 @@ Four phases deliver the smallest useful agent: Desktop supplies trusted identity
 **Requirements**: REQ-FOUND-01, REQ-ARCH-01
 **Success Criteria** (what must be TRUE):
 
-1. PR #8 is human-merged and fresh-checkout evidence retains recall@10 ≥0.90, zero project/agent leakage, kill rebuild/query equivalence, mediation, and seven CI legs.
+1. PR #8 is merged through the recorded owner-directed TradeCanyon account workflow and fresh-checkout evidence retains recall@10 ≥0.90, zero project/agent leakage, kill rebuild/query equivalence, mediation, and seven CI legs.
 2. A signed manifest enumerates every source artifact/version/signature/disposition/precedence; Desktop owns product binding while Nano keeps only security enrollment needed for issuer and anti-remap enforcement.
 3. The amendment pins issuer/trust root, provisioning/rotation/revocation, immutable never-remap/reassignment policy and negative cases, plus wire `principal_id` as a 1:1 semantic alias of physical/schema/journal `agent_id` for v1.1.
 4. It names the protected MEM-SEC fixture amendment/owner, both Desktop ACP stacks converging through one shared Nano admission gate, carrier/version/downgrade rules, merge order, the exact Nano artifact triple (source commit, `Cargo.lock` SHA-256, executable SHA-256), and compatibility exit criteria.

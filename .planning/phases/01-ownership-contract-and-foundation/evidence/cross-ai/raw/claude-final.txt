@@ -1,0 +1,6 @@
+Provider: Anthropic
+Model: Claude CLI configured model
+Provider lineage: anthropic
+Verdict: PASS
+
+PASS. No blocking-human tasks remain; all three tasks are automatic. The stale forbid-agent-merge mitigation and no-agent-switch success criterion are gone. Owner-directed agent-operated attribution is required throughout. No remaining Critical or High finding.

@@ -1,0 +1,58 @@
+{
+  "schema_version": "human-checkpoints-v2",
+  "governance_model": "single-human-distinct-account",
+  "same_human_controller": true,
+  "independent_human_review": false,
+  "owner_directed_agent_operated_review": true,
+  "executor_did_switch_review_merge": true,
+  "author_login": "FerroxLabs",
+  "reviewer_login": "TradeCanyon",
+  "merger_login": "TradeCanyon",
+  "executor_login": "Codex",
+  "base_branch": "master",
+  "account_switch_actions": ["FerroxLabs author context", "TradeCanyon review and merge context"],
+  "review_merge_operation": "owner-directed agent-operated",
+  "expected_head_sha": "146fe699127e5f53544e3ec57d4e785f99e04e8c",
+  "observed_head_sha": "146fe699127e5f53544e3ec57d4e785f99e04e8c",
+  "pr10_bootstrap_receipt_path": ".planning/phases/01-ownership-contract-and-foundation/evidence/pr-10-bootstrap.json",
+  "pr10_bootstrap_receipt_sha256": "29a0cf529ea519d01d08f0470a9ca572b6030f40fd8a6c79c0455b5e61996074",
+  "pr11_bootstrap_receipt_path": ".planning/phases/01-ownership-contract-and-foundation/evidence/pr-11-bootstrap.json",
+  "pr11_bootstrap_receipt_sha256": "2c4f82c4aec19fdde617a664bba24a56de32de1b04f392fe0490a121db7c8a8b",
+  "pr10": {
+    "head_sha": "f23eed5fe195b76a862f87c4808a35d4a83448aa",
+    "review_id": "PRR_kwDOTz7gT88AAAABLW6k1Q",
+    "merge_commit_sha": "ac23f19bbb56417b055ab5885197aaa0de51e89c"
+  },
+  "pr11": {
+    "head_sha": "67123390475fc4f2816455a2c35dd8cd33f0acb2",
+    "review_id": "PRR_kwDOTz7gT88AAAABLW6mdA",
+    "merge_commit_sha": "1b76f14b119411384a159b6ee4afb7d1e8a7d2eb"
+  },
+  "pr8": {
+    "expected_head_sha": "146fe699127e5f53544e3ec57d4e785f99e04e8c",
+    "review_id": "PRR_kwDOTz7gT88AAAABLW-Mlg",
+    "review_commit_oid": "146fe699127e5f53544e3ec57d4e785f99e04e8c",
+    "merge_commit_sha": "5bd545195ceba2c61383a913298612b73f7bd17a",
+    "head_is_merge_ancestor": true
+  },
+  "premerge_receipt_path": ".planning/phases/01-ownership-contract-and-foundation/evidence/pr-8-premerge.json",
+  "premerge_receipt_sha256": "9106fb45c45a1c7d01330f827ddb0883c1fe8f0896b29a63e57765908fec2b47",
+  "signed_artifact_sha256": "9107e3c7b55748c484557d0c090b95c2f9c808ec62d99bf76587e08e8c3b34b3",
+  "authority_receipt_sha256": "013e41dd66b47ab10a4c2a0932e2b7f8277dfa5484cbff276911815f93653b8e",
+  "cross_ai_receipt_sha256": "b5e7a82a7e128e35cd10ccb27c160afaf7172e07ac2e6b23ba9abcfb4b8e0ae6",
+  "audit_prompt_sha256": "101729a7009e44fec5b9f614fe7aa108754f28fe550618bf9376c5df51461e0c",
+  "foundation_acceptance_sha256": "f431f643191da56151466ba9108f9abe338570d2a94a4061cf154b4d1c1b949b",
+  "codeowners_blob_sha": "50e9f1d20e1b64fa4597c83352d21eb904bbdd71",
+  "codeowners_rule_count": 3,
+  "protection": {
+    "required_status_checks": 7,
+    "required_codeowner_approvals": 1,
+    "dismiss_stale_reviews": true,
+    "require_last_push_approval": true,
+    "require_conversation_resolution": true,
+    "rules_apply_to_admins": true,
+    "allow_force_pushes": false,
+    "allow_deletions": false
+  },
+  "captured_at_utc": "2026-08-29T07:35:00Z"
+}

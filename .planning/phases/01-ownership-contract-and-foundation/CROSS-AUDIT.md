@@ -33,13 +33,13 @@ PR #8 cannot yet satisfy the ratified compensated-control model:
 - GitHub does not allow a PR author to approve their own PR.
 - `master` currently has no active protection/ruleset.
 
-PR #10 at `f23eed5fe195b76a862f87c4808a35d4a83448aa` is the one-time unprotected bootstrap for all three CODEOWNERS rules. After its exact seven CI pass, TradeCanyon may interactively merge it with explicit bootstrap evidence; then protection must be installed/verified. The separately reviewed fixture-correction PR must land and the P-MEM adversarial-audit fixes must pass before PR #8 proceeds. PR #8 must then synchronize with protected master, preserve the exact landed three-rule CODEOWNERS blob, and rerun all seven CI legs. Only the dynamically discovered post-synchronization head/run may populate regenerated receipts and the bounded audit. Every older PR #8 head/run is historical/superseded. The governance model is exactly `single-human-distinct-account`: `same_human_controller=true`, `independent_human_review=false`; it is separation of account credentials and ceremony, not human judgment. Cross-AI review is adversarial advisory evidence. Owner residual acceptance is mandatory.
+PR #10 and fixture PR #11 were owner-directed agent-operated bootstrap merges through TradeCanyon before protection was installed. They are exactly attributed exceptions, not human-interactive or independent review. Classic branch protection was then installed. PR #8 synchronized with protected master, preserved the three-rule CODEOWNERS blob, and reran seven CI legs. Only its final synchronized head/run may populate receipts and the bounded audit; every older head/run is historical.
 
 ## Proof boundary
 
 - Live GitHub/API evidence can prove account, collaborator, reviewer, merger, PR head/base/review commit, CI, CODEOWNERS blob, ruleset, merge commit, and ancestry facts.
-- Interactive ceremony, MFA/passkey use, credential custody/inaccessibility to agents or automation, same-human control, residual Sybil/collusion-risk acceptance, and executor non-switch/non-review/non-merge are owner-signed attestations. Verifiers validate their presence, exact binding, hashes, timestamps, and consistency; they do not claim GitHub proves them.
+- Receipts require `owner_directed_agent_operated_review=true`, `executor_did_switch_review_merge=true`, same-human control, residual-risk acceptance, and exact account-action attribution. Superseded interactive/MFA/credential-isolation/executor-nonparticipation claims are rejected.
 
 ## Verdict
 
-**NOT YET APPROVED.** Remaining sequence: fixture-correction merge and P-MEM audit-fix pass; TradeCanyon invite/accept; PR #10 CI and interactive bootstrap merge receipt; install/verify ruleset; synchronize PR #8 with protected master and exact landed CODEOWNERS; rerun seven CI; dynamically regenerate PR #8 receipts; strict bound-artifact audit; signed residual acceptance; protected TradeCanyon PR #8 review/merge.
+**IN PROGRESS.** PR #10/#11 and P-MEM corrective work landed; classic branch protection is installed; PR #8 is synchronized at its exact final head with local acceptance green. Remaining sequence: final seven-leg CI; exact receipts; bounded disposition audit; signed owner override; protected owner-directed TradeCanyon PR #8 review/merge; fresh-master verification.

@@ -1,0 +1,6 @@
+Provider: NVIDIA via OpenCode
+Model: opencode/nemotron-3.5-lightning-free
+Provider lineage: nvidia
+Verdict: PASS
+
+The signed amendment and fresh acceptance receipt were inspected. The governance model is correctly disclosed as single-human distinct-account and owner-directed agent-operated. Identity/authorization rules are byte-exact. The fresh receipt is bound to merge commit 5bd545195ceba2c61383a913298612b73f7bd17a, all eight commands exit zero, recall@10 is 1.0, and cross-project/cross-agent leakage is zero. No Critical or High finding.

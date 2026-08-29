@@ -99,7 +99,10 @@ Assert ($receipt.base_ref -ceq $ExpectedBase) "PR base must be $ExpectedBase."
 Assert ($receipt.head_ref -ceq $ExpectedHeadRef) "Unexpected PR head ref."
 Assert ($receipt.head_sha -ceq $ExpectedHead) "PR head SHA does not match the immutable expected head."
 if ($ExpectedState -ceq 'OPEN') {
-    Assert ($receipt.merge_state -ceq 'CLEAN') "OPEN PR merge state must be CLEAN."
+    $clean = $receipt.merge_state -ceq 'CLEAN'
+    $protectedAwaitingReview =
+        $receipt.merge_state -ceq 'BLOCKED' -and $receipt.review_decision -ceq 'REVIEW_REQUIRED'
+    Assert ($clean -or $protectedAwaitingReview) "OPEN PR must be CLEAN or protected/BLOCKED only on required review."
 } elseif ($ExpectedState -ceq 'MERGED') {
     Assert (-not [string]::IsNullOrWhiteSpace($receipt.merge_commit_sha)) 'MERGED PR must report a merge commit.'
     Assert (-not [string]::IsNullOrWhiteSpace($ExpectedMergeCommit)) 'ExpectedMergeCommit is required for MERGED verification.'

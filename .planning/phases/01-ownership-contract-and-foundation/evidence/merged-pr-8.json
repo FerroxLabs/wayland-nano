@@ -1,16 +1,16 @@
 {
   "schema_version": "phase1-pr8-v1",
-  "captured_at_utc": "2026-08-29T07:15:30.2077383Z",
+  "captured_at_utc": "2026-08-29T08:14:41.8971201Z",
   "pr_number": 8,
   "url": "https://github.com/FerroxLabs/wayland-nano/pull/8",
-  "state": "OPEN",
+  "state": "MERGED",
   "base_ref": "master",
   "head_ref": "feat/p-mem-1-core",
   "head_sha": "146fe699127e5f53544e3ec57d4e785f99e04e8c",
-  "merge_state": "BLOCKED",
-  "review_decision": "REVIEW_REQUIRED",
-  "merge_commit_sha": null,
-  "merged_by": null,
+  "merge_state": "UNKNOWN",
+  "review_decision": "APPROVED",
+  "merge_commit_sha": "5bd545195ceba2c61383a913298612b73f7bd17a",
+  "merged_by": "TradeCanyon",
   "expected_run_id": 33239162169,
   "checks": [
     {

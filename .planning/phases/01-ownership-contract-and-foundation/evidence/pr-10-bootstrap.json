@@ -1,0 +1,75 @@
+{
+  "schema_version": "phase1-pr10-bootstrap-v1",
+  "pr_number": 10,
+  "url": "https://github.com/FerroxLabs/wayland-nano/pull/10",
+  "state": "MERGED",
+  "base_ref": "master",
+  "author_login": "FerroxLabs",
+  "head_sha": "f23eed5fe195b76a862f87c4808a35d4a83448aa",
+  "expected_run_id": 33099729006,
+  "review_id": "PRR_kwDOTz7gT88AAAABLW6k1Q",
+  "review_commit_oid": "f23eed5fe195b76a862f87c4808a35d4a83448aa",
+  "reviewer_login": "TradeCanyon",
+  "merger_login": "TradeCanyon",
+  "merge_commit_sha": "ac23f19bbb56417b055ab5885197aaa0de51e89c",
+  "merged_at": "2026-08-29T06:41:44Z",
+  "governance_model": "single-human-distinct-account",
+  "same_human_controller": true,
+  "independent_human_review": false,
+  "owner_directed_agent_operated_review": true,
+  "executor_did_switch_review_merge": true,
+  "collaborator_invitation_id": 330736811,
+  "collaborator_login": "TradeCanyon",
+  "collaborator_invitation_accepted": true,
+  "collaborator_effective_permission": "write",
+  "checks": [
+    {
+      "name": "gate (macos-14, arm64)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/33099729006/job/98622823210"
+    },
+    {
+      "name": "gate (macos-15-intel, x64)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/33099729006/job/98622833312"
+    },
+    {
+      "name": "gate (ubuntu-22.04, x64)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/33099729006/job/98622787293"
+    },
+    {
+      "name": "gate (ubuntu-24.04-arm, arm64)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/33099729006/job/98622787957"
+    },
+    {
+      "name": "gate (windows-11-arm, arm64)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/33099729006/job/98622820166"
+    },
+    {
+      "name": "gate (windows-latest, x64)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/33099729006/job/98622786335"
+    },
+    {
+      "name": "gate-cards",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/33099729006/job/98622815283"
+    }
+  ],
+  "codeowners_blob_sha": "50e9f1d20e1b64fa4597c83352d21eb904bbdd71",
+  "codeowners_rules": [
+    "/CODEOWNERS @FerroxLabs @TradeCanyon",
+    "/gates/** @FerroxLabs @TradeCanyon",
+    "/agents/** @FerroxLabs @TradeCanyon"
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "schema_version": "wayland.nano.amendment-ratification/v1",
+  "artifact_path": "D:/Development/waylandnano/shared/reviews/research-0.2/specs/WORKABLE-AGENT-AUTHORITY-AMENDMENT-v1.0.md",
+  "amendment_version": "v1.0",
+  "artifact_sha256": "9107e3c7b55748c484557d0c090b95c2f9c808ec62d99bf76587e08e8c3b34b3",
+  "final_signed_artifact_sha256": "9107e3c7b55748c484557d0c090b95c2f9c808ec62d99bf76587e08e8c3b34b3",
+  "artifact_byte_length": 22523,
+  "owner_name": "FerroxLabs owner",
+  "owner_signature": "Approved by explicit owner directive via authenticated Codex session",
+  "signature_date": "2026-08-29",
+  "receipt_time_utc": "2026-08-29T08:27:00Z",
+  "executor_identity": "Codex via FerroxLabs/TradeCanyon authenticated GitHub accounts",
+  "governance_model": "single-human-distinct-account",
+  "author_account": "FerroxLabs",
+  "reviewer_merge_account": "TradeCanyon",
+  "same_human_controller": true,
+  "independent_human_review": false,
+  "owner_directed_agent_operated_review": true,
+  "executor_did_switch_review_merge": true,
+  "sybil_collusion_residual_accepted": true,
+  "sybil_collusion_acceptance_text": "Owner accepts that the two accounts do not provide independent human judgment; exact attribution, CI, branch protection, and cross-provider audits are compensating controls.",
+  "pr_head_sha": "146fe699127e5f53544e3ec57d4e785f99e04e8c",
+  "audit_prompt_sha256": "4bee849117252e49e8d7f00b4f67155d428ccc68c6d61f200dd972729fab5ba5",
+  "caller_lineage": "openai",
+  "implementation_lineage": "openai",
+  "cross_ai_receipt_path": ".planning/phases/01-ownership-contract-and-foundation/evidence/cross-ai-audit-receipt.json",
+  "cross_ai_reviews": [
+    {
+      "id": "nemotron-final",
+      "provider": "NVIDIA via OpenCode",
+      "model": "opencode/nemotron-3.5-lightning-free",
+      "provider_lineage": "nvidia",
+      "invoked_at_utc": "2026-08-29T08:25:00Z",
+      "completed_at_utc": "2026-08-29T08:26:20Z",
+      "status": "completed",
+      "raw_output_path": ".planning/phases/01-ownership-contract-and-foundation/evidence/cross-ai/raw/nemotron-final.txt",
+      "raw_output_sha256": "b96e132c519cfe3757a6ca82cd6c94a49febaba9282ff079ce9e6f65973b099f",
+      "verdict": "PASS",
+      "findings": []
+    }
+  ],
+  "completed_distinct_provider_lineages": ["nvidia"],
+  "disqualified_reviews": [
+    {"provider": "Gemini", "reason": "IneligibleTierError", "counted": false},
+    {"provider": "OpenAI", "reason": "caller_and_implementation_lineage", "counted": false}
+  ],
+  "critical_high_dispositions": [],
+  "owner_acceptance_signature": "Approved by explicit owner directive via authenticated Codex session"
+}

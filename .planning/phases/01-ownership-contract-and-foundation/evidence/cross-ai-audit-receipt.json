@@ -1,0 +1,33 @@
+{
+  "schema_version": "wayland.nano.cross-ai-audit/v1",
+  "final_signed_artifact_sha256": "9107e3c7b55748c484557d0c090b95c2f9c808ec62d99bf76587e08e8c3b34b3",
+  "pr_head_sha": "146fe699127e5f53544e3ec57d4e785f99e04e8c",
+  "merge_commit_sha": "5bd545195ceba2c61383a913298612b73f7bd17a",
+  "audit_prompt_path": ".planning/phases/01-ownership-contract-and-foundation/evidence/cross-ai-audit-prompt.txt",
+  "audit_prompt_sha256": "4bee849117252e49e8d7f00b4f67155d428ccc68c6d61f200dd972729fab5ba5",
+  "caller_lineage": "openai",
+  "implementation_lineage": "openai",
+  "completed_distinct_provider_lineages": ["nvidia"],
+  "quorum_met": false,
+  "reviews": [
+    {
+      "id": "nemotron-final",
+      "provider": "NVIDIA via OpenCode",
+      "model": "opencode/nemotron-3.5-lightning-free",
+      "provider_lineage": "nvidia",
+      "invoked_at_utc": "2026-08-29T08:25:00Z",
+      "completed_at_utc": "2026-08-29T08:26:20Z",
+      "status": "completed",
+      "raw_output_path": ".planning/phases/01-ownership-contract-and-foundation/evidence/cross-ai/raw/nemotron-final.txt",
+      "raw_output_sha256": "b96e132c519cfe3757a6ca82cd6c94a49febaba9282ff079ce9e6f65973b099f",
+      "verdict": "PASS",
+      "findings": []
+    }
+  ],
+  "disqualified_reviews": [
+    {"provider": "Gemini", "reason": "IneligibleTierError", "counted": false},
+    {"provider": "OpenAI", "reason": "caller_and_implementation_lineage", "counted": false}
+  ],
+  "critical_high_dispositions": [],
+  "completed_at_utc": "2026-08-29T08:26:20Z"
+}

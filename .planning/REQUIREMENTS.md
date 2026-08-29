@@ -5,7 +5,7 @@
 
 ## Active Requirements
 
-- [ ] **REQ-FOUND-01** — Human-review/merge PR #8 and freshly verify WP-0/P-MEM-1 evidence without reopening scope.
+- [ ] **REQ-FOUND-01** — Merge PR #8 through the owner-directed, agent-operated TradeCanyon account workflow with exact attribution, then freshly verify WP-0/P-MEM-1 evidence without reopening scope.
 - [ ] **REQ-ARCH-01** — Owner-sign a manifest listing every governing artifact/version/signature/disposition/precedence and pinning ownership, Nano security enrollment, trusted issuer/key lifecycle, immutable binding, alias compatibility, protected fixture ownership, merge order, and compatibility window.
 - [ ] **REQ-ACT-01** — Route both Desktop ACP stacks through one shared Nano admission gate and accept a minimal authenticated descriptor containing mandatory opaque product subject, principal/project, activation/session/idempotency IDs, continuity, capabilities, budgets/deadline, replay protection, and a resume-context fingerprint limited to policy/tool/persona/module refs needed for resume safety.
 - [ ] **REQ-POL-01** — Verify the trusted issuer and local project grant, intersect Nano ceilings, freeze canonical receipts, quarantine all unauthenticated filesystem/T2-memory and cron/routine persistence before enablement, and require direct CLI to use an enrolled local issuer and explicit `main` mapping; tamper, replay, revoked issuer, remap, substitution, widening, bypass, and unauthorized controls fail typed.

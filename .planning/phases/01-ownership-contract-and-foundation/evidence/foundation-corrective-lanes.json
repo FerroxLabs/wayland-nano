@@ -1,0 +1,33 @@
+{
+  "schema_version": "foundation-corrective-lanes-v1",
+  "captured_at_utc": "2026-08-29T08:17:19.3055673Z",
+  "origin_master_sha": "5bd545195ceba2c61383a913298612b73f7bd17a",
+  "pr10": {
+    "head_sha": "f23eed5fe195b76a862f87c4808a35d4a83448aa",
+    "run_id": 33099729006,
+    "merge_commit_sha": "ac23f19bbb56417b055ab5885197aaa0de51e89c",
+    "receipt_sha256": "29a0cf529ea519d01d08f0470a9ca572b6030f40fd8a6c79c0455b5e61996074"
+  },
+  "pr11": {
+    "head_sha": "67123390475fc4f2816455a2c35dd8cd33f0acb2",
+    "run_id": 33102184403,
+    "merge_commit_sha": "1b76f14b119411384a159b6ee4afb7d1e8a7d2eb",
+    "receipt_sha256": "2c4f82c4aec19fdde617a664bba24a56de32de1b04f392fe0490a121db7c8a8b"
+  },
+  "pr8": {
+    "head_sha": "146fe699127e5f53544e3ec57d4e785f99e04e8c",
+    "run_id": 33239162169,
+    "merge_commit_sha": "5bd545195ceba2c61383a913298612b73f7bd17a",
+    "premerge_receipt_sha256": "9106fb45c45a1c7d01330f827ddb0883c1fe8f0896b29a63e57765908fec2b47",
+    "foundation_acceptance_sha256": "f431f643191da56151466ba9108f9abe338570d2a94a4061cf154b4d1c1b949b",
+    "checks": 7
+  },
+  "artifacts": {
+    "fixture_blob_sha": "68c5630e59deaab4fb7d2c1f533f3c2169c8820c",
+    "store_blob_sha": "9a4289c976114e1bc218f2a65c8aab6491fa74e9",
+    "corrective_tests_blob_sha": "eef28d6704317c2ee85e98fc1415a1480c6441bf"
+  },
+  "owner_directed_agent_operated_review": true,
+  "executor_did_switch_review_merge": true,
+  "all_lanes_landed": true
+}
