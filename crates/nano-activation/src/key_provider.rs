@@ -157,6 +157,8 @@ fn verify_safe_parents(path: &Path) -> Result<(), KeyProviderError> {
             if owner != 0 && owner != unsafe { libc::geteuid() } {
                 return Err(KeyProviderError::InsecurePermissions);
             }
+            // `S_ISVTX` varies by libc target; MetadataExt::mode is always u32.
+            #[allow(clippy::unnecessary_cast)]
             if mode & 0o022 != 0 && mode & libc::S_ISVTX as u32 == 0 {
                 return Err(KeyProviderError::InsecurePermissions);
             }

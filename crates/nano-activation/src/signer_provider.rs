@@ -187,7 +187,13 @@ fn validate_path(path: &Path) -> Result<(), SignerProviderError> {
             let owner = metadata.uid();
             let mode = metadata.permissions().mode();
             if (owner != 0 && owner != unsafe { libc::geteuid() })
-                || (mode & 0o022 != 0 && mode & libc::S_ISVTX as u32 == 0)
+                // `S_ISVTX` varies by libc target; MetadataExt::mode is always u32.
+                || (mode & 0o022 != 0
+                    && {
+                        #[allow(clippy::unnecessary_cast)]
+                        let sticky = libc::S_ISVTX as u32;
+                        mode & sticky == 0
+                    })
             {
                 return Err(SignerProviderError::ForbiddenPath);
             }
