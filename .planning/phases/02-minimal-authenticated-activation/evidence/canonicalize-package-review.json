@@ -1,0 +1,92 @@
+{
+  "schema": "wayland.nano.canonicalize-package-review/v1",
+  "package": {
+    "name": "canonicalize",
+    "version": "2.1.0",
+    "license": "Apache-2.0",
+    "manifest_sha256": "1c0de6f2742e9c61f8983c38093cca1b14564a7a982ef96cb04a60328b5653a8",
+    "manifest": {
+      "name": "canonicalize",
+      "version": "2.1.0",
+      "description": "JSON canonicalize function ",
+      "main": "lib/canonicalize.js",
+      "types": "lib/canonicalize.d.ts",
+      "bin": "bin/canonicalize.js",
+      "repository": { "type": "git", "url": "git+https://github.com/erdtman/canonicalize.git" },
+      "license": "Apache-2.0"
+    }
+  },
+  "registry": {
+    "metadata_url": "https://registry.npmjs.org/canonicalize/2.1.0",
+    "tarball_url": "https://registry.npmjs.org/canonicalize/-/canonicalize-2.1.0.tgz",
+    "dist_integrity": "sha512-F705O3xrsUtgt98j7leetNhTWPe+5S72rlL5O4jA1pKqBVQ/dT1O1D6PFxmSXvc0SUOinWS57DKx0I3CHrXJHQ==",
+    "dist_shasum": "92a20ecfb94e96591badf4977dc2fb1bfbc31dc5",
+    "tarball_sha256": "65b2af82fa95b74300d9ecc83f35d44044365a17aadf9d2d153317a7375d015e",
+    "published_at": "2025-03-18T21:43:49.923Z",
+    "maintainers": ["samuelerdtman <samuel@erdtman.se>"]
+  },
+  "source": {
+    "repository": "https://github.com/erdtman/canonicalize.git",
+    "tag": "v2.1.0",
+    "tag_object_sha": "a37b200ed2fe15d630b059908e411eb875fdabd5",
+    "commit_sha": "7fed74ed8addd9f2fe4b2ea4c1c7caf7b793ead2",
+    "tree_sha": "5d7cde442eaf380e9e01878447a4d0b41661c4a0",
+    "tag_signature_verified": false,
+    "all_package_files_match_tree": true
+  },
+  "contents": {
+    "file_count": 20,
+    "files": [
+      { "path": ".travis.yml", "sha256": "395871056963226b9832a91e416634099f073c532e65a2c6ffd30ad2df50a512", "size": 145 },
+      { "path": "bin/canonicalize.js", "sha256": "5bac727637aef2b688c11ebaed9de79e41cbc1097d9ba0b7d726d8c12e5f8b6e", "size": 277 },
+      { "path": "examples/example.js", "sha256": "8f8d284598279aa964943fd25dc3b64c9237894b41b2f7fdcfe8bdda995ad10e", "size": 300 },
+      { "path": "lib/canonicalize.d.ts", "sha256": "68184a6f2ed35c5330ee5e781eb5cf0a02818fcdd108c6cb4af0dc65c15d3313", "size": 71 },
+      { "path": "lib/canonicalize.js", "sha256": "8a22f6848f00747463146fbfb11619944fc5800cf8f1ff0dfb9eb6489a05fe21", "size": 1108 },
+      { "path": "LICENSE", "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4", "size": 11357 },
+      { "path": "package.json", "sha256": "1c0de6f2742e9c61f8983c38093cca1b14564a7a982ef96cb04a60328b5653a8", "size": 1196 },
+      { "path": "README.md", "sha256": "ef5cc62d2e87aa454f00e8e65f628dc44635e9f1fa9f16294d77684fb16077ec", "size": 1780 },
+      { "path": "test/simpletests.js", "sha256": "13e850c1d256345d1664292380f6cc10925d370922fe178bf6f992fdda9c8c10", "size": 4490 },
+      { "path": "test/test.js", "sha256": "991f56442131f005e8428d28810b7879a3baab0c926b8c6136d93dcb0188948f", "size": 1488 },
+      { "path": "test/testdata/input/arrays.json", "sha256": "e503b6d71d1afa595b1c74b1016445c944cd89f90418066b23de1aeda7d17563", "size": 62 },
+      { "path": "test/testdata/input/french.json", "sha256": "03676a951cd8753ac62589f72eb2105cc782c33425418cfe1d517c111f6e5d5a", "size": 150 },
+      { "path": "test/testdata/input/structures.json", "sha256": "9b7cbb880bb663addbd0bdf50938cfcc5bc3cffabec14d2260f2eb99703d470f", "size": 148 },
+      { "path": "test/testdata/input/values.json", "sha256": "c4a041b503d6bc236036ef44db4dac499272f60fc22c40dc3b7a54870ba6f1c3", "size": 182 },
+      { "path": "test/testdata/input/weird.json", "sha256": "aa6d12e156b3ad28b567c98e45e766badda0a6ac8aebdb1977db256598079f4b", "size": 217 },
+      { "path": "test/testdata/output/arrays.json", "sha256": "099601b171cafed97c333f8878d68e7f8c8f795412adb34b2fdcf0e7c7beac42", "size": 32 },
+      { "path": "test/testdata/output/french.json", "sha256": "d99d0ebdcb0033cb858cfa830ae46bc0fb3309413b271f1da828c89901a27ed5", "size": 130 },
+      { "path": "test/testdata/output/structures.json", "sha256": "01edddb4042c3a82645dae3e2daa4960b829ef464e0316b9942694b64ec34edd", "size": 108 },
+      { "path": "test/testdata/output/values.json", "sha256": "2d5e01a318d0f0879ab568c4be289c8b1f64ef8921a53c6277d5e069978baacb", "size": 118 },
+      { "path": "test/testdata/output/weird.json", "sha256": "0f539f49254f75f1ab71c4a7b067e0ce38bad1bb5b04d7e06b2dd2a368cec666", "size": 175 }
+    ],
+    "dependencies": {},
+    "optional_dependencies": {},
+    "peer_dependencies": {},
+    "lifecycle_scripts": {}
+  },
+  "runtime": {
+    "node_version": "v24.16.0",
+    "bun_version": "1.3.11",
+    "commonjs_export": "function",
+    "node_pass": true,
+    "bun_pass": true
+  },
+  "vectors": {
+    "nano_manifest_sha256": "45a338652bb0ab38ecee59e4754cdad70a131f4da6e7d225640a4a6b0df6f46d",
+    "rfc8785_pass": true,
+    "nano_activation_pass": true,
+    "nano_receipt_pass": true,
+    "nano_control_pass": true,
+    "nano_admin_pass": true
+  },
+  "decision": {
+    "outcome": "approved_exact_package",
+    "approved_name": "canonicalize",
+    "approved_version": "2.1.0",
+    "approved_integrity": "sha512-F705O3xrsUtgt98j7leetNhTWPe+5S72rlL5O4jA1pKqBVQ/dT1O1D6PFxmSXvc0SUOinWS57DKx0I3CHrXJHQ==",
+    "approved_tarball_sha256": "65b2af82fa95b74300d9ecc83f35d44044365a17aadf9d2d153317a7375d015e",
+    "authority_mode": "owner-directed-agent-operated",
+    "same_human_controller": true,
+    "independent_human_review": false,
+    "statement": "Owner directed automated execution and approved only this exact artifact after deterministic adversarial verification; this is not independent human review."
+  }
+}
