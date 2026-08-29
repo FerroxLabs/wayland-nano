@@ -230,7 +230,15 @@ while ($true) {
     let (command, args) = {
         let script = r#"
 while IFS= read -r line; do
- id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+ rest=${line#*\"id\":}
+ id=
+ while test -n "$rest"; do
+  c=${rest%"${rest#?}"}
+  case "$c" in
+   [0-9]) id=${id}${c}; rest=${rest#?} ;;
+   *) break ;;
+  esac
+ done
  case "$line" in
   *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"fake","version":"0"}}}\n' "$id" ;;
   *'"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"echoes"}]}}\n' "$id" ;;
