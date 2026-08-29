@@ -102,6 +102,10 @@ const fn card_retryable(title: &'static str, hint: &'static str) -> ErrorSpec {
     }
 }
 
+const fn activation_refusal(reason: &'static str) -> ErrorSpec {
+    response(-32602, false, "Activation refused", reason)
+}
+
 /// The one exhaustive mapping. A new `NanoErrorKind` variant fails THIS
 /// match at compile time — the table can never silently under-cover.
 pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
@@ -404,6 +408,64 @@ pub fn spec(kind: NanoErrorKind) -> ErrorSpec {
             "The computer-use backend failed",
             "Do not retry the identical action",
         ),
+        NanoErrorKind::ActivationCarrierMissing => activation_refusal("carrier_missing"),
+        NanoErrorKind::ActivationCarrierOversized => activation_refusal("carrier_oversized"),
+        NanoErrorKind::ActivationMalformedJson => activation_refusal("malformed_json"),
+        NanoErrorKind::ActivationDuplicateKey => activation_refusal("duplicate_key"),
+        NanoErrorKind::ActivationNoncanonicalPayload => activation_refusal("noncanonical_payload"),
+        NanoErrorKind::ActivationUnknownField => activation_refusal("unknown_field"),
+        NanoErrorKind::ActivationUnsupportedSchema => activation_refusal("unsupported_schema"),
+        NanoErrorKind::ActivationUnsupportedAlgorithm => {
+            activation_refusal("unsupported_algorithm")
+        }
+        NanoErrorKind::ActivationInvalidKeyEncoding => activation_refusal("invalid_key_encoding"),
+        NanoErrorKind::ActivationInvalidSignatureEncoding => {
+            activation_refusal("invalid_signature_encoding")
+        }
+        NanoErrorKind::ActivationInvalidSignature => activation_refusal("invalid_signature"),
+        NanoErrorKind::ActivationUnknownIssuer => activation_refusal("unknown_issuer"),
+        NanoErrorKind::ActivationRevokedIssuer => activation_refusal("revoked_issuer"),
+        NanoErrorKind::ActivationUnknownKey => activation_refusal("unknown_key"),
+        NanoErrorKind::ActivationRevokedKey => activation_refusal("revoked_key"),
+        NanoErrorKind::ActivationKeyNotYetValid => activation_refusal("key_not_yet_valid"),
+        NanoErrorKind::ActivationKeyExpired => activation_refusal("key_expired"),
+        NanoErrorKind::ActivationAssertionNotYetValid => {
+            activation_refusal("assertion_not_yet_valid")
+        }
+        NanoErrorKind::ActivationAssertionExpired => activation_refusal("assertion_expired"),
+        NanoErrorKind::ActivationClockOutOfBounds => activation_refusal("clock_out_of_bounds"),
+        NanoErrorKind::ActivationNonceReplay => activation_refusal("nonce_replay"),
+        NanoErrorKind::ActivationIdempotencyConflict => activation_refusal("idempotency_conflict"),
+        NanoErrorKind::ActivationUnknownProductSubject => {
+            activation_refusal("unknown_product_subject")
+        }
+        NanoErrorKind::ActivationRetiredProductSubject => {
+            activation_refusal("retired_product_subject")
+        }
+        NanoErrorKind::ActivationPrincipalMismatch => activation_refusal("principal_mismatch"),
+        NanoErrorKind::ActivationPrincipalRemap => activation_refusal("principal_remap"),
+        NanoErrorKind::ActivationRetiredIdentifierReuse => {
+            activation_refusal("retired_identifier_reuse")
+        }
+        NanoErrorKind::ActivationUnauthorizedProject => activation_refusal("unauthorized_project"),
+        NanoErrorKind::ActivationAuthorityWidening => activation_refusal("authority_widening"),
+        NanoErrorKind::ActivationArtifactMismatch => activation_refusal("artifact_mismatch"),
+        NanoErrorKind::ActivationResumeFingerprintMissing => {
+            activation_refusal("resume_fingerprint_missing")
+        }
+        NanoErrorKind::ActivationResumeDrift => activation_refusal("resume_drift"),
+        NanoErrorKind::ActivationFallbackUnauthorized => {
+            activation_refusal("fallback_unauthorized")
+        }
+        NanoErrorKind::ActivationContinuityNotEnabled => {
+            activation_refusal("continuity_not_enabled")
+        }
+        NanoErrorKind::ActivationControlUnauthorized => activation_refusal("control_unauthorized"),
+        NanoErrorKind::ActivationControlRaceLost => activation_refusal("control_race_lost"),
+        NanoErrorKind::ActivationAuthorityStoreUnavailable => {
+            activation_refusal("authority_store_unavailable")
+        }
+        NanoErrorKind::ActivationAmbiguousRecovery => activation_refusal("ambiguous_recovery"),
         // Unknown kinds classify TERMINAL in both clients and never retry
         // (design §2/D2 forward-compat rule).
         NanoErrorKind::Unknown => response(
@@ -489,6 +551,44 @@ pub const ALL_KINDS: &[NanoErrorKind] = &[
     NanoErrorKind::CuaBackendUnavailable,
     NanoErrorKind::CuaCoordinateOutOfRange,
     NanoErrorKind::CuaBackend,
+    NanoErrorKind::ActivationCarrierMissing,
+    NanoErrorKind::ActivationCarrierOversized,
+    NanoErrorKind::ActivationMalformedJson,
+    NanoErrorKind::ActivationDuplicateKey,
+    NanoErrorKind::ActivationNoncanonicalPayload,
+    NanoErrorKind::ActivationUnknownField,
+    NanoErrorKind::ActivationUnsupportedSchema,
+    NanoErrorKind::ActivationUnsupportedAlgorithm,
+    NanoErrorKind::ActivationInvalidKeyEncoding,
+    NanoErrorKind::ActivationInvalidSignatureEncoding,
+    NanoErrorKind::ActivationInvalidSignature,
+    NanoErrorKind::ActivationUnknownIssuer,
+    NanoErrorKind::ActivationRevokedIssuer,
+    NanoErrorKind::ActivationUnknownKey,
+    NanoErrorKind::ActivationRevokedKey,
+    NanoErrorKind::ActivationKeyNotYetValid,
+    NanoErrorKind::ActivationKeyExpired,
+    NanoErrorKind::ActivationAssertionNotYetValid,
+    NanoErrorKind::ActivationAssertionExpired,
+    NanoErrorKind::ActivationClockOutOfBounds,
+    NanoErrorKind::ActivationNonceReplay,
+    NanoErrorKind::ActivationIdempotencyConflict,
+    NanoErrorKind::ActivationUnknownProductSubject,
+    NanoErrorKind::ActivationRetiredProductSubject,
+    NanoErrorKind::ActivationPrincipalMismatch,
+    NanoErrorKind::ActivationPrincipalRemap,
+    NanoErrorKind::ActivationRetiredIdentifierReuse,
+    NanoErrorKind::ActivationUnauthorizedProject,
+    NanoErrorKind::ActivationAuthorityWidening,
+    NanoErrorKind::ActivationArtifactMismatch,
+    NanoErrorKind::ActivationResumeFingerprintMissing,
+    NanoErrorKind::ActivationResumeDrift,
+    NanoErrorKind::ActivationFallbackUnauthorized,
+    NanoErrorKind::ActivationContinuityNotEnabled,
+    NanoErrorKind::ActivationControlUnauthorized,
+    NanoErrorKind::ActivationControlRaceLost,
+    NanoErrorKind::ActivationAuthorityStoreUnavailable,
+    NanoErrorKind::ActivationAmbiguousRecovery,
 ];
 
 /// The static, provider-free presentation for one kind: title plus the
@@ -618,7 +718,7 @@ mod tests {
     /// (64 → 70); WP-0.3 added ModelLacksPdf (70 → 71).
     #[test]
     fn all_kinds_count_is_pinned() {
-        assert_eq!(ALL_KINDS.len(), 71);
+        assert_eq!(ALL_KINDS.len(), 109);
     }
 
     #[test]

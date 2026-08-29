@@ -28,12 +28,80 @@ pub enum SignerProviderError {
     InvalidKeyMaterial,
     #[error("receipt signer key changed after provider initialization")]
     KeyChanged,
+    #[error("activation carrier canonicalization failed")]
+    Canonicalization,
 }
 
 pub struct ExternalReceiptSigner {
     path: PathBuf,
     key_id: String,
     public_key: [u8; 32],
+}
+
+/// Owner-controlled signer used only to mint direct-CLI activation assertions.
+/// It deliberately exposes no key material or provider locator.
+pub struct ExternalActivationSigner {
+    path: PathBuf,
+    public_key: [u8; 32],
+}
+
+impl ExternalActivationSigner {
+    pub fn from_key_reference(reference: &KeyReference) -> Result<Self, SignerProviderError> {
+        if reference.role() != KeyRole::LocalCliIssuer {
+            return Err(SignerProviderError::RoleMismatch);
+        }
+        match reference.provider() {
+            "file" => {
+                let path = PathBuf::from(reference.reference());
+                validate_path(&path)?;
+                let key = load_signing_key(&path)?;
+                Ok(Self {
+                    path,
+                    public_key: key.verifying_key().to_bytes(),
+                })
+            }
+            "os" => Err(SignerProviderError::OsProviderUnavailable),
+            _ => Err(SignerProviderError::UnsupportedProvider),
+        }
+    }
+
+    pub fn public_key(&self) -> [u8; 32] {
+        self.public_key
+    }
+
+    pub fn sign_activation(
+        &self,
+        canonical_payload: &[u8],
+    ) -> Result<[u8; 64], SignerProviderError> {
+        let key = load_signing_key(&self.path)?;
+        if key.verifying_key().to_bytes() != self.public_key {
+            return Err(SignerProviderError::KeyChanged);
+        }
+        let mut message = Vec::with_capacity(30 + canonical_payload.len());
+        message.extend_from_slice(b"WAYLAND-NANO-ACTIVATION\0v1\0");
+        message.extend_from_slice(canonical_payload);
+        Ok(key.sign(&message).to_bytes())
+    }
+
+    pub fn sign_activation_carrier(
+        &self,
+        carrier: &mut serde_json::Value,
+    ) -> Result<(), SignerProviderError> {
+        let canonical =
+            serde_jcs::to_vec(carrier).map_err(|_| SignerProviderError::Canonicalization)?;
+        let signature = self.sign_activation(&canonical)?;
+        carrier
+            .as_object_mut()
+            .ok_or(SignerProviderError::Canonicalization)?
+            .insert(
+                "signature".into(),
+                serde_json::Value::String(base64::Engine::encode(
+                    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                    signature,
+                )),
+            );
+        Ok(())
+    }
 }
 
 impl ExternalReceiptSigner {

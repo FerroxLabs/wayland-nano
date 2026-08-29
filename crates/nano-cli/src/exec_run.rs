@@ -738,13 +738,40 @@ fn finish_exec<W: Write + Send>(
 /// Production entry: Flux driver + real tools, JSONL on stdout. Requires
 /// the Flux key via the standard resolution chain (never embedded).
 pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32 {
-    let activation = if let Some(path) = &params.activation_request {
-        let raw = match std::fs::read(path) {
-            Ok(value) => value,
-            Err(_) => {
-                eprintln!("wayland-nano: activation request unavailable");
+    run_with_local_activation(nano_home, workspace, params, None).await
+}
+
+pub async fn run_with_local_activation(
+    nano_home: &Path,
+    workspace: &Path,
+    params: &ExecParams,
+    local: Option<&crate::exec_mode::LocalActivationParams>,
+) -> i32 {
+    let local_raw = if let Some(local) = local {
+        match crate::activation::mint_local_cli_request(nano_home, local, params.mode) {
+            Ok(raw) => Some(raw),
+            Err(error) => {
+                eprintln!("wayland-nano: {error}");
                 return 2;
             }
+        }
+    } else {
+        None
+    };
+    let activation = if params.activation_request.is_some() || local_raw.is_some() {
+        let path_raw;
+        let raw = if let Some(raw) = local_raw {
+            raw
+        } else {
+            let path = params.activation_request.as_ref().expect("checked");
+            path_raw = match std::fs::read(path) {
+                Ok(value) => value,
+                Err(_) => {
+                    eprintln!("wayland-nano: activation request unavailable");
+                    return 2;
+                }
+            };
+            path_raw
         };
         let gate = match crate::activation::SharedAdmission::open_production(nano_home) {
             Ok(value) => value,
@@ -765,11 +792,8 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
             }
         }
     } else {
-        if params.resume.is_some() {
-            eprintln!("wayland-nano: persistent resume requires --activation-request");
-            return 2;
-        }
-        None
+        eprintln!("wayland-nano: persistent exec requires authenticated activation");
+        return 2;
     };
     let Some(api_key) = crate::flux_key::flux_api_key() else {
         eprintln!("wayland-nano: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for exec mode");

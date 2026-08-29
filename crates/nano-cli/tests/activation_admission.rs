@@ -31,6 +31,7 @@ fn raw_admission_precedes_transport_serde_and_side_effects() {
     let home = tempfile::tempdir().unwrap();
     let issuer = SigningKey::from_bytes(&[1; 32]);
     let receipt = SigningKey::from_bytes(&[9; 32]);
+    let receipt_public = receipt.verifying_key().to_bytes();
     bootstrap(home.path(), &issuer, &receipt);
     let gate = SharedAdmission::from_gate(
         AdmissionGate::open(
@@ -64,12 +65,18 @@ fn raw_admission_precedes_transport_serde_and_side_effects() {
     assert_eq!(resumed.session_id(), Some("session-a"));
 
     let duplicate = br#"{"id":2,"id":3,"jsonrpc":"2.0","method":"session/new","params":{"_meta":{"waylandNanoActivation":{}}}}"#;
+    let refusal = gate
+        .admit_transport(duplicate, "2026-08-30T10:00:00Z")
+        .unwrap_err();
+    assert_eq!(refusal.reason(), RejectReason::DuplicateKey);
     assert_eq!(
-        gate.admit_transport(duplicate, "2026-08-30T10:00:00Z")
-            .unwrap_err()
-            .reason(),
-        RejectReason::DuplicateKey,
+        refusal.kind(),
+        nano_session::NanoErrorKind::ActivationDuplicateKey
     );
+    let refusal_receipt = refusal.receipt().expect("signed refusal receipt");
+    nano_activation::verify_receipt(refusal_receipt, &receipt_public).unwrap();
+    let refusal_json: serde_json::Value = serde_json::from_slice(refusal_receipt).unwrap();
+    assert_eq!(refusal_json["reason"], "duplicate_key");
     let oversized = vec![b' '; 32 * 1024 + 1];
     assert_eq!(
         gate.admit_transport(&oversized, "2026-08-30T10:00:00Z")

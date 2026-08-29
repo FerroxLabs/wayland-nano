@@ -71,14 +71,33 @@ fn main() {
             let workspace = std::env::current_dir().expect("cwd");
             match parse_exec_args(&args[2..]) {
                 Err(code) => code,
-                Ok(params) => {
+                Ok(parsed) => {
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
                         .expect("tokio runtime");
-                    runtime.block_on(nano_cli::exec_run::run(&home, &workspace, &params))
+                    match parsed.local_activation.as_ref() {
+                        Some(local) => {
+                            runtime.block_on(nano_cli::exec_run::run_with_local_activation(
+                                &home,
+                                &workspace,
+                                &parsed.exec,
+                                Some(local),
+                            ))
+                        }
+                        None => runtime.block_on(nano_cli::exec_run::run(
+                            &home,
+                            &workspace,
+                            &parsed.exec,
+                        )),
+                    }
                 }
             }
+        }
+        Some("activation") => {
+            let home = nano_home();
+            let mut out = std::io::stdout();
+            nano_cli::activation::run_activation_command(&home, &args[2..], &mut out)
         }
         // C11: session fork — clone a journal prefix under the SessionGuard.
         Some("session") if args.get(2).map(String::as_str) == Some("fork") => {
@@ -161,7 +180,12 @@ fn main() {
 }
 
 /// Parses `exec` arguments. Usage errors are exit 2 (the caller prints).
-fn parse_exec_args(args: &[String]) -> Result<nano_cli::exec_mode::ExecParams, i32> {
+struct ParsedExec {
+    exec: nano_cli::exec_mode::ExecParams,
+    local_activation: Option<nano_cli::exec_mode::LocalActivationParams>,
+}
+
+fn parse_exec_args(args: &[String]) -> Result<ParsedExec, i32> {
     let mut mode = nano_protocol::permission_mode::PermissionMode::default();
     let mut resume = None;
     let mut output_last_message = None;
@@ -170,6 +194,11 @@ fn parse_exec_args(args: &[String]) -> Result<nano_cli::exec_mode::ExecParams, i
     let mut model = None;
     let mut auto = false;
     let mut activation_request = None;
+    let mut activation_keyref = None;
+    let mut activation_issuer = None;
+    let mut activation_key_id = None;
+    let mut activation_project = None;
+    let mut activation_resume_fingerprint = None;
     let mut positional = Vec::new();
     let mut index = 0;
     let take_value = |args: &[String], index: &mut usize, flag: &str| -> Result<String, i32> {
@@ -215,6 +244,29 @@ fn parse_exec_args(args: &[String]) -> Result<nano_cli::exec_mode::ExecParams, i
                     &mut index,
                     "--activation-request",
                 )?));
+            }
+            "--activation-keyref" => {
+                activation_keyref = Some(std::path::PathBuf::from(take_value(
+                    args,
+                    &mut index,
+                    "--activation-keyref",
+                )?))
+            }
+            "--activation-issuer" => {
+                activation_issuer = Some(take_value(args, &mut index, "--activation-issuer")?)
+            }
+            "--activation-key-id" => {
+                activation_key_id = Some(take_value(args, &mut index, "--activation-key-id")?)
+            }
+            "--activation-project" => {
+                activation_project = Some(take_value(args, &mut index, "--activation-project")?)
+            }
+            "--activation-resume-fingerprint" => {
+                activation_resume_fingerprint = Some(take_value(
+                    args,
+                    &mut index,
+                    "--activation-resume-fingerprint",
+                )?)
             }
             "--resume" => {
                 let value = take_value(args, &mut index, "--resume")?;
@@ -264,15 +316,68 @@ fn parse_exec_args(args: &[String]) -> Result<nano_cli::exec_mode::ExecParams, i
         eprintln!("wayland-nano: exec requires a prompt (or --goal)");
         return Err(2);
     }
-    Ok(nano_cli::exec_mode::ExecParams {
-        prompt,
-        mode,
-        resume,
-        output_last_message,
-        goal,
-        model,
-        auto,
-        activation_request,
+    if activation_request.is_some() && activation_keyref.is_some() {
+        eprintln!("wayland-nano: --activation-request conflicts with local activation flags");
+        return Err(2);
+    }
+    let local_count = [
+        activation_keyref.is_some(),
+        activation_issuer.is_some(),
+        activation_key_id.is_some(),
+        activation_project.is_some(),
+    ]
+    .into_iter()
+    .filter(|v| *v)
+    .count();
+    if local_count != 0 && local_count != 4 {
+        eprintln!(
+            "wayland-nano: local activation requires --activation-keyref, --activation-issuer, --activation-key-id, and --activation-project"
+        );
+        return Err(2);
+    }
+    if activation_resume_fingerprint.is_some() && activation_keyref.is_none() {
+        eprintln!("wayland-nano: --activation-resume-fingerprint requires local activation flags");
+        return Err(2);
+    }
+    let local_session = match &resume {
+        Some(nano_cli::exec_mode::ResumeTarget::Id(id)) => Some(id.clone()),
+        Some(nano_cli::exec_mode::ResumeTarget::Last) if activation_keyref.is_some() => {
+            eprintln!(
+                "wayland-nano: local activation requires explicit --resume <id>, not --resume-last"
+            );
+            return Err(2);
+        }
+        _ => None,
+    };
+    if activation_keyref.is_some()
+        && (local_session.is_some() != activation_resume_fingerprint.is_some())
+    {
+        eprintln!(
+            "wayland-nano: local resume requires --resume <id> and --activation-resume-fingerprint together"
+        );
+        return Err(2);
+    }
+    let local_activation =
+        activation_keyref.map(|key_reference| nano_cli::exec_mode::LocalActivationParams {
+            key_reference,
+            issuer_id: activation_issuer.unwrap(),
+            key_id: activation_key_id.unwrap(),
+            project_id: activation_project.unwrap(),
+            session_id: local_session,
+            resume_fingerprint: activation_resume_fingerprint,
+        });
+    Ok(ParsedExec {
+        exec: nano_cli::exec_mode::ExecParams {
+            prompt,
+            mode,
+            resume,
+            output_last_message,
+            goal,
+            model,
+            auto,
+            activation_request,
+        },
+        local_activation,
     })
 }
 

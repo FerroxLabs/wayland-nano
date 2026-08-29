@@ -661,7 +661,7 @@ impl Host {
                     hooks: &hooks,
                     routing: &DEFAULT_ROUTING,
                 };
-                acp_mode::serve(
+                acp_mode::serve_legacy_debug(
                     ChannelReader {
                         rx: in_rx,
                         buf: Vec::new(),

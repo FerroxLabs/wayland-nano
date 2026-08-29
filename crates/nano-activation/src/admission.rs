@@ -5,7 +5,7 @@ use crate::control::{ControlKind, ControlOutcome};
 use crate::policy::{EffectivePolicy, PolicyCeiling, intersect};
 use crate::receipt::{
     ArtifactIdentity, Decision, IntentState, ReceiptFields, ReceiptSigner, ResultState,
-    SignedReceipt, mint,
+    SignedReceipt, mint, mint_refusal,
 };
 use crate::store::AuthorityStore;
 use crate::{
@@ -64,6 +64,26 @@ pub struct AdmittedToken {
 pub struct ControlDecision {
     outcome: ControlOutcome,
     receipt: SignedReceipt,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdmissionRefusal {
+    error: ActivationError,
+    receipt: Option<SignedReceipt>,
+}
+
+impl AdmissionRefusal {
+    pub fn reason(&self) -> RejectReason {
+        self.error.reason()
+    }
+
+    pub fn kind(&self) -> nano_session::NanoErrorKind {
+        self.error.reason().error_kind()
+    }
+
+    pub fn receipt(&self) -> Option<&SignedReceipt> {
+        self.receipt.as_ref()
+    }
 }
 
 impl ControlDecision {
@@ -153,6 +173,47 @@ impl AdmissionGate {
         resume: Option<&ResumeBinding>,
     ) -> Result<AdmittedToken, ActivationError> {
         self.admit_raw_with_fault(raw_frame, now_utc, resume, AdmissionFault::None)
+    }
+
+    /// Admit a raw ACP frame and attach canonical, signed evidence to every
+    /// refusal for which the receipt signer remains available. Signer failure
+    /// itself is fail-closed and intentionally has no unsigned substitute.
+    pub fn admit_raw_with_receipt(
+        &mut self,
+        raw_frame: &[u8],
+        now_utc: &str,
+        resume: Option<&ResumeBinding>,
+    ) -> Result<AdmittedToken, AdmissionRefusal> {
+        match self.admit_raw(raw_frame, now_utc, resume) {
+            Ok(token) => Ok(token),
+            Err(error) => Err(self.sign_refusal(raw_frame, now_utc, error.reason())),
+        }
+    }
+
+    /// Sign safe refusal evidence for failures found by the raw transport
+    /// scanner or signed-control verifier before activation admission runs.
+    pub fn sign_refusal(
+        &self,
+        raw_frame: &[u8],
+        now_utc: &str,
+        reason: RejectReason,
+    ) -> AdmissionRefusal {
+        match mint_refusal(
+            self.signer.as_ref(),
+            reason,
+            raw_frame,
+            now_utc,
+            &self.artifact,
+        ) {
+            Ok(receipt) => AdmissionRefusal {
+                error: ActivationError::new(reason),
+                receipt: Some(receipt),
+            },
+            Err(_) => AdmissionRefusal {
+                error: ActivationError::new(RejectReason::AuthorityStoreUnavailable),
+                receipt: None,
+            },
+        }
     }
 
     pub fn admit_raw_with_fault(

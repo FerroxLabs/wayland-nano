@@ -81,6 +81,53 @@ impl fmt::Display for RejectReason {
     }
 }
 
+impl RejectReason {
+    pub fn error_kind(self) -> nano_session::NanoErrorKind {
+        use nano_session::NanoErrorKind;
+        match self {
+            Self::None => NanoErrorKind::Unknown,
+            Self::CarrierMissing => NanoErrorKind::ActivationCarrierMissing,
+            Self::CarrierOversized => NanoErrorKind::ActivationCarrierOversized,
+            Self::MalformedJson => NanoErrorKind::ActivationMalformedJson,
+            Self::DuplicateKey => NanoErrorKind::ActivationDuplicateKey,
+            Self::NoncanonicalPayload => NanoErrorKind::ActivationNoncanonicalPayload,
+            Self::UnknownField => NanoErrorKind::ActivationUnknownField,
+            Self::UnsupportedSchema => NanoErrorKind::ActivationUnsupportedSchema,
+            Self::UnsupportedAlgorithm => NanoErrorKind::ActivationUnsupportedAlgorithm,
+            Self::InvalidKeyEncoding => NanoErrorKind::ActivationInvalidKeyEncoding,
+            Self::InvalidSignatureEncoding => NanoErrorKind::ActivationInvalidSignatureEncoding,
+            Self::InvalidSignature => NanoErrorKind::ActivationInvalidSignature,
+            Self::UnknownIssuer => NanoErrorKind::ActivationUnknownIssuer,
+            Self::RevokedIssuer => NanoErrorKind::ActivationRevokedIssuer,
+            Self::UnknownKey => NanoErrorKind::ActivationUnknownKey,
+            Self::RevokedKey => NanoErrorKind::ActivationRevokedKey,
+            Self::KeyNotYetValid => NanoErrorKind::ActivationKeyNotYetValid,
+            Self::KeyExpired => NanoErrorKind::ActivationKeyExpired,
+            Self::AssertionNotYetValid => NanoErrorKind::ActivationAssertionNotYetValid,
+            Self::AssertionExpired => NanoErrorKind::ActivationAssertionExpired,
+            Self::ClockOutOfBounds => NanoErrorKind::ActivationClockOutOfBounds,
+            Self::NonceReplay => NanoErrorKind::ActivationNonceReplay,
+            Self::IdempotencyConflict => NanoErrorKind::ActivationIdempotencyConflict,
+            Self::UnknownProductSubject => NanoErrorKind::ActivationUnknownProductSubject,
+            Self::RetiredProductSubject => NanoErrorKind::ActivationRetiredProductSubject,
+            Self::PrincipalMismatch => NanoErrorKind::ActivationPrincipalMismatch,
+            Self::PrincipalRemap => NanoErrorKind::ActivationPrincipalRemap,
+            Self::RetiredIdentifierReuse => NanoErrorKind::ActivationRetiredIdentifierReuse,
+            Self::UnauthorizedProject => NanoErrorKind::ActivationUnauthorizedProject,
+            Self::AuthorityWidening => NanoErrorKind::ActivationAuthorityWidening,
+            Self::ArtifactMismatch => NanoErrorKind::ActivationArtifactMismatch,
+            Self::ResumeFingerprintMissing => NanoErrorKind::ActivationResumeFingerprintMissing,
+            Self::ResumeDrift => NanoErrorKind::ActivationResumeDrift,
+            Self::FallbackUnauthorized => NanoErrorKind::ActivationFallbackUnauthorized,
+            Self::ContinuityNotEnabled => NanoErrorKind::ActivationContinuityNotEnabled,
+            Self::ControlUnauthorized => NanoErrorKind::ActivationControlUnauthorized,
+            Self::ControlRaceLost => NanoErrorKind::ActivationControlRaceLost,
+            Self::AuthorityStoreUnavailable => NanoErrorKind::ActivationAuthorityStoreUnavailable,
+            Self::AmbiguousRecovery => NanoErrorKind::ActivationAmbiguousRecovery,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationError {
     reason: RejectReason,

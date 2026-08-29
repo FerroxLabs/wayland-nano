@@ -80,6 +80,16 @@ pub struct ExecParams {
     pub activation_request: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone)]
+pub struct LocalActivationParams {
+    pub key_reference: PathBuf,
+    pub issuer_id: String,
+    pub key_id: String,
+    pub project_id: String,
+    pub session_id: Option<String>,
+    pub resume_fingerprint: Option<String>,
+}
+
 /// P5 §1: the routing decision for this exec run, resolved by the caller
 /// (production: `exec_run::run`; tests inject). `mode` is journaled on
 /// every turn's routing snapshot; `auto_client_side` turns run the §4

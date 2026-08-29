@@ -2,7 +2,9 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use nano_activation::authority::KeyRole;
 use nano_activation::key_provider::load_key_reference;
 use nano_activation::receipt::ReceiptSigner;
-use nano_activation::signer_provider::{ExternalReceiptSigner, SignerProviderError};
+use nano_activation::signer_provider::{
+    ExternalActivationSigner, ExternalReceiptSigner, SignerProviderError,
+};
 use std::path::Path;
 
 #[test]
@@ -70,6 +72,42 @@ fn os_provider_and_secrets_paths_are_typed_refusals() {
         ExternalReceiptSigner::from_key_reference(&file_reference),
         Err(SignerProviderError::ForbiddenPath)
     ));
+}
+
+#[test]
+fn local_activation_signer_requires_the_distinct_cli_role() {
+    let home = tempfile::tempdir().unwrap();
+    let key_path = home.path().canonicalize().unwrap().join("cli.seed");
+    std::fs::write(&key_path, [6_u8; 32]).unwrap();
+    secure(&key_path);
+    let receipt = write_reference(home.path(), "file", key_path.to_str().unwrap());
+    assert!(matches!(
+        ExternalActivationSigner::from_key_reference(&receipt),
+        Err(SignerProviderError::RoleMismatch)
+    ));
+
+    let path = home.path().join("cli.keyref");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({
+            "provider": "file",
+            "reference": key_path,
+            "role": "local_cli_issuer"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    secure(&path);
+    let reference = load_key_reference(&path, KeyRole::LocalCliIssuer).unwrap();
+    let signer = ExternalActivationSigner::from_key_reference(&reference).unwrap();
+    let payload = b"{}";
+    let signature = Signature::from_bytes(&signer.sign_activation(payload).unwrap());
+    let mut message = b"WAYLAND-NANO-ACTIVATION\0v1\0".to_vec();
+    message.extend_from_slice(payload);
+    VerifyingKey::from_bytes(&signer.public_key())
+        .unwrap()
+        .verify(&message, &signature)
+        .unwrap();
 }
 
 fn write_reference(

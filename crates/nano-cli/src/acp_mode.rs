@@ -347,6 +347,8 @@ enum Inbound {
     ActivationRefused {
         id: serde_json::Value,
         reason: nano_activation::RejectReason,
+        kind: NanoErrorKind,
+        receipt: Option<Box<serde_json::Value>>,
     },
 }
 
@@ -1554,6 +1556,9 @@ fn option_cardinality<T>(value: &Option<T>) -> u64 {
     u64::from(value.is_some())
 }
 
+/// The former unauthenticated persistent constructor is permanently closed.
+/// Production enters through [`serve_admitted`]; debug corpus tests use the
+/// explicitly named, debug-only [`serve_legacy_debug`] adapter below.
 pub async fn serve<R, W, FD, FT, D, T>(
     reader: R,
     writer: W,
@@ -1566,6 +1571,36 @@ where
     W: Write + Send + 'static,
     // Send + Sync: the C11 cron tick shares the factories with the prompt
     // path and runs its fires through the async (Send-bound) executor trait.
+    FD: Fn(&crate::provider_router::ProviderBinding) -> D + Send + Sync + 'static,
+    FT: Fn(
+            &std::path::Path,
+            PermissionMode,
+            &std::path::Path,
+            Option<DiffHook>,
+            Option<Arc<dyn nano_model::metering::UsageSink>>,
+            Option<Arc<dyn nano_tools::image::ImageReadApprover>>,
+        ) -> (T, nano_core::permissions::FileSystemSandboxPolicy)
+        + Send
+        + Sync,
+    D: ModelDriver + 'static,
+    T: ToolExecutor,
+{
+    let _ = (reader, writer, config, make_driver, make_tools);
+    Ok(2)
+}
+
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub async fn serve_legacy_debug<R, W, FD, FT, D, T>(
+    reader: R,
+    writer: W,
+    config: &ServeConfig<'_>,
+    make_driver: FD,
+    make_tools: FT,
+) -> std::io::Result<i32>
+where
+    R: BufRead + Send + 'static,
+    W: Write + Send + 'static,
     FD: Fn(&crate::provider_router::ProviderBinding) -> D + Send + Sync + 'static,
     FT: Fn(
             &std::path::Path,
@@ -1824,16 +1859,20 @@ where
                             ),
                         )?;
                     }
-                    Inbound::ActivationRefused { id, reason } => {
-                        write_out(
-                            &out,
-                            &JsonRpcResponse::err_typed(
-                                id,
-                                NanoErrorKind::InvalidParams,
-                                format!("activation refused: {reason}"),
-                                NanoErrorExtras::default(),
-                            ),
-                        )?;
+                    Inbound::ActivationRefused { id, reason, kind, receipt } => {
+                        let mut data = nano_protocol::acp::nano_error_data(
+                            kind,
+                            &NanoErrorExtras::default(),
+                        );
+                        if let Some(receipt) = receipt {
+                            data["waylandNanoActivationReceipt"] = *receipt;
+                        }
+                        write_out(&out, &JsonRpcResponse::err_with_data(
+                            id,
+                            nano_protocol::error_codes::spec(kind).wire_code,
+                            format!("activation refused: {reason}"),
+                            data,
+                        ))?;
                     }
                     Inbound::Notification { method, control } => {
                         if method == "session/cancel" {
@@ -5626,6 +5665,10 @@ fn reader_loop<R: BufRead>(
                         .send(Inbound::ActivationRefused {
                             id,
                             reason: error.reason(),
+                            kind: error.kind(),
+                            receipt: error
+                                .receipt()
+                                .and_then(|bytes| serde_json::from_slice(bytes).ok().map(Box::new)),
                         })
                         .is_err()
                     {
@@ -11486,7 +11529,7 @@ mod tests {
                             hooks: &hooks,
                             routing: &routing,
                         };
-                        serve(
+                        serve_legacy_debug(
                             LiveChannelReader {
                                 rx: input_rx,
                                 buf: vec![],
@@ -11836,7 +11879,7 @@ mod tests {
                         hooks: &hooks,
                         routing: &routing,
                     };
-                    serve(
+                    serve_legacy_debug(
                         LiveChannelReader {
                             rx: input_rx,
                             buf: Vec::new(),

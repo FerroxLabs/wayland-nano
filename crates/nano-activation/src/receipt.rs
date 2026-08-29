@@ -160,3 +160,55 @@ pub(crate) fn mint(
         .map_err(|_| ReceiptError::InvalidSignerOutput)?;
     Ok(SignedReceipt { canonical })
 }
+
+pub(crate) fn mint_refusal(
+    signer: &dyn ReceiptSigner,
+    reason: RejectReason,
+    raw_frame: &[u8],
+    issued_at: &str,
+    artifact: &ArtifactIdentity,
+) -> Result<SignedReceipt, ReceiptError> {
+    use sha2::{Digest as _, Sha256};
+
+    signer.preflight()?;
+    let raw_sha256 = hex(&Sha256::digest(raw_frame));
+    let receipt_id = format!(
+        "refusal-{}",
+        &hex(&Sha256::digest(
+            [raw_sha256.as_bytes(), reason.to_string().as_bytes()].concat()
+        ))[..24]
+    );
+    let mut value = json!({
+        "alg": "Ed25519",
+        "decision": Decision::Refused,
+        "issued_at": issued_at,
+        "reason": reason,
+        "receipt_id": receipt_id,
+        "receipt_key_id": signer.key_id(),
+        "raw_assertion_sha256": raw_sha256,
+        "schema": "wayland.nano.activation-receipt/v1",
+        "source_commit_sha": artifact.source_commit_sha,
+        "cargo_lock_sha256": artifact.cargo_lock_sha256,
+        "executable_sha256": artifact.executable_sha256,
+    });
+    let payload = serde_jcs::to_vec(&value).map_err(|_| ReceiptError::Canonicalization)?;
+    let mut message = Vec::with_capacity(RECEIPT_DOMAIN.len() + payload.len());
+    message.extend_from_slice(RECEIPT_DOMAIN);
+    message.extend_from_slice(&payload);
+    let signature = signer.sign(&message)?;
+    value
+        .as_object_mut()
+        .ok_or(ReceiptError::Canonicalization)?
+        .insert(
+            "signature".into(),
+            Value::String(URL_SAFE_NO_PAD.encode(signature)),
+        );
+    let canonical = serde_jcs::to_vec(&value).map_err(|_| ReceiptError::Canonicalization)?;
+    verify_receipt(&canonical, &signer.public_key())
+        .map_err(|_| ReceiptError::InvalidSignerOutput)?;
+    Ok(SignedReceipt { canonical })
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
