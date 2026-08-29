@@ -29,7 +29,7 @@ function Get-LowerHash {
 
 function Get-ObjectKeys {
     param([object]$Object)
-    return @($Object.PSObject.Properties.Name | Sort-Object)
+    return @($Object.PSObject.Properties | ForEach-Object { $_.Name } | Sort-Object)
 }
 
 function Assert-ExactKeys {
@@ -122,8 +122,8 @@ try {
     $lifecycleNames = @('preinstall','install','postinstall','prepublish','prepare','prepack','postpack')
     $presentLifecycle = @($lifecycleNames | Where-Object { $manifest.scripts.PSObject.Properties.Name -contains $_ })
     Assert-Equal $presentLifecycle.Count 0 'lifecycle script count'
-    Assert-Equal (Get-ObjectKeys $receipt.contents.dependencies).Count 0 'recorded dependencies'
-    Assert-Equal (Get-ObjectKeys $receipt.contents.lifecycle_scripts).Count 0 'recorded lifecycle scripts'
+    Assert-Equal (@(Get-ObjectKeys $receipt.contents.dependencies).Count) 0 'recorded dependencies'
+    Assert-Equal (@(Get-ObjectKeys $receipt.contents.lifecycle_scripts).Count) 0 'recorded lifecycle scripts'
 
     $tag = Invoke-RestMethod -Uri 'https://api.github.com/repos/erdtman/canonicalize/git/ref/tags/v2.1.0' -Headers @{ 'User-Agent' = 'wayland-nano-package-audit' }
     Assert-Equal $tag.object.sha $receipt.source.tag_object_sha 'tag object SHA'
