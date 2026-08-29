@@ -1,118 +1,45 @@
-# Wayland Nano Verified Change
-
-## Authority
-
-This file is a Ferrox navigation projection. It does not replace the program
-documents. The single entry point is
-`../shared/reviews/research-0.2/NANO-BUILD-PLAN-V3.md`. Its standing execution
-rules are binding. For WP-1 through WP-4, the authority order is:
-
-1. `../shared/reviews/research-0.2/specs/SPEC-WP-INTERFACES.md`
-2. The work-package spec referenced by the master document
-3. `../shared/reviews/research-0.2/NANO-BUILD-PLAN-V3.md`
-4. `../shared/reviews/research-0.2/GOALS.md`
-
-Any contradiction is resolved by the higher authority. A boundary conflict
-stops that sub-task and produces the required deviation note; it never licenses
-an improvised workaround.
-
-## What This Is
-
-Wayland Nano is a small native Rust execution runtime whose current product
-program turns its proof discipline into `wayland-nano verify`: executable gates
-that reject fluent-but-wrong agent changes plus independently rerunnable
-red-green receipts. The customer is an engineering organization allowing agents
-to modify real repositories and needing an enforceable merge condition.
+# Wayland Nano
 
 ## Core Value
 
-A change earns trust only through independently rerunnable machine evidence;
-model confidence and self-report never substitute for a green gate.
+A change earns trust only through independently rerunnable machine evidence.
 
-## Business Context
+## Current Milestone: v1.1 Workable Persistent Agent
 
-- **Customer**: Engineering teams allowing coding agents to change real repositories.
-- **Success metric**: At least two external teams voluntarily require the Wayland receipt as a merge condition.
-- **Strategy notes**: `../shared/reviews/research-0.2/NANO-FINAL-PLAN-V2.md`
+**Goal:** A Desktop-defined bot can repeatedly invoke Nano with authenticated, project/principal-scoped continuity and bounded host-triggered work. Desktop remains the sole product control plane; Nano remains the security/continuity/execution kernel.
 
-## Requirements
+This is the smallest useful persistent-agent slice. Hardened browser and desktop providers are separate later milestones and do not block it.
 
-### Validated
+## Boundary
 
-- ✓ Native Rust runtime, fail-closed containment, typed policy seams, append-only session journal, and provider-neutral execution loop — existing v0.1.1 product.
-- ✓ Attested multi-target release pipeline consumed by Wayland Desktop — existing v0.1.1 release.
-- ✓ Full workspace quality gate: `just gate-all` — formatting, clippy with warnings denied, workspace tests, and generated-artifact drift checks — existing repository contract.
+- Desktop owns bot→principal binding, bot CRUD/registry, persona/team/model/backend choices, schedules/timers, approvals, history/attention UI, and later provider selection.
+- Nano trusts only an explicitly configured issuer assertion. It validates issuer, freshness, replay protection, local policy intersection, memory scope, bounds, journals, and receipts. It cannot prove the real-world truth of Desktop's mapping. Minimal Nano security enrollment/binding state may enforce trust roots and anti-remap; it is not a product registry.
+- ACP is transport, not semantic authorization or orchestration.
+- For v1.1 compatibility, wire `principal_id` is the semantic name for the immutable authority partition and maps 1:1 to the existing physical/schema/journal `agent_id`. No schema rename occurs in this milestone.
 
-### Active
+## Authority and Source Status
 
-- [ ] Complete Phase 0 hardening: WP-0.2, WP-0.3, and WP-0.4.
-- [ ] Build the gate runner and red-green receipt foundation in WP-1.
-- [ ] Build the budgeted gated-climb engine in WP-2.
-- [ ] Build the `wayland-nano verify` CLI, CI consumer, and offline verifier in WP-3.
-- [ ] Build and dogfood the three sealed Gate Card packs in WP-4.
-- [ ] Produce canary-clean, reproducible evidence for every promoted claim.
+`.planning/sources/` contains hash-verified immutable snapshots. MEMORY-CONTRACT v1.2 is owner-signed. NANO-PROGRAM-PLAN, PROFILES-CONTRACT, and NANO-MODULE-CONTRACT are authoritative snapshots but are not represented here as owner-signed. ADR-001 is only a proposed amendment.
 
-### Owner-Led / External Gates
+Only PR #8 acceptance is eligible until the owner signs/version-stamps a ratification manifest listing every source artifact/version/signature/disposition/precedence and pinning ownership; trust roots/key lifecycle; immutable bot→principal binding; descriptor/replay; `principal_id`↔`agent_id` compatibility; protected MEM-SEC fixture ownership; merge order and compatibility window. Rejection or ambiguity stops and re-roadmaps.
 
-- WP-0.1 is an interactive host-run proof requiring the owner's Windows desktop and manual 100%/150% display scaling.
-- WP-5 partner demo/onboarding and WP-6 adoption decision are owner-led and are not autonomous build phases.
+## Four Focused Phases
 
-### Out of Scope
+1. Ratify the boundary and accept P-MEM-1.
+2. Add the minimal authenticated activation/policy contract.
+3. Wire secure scoped memory into the real runtime and measure continuity.
+4. Run bounded Desktop-triggered work and immediately dogfood/decide.
 
-- WP-5 and WP-6 execution — stop after WP-4 and hand control to the owner.
-- P-MEM, P-PROF, P-MOD, MCP server mode, self-evolution, and subscription bridging — frozen until WP-6 succeeds.
-- Writes to `../nano/` or `../resources/upstreams/` — immutable/read-only boundaries.
-- Speculative features, drive-by refactors, dependency upgrades, unrelated cleanup, and sidequests — every changed line must trace to the active WP.
+## Cross-Repo Authority
 
-## Execution Model
+This Nano worktree may define the protocol and Nano implementation only. Its `AGENTS.md` excludes Desktop writes. Any Desktop implementation requires a separately authorized Desktop worktree/branch/PR or an exact owner handoff. Cross-repo acceptance uses pinned fixtures, declared merge order, and a bounded compatibility window; it never edits Desktop from this worktree.
 
-- Execute one WP promotion at a time in the master document's dependency order.
-- Before every WP, fetch and resolve current `origin/master`, record its exact SHA,
-  and create a clean dedicated worktree and canonical branch `feat/wp-<id>` at
-  that SHA. The historical `466f030` plan baseline is provenance, not a frozen
-  execution base; stale `.tmp-wt-*` worktrees are never source truth.
-- Use parallel subagent swarms only for independent research, planning, audits,
-  verification, or explicitly disjoint owned files.
-- Serialize edits to hot seams including `acp_mode.rs`, `crates/nano-verify/**`,
-  generated artifacts, and integration state.
-- Give every builder explicit file ownership and an isolated worktree. Builders
-  never merge or push.
-- Ferrox `git.branching_strategy` remains `none` intentionally: the integrator creates
-  each canonical `feat/wp-<id>` branch and worktree manually at the recorded
-  `origin/master` SHA because generic Ferrox phase branches do not satisfy the WP card.
-- Per WP: implement within OWNS/NEVER-TOUCH, run one Critical/High audit, one fix
-  round, fix verification, and the complete local `just gate-all` gate, including
-  `gate-gen-check`.
-- Integrate one branch at a time through detached `.tmp-wt-integ` using
-  `--no-ff`; re-run `just gate-all`, push `HEAD:master`, and require CI green before
-  promoting the next dependency.
-- Report one line per WP: WP, commits, local/integration gate, and CI result.
+## Later Focused Milestones
 
-## Constraints
+- v1.2 Hardened Browser Provider
+- v1.3 Hardened Desktop Provider
+- Evidence-gated backlog: compaction/procedure extraction, code graph/blast/KG, and cross-project reads
 
-- **Security**: Fail closed; never weaken a security invariant or test to pass.
-- **Secrets**: The Flux key is path-only at `../.secrets/flux-test-key`; never read, echo, copy, or embed it. Canary-scan captured evidence.
-- **Generated artifacts**: Regenerate error tables with `cargo run -p nano-cli --bin gen_error_table`; never hand-edit them or change their mirror without regeneration.
-- **Dependencies**: No new dependency without a cargo-deny-clean justification.
-- **Evidence**: Keep Implemented, Reachable, and Live-proven claims separate.
-- **Platform gate**: Three Windows `SetNamedSecurityInfoW` ACL failures may be environmental; report them and never weaken or chase the tests.
-- **Baseline truth**: Build from current `origin/master`; stale `.tmp-wt-*` worktrees are never source truth.
+## Discipline and Out of Scope
 
-## Key Decisions
-
-| Decision | Rationale | Outcome |
-|----------|-----------|---------|
-| Lead with verified change rather than memory | Trust and production accountability are the wedge; adoption must earn the broader roadmap | — Pending WP-6 |
-| Canonical interface contract wins | Prevents independently authored WP surfaces from drifting | — Binding |
-| Parallelize analysis, serialize hot seams and promotion | Gains swarm speed without semantic merge guesses or branch chaos | — Binding |
-| Stop autonomous execution after WP-4 | Demo partnerships and the adoption decision require owner leadership | — Binding |
-
-## Evolution
-
-This projection changes only when the authoritative program changes. Phase
-completion may update requirement status and evidence pointers but may not add
-scope. New capabilities require an explicit master-plan amendment before they
-enter the roadmap.
-
----
-*Last updated: 2026-08-16 after WP-0.4 promotion and six-job CI verification*
+One phase/goal at a time; isolated worktree; no side quests; three strikes; exact handoff on stop; human review; governing local/CI evidence. No Nano bot registry, persona/team system, scheduler, UI, provider work in v1.1, hosted memory, schema rename, composition-digest framework without an enforcement consumer, extraction, graph, KG, or cross-project reads.

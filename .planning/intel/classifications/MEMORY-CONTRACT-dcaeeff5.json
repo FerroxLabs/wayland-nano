@@ -1,0 +1,38 @@
+{
+  "source_path": "D:/Development/waylandnano/wayland-nano/.tmp-wt-agent-program-plan/.planning/sources/MEMORY-CONTRACT.md",
+  "type": "SPEC",
+  "confidence": "high",
+  "manifest_override": true,
+  "title": "MEMORY-CONTRACT.md — the P-MEM interface freeze (2026-08-20; amended 2026-08-24; amended 2026-08-26)",
+  "summary": "Defines the P-MEM storage, retrieval, durability, trust, partitioning, policy, identity, and acceptance contracts.",
+  "scope": [
+    "P-MEM",
+    "SQLite",
+    "FTS5",
+    "sqlite-vec",
+    "memory schema",
+    "retrieval",
+    "journaling",
+    "MemoryPolicy",
+    "trust tiers",
+    "project partitioning",
+    "agent identity",
+    "acceptance criteria"
+  ],
+  "cross_refs": [
+    "../NANO-PROGRAM-PLAN.md",
+    "resources/upstreams/wcore-0.13.0",
+    "AGENTS.md",
+    "../MEMO-multi-bot-memory.md",
+    "bots/AUDIT-2-design.md",
+    "bots/AUDIT-3-wave2.md",
+    "bots/MEMO-graph-engineering.md",
+    "bots/DESIGN-persistent-subagents.md",
+    "bots/MEMO-grokbot-hermes-bots.md",
+    "bots/AUDIT-4-contract-v12.md",
+    "bots/AUDIT-5-buildability.md"
+  ],
+  "locked": false,
+  "precedence": 0,
+  "notes": ""
+}

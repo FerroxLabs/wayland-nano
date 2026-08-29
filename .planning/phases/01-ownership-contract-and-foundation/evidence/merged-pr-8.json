@@ -1,0 +1,71 @@
+{
+  "schema_version": "phase1-pr8-v1",
+  "captured_at_utc": "2026-08-29T09:20:46.3260057Z",
+  "pr_number": 8,
+  "url": "https://github.com/FerroxLabs/wayland-nano/pull/8",
+  "state": "MERGED",
+  "base_ref": "master",
+  "head_ref": "feat/p-mem-1-core",
+  "head_sha": "146fe699127e5f53544e3ec57d4e785f99e04e8c",
+  "merge_state": "UNKNOWN",
+  "review_decision": "APPROVED",
+  "merge_commit_sha": "5bd545195ceba2c61383a913298612b73f7bd17a",
+  "merged_by": "TradeCanyon",
+  "expected_run_id": 33239162169,
+  "checks": [
+    {
+      "name": "gate (windows-latest, x64)",
+      "conclusion": "SUCCESS",
+      "status": "COMPLETED",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/33239162169/job/99065381101"
+    },
+    {
+      "name": "gate (windows-11-arm, arm64)",
+      "conclusion": "SUCCESS",
+      "status": "COMPLETED",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/33239162169/job/99065381149"
+    },
+    {
+      "name": "gate (macos-14, arm64)",
+      "conclusion": "SUCCESS",
+      "status": "COMPLETED",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/33239162169/job/99065381074"
+    },
+    {
+      "name": "gate (macos-15-intel, x64)",
+      "conclusion": "SUCCESS",
+      "status": "COMPLETED",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/33239162169/job/99065381077"
+    },
+    {
+      "name": "gate (ubuntu-22.04, x64)",
+      "conclusion": "SUCCESS",
+      "status": "COMPLETED",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/33239162169/job/99065381105"
+    },
+    {
+      "name": "gate (ubuntu-24.04-arm, arm64)",
+      "conclusion": "SUCCESS",
+      "status": "COMPLETED",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/33239162169/job/99065381061"
+    },
+    {
+      "name": "gate-cards",
+      "conclusion": "SUCCESS",
+      "status": "COMPLETED",
+      "details_url": "https://github.com/FerroxLabs/wayland-nano/actions/runs/33239162169/job/99065381018"
+    }
+  ],
+  "codeowners": {
+    "blob_sha": "50e9f1d20e1b64fa4597c83352d21eb904bbdd71",
+    "rule_count": 3,
+    "self": true,
+    "gates": true,
+    "agents": true,
+    "required_logins": [
+      "FerroxLabs",
+      "TradeCanyon"
+    ],
+    "all_rules_have_required_logins": true
+  }
+}

@@ -1,0 +1,8 @@
+Provider: Anthropic
+Model: Claude CLI configured model
+Provider lineage: anthropic
+Post-fix verdict: NOT_PASS_EVIDENCE_ARTIFACT_ONLY
+
+The post-fix review independently verified clean: signed amendment SHA/length and four source hashes; full receipt hash chain; monotone acceptance -> cross-AI -> authority -> governance -> prerequisite chronology; foundation-prerequisites passed; eight-command fresh-master acceptance at merge SHA with recall 1.0 and zero project/agent leakage; two noncaller lineages with OpenAI/Gemini disqualified; honest owner-directed agent-operated governance.
+
+The sole remaining High finding was that this post-fix review had not yet been preserved as a distinct raw artifact and the Critical/High dispositions still pointed to the initial Anthropic review. Required disposition: preserve this file, hash it, repoint the two fixed_reaudited findings to this review, and owner-accept the self-referential artifact-preservation finding with strict raw-hash verification as the compensating control.

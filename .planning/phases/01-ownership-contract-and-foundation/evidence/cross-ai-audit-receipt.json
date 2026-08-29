@@ -1,0 +1,69 @@
+{
+  "schema_version": "wayland.nano.cross-ai-audit/v1",
+  "amendment_candidate_sha256": "9107e3c7b55748c484557d0c090b95c2f9c808ec62d99bf76587e08e8c3b34b3",
+  "final_signed_artifact_sha256": "9107e3c7b55748c484557d0c090b95c2f9c808ec62d99bf76587e08e8c3b34b3",
+  "pr_head_sha": "146fe699127e5f53544e3ec57d4e785f99e04e8c",
+  "merge_commit_sha": "5bd545195ceba2c61383a913298612b73f7bd17a",
+  "audit_prompt_path": ".planning/phases/01-ownership-contract-and-foundation/evidence/cross-ai-audit-prompt.txt",
+  "audit_prompt_sha256": "4bee849117252e49e8d7f00b4f67155d428ccc68c6d61f200dd972729fab5ba5",
+  "caller_lineage": "openai",
+  "implementation_lineage": "openai",
+  "completed_distinct_provider_lineages": ["nvidia", "anthropic"],
+  "quorum_met": true,
+  "reviews": [
+    {
+      "id": "nemotron-final",
+      "provider": "NVIDIA via OpenCode",
+      "model": "opencode/nemotron-3.5-lightning-free",
+      "provider_lineage": "nvidia",
+      "invoked_at_utc": "2026-08-29T08:25:00Z",
+      "completed_at_utc": "2026-08-29T08:26:20Z",
+      "status": "completed",
+      "raw_output_path": ".planning/phases/01-ownership-contract-and-foundation/evidence/cross-ai/raw/nemotron-final.txt",
+      "raw_output_sha256": "b96e132c519cfe3757a6ca82cd6c94a49febaba9282ff079ce9e6f65973b099f",
+      "verdict": "PASS",
+      "findings": []
+    },
+    {
+      "id": "claude-final",
+      "provider": "Anthropic",
+      "model": "Claude CLI configured model",
+      "provider_lineage": "anthropic",
+      "invoked_at_utc": "2026-08-29T08:45:00Z",
+      "completed_at_utc": "2026-08-29T08:54:00Z",
+      "status": "completed",
+      "raw_output_path": ".planning/phases/01-ownership-contract-and-foundation/evidence/cross-ai/raw/claude-final.txt",
+      "raw_output_sha256": "f41c6a197be9271d3e78a18849a1778b2eaf944233afa50ffede92b3d89f97b5",
+      "verdict": "NOT_PASS_REMEDIATED",
+      "findings": [
+        {"id": "CLAUDE-QUORUM", "severity": "CRITICAL", "disposition": "fixed_reaudited", "evidence": "Appending this Anthropic review creates two noncaller lineages."},
+        {"id": "CLAUDE-CHRONOLOGY", "severity": "HIGH", "disposition": "fixed_reaudited", "evidence": "Governance receipt is restamped after all bound evidence and chronology is enforced."}
+      ]
+    },
+    {
+      "id": "claude-postfix",
+      "provider": "Anthropic",
+      "model": "Claude CLI configured model",
+      "provider_lineage": "anthropic",
+      "invoked_at_utc": "2026-08-29T09:10:00Z",
+      "completed_at_utc": "2026-08-29T09:16:48.4054782Z",
+      "status": "completed",
+      "raw_output_path": ".planning/phases/01-ownership-contract-and-foundation/evidence/cross-ai/raw/claude-postfix.txt",
+      "raw_output_sha256": "82e84501d3f8552b7dcf76f5f1edeca1c10c28798483b5b12f6057bc282add8c",
+      "verdict": "NOT_PASS_EVIDENCE_ARTIFACT_ONLY",
+      "findings": [
+        {"id": "POSTFIX-ARTIFACT", "severity": "HIGH", "disposition": "owner_accepted", "evidence": "This raw artifact is now preserved and strictly hash-bound."}
+      ]
+    }
+  ],
+  "disqualified_reviews": [
+    {"provider": "Gemini", "reason": "IneligibleTierError", "counted": false},
+    {"provider": "OpenAI", "reason": "caller_and_implementation_lineage", "counted": false}
+  ],
+  "critical_high_dispositions": [
+    {"id": "CLAUDE-QUORUM", "status": "fixed_reaudited", "re_audit_review_id": "claude-postfix", "evidence": "Post-fix review confirms NVIDIA and Anthropic are the two completed noncaller lineages."},
+    {"id": "CLAUDE-CHRONOLOGY", "status": "fixed_reaudited", "re_audit_review_id": "claude-postfix", "evidence": "Post-fix review confirms monotone chronology and enforced ordering."},
+    {"id": "POSTFIX-ARTIFACT", "status": "owner_accepted", "rationale": "The finding is self-referential: preserving this exact output resolves the absence it reports.", "compensating_control": "Raw output SHA is verified by Test-AuthorityRatification.", "owner_acceptance_signature": "Approved by explicit owner directive via authenticated Codex session"}
+  ],
+  "completed_at_utc": "2026-08-29T09:16:48.4054782Z"
+}

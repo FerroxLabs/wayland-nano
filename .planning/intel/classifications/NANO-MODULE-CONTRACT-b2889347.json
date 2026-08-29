@@ -1,0 +1,22 @@
+{
+  "source_path": "D:/Development/waylandnano/wayland-nano/.tmp-wt-agent-program-plan/.planning/sources/NANO-MODULE-CONTRACT.md",
+  "type": "SPEC",
+  "confidence": "high",
+  "manifest_override": true,
+  "title": "NANO-MODULE-CONTRACT.md — the module contract v1 (2026-08-20)",
+  "summary": "Defines the versioned Nano module manifest, registration lifecycle, trust boundary, acceptance criteria, and v1 exclusions.",
+  "scope": [
+    "Nano modules",
+    "module.toml",
+    "MCP-server modules",
+    "skill modules",
+    "registration lifecycle",
+    "module trust boundary"
+  ],
+  "cross_refs": [
+    "UPSTREAM.md"
+  ],
+  "locked": false,
+  "precedence": 2,
+  "notes": ""
+}

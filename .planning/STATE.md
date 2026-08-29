@@ -1,58 +1,46 @@
 ---
 ferrox_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-current_phase: 7
-current_phase_name: WP-4 Gate Cards and Dogfood
-status: complete
-last_updated: "2026-08-22T20:15:00.000Z"
-last_activity: 2026-08-22
-last_activity_desc: Phase 7 complete; WP-4 promoted with exact-SHA seven-job CI green; autonomous execution stops
+milestone: v1.1
+milestone_name: Workable Persistent Agent
+current_phase: 2
+current_phase_name: Minimal Authenticated Activation
+status: ready_to_plan
+last_updated: "2026-08-29T15:50:59.577Z"
+last_activity: 2026-08-29
+last_activity_desc: Phase 1 independently verified
 progress:
-  total_phases: 7
-  completed_phases: 7
-  total_plans: 36
-  completed_plans: 36
-stopped_at: WP-4 promoted and CI-proven; program handed to owner per stop boundary
+  total_phases: 4
+  completed_phases: 1
+  total_plans: 4
+  completed_plans: 4
+  percent: 25
+stopped_at: Phase 1 complete; Phase 2 planning not started
 ---
 
 # Project State
 
 ## Current Position
 
-Phase: 7 — WP-4 Gate Cards and Dogfood
-Plan: Complete
-Status: Complete
-Last activity: 2026-08-22 — WP-4 promoted; exact-SHA seven-job CI green; program stops after WP-4
+Phase: 2 — Minimal Authenticated Activation
+Plan: Not created
+Status: Ready to plan; no Phase 2 implementation authorized in this goal
+Last activity: 2026-08-29 — Phase 1 independently verified
 
-Progress: [██████████] 100%
+Progress: [███-------] 25%
 
 ## Performance Metrics
 
-**Velocity:**
+**Current milestone velocity:**
 
-- Total plans completed: 36
-- Average duration: 0 min
-- Total execution time: 0.0 hours
+- Plans completed: 4
+- Average duration: -
+- Execution time: 0.0 hours
 
-**By Phase:**
+**Current milestone phases:**
 
 | Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 1 | 3 | - | - |
-| 2 | 6 | - | - |
-| 3 | 13 | - | - |
-| 4 | 9 | - | - |
-| 5 | 5 | - | - |
+|---:|---:|---:|---:|
+| 1 | 4 | 4 | - |
+| 2–4 | 0 | - | - |
 
-**Recent Trend:**
-
-- Last 5 plans: -
-- Trend: Stable
-
-*Updated after each plan completion*
-**Per-Plan Metrics:**
-
-| Plan | Duration | Tasks | Files |
-|------|----------|-------|-------|
-| Phase 04 P01 | 8 | 2 tasks | 8 files |
+**Recent trend:** Phase 1 complete

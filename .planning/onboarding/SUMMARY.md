@@ -1,39 +1,29 @@
 # Onboarding Summary
 
-## Project State
+## Current State
 
-- `PROJECT.md`: present
-- `REQUIREMENTS.md`: present; 58 current requirements
-- `ROADMAP.md`: present; seven serial phases
-- `STATE.md`: present; Phase 1 ready to plan
+- Active milestone: v1.1 Workable Persistent Agent
+- Four focused phases, nine active requirements mapped exactly once, zero plans and 0% progress
+- Phase 1 waits for the owner ratification manifest and PR #8 human merge/fresh verification
+- Signed/hash-verified source status is explicit; snapshots remain untouched
 
-## Codebase Context
+## Architecture
 
-- Brownfield repository: yes
-- Codebase map: complete (`.planning/codebase/`)
-- Authoritative entry point: `../shared/reviews/research-0.2/NANO-BUILD-PLAN-V3.md`
-- Canonical interface contract: `../shared/reviews/research-0.2/specs/SPEC-WP-INTERFACES.md`
+Desktop is the product control plane. Nano verifies a trusted issuer assertion, narrows authority, provides project/principal-scoped continuity, enforces bounds, and emits evidence. Wire `principal_id` maps 1:1 to existing immutable physical `agent_id` for v1.1. Nano security enrollment is allowed only for trust-root and anti-remap enforcement; it is not a bot registry.
 
-## Execution Order
+## Cross-Repo Boundary
 
-1. WP-0.4 frozen contracts
-2. WP-0.2 memory hardening
-3. WP-0.3 PDF intake
-4. WP-1 gate and receipt foundation
-5. WP-2 gated climb
-6. WP-3 verify CLI and CI surface
-7. WP-4 Gate Cards and dogfood
+The Nano worktree cannot edit Desktop. Desktop integration through authoritative `AcpConnection` requires separate owner authorization/worktree/PR or exact handoff. Contract tests pin fixture owner, merge order, compatibility window, carrier/version/downgrade, job occurrence derivation, and exact Nano artifact SHA.
 
-WP-0.1 remains owner-host-run. Autonomous execution stops before WP-5/WP-6.
+## Active Sequence
 
-## Quality State
+1. Ownership contract and foundation
+2. Minimal authenticated activation
+3. Runtime-integrated scoped continuity
+4. Bounded Desktop trigger and immediate dogfood decision
 
-- Kimi K3 and Claude Fable cross-audit: zero unresolved High findings
-- Ferrox roadmap plan gate: PASS
-- Requirement coverage: 58/58 exactly once
-- Promotion model: serial WP worktrees, `just gate-all`, detached `--no-ff`
-  integration, push, and CI-green confirmation
+Browser and desktop providers are subsequent v1.2/v1.3 milestones with bypass-negative and Docker/Podman gates. Extraction, graph/KG, and cross-project reads remain evidence-gated.
 
-## Recommended Next Step
+## Next Step
 
-Plan and execute Phase 1 (WP-0.4) through the Ferrox phase workflow.
+Complete Phase 1 only: ratify the source/authority/identity/fixture/compatibility manifest, merge PR #8, and freshly verify its evidence.

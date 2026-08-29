@@ -1,201 +1,204 @@
 # Codebase Concerns
 
-**Analysis Date:** 2026-08-16
+**Analysis Date:** 2026-08-27
 
 ## Tech Debt
 
-**Residual per-turn retained memory (F-45):**
-- Issue: The live ACP host retains approximately 8–10 KiB per completed turn after the larger whole-journal rebuild leak was fixed. The retaining structure is not identified; the current hypotheses are per-turn tool-definition rebuilding, engine construction, or an accumulating registry.
-- Files: `wayland-nano/docs/FOLLOWUPS.md`, `wayland-nano/docs/STATUS.md`, `wayland-nano/crates/nano-cli/src/acp_mode.rs`, `wayland-nano/crates/nano-agent/src/turn.rs`
-- Impact: At the measured maximum soak cadence this is approximately 50 MiB/hour. The 1.5 GiB harness cap gives operational headroom, but long-running sessions remain O(turns) in retained memory and the owner explicitly accepted this sev-2 risk for 0.1.0/0.1.1.
-- Fix approach: Heap-profile the ACP host under the recorded soak workload, identify the retaining owner, fix it without weakening the memory oracle, and require a one-hour max-cadence run at no more than 16 MiB/hour as specified by `wayland-nano/docs/FOLLOWUPS.md`.
+**Two independent memory implementations:**
+- Issue: The shipped agent-facing memory tools still use the filesystem-backed `nano_agent::memory::MemoryStore`, while the new persistent T2 store is a separate `nano_memory::MemoryStore`. The CLI constructs the former and no runtime crate depends on `nano-memory`.
+- Files: `crates/nano-agent/src/memory.rs`, `crates/nano-cli/src/host_mode.rs`, `crates/nano-cli/src/acp_mode.rs`, `crates/nano-memory/src/lib.rs`, `Cargo.toml`
+- Impact: P-MEM-1 is a proven substrate, but interactive activations do not get project/agent-partitioned FTS5/KNN recall, mediated proposals, or T2 retention semantics.
+- Fix approach: Implement only the planned integration in P-BOT-5b: bind a configured `agent_id` and project to `nano-memory`, expose scoped recall and mediated proposals, and preserve the existing journal-first authority. Do not casually merge or rewrite the old C5 store.
 
-**Monolithic ACP orchestration:**
-- Issue: `acp_mode.rs` is about 10,154 lines and owns startup, session lifecycle, model routing, rules, MCP, hooks, checkpoints, approval, streaming, and notices. Several shipped-but-unreachable defects (hooks F-46 and checkpoints F-47) arose because feature crates exposed integration seams without production callers in this file.
-- Files: `wayland-nano/crates/nano-cli/src/acp_mode.rs`, `wayland-nano/crates/nano-agent/src/wiring.rs`, `wayland-nano/crates/nano-agent/src/turn.rs`, `wayland-nano/docs/FOLLOWUPS.md`
-- Impact: Cross-cutting features can compile and pass crate tests while remaining inert on the primary Desktop/TUI surface. Review and merge conflict cost is high, and it is easy for exec, protocol-host, and ACP behavior to drift.
-- Fix approach: Keep a mandatory production-call-site matrix for every capability and add wire-level tests through each advertised surface. Extract cohesive bootstrap/registration units only when a locked requirement touches them; preserve the existing fail-closed gates and avoid a broad rewrite.
+**Deferred engine and UX debt is centralized but sizable:**
+- Issue: The follow-up ledger records open engine/host issues including uncapped composed tool results, manual task-directory GC, missing Desktop presentation surfaces, untyped task failures, and low-severity merge-review debt.
+- Files: `docs/FOLLOWUPS.md`, `crates/nano-agent/src/turn.rs`, `crates/nano-protocol/src/acp.rs`, `crates/nano-agent/src/tasks.rs`
+- Impact: These do not invalidate the stable coding-agent engine, but new tool and persistent-agent surfaces can amplify context flooding, storage accumulation, and weak operator diagnostics.
+- Fix approach: Treat `docs/FOLLOWUPS.md` as the authoritative queue. Close entries in dedicated packages; do not fold them into persistent-agent milestones without an explicit dependency.
 
-**Open low-severity register is broad and partly reference-only:**
-- Issue: Numerous sev-3 items remain open, including typed task-spawn errors, backend attribution fidelity, cross-process blob GC proof, lease/store identity binding, dispatcher/OAuth/rules/PTY/session-browser robustness, and platform test gaps. Some P3/P4 entries are recorded only as lists by reference rather than independently closeable findings.
-- Files: `wayland-nano/docs/SEVERITY-MAP.md`, `wayland-nano/docs/FOLLOWUPS.md`, `wayland-nano/crates/nano-session/src/attachment_store.rs`, `wayland-nano/crates/nano-mcp/src/dispatcher.rs`, `wayland-nano/crates/nano-mcp/src/oauth/`, `wayland-nano/crates/nano-core/src/execrules.rs`
-- Impact: Small correctness and proof debts accumulate around security-sensitive machinery, and reference-only rows are difficult to assign, verify, and close without omission.
-- Fix approach: Split aggregate rows into one ID per independently testable behavior, attach current file/test evidence, and prioritize items that affect journal integrity, cancellation, containment, or credential handling before cosmetic fidelity.
-
-**Hook behavior is intentionally incomplete across child turns:**
-- Issue: Hooks are wired on the primary ACP surface, but C6 child task turns remain hook-free on every surface. In addition, an invalid `hooks.toml` produces warnings and zero hooks rather than aborting the host.
-- Files: `wayland-nano/docs/FOLLOWUPS.md`, `wayland-nano/crates/nano-hooks/src/lib.rs`, `wayland-nano/crates/nano-cli/src/acp_mode.rs`, `wayland-nano/crates/nano-agent/src/tasks.rs`
-- Impact: Policy or audit expectations encoded as hooks do not apply to delegated child work. A malformed hook configuration can silently remove expected enforcement for clients that do not surface host stderr prominently.
-- Fix approach: Treat hooks as advisory unless their contract is strengthened. If hooks are used for enforcement, propagate them into child-engine construction and convert invalid configured state into a typed unavailable startup/session error rather than a warning-only zero-hook fallback.
-
-**Toolchain metadata disagrees:**
-- Issue: The repository pins Rust 1.95.0, while the workspace package metadata declares `rust-version = "1.85"`.
-- Files: `wayland-nano/rust-toolchain.toml`, `wayland-nano/Cargo.toml`, `wayland-nano/AGENTS.md`
-- Impact: Downstream tooling can infer an unsupported MSRV, while contributors and CI use the newer pinned compiler. This weakens reproducibility and can make compatibility claims inaccurate.
-- Fix approach: Decide whether 1.85 is a tested MSRV or stale metadata. Either add an explicit 1.85 build gate and document it, or align `rust-version` with the pinned 1.95.0 toolchain.
+**Large orchestration modules concentrate change risk:**
+- Issue: `nano-cli`, `nano-agent`, and `nano-sandbox` contain the largest Rust surfaces, while central runtime wiring remains concentrated in files such as `crates/nano-cli/src/acp_mode.rs` and `crates/nano-agent/src/turn.rs`.
+- Files: `crates/nano-cli/src/acp_mode.rs`, `crates/nano-agent/src/turn.rs`, `crates/nano-agent/src/wiring.rs`, `crates/nano-sandbox/src/lib.rs`
+- Impact: Named-agent, recall, routine, and backend changes all cross high-churn seams where an unrelated behavioral regression is easy to introduce.
+- Fix approach: Add narrow adapters at existing construction and journal seams, keep package ownership explicit, and require focused contract tests plus `just gate-all` for every landing.
 
 ## Known Bugs
 
-**Image-bearing turns under-report cost:**
-- Symptoms: Flux usage reports do not include image-token cost on the OpenAI wire; recorded image turns can report fewer prompt tokens than text-only baselines. Attachments are re-sent on later turns, so the under-count compounds.
-- Files: `wayland-nano/docs/FOLLOWUPS.md`, `wayland-nano/crates/nano-model/src/pricing.rs`, `wayland-nano/crates/nano-agent/src/turn.rs`, `shared/fixtures/flux/vision/`
-- Trigger: Run an image-bearing Flux turn and compare returned prompt usage with the bytes sent and the text-only baseline.
-- Workaround: Treat image-bearing session cost as incomplete/unpriced; do not use the reported token total as a hard spend oracle.
+**Permission-parked ACP turn can starve control traffic:**
+- Symptoms: A turn waiting on permission has been observed to leave fork, a second prompt, and cancel unanswered for at least 15 seconds.
+- Files: `docs/FOLLOWUPS.md`, `crates/nano-cli/src/acp_mode.rs`
+- Trigger: Park an ACP turn on a permission request, then issue a control request during the wait.
+- Workaround: Avoid overlapping control requests while a permission card is unresolved; F-7 requires a scripted reproduction before changing the wait architecture.
 
-**Remote image URLs are unsupported:**
-- Symptoms: ACP intake rejects remote HTTP(S) image URLs with a typed error rather than fetching and inlining them.
-- Files: `wayland-nano/docs/FOLLOWUPS.md`, `wayland-nano/crates/nano-cli/src/acp_mode.rs`, `wayland-nano/crates/nano-egress/src/client.rs`
-- Trigger: Submit an image input whose source is an HTTP(S) URL.
-- Workaround: Provide an inline/local image through the supported bounded intake path.
+**AGENTS.md edits are applied one ACP turn late:**
+- Symptoms: A mid-session edit affects turn N+2 rather than the contractually expected next turn N+1 on the ACP path; host mode re-reads per turn.
+- Files: `docs/FOLLOWUPS.md`, `crates/nano-cli/src/acp_mode.rs`, `crates/nano-cli/src/host_mode.rs`
+- Trigger: Edit `AGENTS.md` between ACP turns and inspect the next generated prefix.
+- Workaround: Restart/resume the ACP session after changing instructions when immediate effect matters.
 
-**Multiple images per message are rejected:**
-- Symptoms: More than one image in a message is typed-refused because live Flux probing miscounted a two-image request.
-- Files: `wayland-nano/docs/FOLLOWUPS.md`, `wayland-nano/crates/nano-cli/src/acp_mode.rs`, `shared/fixtures/flux/vision/`
-- Trigger: Send a single message containing two image blocks.
-- Workaround: Use one image per message until the upstream behavior is re-probed and the count guard can be safely removed.
-
-**Flux MCP invocation is externally blocked:**
-- Symptoms: `/mcp/` initialization and `tools/list` work, but the live Flux catalog is empty, so no `tools/call` proof is possible.
-- Files: `wayland-nano/docs/compliance/SCENARIO_CATALOG.md`, `shared/fixtures/flux/mcp/`, `shared/fixtures/flux/FINDINGS.md`
-- Trigger: Query the current Flux MCP tool catalog used by the recorded compatibility proof.
-- Workaround: Use configured external MCP servers; keep the Flux MCP invocation capability unclaimed until an invocable upstream tool exists.
+**Residual host-path retained growth remains unresolved:**
+- Symptoms: Long soak measurements retain roughly 8 KB per turn after the earlier whole-journal rebuild leak was fixed; the one-hour acceptance receipt was not completed.
+- Files: `docs/FOLLOWUPS.md`, `crates/nano-cli/src/acp_mode.rs`, `crates/nano-agent/src/turn.rs`
+- Trigger: Run the scaled B1/B5 host-turn soak described under F-45 in `docs/FOLLOWUPS.md`.
+- Workaround: Bound session length or restart between long runs until F-45 has a passing long-duration receipt.
 
 ## Security Considerations
 
-**Fail-closed invariants span many integration points:**
-- Risk: Sandbox, egress, tool policy, journal integrity, rules, hooks, MCP, and checkpoints are composed across large orchestration modules. A missing call site can ship an advertised control as inert, while warning-to-empty fallback can remove expected controls.
-- Files: `wayland-nano/AGENTS.md`, `wayland-nano/ARCHITECTURE.md`, `wayland-nano/crates/nano-cli/src/acp_mode.rs`, `wayland-nano/crates/nano-agent/src/wiring.rs`, `wayland-nano/crates/nano-egress/`, `wayland-nano/crates/nano-sandbox/`
-- Current mitigation: The codebase uses deny-by-default egress, OS containment, policy-gated tools, append-only journaling, capability honesty, adversarial suites, and external filesystem/process/network oracles.
-- Recommendations: Require a negative test and a real production-surface call-site test for every security control. Never accept crate-local availability as proof of activation; preserve `SANDBOX_UNAVAILABLE` and typed refusal on uncertainty.
+**Memory adversarial gates are not yet landed:**
+- Risk: P-MEM-1 has partition and mediation unit/acceptance evidence, but the required six-card `mem-sec` pack has not independently exercised poisoned supersession, extraction laundering, removed-scope escapes, and cross-agent leakage at every retrieval checkpoint.
+- Files: `crates/nano-memory/src/store.rs`, `crates/nano-memory/src/mediation.rs`, `gates/`, `contracts/`
+- Current mitigation: `nano-memory` validates project/agent partitions, applies deterministic tier-aware resolution, requires host mediation for model writes, and filters retrieval in both candidate passes and assembled output.
+- Recommendations: Land P-MEM-SEC before persistent memory is treated as safe for named agents; preserve human review ownership for both `gates/**` and `agents/**` via `CODEOWNERS`.
 
-**Attachment-store cross-process safety is not fully proven:**
-- Risk: The GC race battery is single-process, and `WriteLease` is not bound to a specific store identity. These are currently classified sev-3 because no production cross-process failure or multi-store configuration is demonstrated.
-- Files: `wayland-nano/crates/nano-session/src/attachment_store.rs`, `wayland-nano/docs/SEVERITY-MAP.md`, `wayland-nano/docs/FOLLOWUPS.md`
-- Current mitigation: Production uses one store and the current lease discipline; attachment references are scanned from manifests and tool-result image references.
-- Recommendations: Add a true cross-process writer/GC battery and bind leases to store identity before supporting multiple stores or concurrent maintenance processes.
+**Agent identity has grammar but no configured registry:**
+- Risk: `nano-memory` validates the syntax of `agent_id`, but the planned fail-closed configured-ID check cannot exist until the named-agent registry lands. A syntactically valid, unconfigured namespace must not become writable through runtime integration.
+- Files: `crates/nano-memory/src/types.rs`, `crates/nano-memory/src/store.rs`, `CODEOWNERS`
+- Current mitigation: No runtime T2 memory surface is wired, so the incomplete registry check is not currently externally reachable through the agent.
+- Recommendations: P-BOT-5a must establish the trusted registry; P-BOT-5b must reject unknown identities at activation and write time before exposing memory tools.
 
-**Remote image fetching must not bypass egress policy:**
-- Risk: Adding convenience URL intake could create SSRF/private-range access or unbounded binary downloads if it reuses a generic HTTP client or widens the text fetcher.
-- Files: `wayland-nano/crates/nano-egress/src/client.rs`, `wayland-nano/crates/nano-cli/src/acp_mode.rs`, `wayland-nano/docs/FOLLOWUPS.md`
-- Current mitigation: Remote image URLs are rejected; the existing bounded egress fetcher denies `image/*`.
-- Recommendations: Keep rejection until a dedicated bounded image-fetch operation has an explicit host allowlist, private-range denial, content-type/size limits, redirect policy, and adversarial probes.
+**Module provenance is insufficient for agent composition:**
+- Risk: Agent files referencing modules would currently lack the planned contract version, digest-pinned source verification, install receipt, and registry-kind refusal.
+- Files: `crates/nano-plugins/src/manifest.rs`, `crates/nano-plugins/src/source.rs`, `crates/nano-plugins/src/fetch.rs`, `crates/nano-session/src/op.rs`
+- Current mitigation: Named-agent module composition is not implemented, so this gap is not yet a reachable agent-registry path.
+- Recommendations: Complete P-MOD-GAP before P-BOT-5a permits `[modules]`; fail closed on digest mismatch and unsupported registry sources.
+
+**Blob write leases are not store-bound:**
+- Risk: The open F-26 audit finding states a `WriteLease` can be consumed by the wrong attachment store when names collide.
+- Files: `docs/FOLLOWUPS.md`, `crates/nano-session/src/attachment_store.rs`
+- Current mitigation: Lease validation and namespace controls exist, but the store identity is not part of the lease invariant.
+- Recommendations: Bind leases to canonical store identity and add an adversarial cross-store test in a dedicated attachment-store hardening change.
 
 ## Performance Bottlenecks
 
-**ACP host retained-memory slope:**
-- Problem: The host retains about 8–10 KiB per turn even after incremental journal folding removed the dominant leak.
-- Files: `wayland-nano/docs/FOLLOWUPS.md`, `wayland-nano/scripts/soak/`, `wayland-nano/crates/nano-cli/src/acp_mode.rs`
-- Cause: Unknown; A/B evidence exonerates repo-map, and the remaining candidates are in turn construction and registries.
-- Improvement path: Use a heap profiler against the reproducible soak workload, retain the strengthened slope/absolute-cap oracle, and verify no throughput decay after the fix.
+**Per-turn retained growth limits very long sessions:**
+- Problem: F-45 records residual retained growth of about 8 KB per host turn and no successful 3,600-second acceptance receipt.
+- Files: `docs/FOLLOWUPS.md`, `crates/nano-cli/src/acp_mode.rs`
+- Cause: The prior whole-journal rebuild source is fixed, but the remaining owner is not proven.
+- Improvement path: Reproduce with the recorded B1/B5 isolation battery, attribute allocations before changing code, and rerun the long receipt.
 
-**Large high-churn modules:**
-- Problem: Several production files are very large: `acp_mode.rs` (~10.1k lines), sandbox ACL code (~3.1k), agent tasks/wiring/turn (~2.1–2.5k each), auto-routing (~2.3k), and MCP dispatcher (~1.8k).
-- Files: `wayland-nano/crates/nano-cli/src/acp_mode.rs`, `wayland-nano/crates/nano-sandbox/src/acl.rs`, `wayland-nano/crates/nano-agent/src/tasks.rs`, `wayland-nano/crates/nano-agent/src/wiring.rs`, `wayland-nano/crates/nano-agent/src/turn.rs`, `wayland-nano/crates/nano-cli/src/auto_routing.rs`, `wayland-nano/crates/nano-mcp/src/dispatcher.rs`
-- Cause: Successive capability waves converge in shared orchestration and platform-specific security code.
-- Improvement path: Extract only proven cohesive boundaries with characterization tests. Prefer registries/builders that make activation enumerable, while keeping approval and journal ordering explicit.
+**Tool output lacks a global context ceiling:**
+- Problem: Per-tool caps do not protect model history or ACP frames from a future or composed MCP tool returning an oversized result.
+- Files: `docs/FOLLOWUPS.md`, `crates/nano-agent/src/turn.rs`, `crates/nano-protocol/src/acp.rs`
+- Cause: `ToolOutcome.output` is cloned into history and emitted without an engine-wide bound.
+- Improvement path: Add a typed, deterministic ceiling at both the history-append and ACP emission seams, with an oversized MCP adversarial test.
+
+**Retention cleanup for task artifacts is manual:**
+- Problem: Completed task directories retain journals, workspace copies, and reports indefinitely.
+- Files: `docs/FOLLOWUPS.md`, `crates/nano-agent/src/tasks.rs`
+- Cause: Auditability was prioritized and no explicit retention command exists.
+- Improvement path: Add an explicit age/completion-aware GC command; never silently reap audit artifacts.
 
 ## Fragile Areas
 
-**Primary surface wiring:**
-- Files: `wayland-nano/crates/nano-cli/src/acp_mode.rs`, `wayland-nano/crates/nano-cli/src/exec_mode.rs`, `wayland-nano/crates/nano-cli/src/host_mode.rs`, `wayland-nano/crates/nano-agent/src/wiring.rs`
-- Why fragile: Hooks and checkpoints both shipped as implemented crates but were unreachable on the ACP surface until post-stable fixes. Every new capability must be registered, approved, journaled, advertised honestly, and resumed consistently on three surfaces.
-- Safe modification: Enumerate all production modes and add end-to-end tests that invoke the feature through each claimed mode. Keep capability flags false until those tests and live proof exist.
-- Test coverage: Wire-level batteries now cover hooks and checkpoints, but there is no general automated assertion that every advertised definition has a live production caller.
+**Journal/SQLite dual-write boundary:**
+- Files: `crates/nano-memory/src/store.rs`, `crates/nano-memory/src/mediation.rs`, `crates/nano-session/src/op.rs`, `crates/nano-session/src/replay.rs`
+- Why fragile: The journal is authority and SQLite is rebuildable; changing operation order, receipt binding, or replay neutrality can create acknowledged-but-unrecoverable memory or change old-session replay.
+- Safe modification: Append the memory op before committing the index, keep new op variants additive and replay-neutral, and verify kill-after-journal recovery by dropping and rebuilding the DB.
+- Test coverage: P-MEM-1 covers core hard-kill recovery; each new runtime write surface and new op family still needs its own mediation and replay test.
 
-**Journal-first state transitions:**
-- Files: `wayland-nano/crates/nano-session/`, `wayland-nano/crates/nano-checkpoints/src/lib.rs`, `wayland-nano/crates/nano-agent/src/cron.rs`, `wayland-nano/crates/nano-cli/src/acp_mode.rs`
-- Why fragile: Previous findings included checkpoint events appended before reachable state, cron double-fire windows, swallowed append failures, and competing writers. Ordering failures create replay claims that external state cannot satisfy.
-- Safe modification: Preserve one append authority, acquire ownership before idempotency checks, persist/sync external state before the final journal claim where required, and abort on append failure.
-- Test coverage: Existing kill-resume and adversarial tests are strong, but each new stateful feature needs crash points before and after every durable boundary plus an external oracle.
+**SQLite native extension matrix:**
+- Files: `crates/nano-memory/src/lib.rs`, `crates/nano-memory/Cargo.toml`, `.github/workflows/ci.yml`
+- Why fragile: `sqlite-vec` introduces native C compilation and explicit SQLite extension registration across seven CI targets, including Windows ARM64.
+- Safe modification: Preserve the proven dependency versions and registration pattern; exercise all target legs for schema or build changes.
+- Test coverage: P-MEM-1 is green at the recorded HEAD, but no runtime consumer currently exercises startup/registration through CLI binaries.
 
-**Unix sandbox wrapper:**
-- Files: `wayland-nano/crates/nano-sandbox/src/bin/linux_sandbox/main.rs`, `wayland-nano/crates/nano-sandbox/src/linux_landlock.rs`, `wayland-nano/crates/nano-sandbox/src/linux_bwrap.rs`, `wayland-nano/crates/nano-mcp/tests/unix_contained_spawn.rs`
-- Why fragile: It combines fork/exec, signal forwarding, process groups, bubblewrap, Landlock, seccomp, protected-create monitoring, and parent-death behavior. A recent contained stdio MCP regression showed containment can remain present while function breaks.
-- Safe modification: Run the full hosted Linux/macOS containment and stdio dispatcher batteries; never replace failure with an uncontained fallback.
-- Test coverage: Hosted platform legs exist, but architecture-specific seccomp code still contains an explicit unsupported-architecture `unimplemented!` in `wayland-nano/crates/nano-sandbox/src/bin/linux_sandbox/landlock.rs` and Windows cannot exercise the Unix runtime locally.
+**Identity/composition resume boundary:**
+- Files: `crates/nano-session/src/fork.rs`, `crates/nano-session/src/op.rs`, `crates/nano-agent/src/tasks.rs`, `crates/nano-cli/src/acp_mode.rs`
+- Why fragile: P-BOT-5a/5b must combine immutable identity, current ceilings, persona/module hashes, fork digests, and re-derived postures without restoring revoked authority.
+- Safe modification: Journal resolved composition in `SessionBegin`, require digest and identity checks on resume, and re-derive current posture rather than replaying prior grants.
+- Test coverage: Existing fork and task tests cover ephemeral sessions; named-agent mismatch, rekey, revoked-module, and `AgentBusy` scenarios are missing until P-BOT-5a/5b.
+
+**Container supervisor boundary:**
+- Files: `crates/nano-cua/src/backend.rs`, `crates/nano-cua/src/backends/`, `crates/nano-sandbox/src/`, `crates/nano-platform/src/lib.rs`
+- Why fragile: The planned browser/desktop backends combine container-runtime authority, validated names, bind mounts, image digests, viewer ports, capability intersection, and per-action evidence.
+- Safe modification: P-EXE-1 must expose only ensure/stop/reset/list by validated `agent_id`, re-inspect hardening before every use, and refuse mismatches; P-EXE-2 must extend the same seam rather than create a second architecture.
+- Test coverage: Current `nano-cua` live desktop proofs remain capability-gated in `docs/FOLLOWUPS.md`; browser/desktop container tamper, Docker/Podman parity, and frame-receipt replay do not exist yet.
 
 ## Scaling Limits
 
-**Long-lived session memory:**
-- Current capacity: The soak harness caps host memory at 1.5 GiB and the recorded workload has about 12× headroom; measured retained growth is about 50 MiB/hour at maximum cadence.
-- Limit: A sufficiently long uninterrupted high-cadence session approaches the absolute cap because retained state grows with turn count.
-- Scaling path: Remove F-45's retaining structure, keep compaction/restart as secondary bounds, and enforce slope plus absolute limits in release soaks.
+**Memory writer concurrency:**
+- Current capacity: One `memory.db` under the session ownership lock; agent activations are sequential for writes.
+- Limit: Concurrent writers for the same agent are not a v1 claim and must produce typed contention/`AgentBusy`, not queue silently.
+- Scaling path: Keep P-BOT-5b to one live activation per `agent_id`; treat concurrent multi-agent writers as a later contract change, not an optimization.
 
-**Tool and hydration bounds:**
-- Current capacity: MCP/tool outputs, schemas, hydrated names, hook output, and HTTP bodies have explicit bounds; hydration over the 64-name carry cap degrades to digest/summary form.
-- Limit: Large tool inventories intentionally lose hydrated-name carry across compaction and require rehydration; exceeding bounds fails or degrades rather than scaling indefinitely.
-- Scaling path: Preserve global byte/count budgets, use deferred tool search, and improve rehydration UX without raising bounds or placing full schemas/results into model history.
+**Local memory retention:**
+- Current capacity: Defaults in `crates/nano-memory/src/types.rs` cap each `(project, agent_id)` at 10,000 episodes, 50,000 facts, and 256 MiB across retained memory.
+- Limit: Caps are local and enforced synchronously; there is no hosted tier, cross-project global read, or concurrent shared service.
+- Scaling path: Preserve partition-local retention first. P-XPROJ is explicitly last, and hosted storage requires a separate security and durability contract.
+
+**Routine execution:**
+- Current capacity: Existing cron infrastructure schedules ephemeral work, but no per-agent routine activation or ledger exists.
+- Limit: Without P-BOT-5c caps, persistent routines could spin, retain unbounded run history, or repeatedly escalate.
+- Scaling path: Enforce per-agent routine/run-record caps, rate-limited attention requests, typed failure handling, and a global pause control in P-BOT-5c.
 
 ## Dependencies at Risk
 
-**Pinned platform/security dependencies:**
-- Risk: The workspace requires Rust 1.95.0 and pins `windows-sys` 0.52; security and FFI behavior is tested against those exact constraints. The workspace metadata currently advertises Rust 1.85.
-- Impact: Uncoordinated compiler or Windows binding changes can alter ACL, job-object, credential-manager, or process-containment behavior and invalidate certified evidence.
-- Migration plan: Change pins only as a dedicated compatibility phase with hosted platform matrices, containment adversarial tests, provenance updates, and refreshed evidence.
+**`sqlite-vec` native extension:**
+- Risk: Native builds and SQLite extension ABI/registration are platform-sensitive, especially on Windows ARM64.
+- Impact: A failure prevents `nano-memory` from compiling or opening its vector table on a supported target.
+- Migration plan: No migration is currently justified; retain the exact proven stack and let the seven-leg CI matrix gate every change.
 
-**Upstream Flux behavior:**
-- Risk: Flux routing/model catalogs, image accounting, multi-image behavior, and MCP inventory are external and partially unstable.
-- Impact: Provider payload quirks have previously caused startup availability failures and typed-error misclassification; current MCP invocation and image cost completeness remain blocked.
-- Migration plan: Keep the vendored provider catalog as endpoint authority, reject malformed entries individually where safe, retain recorded fixtures, and require live probes before changing capability flags.
+**Container runtime assumptions are not yet contracted in code:**
+- Risk: Docker and Podman differ in inspect output, security defaults, networking, and lifecycle behavior.
+- Impact: A backend may appear available while violating cap-drop, namespace, mount, or loopback-only requirements.
+- Migration plan: P-EXE-1 must normalize only the four supervisor verbs and verify derived posture on both runtimes; unsupported states return typed refusal.
 
 ## Missing Critical Features
 
-**PDF input:**
-- Problem: PDF/document blocks are not supported; all Flux bindings currently use the OpenAI-completions path while the proven PDF contract requires an Anthropic document block or safe pinned-id alternative.
-- Blocks: PDF-based analysis and multi-page document workflows.
-- Files: `wayland-nano/docs/FOLLOWUPS.md`, `wayland-nano/crates/nano-model/src/provider_router.rs`, `shared/fixtures/flux/`
+**P-MEM-SEC — adversarial memory certification:**
+- Problem: The six contract gate cards and independently owned fixtures are absent from the current gate registry.
+- Blocks: Treating runtime persistent memory as poisoning- and partition-resistant.
 
-**Complete image cost accounting:**
-- Problem: Provider usage omits image tokens and there is no client-side byte-to-token estimate.
-- Blocks: Trustworthy spend caps and cost reports for image-heavy sessions.
-- Files: `wayland-nano/docs/FOLLOWUPS.md`, `wayland-nano/crates/nano-model/src/pricing.rs`, `wayland-nano/crates/nano-cli/src/auto_routing.rs`
+**P-PROF — profiles and merge math:**
+- Problem: Closed profile TOML, narrow-only merge behavior, `Op::ProfileSet`, resume-narrows, and shipped profiles are not implemented.
+- Blocks: Safe policy composition and the P-BOT-5a ceiling chain.
+
+**P-MOD-GAP — digest-verified modules:**
+- Problem: Manifest contract versioning, digest source pins, install receipts, provenance, and typed registry refusal are missing.
+- Blocks: Allowing named-agent files to reference modules.
+
+**P-BOT-5a — named-agent composition:**
+- Problem: There is no `agents/*.agent.toml` registry, trusted agent selection, persona overlay, composition hash, named spawn, or agent-attributed usage rollup.
+- Blocks: Persistent named identities and backend selection.
+
+**P-BOT-5b — recall-driven continuity:**
+- Problem: Runtime activations do not use T2 scoped recall, mediated proposals, memory-primary resume, per-agent ledgers, identity-checked fork chains, or surgical rollback.
+- Blocks: The product claim that a named agent accumulates and safely recalls experience across activations.
+
+**P-BOT-5c — proactive routines and escalation:**
+- Problem: Cron cannot activate a named agent with bounded routine receipts, typed activation failures, attention requests, or per-agent pause semantics.
+- Blocks: Safe proactive agents.
+
+**P-EXE-1/P-EXE-2 — browser and desktop computers:**
+- Problem: No hardened per-agent container supervisor, browser flavor, desktop flavor, image/composition digest binding, or frame-receipt evidence exists.
+- Blocks: Agents safely operating isolated browser and desktop environments.
 
 ## Test Coverage Gaps
 
-**Cross-process attachment GC:**
-- What's not tested: A real second process racing attachment writes against garbage collection.
-- Files: `wayland-nano/crates/nano-session/src/attachment_store.rs`
-- Risk: A race could delete or misclassify a live blob without being caught by the single-process battery.
-- Priority: Medium
-
-**Hook enforcement on delegated tasks:**
-- What's not tested: Hook behavior on C6 child task turns, because those engines do not receive hooks.
-- Files: `wayland-nano/crates/nano-agent/src/tasks.rs`, `wayland-nano/crates/nano-hooks/src/lib.rs`, `wayland-nano/docs/FOLLOWUPS.md`
-- Risk: Delegation bypasses user expectations if hooks are treated as enforcement or comprehensive audit policy.
-- Priority: High if hooks are policy; Medium while explicitly advisory
-
-**Host-independent and architecture-edge containment:**
-- What's not tested: All Unix fork/signal/seccomp paths on the Windows development host; unsupported seccomp architectures terminate via `unimplemented!`.
-- Files: `wayland-nano/crates/nano-sandbox/src/bin/linux_sandbox/landlock.rs`, `wayland-nano/crates/nano-sandbox/src/bin/linux_sandbox/main.rs`, `wayland-nano/crates/nano-mcp/tests/unix_contained_spawn.rs`
-- Risk: Platform-only regressions appear only in hosted CI, and a newly targeted architecture can panic rather than return a typed unavailable error.
-- Priority: High before expanding supported architectures
-
-**Capability-to-production-call-site coverage:**
-- What's not tested: A generic invariant that every advertised capability and tool definition has a consumer on each claimed production surface.
-- Files: `wayland-nano/crates/nano-agent/src/wiring.rs`, `wayland-nano/crates/nano-cli/src/acp_mode.rs`, `wayland-nano/crates/nano-cli/src/exec_mode.rs`, `wayland-nano/crates/nano-cli/src/host_mode.rs`
-- Risk: Implemented crates can ship inert again, as occurred with hooks and checkpoints.
+**Runtime T2 memory integration:**
+- What's not tested: CLI startup/open, scoped recall injection, proposal mediation, visible receipts, configured-agent rejection, and kill/resume through an actual agent activation.
+- Files: `crates/nano-cli/src/acp_mode.rs`, `crates/nano-cli/src/host_mode.rs`, `crates/nano-agent/src/memory.rs`, `crates/nano-memory/src/store.rs`
+- Risk: The store can remain correct in isolation while the host wires identity, trust tier, or journaling incorrectly.
 - Priority: High
 
-## Planning and Specification Inconsistencies
+**Cross-process attachment-store safety:**
+- What's not tested: F-25 records that the claimed cross-process GC battery is single-process, and F-26 lacks a wrong-store lease rejection test.
+- Files: `docs/FOLLOWUPS.md`, `crates/nano-session/src/attachment_store.rs`
+- Risk: Concurrent cleanup or store confusion can delete or authorize the wrong blob.
+- Priority: Medium
 
-**Severity map is stale relative to follow-ups and release status:**
-- Issue: `docs/SEVERITY-MAP.md` still lists F-1, F-8 data integrity, F-17 latency, F-18, F-19, F-27 item 6, F-P3-5/6/8/11/12, and F-P5-3 as open sev-1/2 even though `docs/FOLLOWUPS.md` records fixes with commits and `docs/STATUS.md` declares the stable gate met. It also says owner signature is pending while status says owner-signed.
-- Files: `wayland-nano/docs/SEVERITY-MAP.md`, `wayland-nano/docs/FOLLOWUPS.md`, `wayland-nano/docs/STATUS.md`, `shared/reviews/stable-wave/SEVERITY-SIGNOFF-2026-08-14.md`
-- Impact: A planner can prioritize already-fixed work, misreport release risk, or distrust the stable claim. F-45 is the actual explicit accepted exception and must remain visible.
-- Fix approach: Rebuild the severity map from current HEAD, retain code/test evidence for each transition, and make one artifact authoritative for open severity.
+**Environment-sensitive Linux sandbox probe:**
+- What's not tested: F-38 records a `bwrap` probe whose CI result depends on runner environment rather than a fully controlled oracle.
+- Files: `docs/FOLLOWUPS.md`, `crates/nano-sandbox/src/`
+- Risk: CI can be flaky or misclassify platform availability.
+- Priority: Medium
 
-**Contract gap register contradicts the filesystem:**
-- Issue: The scenario catalog says the frozen artifacts in `shared/contracts/` have not been produced, and an older status section says the directory is empty. The active tree contains `capability-profile.md`, `journal-semantics.md`, `flux-endpoint-contract.md`, `event-types.md`, and `nano-error-codes.json`.
-- Files: `wayland-nano/docs/compliance/SCENARIO_CATALOG.md`, `wayland-nano/docs/STATUS.md`, `shared/contracts/capability-profile.md`, `shared/contracts/journal-semantics.md`, `shared/contracts/flux-endpoint-contract.md`, `shared/contracts/event-types.md`
-- Impact: Compliance tooling and future plans can key off obsolete SCORECARD prose instead of the frozen contracts.
-- Fix approach: Close G-CTR-1 with provenance/evidence and label old status sections historical so they cannot be read as current state.
-
-**Build-plan mirror path is stale, though current files match:**
-- Issue: `NANO-BUILD-PLAN-V3.md` warns about drift between `shared/contracts/nano-error-codes.json` and an unspecified in-repo copy. The actual in-repo mirror is `crates/nano-session/contracts/nano-error-codes.json`; both currently have the same SHA-256, so the risk is procedural rather than an active mismatch.
-- Files: `shared/reviews/research-0.2/NANO-BUILD-PLAN-V3.md`, `shared/contracts/nano-error-codes.json`, `wayland-nano/crates/nano-session/contracts/nano-error-codes.json`
-- Impact: Future error-kind edits can update the wrong assumed path or skip regeneration.
-- Fix approach: Name the exact mirror path in the plan and enforce byte equality in the existing error-table generation/check gate.
+**Persistent-agent end-to-end acceptance:**
+- What's not tested: Named composition, memory-primary repeated activations, revocation across resume, one-live-activation locking, routine spin caps, container tamper refusal, and browser/desktop evidence replay.
+- Files: `crates/nano-agent/`, `crates/nano-cli/`, `crates/nano-session/`, `crates/nano-memory/`, `crates/nano-cua/`
+- Risk: Individual packages may pass locally while identity, authority, memory, scheduling, and computer control fail at their integration boundaries.
+- Priority: High
 
 ---
 
-*Concerns audit: 2026-08-16*
+*Concerns audit: 2026-08-27*

@@ -1,0 +1,13 @@
+docs:
+  - path: .planning/sources/MEMORY-CONTRACT.md
+    type: SPEC
+    precedence: 0
+  - path: .planning/sources/PROFILES-CONTRACT.md
+    type: SPEC
+    precedence: 1
+  - path: .planning/sources/NANO-MODULE-CONTRACT.md
+    type: SPEC
+    precedence: 2
+  - path: .planning/sources/NANO-PROGRAM-PLAN.md
+    type: PRD
+    precedence: 3

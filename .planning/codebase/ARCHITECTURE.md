@@ -1,205 +1,245 @@
-<!-- refreshed: 2026-08-16 -->
+<!-- refreshed: 2026-08-27 -->
 # Architecture
 
-**Analysis Date:** 2026-08-16
+**Analysis Date:** 2026-08-27
 
 ## System Overview
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│                    Host / Product Layer                     │
-├──────────────────┬──────────────────┬───────────────────────┤
-│ CLI + ACP/NDJSON │ Terminal UI      │ Packaging / proofs    │
-│ `crates/nano-cli`│ `crates/nano-tui`│ `packaging/`, `scripts/`│
-└────────┬─────────┴────────┬─────────┴──────────┬────────────┘
-         │                  │                     │
-         ▼                  ▼                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│       Agent orchestration and protocol adaptation           │
-│ `crates/nano-agent`, `crates/nano-protocol`                 │
-├──────────────────┬──────────────────┬───────────────────────┤
-│ model + egress   │ tools + sandbox  │ session + extensions  │
-│ `nano-model`     │ `nano-tools`     │ `nano-session`        │
-│ `nano-egress`    │ `nano-sandbox`   │ MCP/skills/plugins    │
-└────────┬─────────┴────────┬─────────┴──────────┬────────────┘
-         │                  │                     │
-         ▼                  ▼                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│ OS / network / durable-state boundaries and shared contracts│
-│ `crates/nano-platform`, `../shared/contracts/`, `$NANO_HOME`│
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│ Entry adapters                                                           │
+│ `crates/nano-cli`   `crates/nano-tui`   `crates/nano-protocol`           │
+└──────────────────────────────────┬───────────────────────────────────────┘
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ Agent orchestration                                                      │
+│ `crates/nano-agent` — bootstrap, turn loop, tools, approval, goals/tasks │
+└───────────────┬──────────────────┬─────────────────────┬─────────────────┘
+                ▼                  ▼                     ▼
+┌──────────────────────┐ ┌────────────────────┐ ┌──────────────────────────┐
+│ Model / network      │ │ Execution boundary │ │ Durable state            │
+│ `nano-model`         │ │ `nano-tools`       │ │ `nano-session`           │
+│ `nano-egress`        │ │ `nano-sandbox`     │ │ `nano-checkpoints`       │
+└──────────────────────┘ │ `nano-cua`         │ │ `nano-memory`            │
+                         └────────────────────┘ └──────────────────────────┘
+        ┌───────────────────────────┴──────────────────────────────────┐
+        ▼                                                              ▼
+┌──────────────────────────────┐                       ┌────────────────────┐
+│ Extensions                   │                       │ Evidence/contracts │
+│ MCP, skills, plugins, hooks │                       │ verify/gates       │
+└──────────────────────────────┘                       └────────────────────┘
 ```
 
 ## Component Responsibilities
 
 | Component | Responsibility | File |
 |-----------|----------------|------|
-| Product entry points | Dispatch doctor, protocol, ACP, exec, session, goal, rules, and plugin commands | `wayland-nano/crates/nano-cli/src/main.rs` |
-| Host composition | Assemble production model, tools, MCP, skills, memory, checkpoints, and journal services | `wayland-nano/crates/nano-cli/src/host_mode.rs` |
-| ACP adapter | Translate Desktop ACP lifecycle and streamed turns into the same runtime services | `wayland-nano/crates/nano-cli/src/acp_mode.rs` |
-| Agent runtime | Own the turn state machine, budgets, loop protection, bounded tasks, steering, goals, and tool routing | `wayland-nano/crates/nano-agent/src/turn.rs` |
-| Model boundary | Expose provider-neutral requests/events and provider clients behind drivers | `wayland-nano/crates/nano-model/src/types.rs` |
-| Policy boundary | Define permission profiles, policy evaluation, sensitive paths, and execution rules | `wayland-nano/crates/nano-core/src/permissions.rs` |
-| Tool boundary | Enforce filesystem/search/shell/web operations; shell execution delegates to containment | `wayland-nano/crates/nano-tools/src/lib.rs` |
-| OS containment | Implement Windows, macOS, and Linux process isolation and cleanup | `wayland-nano/crates/nano-sandbox/src/lib.rs` |
-| Network containment | Apply deny-by-default egress policies and redaction-safe errors | `wayland-nano/crates/nano-egress/src/lib.rs` |
-| Durable state | Append, coordinate, replay, recover, fork, and compact session journals | `wayland-nano/crates/nano-session/src/lib.rs` |
-| Wire protocol | Encode/decode NDJSON, publish honest capabilities, and run ready-first host framing | `wayland-nano/crates/nano-protocol/src/host.rs` |
-| Extension boundaries | Integrate MCP servers, skills, plugins, hooks, checkpoints, and CUA without expanding core types | `wayland-nano/crates/nano-mcp/src/lib.rs` |
-| External contract authority | Define cross-track capabilities, errors, journal semantics, and scorecard evidence | `shared/contracts/`, `shared/SCORECARD.md` |
+| CLI adapters | Dispatch doctor, ACP, protocol-host, exec, session, goal, plugin, and verify commands | `crates/nano-cli/src/main.rs` |
+| Exec host | Assemble one-shot sessions, ownership, routing, tools, checkpoints, goals, and output | `crates/nano-cli/src/exec_run.rs` |
+| ACP host | Maintain interactive ACP sessions, approvals, model selection, and event transport | `crates/nano-cli/src/acp_mode.rs` |
+| Agent engine | Run model/tool turns with protection, cancellation, approvals, streaming, hooks, and compaction | `crates/nano-agent/src/turn.rs` |
+| Bootstrap | Provide shared session bootstrap and two-layer single-writer exclusion | `crates/nano-agent/src/bootstrap.rs` |
+| Tool wiring | Advertise and dispatch filesystem, shell, web, MCP, checkpoint, task, and CUA operations | `crates/nano-agent/src/wiring.rs` |
+| Durable journal | Define append-only typed operations and replay state | `crates/nano-session/src/op.rs`, `crates/nano-session/src/replay.rs` |
+| Core memory | Persist project/agent-partitioned facts, decisions, episodes, and procedures | `crates/nano-memory/src/store.rs` |
+| Memory schema | Own bi-temporal tables, retention, empty KG schema, FTS5, and sqlite-vec | `crates/nano-memory/src/schema.rs` |
+| Model boundary | Normalize provider requests, responses, catalogs, retry, and usage | `crates/nano-model/src/lib.rs` |
+| Egress boundary | Enforce grants, deny-by-default policy, redaction, and HTTP transport | `crates/nano-egress/src/client.rs` |
+| OS containment | Create and supervise platform-native sandboxed processes | `crates/nano-sandbox/src/lib.rs` |
+| Tool policy | Apply filesystem, shell, search, image, PTY, and web policy | `crates/nano-tools/src/lib.rs` |
+| Extensions | Implement MCP, skills, plugins, hooks, checkpoints, and CUA behind boundaries | `crates/nano-mcp/src/lib.rs`, `crates/nano-skills/src/lib.rs` |
+| Gate engine | Execute registered gates, classify evidence, and mint receipts | `crates/nano-verify/src/lib.rs` |
 
 ## Pattern Overview
 
-**Overall:** Layered hexagonal runtime with trait seams and composition roots.
+**Overall:** Layered ports-and-adapters workspace with an append-only event journal and fail-closed security boundaries.
 
 **Key Characteristics:**
-- Keep hosts thin: assemble concrete adapters in `wayland-nano/crates/nano-cli/src/host_mode.rs` and `wayland-nano/crates/nano-cli/src/acp_mode.rs`, then drive `nano-agent` abstractions.
-- Keep universal agent and model types provider-neutral; place provider-specific wire behavior in `wayland-nano/crates/nano-model/`.
-- Enforce security at two independent boundaries: HTTP through `wayland-nano/crates/nano-egress/`, processes through `wayland-nano/crates/nano-sandbox/`.
-- Treat `wayland-nano/crates/nano-session/` as the append-only authority for session mutations and use one `JournalCoordinator` per journal.
-- Add optional capabilities through wrappers and registries around `ToolExecutor`, not branches embedded in the turn engine.
+- Keep shared vocabulary in `crates/nano-core`; keep provider behavior in `crates/nano-model` and OS behavior in `crates/nano-platform`/`crates/nano-sandbox`.
+- Build host-specific dependency graphs in `crates/nano-cli`; keep `crates/nano-agent` independent of CLI transports.
+- Route session mutation through typed `nano_session::Op` envelopes and reconstruct state with `crates/nano-session/src/replay.rs`.
+- Route outbound HTTP through `crates/nano-egress`; never create an independent HTTP path in feature crates.
+- Treat `nano-mcp`, `nano-skills`, `nano-plugins`, and `nano-hooks` as bounded inputs to host composition.
 
 ## Layers
 
-**Host and Presentation:**
-- Purpose: Parse product commands and adapt stdio, ACP, headless exec, and terminal interactions.
-- Location: `wayland-nano/crates/nano-cli/`, `wayland-nano/crates/nano-tui/`
-- Contains: Binary entry points, host loops, argument parsing, session-facing UX, composition roots.
-- Depends on: Agent, protocol, model, tools, policy, journal, and extension crates.
-- Used by: Wayland Desktop, terminals, proof scripts, and npm-packaged binaries.
+**Adapters and Presentation:**
+- Purpose: Convert terminal, ACP, NDJSON, and TUI input into engine calls and render events.
+- Location: `crates/nano-cli`, `crates/nano-tui`, `crates/nano-protocol`.
+- Contains: Binaries, parsers, host loops, protocol types, event sinks.
+- Depends on: Agent orchestration and service crates.
+- Used by: Users, editors, desktop hosts, CI harnesses.
 
-**Orchestration:**
-- Purpose: Execute a bounded agent turn without owning OS or provider details.
-- Location: `wayland-nano/crates/nano-agent/`
-- Contains: `ModelDriver`/`ToolExecutor` seams, turn state, loop protection, tasks, goals, memory, review, steering.
-- Depends on: `nano-core`, `nano-model`, `nano-tools`, `nano-session`, and extension crates.
-- Used by: `nano-cli`, `nano-protocol`, and `nano-plugins`.
+**Agent Orchestration:**
+- Purpose: Coordinate bootstrap, model turns, tools, approvals, compaction, goals, tasks, cron, and steering.
+- Location: `crates/nano-agent`.
+- Contains: `TurnEngine`, `SessionGuardRegistry`, task/MCP registries, tool executors.
+- Depends on: Core, model, tools, session, extensions, egress, CUA.
+- Used by: CLI and protocol adapters.
 
-**Adapters and Enforcement:**
-- Purpose: Convert abstract model/tool operations into provider, filesystem, process, network, and extension actions.
-- Location: `wayland-nano/crates/nano-model/`, `wayland-nano/crates/nano-tools/`, `wayland-nano/crates/nano-egress/`, `wayland-nano/crates/nano-sandbox/`, `wayland-nano/crates/nano-mcp/`
-- Contains: Flux/provider clients, SSE codecs, tool implementations, sandbox backends, egress policy, MCP transports.
-- Depends on: Core policy and external libraries; `nano-tools` delegates shell containment to `nano-sandbox`.
-- Used by: Host composition and agent wiring.
+**Execution and Security:**
+- Purpose: Validate and perform effects under policy, containment, and egress controls.
+- Location: `crates/nano-tools`, `crates/nano-sandbox`, `crates/nano-egress`, `crates/nano-cua`, `crates/nano-platform`.
+- Contains: Executors, platform isolation, HTTP chokepoint, computer-use backends.
+- Depends on: `nano-core` vocabulary and platform libraries.
+- Used by: Agent wiring, model clients, MCP, hooks, repomap.
 
-**Persistence and Contracts:**
-- Purpose: Preserve recoverable history and stabilize cross-process/cross-track interfaces.
-- Location: `wayland-nano/crates/nano-session/`, `wayland-nano/crates/nano-protocol/`, `shared/contracts/`
-- Contains: Op journal, coordinator, replay, redaction, NDJSON/ACP messages, error and capability contracts.
-- Depends on: Provider-neutral model types where journal payloads require them.
-- Used by: Every host and verification harness.
+**Durability:**
+- Purpose: Preserve replayable sessions, workspace checkpoints, and partitioned long-term memory.
+- Location: `crates/nano-session`, `crates/nano-checkpoints`, `crates/nano-memory`.
+- Contains: JSONL operations/reducer, attachments, git checkpoints, SQLite memory.
+- Depends on: Filesystem locking; memory depends on session journal primitives.
+- Used by: Agent bootstrap, CLI hosts, plugins, tools, verification.
+
+**Evidence and Contracts:**
+- Purpose: Make claims testable through executable gates and frozen vocabulary.
+- Location: `crates/nano-verify`, `gates`, `contracts`, `scripts`.
+- Contains: Gate registry/cards, receipts, soak/proof harnesses, JSON/Markdown contracts.
+- Depends on: Candidate artifacts and external oracles.
+- Used by: CI and release evidence collection.
 
 ## Data Flow
 
-### Primary NDJSON Request Path
+### Primary Exec Request Path
 
-1. `main` selects `protocol-host` and creates a current-thread Tokio runtime (`wayland-nano/crates/nano-cli/src/main.rs:31`).
-2. `host_mode::run` constructs permission policy, tools, egress/model driver, registries, wrappers, and the journal coordinator (`wayland-nano/crates/nano-cli/src/host_mode.rs:30`).
-3. `run_host_loop` emits `ready`, decodes commands, frames each message, and invokes the turn closure (`wayland-nano/crates/nano-protocol/src/host.rs:55`).
-4. `TurnEngine` calls the model through `ModelDriver`, routes tool calls through layered `ToolExecutor` wrappers, and applies loop/budget state (`wayland-nano/crates/nano-agent/src/turn.rs:304`).
-5. Model HTTP crosses `EgressClient`; shell/process work crosses `ShellTool` and `nano-sandbox`; mutations append through `JournalCoordinator` (`wayland-nano/crates/nano-agent/src/wiring.rs`).
-6. Protocol events are encoded and flushed as NDJSON through stream end (`wayland-nano/crates/nano-protocol/src/host.rs:105`).
+1. `main` parses `wayland-nano exec` and creates a current-thread Tokio runtime (`crates/nano-cli/src/main.rs:14`).
+2. `exec_run::run` resolves credentials, routing, MCP specs, and factories; `run_exec_with` resolves the seed (`crates/nano-cli/src/exec_run.rs:38`).
+3. `bootstrap_session` creates or resumes JSONL; `SessionGuardRegistry` holds lifetime OS ownership plus an in-process mutex (`crates/nano-agent/src/bootstrap.rs:54`).
+4. `JournalCoordinator` becomes the append path; replayed envelopes become model context (`crates/nano-cli/src/exec_run.rs:145`).
+5. `run_exec_turn` assembles `TurnEngine`, sends requests through `ModelDriver`, dispatches approved `ToolExecutor` calls, and streams events (`crates/nano-cli/src/exec_mode.rs:537`).
+6. The host journals outcomes and emits JSONL plus the pinned process exit code (`crates/nano-cli/src/exec_run.rs`).
 
-### ACP / Desktop Flow
+### Session Replay Path
 
-1. `main` selects `acp-host` and calls the ACP adapter (`wayland-nano/crates/nano-cli/src/main.rs:17`).
-2. The adapter handles initialize, session creation/resume, prompts, cancellation, permission requests, and session journals (`wayland-nano/crates/nano-cli/src/acp_mode.rs`).
-3. Prompt handling invokes streaming turn APIs and translates runtime events into ACP updates (`wayland-nano/crates/nano-cli/src/acp_mode.rs:4017`).
-4. Session operations remain journal-first through `wayland-nano/crates/nano-session/src/coordinator.rs`.
+1. `JournalWriter` appends a versioned `OpEnvelope` as one JSON line (`crates/nano-session/src/writer.rs`).
+2. `read_journal` tolerates only a torn final line and rejects malformed middle records (`crates/nano-session/src/reader.rs`).
+3. The reducer folds known operations; unknown operation names remain compatible (`crates/nano-session/src/replay.rs`).
+4. Bootstrap normalizes interrupted running phases to safe resumable states (`crates/nano-agent/src/bootstrap.rs`).
+
+### Core Memory Write and Recovery Path
+
+1. A host opens `MemoryStore` with a DB, journal path, and `MemoryPolicy` (`crates/nano-memory/src/store.rs:18`).
+2. Store methods validate policy, `(project, agent_id)`, identity, trust, and contradiction outcome (`crates/nano-memory/src/store.rs:63`).
+3. The store sync-appends `Op::MemoryWriteFact|Decision|Episode|Procedure` before SQLite mutation; mediated writes append `MemoryWriteReceipt` (`crates/nano-memory/src/store.rs:108`).
+4. SQLite updates canonical tables plus FTS5 and sqlite-vec; retention keys include project and agent (`crates/nano-memory/src/schema.rs`).
+5. `rebuild_from_journals` replays MemoryWrite operations; the session reducer treats them as replay-neutral (`crates/nano-memory/src/store.rs:651`, `crates/nano-session/src/replay.rs:639`).
+
+### Memory Retrieval Path
+
+1. `RetrieveQuery` carries project and `AgentScope`; no global read scope exists (`crates/nano-memory/src/types.rs`).
+2. FTS5 BM25 and per-agent sqlite-vec KNN produce bounded candidates (`crates/nano-memory/src/store.rs:529`).
+3. Reciprocal-rank fusion combines passes and applies source-tier weights (`crates/nano-memory/src/store.rs`).
 
 **State Management:**
-- Use append-only JSONL session journals under `NANO_HOME`, coordinated by `JournalCoordinator`; reconstruct state through replay rather than mutable database records (`wayland-nano/crates/nano-session/src/replay.rs`).
-- Keep per-turn mutable state in `TurnState` and bounded wrapper-owned cells; shared registries use `Arc<Mutex<_>>` at host composition sites (`wayland-nano/crates/nano-cli/src/host_mode.rs`).
+- Session authority is append-only JSONL under `NANO_HOME/sessions`; in-memory state is a replay projection.
+- Attachments are content-addressed blobs owned by `crates/nano-session/src/attachment_store.rs`.
+- Core memory is a rebuildable SQLite projection whose mutation record is the `MemoryWrite*` journal family.
+- `crates/nano-agent/src/memory.rs` is a separate session-local JSON memory surface; `nano-agent` and `nano-cli` manifests contain no `nano-memory` dependency.
 
 ## Key Abstractions
 
-**ModelDriver:**
-- Purpose: Isolate the turn engine from provider transport and wire variants.
-- Examples: `wayland-nano/crates/nano-agent/src/turn.rs`, `wayland-nano/crates/nano-agent/src/wiring.rs`
-- Pattern: Async port with concrete Flux/provider adapters.
+**`TurnEngine`:**
+- Purpose: Run one bounded model/tool loop with approvals, cancellation, hooks, streaming, and robustness checks.
+- Examples: `crates/nano-agent/src/turn.rs`, `crates/nano-agent/src/tasks.rs`.
+- Pattern: Dependency injection through `ModelDriver`, `ToolExecutor`, and `ApprovalGate` traits.
 
-**ToolExecutor:**
-- Purpose: Provide one routing seam for built-in, MCP, session, checkpoint, memory, and policy-aware tools.
-- Examples: `wayland-nano/crates/nano-agent/src/turn.rs`, `wayland-nano/crates/nano-agent/src/mcp_session_tools.rs`
-- Pattern: Decorator chain assembled by each host.
+**`Op` / `OpEnvelope`:**
+- Purpose: Define durable additive session transitions and receipts.
+- Examples: `crates/nano-session/src/op.rs`, `contracts/event-types.json`.
+- Pattern: Tagged serde enum inside a versioned envelope, reduced into `SessionState`.
 
-**PermissionProfile / PolicyEngine:**
-- Purpose: Convert product permission modes into enforceable filesystem and execution decisions.
-- Examples: `wayland-nano/crates/nano-core/src/permissions.rs`, `wayland-nano/crates/nano-core/src/policy_engine.rs`
-- Pattern: Immutable policy value passed into tool adapters.
+**`JournalCoordinator`:**
+- Purpose: Provide the single append/compaction coordination point.
+- Examples: `crates/nano-session/src/coordinator.rs`, `crates/nano-cli/src/exec_run.rs`.
+- Pattern: Shared coordinator behind `Arc`, paired with `SessionGuard` ownership.
 
-**JournalCoordinator:**
-- Purpose: Serialize journal-first state transitions and preserve append-only semantics.
-- Examples: `wayland-nano/crates/nano-session/src/coordinator.rs`, `shared/contracts/journal-semantics.md`
-- Pattern: Session-scoped shared coordinator.
+**`EgressClient`:**
+- Purpose: Centralize network authorization, redirects, transport, and redaction.
+- Examples: `crates/nano-egress/src/client.rs`, `crates/nano-model/src/flux_common.rs`.
+- Pattern: Explicit endpoint grants and deny-by-default policy.
+
+**`MemoryStore`:**
+- Purpose: Mediate journal-first writes and scoped hybrid retrieval.
+- Examples: `crates/nano-memory/src/store.rs`, `crates/nano-memory/src/mediation.rs`.
+- Pattern: Single-writer SQLite projection with deterministic local embeddings and journal rebuild.
 
 ## Entry Points
 
 **Wayland Nano CLI:**
-- Location: `wayland-nano/crates/nano-cli/src/main.rs`
-- Triggers: `wayland-nano` command invocation.
-- Responsibilities: Command dispatch, runtime creation, exit-code mapping.
+- Location: `crates/nano-cli/src/main.rs`.
+- Triggers: `doctor`, `protocol-host`, `acp-host`, `auth`, `exec`, `session`, `goal`, `plugin`, `verify`.
+- Responsibilities: Parse arguments, establish runtime/home/workspace, delegate to library orchestration.
 
-**Terminal UI:**
-- Location: `wayland-nano/crates/nano-tui/src/main.rs`
-- Triggers: TUI binary invocation.
-- Responsibilities: ACP client presentation, input, transcript, modal, and terminal lifecycle.
+**ACP Profile Helper:**
+- Location: `crates/nano-cli/src/bin/acp_profile/main.rs`.
+- Triggers: ACP profile/integration harness execution.
+- Responsibilities: Spawn and exercise ACP child sessions.
 
-**Protocol Host:**
-- Location: `wayland-nano/crates/nano-cli/src/host_mode.rs`
-- Triggers: `wayland-nano protocol-host`.
-- Responsibilities: Production dependency construction and NDJSON host execution.
+**TUI:**
+- Location: `crates/nano-tui/src/main.rs`.
+- Triggers: Interactive terminal client invocation.
+- Responsibilities: Connect to host, compose input, render transcript/modal/status state.
 
-**ACP Host:**
-- Location: `wayland-nano/crates/nano-cli/src/acp_mode.rs`
-- Triggers: `wayland-nano acp-host` from Desktop custom-agent registration.
-- Responsibilities: ACP lifecycle and streamed runtime translation.
+**MCP Fake Server:**
+- Location: `crates/nano-mcp/src/bin/wayland-nano-mcp-fake-server/main.rs`.
+- Triggers: MCP tests and proof harnesses.
+- Responsibilities: Provide deterministic protocol fixtures.
 
 ## Architectural Constraints
 
-- **Threading:** Product hosts use a current-thread Tokio runtime; explicitly shared registries and session posture use `Arc<Mutex<_>>` (`wayland-nano/crates/nano-cli/src/main.rs`).
-- **Global state:** Avoid application-wide mutable state; test/soak seams may use guarded `OnceLock` state in `wayland-nano/crates/nano-agent/src/wiring.rs`.
-- **Circular imports:** Cargo crate dependencies remain directed toward core/adapters; do not introduce reverse dependencies from enforcement crates into `nano-cli`.
-- **OS isolation:** Keep target-specific containment in `wayland-nano/crates/nano-sandbox/` and OS abstraction in `wayland-nano/crates/nano-platform/`; the agent loop must not inspect OS details.
-- **Egress:** All outbound HTTP must use `wayland-nano/crates/nano-egress/`; workspace linting treats bypasses as architecture violations.
-- **Failure posture:** Missing containment or corrupted security/state stores must produce typed failure, never degraded execution.
-- **Scope authority:** `wayland-nano/` and `shared/` are active; `nano/` and `resources/upstreams/` are read-only donor context; `wayland-nano/.tmp-wt-*` is never architectural truth (`wayland-nano/AGENTS.md`).
+- **Threading:** CLI hosts use a current-thread Tokio runtime; session mutation is single-writer per journal across processes.
+- **Global state:** Session guard registry lives in `crates/nano-agent/src/bootstrap.rs`; credential redaction registry lives in `crates/nano-egress/src/redact.rs`.
+- **Network:** All outbound HTTP must pass through `nano-egress`.
+- **OS boundary:** Keep OS-specific logic out of the agent loop; use `nano-platform`, `nano-sandbox`, or a CUA backend.
+- **Journal:** Add operations without changing old wire tags; unknown operations remain skippable and replay-neutral where appropriate.
+- **Subagents:** Keep helpers temporary and bounded to fan-out four and depth one in `crates/nano-agent/src/tasks.rs`.
+- **Memory scope:** Core memory permits project reads with explicit agent scopes only; do not add a cross-project/global path.
+- **Vendoring:** Do not modify `vendor/`; adapted donor code requires a file-specific `UPSTREAM.md` entry.
 
 ## Anti-Patterns
 
-### Host Logic in the Agent Loop
+### Adapter-Owned Orchestration
 
-**What happens:** Protocol, ACP, provider, or OS-specific branches are added to turn-state code.
-**Why it's wrong:** It couples orchestration to a host or platform and violates the constitution boundary.
-**Do this instead:** Add an adapter in `wayland-nano/crates/nano-cli/`, `wayland-nano/crates/nano-protocol/`, or `wayland-nano/crates/nano-platform/` and satisfy the seams in `wayland-nano/crates/nano-agent/src/turn.rs`.
+**What happens:** Session lifecycle, replay, or exclusion logic is implemented in a CLI/ACP handler.
+**Why it's wrong:** Entry points diverge from the shared bootstrap path.
+**Do this instead:** Add lifecycle behavior to `crates/nano-agent/src/bootstrap.rs` or another engine module and keep `crates/nano-cli/src/main.rs` thin.
 
-### Direct Network or Process Execution
+### Side-Channel Effects
 
-**What happens:** A feature constructs an HTTP client or spawns a process outside the enforcement crates.
-**Why it's wrong:** It bypasses deny-by-default egress, redaction, containment, and tree cleanup.
-**Do this instead:** Route HTTP through `wayland-nano/crates/nano-egress/src/client.rs` and shell/process work through `wayland-nano/crates/nano-tools/src/shell.rs` plus `wayland-nano/crates/nano-sandbox/`.
+**What happens:** A feature creates its own HTTP client, bypasses tool policy, or mutates state before journaling.
+**Why it's wrong:** It defeats egress, containment, replay, and crash durability.
+**Do this instead:** Use `crates/nano-egress/src/client.rs`, `crates/nano-tools`, and journal via `crates/nano-session/src/coordinator.rs` before projection mutation.
 
-### Uncoordinated Session Writes
+### Treating Core Memory as Runtime-Wired
 
-**What happens:** Multiple feature wrappers append or rewrite session state independently.
-**Why it's wrong:** Ordering, recovery, and journal-first invariants become unverifiable.
-**Do this instead:** Share the session's `JournalCoordinator` from `wayland-nano/crates/nano-session/src/coordinator.rs` and represent changes as operations in `wayland-nano/crates/nano-session/src/op.rs`.
+**What happens:** Runtime behavior assumes `crates/nano-memory` already participates in agent/CLI composition.
+**Why it's wrong:** `crates/nano-agent/Cargo.toml` and `crates/nano-cli/Cargo.toml` contain no `nano-memory`; `crates/nano-agent/src/memory.rs` is distinct.
+**Do this instead:** Plan explicit identity, policy, recall-context, mediation, and receipt seams while preserving journal-first storage.
+
+### Graph Logic in Core Memory
+
+**What happens:** Retrieval populates or traverses `kg_nodes`/`kg_edges`.
+**Why it's wrong:** `crates/nano-memory/src/schema.rs` is storage-only and retrieval is FTS/KNN/RRF.
+**Do this instead:** Keep graph algorithms in a separately contracted package behind an explicit boundary.
 
 ## Error Handling
 
-**Strategy:** Typed, fail-closed errors at boundaries; host adapters map errors to protocol frames or stable exit codes while continuing only for explicitly recoverable input errors.
+**Strategy:** Typed errors at libraries, fail-closed security decisions, sanitized messages at transports, and stable process/protocol codes.
 
 **Patterns:**
-- Malformed NDJSON becomes a typed protocol error frame and the host continues (`wayland-nano/crates/nano-protocol/src/host.rs`).
-- Sandbox unavailability, corrupt plugin stores, and security-boundary failures refuse the operation or host startup (`wayland-nano/crates/nano-cli/src/host_mode.rs`).
-- Egress errors redact sensitive material before display (`wayland-nano/crates/nano-egress/src/redact.rs`).
+- Define domain errors with `thiserror`, such as `MemoryError` in `crates/nano-memory/src/types.rs` and `GuardError` in `crates/nano-agent/src/bootstrap.rs`.
+- Use typed sandbox/busy/usage outcomes instead of fallback behavior.
+- Sanitize provider text with `crates/nano-egress/src/redact.rs` before display or journaling.
+- Journal interrupted lifecycle state and reconcile it during bootstrap.
 
 ## Cross-Cutting Concerns
 
-**Logging:** Host diagnostics use stderr; structured runtime state and proof evidence live in journals and explicit evidence artifacts (`wayland-nano/crates/nano-cli/src/host_mode.rs`, `shared/reviews/`).
-**Validation:** Deserialize into typed protocol/config values, validate at adapter boundaries, and enforce paths/permissions again inside tools (`wayland-nano/crates/nano-protocol/src/codec.rs`, `wayland-nano/crates/nano-core/src/policy_engine.rs`).
-**Authentication:** Provider/MCP credential resolution stays in CLI adapter modules and is injected into clients; keys do not enter universal types or frames (`wayland-nano/crates/nano-cli/src/flux_key.rs`, `wayland-nano/crates/nano-cli/src/provider_key.rs`).
+**Logging:** CLI adapters write bounded diagnostics to stderr; protocol/exec paths emit structured events; durable facts belong in journals and receipts.
+
+**Validation:** Validate CLI input, protocol frames, tool schemas, catalogs, endpoint grants, journal envelopes, memory partitions, and gate inventories at boundaries.
+
+**Authentication:** Provider keys resolve in `crates/nano-cli/src/flux_key.rs` and `crates/nano-cli/src/provider_key.rs`; MCP OAuth lives in `crates/nano-mcp/src/oauth`.
 
 ---
 
-*Architecture analysis: 2026-08-16*
+*Architecture analysis: 2026-08-27*
