@@ -4,6 +4,7 @@
 //! (nano-model). Loop protection: repeated-action breaker, no-progress
 //! detection, failure streaks, budgets.
 
+pub mod activation_effects;
 pub mod bootstrap;
 pub mod checkpoint_tools;
 pub mod clock;
