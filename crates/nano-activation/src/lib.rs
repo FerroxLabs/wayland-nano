@@ -1,13 +1,17 @@
 //! Byte-preserving contract boundary for Wayland Nano activation messages.
 //!
-//! This crate intentionally stops before authority lookup or runtime admission. It
-//! validates raw transport ambiguity, the frozen carrier, JCS bytes and Ed25519 proof.
+//! It validates raw transport ambiguity, the frozen carrier, JCS and Ed25519 proof,
+//! then narrows admitted authority through one durable, fail-closed gate.
 
 pub mod admin;
+pub mod admission;
 pub mod authority;
+pub mod control;
 pub mod journal;
 pub mod key_provider;
+pub mod policy;
 mod raw;
+pub mod receipt;
 pub mod store;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -80,7 +84,7 @@ pub struct ActivationError {
 }
 
 impl ActivationError {
-    fn new(reason: RejectReason) -> Self {
+    pub(crate) fn new(reason: RejectReason) -> Self {
         Self { reason }
     }
 
@@ -115,44 +119,48 @@ impl AdmittedActivation {
     pub fn canonical_payload_sha256(&self) -> &str {
         &self.canonical_payload_sha256
     }
+
+    pub(crate) fn carrier(&self) -> &ActivationCarrier {
+        &self.carrier
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ActivationCarrier {
-    schema: String,
-    issuer_id: String,
-    key_id: String,
-    alg: String,
-    issued_at: String,
-    not_before: String,
-    not_after: String,
-    nonce: String,
-    product_subject_id: String,
-    principal_id: String,
-    project_id: String,
-    activation_id: String,
-    idempotency_key: String,
-    session_id: Option<String>,
-    continuity: Continuity,
-    capabilities: Vec<Capability>,
-    budgets: Budgets,
-    deadline: String,
-    controls: Vec<Control>,
-    signature: String,
+pub(crate) struct ActivationCarrier {
+    pub(crate) schema: String,
+    pub(crate) issuer_id: String,
+    pub(crate) key_id: String,
+    pub(crate) alg: String,
+    pub(crate) issued_at: String,
+    pub(crate) not_before: String,
+    pub(crate) not_after: String,
+    pub(crate) nonce: String,
+    pub(crate) product_subject_id: String,
+    pub(crate) principal_id: String,
+    pub(crate) project_id: String,
+    pub(crate) activation_id: String,
+    pub(crate) idempotency_key: String,
+    pub(crate) session_id: Option<String>,
+    pub(crate) continuity: Continuity,
+    pub(crate) capabilities: Vec<Capability>,
+    pub(crate) budgets: Budgets,
+    pub(crate) deadline: String,
+    pub(crate) controls: Vec<Control>,
+    pub(crate) signature: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Continuity {
-    strategy: ContinuityStrategy,
-    fallback: Fallback,
-    resume_fingerprint: Option<String>,
+pub(crate) struct Continuity {
+    pub(crate) strategy: ContinuityStrategy,
+    pub(crate) fallback: Fallback,
+    pub(crate) resume_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum ContinuityStrategy {
+pub(crate) enum ContinuityStrategy {
     Fresh,
     SessionResume,
     MemoryRecall,
@@ -160,14 +168,14 @@ enum ContinuityStrategy {
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum Fallback {
+pub(crate) enum Fallback {
     None,
     Fresh,
     MemoryRecall,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
-enum Capability {
+pub(crate) enum Capability {
     #[serde(rename = "filesystem.read")]
     FilesystemRead,
     #[serde(rename = "filesystem.write")]
@@ -188,25 +196,26 @@ enum Capability {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum Control {
+pub(crate) enum Control {
     Cancel,
     Pause,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Budgets {
-    max_turns: u64,
-    max_tool_calls: u64,
-    max_input_tokens: u64,
-    max_output_tokens: u64,
-    max_cost_microcents: u64,
-    wall_clock_ms: u64,
+pub(crate) struct Budgets {
+    pub(crate) max_turns: u64,
+    pub(crate) max_tool_calls: u64,
+    pub(crate) max_input_tokens: u64,
+    pub(crate) max_output_tokens: u64,
+    pub(crate) max_cost_microcents: u64,
+    pub(crate) wall_clock_ms: u64,
 }
 
 #[derive(Debug, Clone)]
 pub struct VerifiedControl {
     control: Control,
+    carrier: ControlCarrier,
 }
 
 impl VerifiedControl {
@@ -216,24 +225,28 @@ impl VerifiedControl {
             Control::Pause => "pause",
         }
     }
+
+    pub(crate) fn carrier(&self) -> &ControlCarrier {
+        &self.carrier
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ControlCarrier {
-    schema: String,
-    issuer_id: String,
-    key_id: String,
-    alg: String,
-    activation_id: String,
-    session_id: String,
-    principal_id: String,
-    project_id: String,
-    control: Control,
-    nonce: String,
-    issued_at: String,
-    not_after: String,
-    signature: String,
+pub(crate) struct ControlCarrier {
+    pub(crate) schema: String,
+    pub(crate) issuer_id: String,
+    pub(crate) key_id: String,
+    pub(crate) alg: String,
+    pub(crate) activation_id: String,
+    pub(crate) session_id: String,
+    pub(crate) principal_id: String,
+    pub(crate) project_id: String,
+    pub(crate) control: Control,
+    pub(crate) nonce: String,
+    pub(crate) issued_at: String,
+    pub(crate) not_after: String,
+    pub(crate) signature: String,
 }
 
 #[derive(Debug, Clone)]
@@ -405,7 +418,25 @@ pub fn verify_control(
     )?;
     Ok(VerifiedControl {
         control: control.control,
+        carrier: control,
     })
+}
+
+pub(crate) fn activation_lookup(raw_frame: &[u8]) -> Result<ActivationCarrier, ActivationError> {
+    let frame = raw::parse_frame(raw_frame)?;
+    let carrier_value = raw::locate_activation(raw_frame, &frame)?;
+    classify_header(carrier_value)?;
+    let carrier: ActivationCarrier = serde_json::from_value(carrier_value.clone())
+        .map_err(|_| ActivationError::new(RejectReason::UnknownField))?;
+    validate_carrier(&carrier)?;
+    canonical_without_signature(carrier_value)?;
+    Ok(carrier)
+}
+
+pub(crate) fn control_lookup(raw_control: &[u8]) -> Result<ControlCarrier, ActivationError> {
+    let value = strict_canonical_document(raw_control)?;
+    classify_document_header(&value, "wayland.nano.control/v1")?;
+    serde_json::from_value(value).map_err(|_| ActivationError::new(RejectReason::UnknownField))
 }
 
 pub fn verify_admin_request(
