@@ -1,30 +1,54 @@
 //! Human-rooted local bootstrap and signed admin operation application.
 
+use crate::authority::KeyRole;
 use crate::authority::{AuthorityCommand, AuthorityError, AuthoritySnapshot};
+use crate::key_provider::{KeyProviderError, load_key_reference};
 use crate::store::AuthorityStore;
 use crate::{ActivationError, VerifiedAdminRequest, verify_admin_request};
 use std::io::IsTerminal;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
-pub struct BootstrapRequest {
+struct BootstrapRequest {
     admin_public_key: [u8; 32],
     recovery_public_key: [u8; 32],
+    receipt_signer_public_key: [u8; 32],
+    local_cli_public_key: [u8; 32],
     admin_id: String,
 }
 
 impl BootstrapRequest {
-    pub fn new(
+    fn new(
         admin_public_key: [u8; 32],
         recovery_public_key: [u8; 32],
+        receipt_signer_public_key: [u8; 32],
+        local_cli_public_key: [u8; 32],
         admin_id: impl Into<String>,
     ) -> Self {
         Self {
             admin_public_key,
             recovery_public_key,
+            receipt_signer_public_key,
+            local_cli_public_key,
             admin_id: admin_id.into(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct BootstrapKeyPaths {
+    pub admin_root: std::path::PathBuf,
+    pub recovery_root: std::path::PathBuf,
+    pub receipt_signer: std::path::PathBuf,
+    pub local_cli_issuer: std::path::PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct BootstrapPublicKeys {
+    pub admin_root: [u8; 32],
+    pub recovery_root: [u8; 32],
+    pub receipt_signer: [u8; 32],
+    pub local_cli_issuer: [u8; 32],
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -39,11 +63,15 @@ pub enum BootstrapError {
     InsecureHome,
     #[error(transparent)]
     Authority(#[from] AuthorityError),
+    #[error(transparent)]
+    KeyProvider(#[from] KeyProviderError),
 }
 
 pub fn bootstrap(
     nano_home: &Path,
-    request: BootstrapRequest,
+    paths: &BootstrapKeyPaths,
+    keys: BootstrapPublicKeys,
+    admin_id: impl Into<String>,
     confirmed: bool,
 ) -> Result<AuthorityStore, BootstrapError> {
     if !confirmed {
@@ -52,6 +80,17 @@ pub fn bootstrap(
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
         return Err(BootstrapError::NoControllingTty);
     }
+    load_key_reference(&paths.admin_root, KeyRole::AdminRoot)?;
+    load_key_reference(&paths.recovery_root, KeyRole::RecoveryRoot)?;
+    load_key_reference(&paths.receipt_signer, KeyRole::ReceiptSigner)?;
+    load_key_reference(&paths.local_cli_issuer, KeyRole::LocalCliIssuer)?;
+    let request = BootstrapRequest::new(
+        keys.admin_root,
+        keys.recovery_root,
+        keys.receipt_signer,
+        keys.local_cli_issuer,
+        admin_id,
+    );
     bootstrap_attested(nano_home, request)
 }
 
@@ -66,7 +105,11 @@ fn bootstrap_attested(
     AuthorityStore::bootstrap_initial(
         nano_home,
         AuthoritySnapshot::empty(request.admin_id, request.admin_public_key)
-            .with_recovery_key(request.recovery_public_key),
+            .with_recovery_key(request.recovery_public_key)
+            .with_service_keys(
+                request.receipt_signer_public_key,
+                request.local_cli_public_key,
+            ),
     )
     .map_err(Into::into)
 }
@@ -223,13 +266,13 @@ mod tests {
         }
         bootstrap_attested(
             home.path(),
-            BootstrapRequest::new([1; 32], [2; 32], "root-1"),
+            BootstrapRequest::new([1; 32], [2; 32], [3; 32], [4; 32], "root-1"),
         )
         .unwrap();
         assert!(matches!(
             bootstrap_attested(
                 home.path(),
-                BootstrapRequest::new([1; 32], [2; 32], "root-1")
+                BootstrapRequest::new([1; 32], [2; 32], [3; 32], [4; 32], "root-1")
             ),
             Err(BootstrapError::AlreadyBootstrapped)
         ));

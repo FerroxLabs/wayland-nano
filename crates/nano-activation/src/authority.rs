@@ -10,6 +10,7 @@ pub enum KeyRole {
     AdminRoot,
     ReceiptSigner,
     LocalCliIssuer,
+    RecoveryRoot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +42,8 @@ pub struct AuthoritySnapshot {
     pub admin_epoch: u64,
     pub admin_public_key: [u8; 32],
     pub recovery_public_key: Option<[u8; 32]>,
+    pub receipt_signer_public_key: Option<[u8; 32]>,
+    pub local_cli_public_key: Option<[u8; 32]>,
     pub issuers: BTreeMap<String, IssuerAuthority>,
     pub retired_subjects: BTreeSet<String>,
     pub retired_principals: BTreeSet<String>,
@@ -56,6 +59,8 @@ impl AuthoritySnapshot {
             admin_epoch: 1,
             admin_public_key,
             recovery_public_key: None,
+            receipt_signer_public_key: None,
+            local_cli_public_key: None,
             issuers: BTreeMap::new(),
             retired_subjects: BTreeSet::new(),
             retired_principals: BTreeSet::new(),
@@ -67,6 +72,16 @@ impl AuthoritySnapshot {
 
     pub fn with_recovery_key(mut self, recovery_public_key: [u8; 32]) -> Self {
         self.recovery_public_key = Some(recovery_public_key);
+        self
+    }
+
+    pub fn with_service_keys(
+        mut self,
+        receipt_signer_public_key: [u8; 32],
+        local_cli_public_key: [u8; 32],
+    ) -> Self {
+        self.receipt_signer_public_key = Some(receipt_signer_public_key);
+        self.local_cli_public_key = Some(local_cli_public_key);
         self
     }
 

@@ -1,7 +1,8 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signer, SigningKey};
 use nano_activation::admin::{
-    AdminError, BootstrapError, BootstrapRequest, apply_signed_admin, bootstrap,
+    AdminError, BootstrapError, BootstrapKeyPaths, BootstrapPublicKeys, apply_signed_admin,
+    bootstrap,
 };
 use nano_activation::authority::{AuthorityCommand, AuthoritySnapshot, KeyRole};
 use nano_activation::journal::AuthorityRecord;
@@ -71,13 +72,24 @@ fn symlink_or_reparse_reference_is_refused_in_real_child_process() {
 #[test]
 fn bootstrap_requires_confirmation_tty_and_empty_store() {
     let home = tempfile::tempdir().unwrap();
-    let request = BootstrapRequest::new([1; 32], [2; 32], "root-1");
+    let paths = BootstrapKeyPaths {
+        admin_root: home.path().join("missing-admin"),
+        recovery_root: home.path().join("missing-recovery"),
+        receipt_signer: home.path().join("missing-receipt"),
+        local_cli_issuer: home.path().join("missing-cli"),
+    };
+    let keys = BootstrapPublicKeys {
+        admin_root: [1; 32],
+        recovery_root: [2; 32],
+        receipt_signer: [3; 32],
+        local_cli_issuer: [4; 32],
+    };
     assert!(matches!(
-        bootstrap(home.path(), request.clone(), false),
+        bootstrap(home.path(), &paths, keys.clone(), "root-1", false),
         Err(BootstrapError::ConfirmationRequired)
     ));
     assert!(matches!(
-        bootstrap(home.path(), request, true),
+        bootstrap(home.path(), &paths, keys, "root-1", true),
         Err(BootstrapError::NoControllingTty)
     ));
 }
