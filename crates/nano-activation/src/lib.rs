@@ -3,9 +3,11 @@
 //! This crate intentionally stops before authority lookup or runtime admission. It
 //! validates raw transport ambiguity, the frozen carrier, JCS bytes and Ed25519 proof.
 
-mod raw;
+pub mod admin;
 pub mod authority;
 pub mod journal;
+pub mod key_provider;
+mod raw;
 pub mod store;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -244,13 +246,30 @@ impl VerifiedAdminRequest {
         self.request.operation.as_str()
     }
 
-    pub fn admin_id(&self) -> &str { &self.request.admin_id }
-    pub fn admin_epoch(&self) -> u64 { self.request.admin_epoch }
-    pub fn operation_id(&self) -> &str { &self.request.operation_id }
-    pub fn issued_at(&self) -> &str { &self.request.issued_at }
-    pub fn not_after(&self) -> &str { &self.request.not_after }
-    pub fn before_digest(&self) -> &str { &self.request.before_digest }
-    pub fn after_digest(&self) -> &str { &self.request.after_digest }
+    pub fn admin_id(&self) -> &str {
+        &self.request.admin_id
+    }
+    pub fn admin_epoch(&self) -> u64 {
+        self.request.admin_epoch
+    }
+    pub fn operation_id(&self) -> &str {
+        &self.request.operation_id
+    }
+    pub fn nonce(&self) -> &str {
+        &self.request.nonce
+    }
+    pub fn issued_at(&self) -> &str {
+        &self.request.issued_at
+    }
+    pub fn not_after(&self) -> &str {
+        &self.request.not_after
+    }
+    pub fn before_digest(&self) -> &str {
+        &self.request.before_digest
+    }
+    pub fn after_digest(&self) -> &str {
+        &self.request.after_digest
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
