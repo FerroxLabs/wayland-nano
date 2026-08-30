@@ -2422,6 +2422,10 @@ mod tests {
             std::fs::create_dir_all(&custody).unwrap();
             secure_test_directory(&home);
             secure_test_directory(&custody);
+            let global = root.path().join("global.jsonl");
+            let target = target_ledger_path(&home);
+            precreate_test_ledger(&global);
+            precreate_test_ledger(&target);
             let mut refs = Vec::new();
             for (name, role, seed) in [
                 ("admin", "admin_root", 11u8),
@@ -2453,7 +2457,7 @@ mod tests {
                     local_cli_issuer: refs[3].clone(),
                 },
                 challenge: root.path().join("challenge.json"),
-                global: root.path().join("global.jsonl"),
+                global,
                 root,
             }
         }
@@ -2997,6 +3001,8 @@ mod tests {
             let home = root.path().join("home");
             std::fs::create_dir_all(&home).unwrap();
             secure_test_directory(&home);
+            precreate_test_ledger(&root.path().join("global.jsonl"));
+            precreate_test_ledger(&target_ledger_path(&home));
             let run = |mode: &str| {
                 Command::new(std::env::current_exe().unwrap())
                     .args([
@@ -3214,6 +3220,15 @@ mod tests {
     #[cfg(windows)]
     fn secure_test_directory(path: &Path) {
         secure_test_path(path, true);
+    }
+
+    #[cfg(windows)]
+    fn precreate_test_ledger(path: &Path) {
+        let parent = path.parent().unwrap();
+        std::fs::create_dir_all(parent).unwrap();
+        secure_test_directory(parent);
+        std::fs::write(path, []).unwrap();
+        secure_test_file(path);
     }
 
     #[cfg(windows)]
