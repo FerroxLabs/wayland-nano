@@ -3,7 +3,7 @@ use nano_activation::authority::KeyRole;
 use nano_activation::key_provider::load_key_reference;
 use nano_activation::receipt::ReceiptSigner;
 use nano_activation::signer_provider::{
-    ExternalActivationSigner, ExternalReceiptSigner, SignerProviderError,
+    ExternalActivationSigner, ExternalReceiptSigner, SignerProviderError, derive_public_key,
 };
 use std::path::Path;
 
@@ -24,6 +24,44 @@ fn owner_only_file_provider_signs_with_public_identity() {
         .verify(message, &signature)
         .unwrap();
     assert!(signer.key_id().starts_with("receipt-ed25519-"));
+}
+
+#[test]
+fn provider_derivation_binds_role_reference_to_actual_public_key() {
+    let home = tempfile::tempdir().unwrap();
+    let seed_path = home.path().canonicalize().unwrap().join("admin.seed");
+    std::fs::write(&seed_path, [11_u8; 32]).unwrap();
+    secure(&seed_path);
+    let reference_path = home.path().join("admin.keyref");
+    std::fs::write(
+        &reference_path,
+        serde_json::to_vec(&serde_json::json!({
+            "provider": "file",
+            "reference": seed_path,
+            "role": "admin_root"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    secure(&reference_path);
+    let reference = load_key_reference(&reference_path, KeyRole::AdminRoot).unwrap();
+    let expected = ed25519_dalek::SigningKey::from_bytes(&[11_u8; 32])
+        .verifying_key()
+        .to_bytes();
+    assert_eq!(
+        derive_public_key(&reference, KeyRole::AdminRoot).unwrap(),
+        expected
+    );
+    assert!(matches!(
+        derive_public_key(&reference, KeyRole::RecoveryRoot),
+        Err(SignerProviderError::RoleMismatch)
+    ));
+    std::fs::write(&seed_path, [12_u8; 32]).unwrap();
+    secure(&seed_path);
+    assert_ne!(
+        derive_public_key(&reference, KeyRole::AdminRoot).unwrap(),
+        expected
+    );
 }
 
 #[test]

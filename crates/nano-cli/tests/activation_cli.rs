@@ -1,5 +1,9 @@
 use nano_cli::exec_mode::{ExecParams, ResumeTarget};
 use nano_protocol::permission_mode::PermissionMode;
+#[cfg(target_os = "linux")]
+use std::io::Write as _;
+#[cfg(any(windows, target_os = "linux"))]
+use std::process::{Command, Stdio};
 
 #[test]
 fn unauthenticated_resume_refuses_before_nano_home_state() {
@@ -82,6 +86,130 @@ fn activation_admin_surface_rejects_incomplete_arguments_without_state() {
 }
 
 #[test]
+fn admin_bootstrap_rejects_confirmation_in_argv_before_state_or_key_access() {
+    let home = tempfile::tempdir().unwrap();
+    let mut output = Vec::new();
+    let args = vec!["admin-bootstrap".into(), "--confirm".into(), "yes".into()];
+    assert_eq!(
+        nano_cli::activation::run_activation_command(home.path(), &args, &mut output),
+        2
+    );
+    assert!(output.is_empty());
+    assert!(!home.path().join("activation").exists());
+}
+
+#[test]
+#[cfg(any(windows, target_os = "linux"))]
+fn admin_bootstrap_refuses_detached_process_before_creating_authority() {
+    let home = tempfile::tempdir().unwrap();
+    let args = bootstrap_process_args(home.path());
+    #[cfg(target_os = "linux")]
+    let output = Command::new("setsid")
+        .arg(env!("CARGO_BIN_EXE_wayland-nano"))
+        .args(&args)
+        .env("NANO_HOME", home.path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    #[cfg(windows)]
+    let output = {
+        use std::os::windows::process::CommandExt as _;
+        Command::new(env!("CARGO_BIN_EXE_wayland-nano"))
+            .args(&args)
+            .env("NANO_HOME", home.path())
+            .stdin(Stdio::null())
+            .creation_flags(0x0800_0000)
+            .output()
+            .unwrap()
+    };
+    assert_eq!(output.status.code(), Some(2));
+    let refusal = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        [
+            "requires controlling",
+            "requires attached console",
+            "requires owning console",
+            "requires local process session",
+        ]
+        .iter()
+        .any(|reason| refusal.contains(reason)),
+        "{refusal}"
+    );
+    assert!(!home.path().join("activation/authority.jsonl").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn foreground_pty_without_affirmative_utmp_row_fails_closed() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(std::env::var_os("HOME").unwrap())
+        .unwrap();
+    let args = bootstrap_process_args(home.path());
+    let command = std::iter::once(shell_quote(env!("CARGO_BIN_EXE_wayland-nano")))
+        .chain(args.iter().map(|arg| shell_quote(arg)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let run = || {
+        let mut child = Command::new("script")
+            .args(["-qfec", &command, "/dev/null"])
+            .env("NANO_HOME", home.path())
+            .env_remove("SSH_CLIENT")
+            .env_remove("SSH_CONNECTION")
+            .env_remove("SSH_TTY")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"BOOTSTRAP owner-1\n")
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let output = run();
+    assert!(!output.status.success());
+    assert!(!home.path().join("activation/authority.jsonl").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn remote_environment_marker_is_not_session_authority() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(std::env::var_os("HOME").unwrap())
+        .unwrap();
+    let args = bootstrap_process_args(home.path());
+    let command = std::iter::once(shell_quote(env!("CARGO_BIN_EXE_wayland-nano")))
+        .chain(args.iter().map(|arg| shell_quote(arg)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut child = Command::new("script")
+        .args(["-qfec", &command, "/dev/null"])
+        .env("NANO_HOME", home.path())
+        .env("SSH_CONNECTION", "127.0.0.1 1 127.0.0.1 2")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"BOOTSTRAP owner-1\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(!home.path().join("activation/authority.jsonl").exists());
+}
+
+#[test]
 fn offline_receipt_verification_never_requires_nano_home_or_private_key() {
     let home = tempfile::tempdir().unwrap();
     let receipt = home.path().join("receipt.json");
@@ -100,4 +228,27 @@ fn offline_receipt_verification_never_requires_nano_home_or_private_key() {
     );
     assert!(output.is_empty());
     assert!(!home.path().join("activation").exists());
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+fn bootstrap_process_args(home: &std::path::Path) -> Vec<String> {
+    vec![
+        "admin".into(),
+        "bootstrap".into(),
+        "--admin-id".into(),
+        "owner-1".into(),
+        "--admin-root-keyref".into(),
+        home.join("admin.keyref").display().to_string(),
+        "--recovery-root-keyref".into(),
+        home.join("recovery.keyref").display().to_string(),
+        "--receipt-signer-keyref".into(),
+        home.join("receipt.keyref").display().to_string(),
+        "--local-cli-keyref".into(),
+        home.join("cli.keyref").display().to_string(),
+    ]
+}
+
+#[cfg(target_os = "linux")]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }

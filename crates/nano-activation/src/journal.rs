@@ -14,6 +14,10 @@ pub enum AuthorityRecord {
         sequence: u64,
         snapshot: AuthoritySnapshot,
     },
+    BootstrapReceipt {
+        sequence: u64,
+        receipt: String,
+    },
     Command {
         sequence: u64,
         command: AuthorityCommand,
@@ -30,12 +34,19 @@ pub(crate) struct AuthorityJournal {
     next_sequence: u64,
 }
 
+type ReplayState = (
+    Option<AuthoritySnapshot>,
+    Option<AuthoritySnapshot>,
+    Option<Vec<u8>>,
+    u64,
+);
+
 impl AuthorityJournal {
     pub(crate) fn open(path: &Path) -> Result<Self, AuthorityError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let (_, sequence) = replay(path)?;
+        let (_, _, _, sequence) = replay(path)?;
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -54,6 +65,16 @@ impl AuthorityJournal {
         self.append(AuthorityRecord::Bootstrap {
             sequence: self.next_sequence,
             snapshot,
+        })
+    }
+
+    pub(crate) fn append_bootstrap_receipt(
+        &mut self,
+        receipt: String,
+    ) -> Result<(), AuthorityError> {
+        self.append(AuthorityRecord::BootstrapReceipt {
+            sequence: self.next_sequence,
+            receipt,
         })
     }
 
@@ -89,13 +110,17 @@ impl AuthorityJournal {
     }
 }
 
-pub(crate) fn replay(path: &Path) -> Result<(Option<AuthoritySnapshot>, u64), AuthorityError> {
+pub(crate) fn replay(path: &Path) -> Result<ReplayState, AuthorityError> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((None, 0)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((None, None, None, 0));
+        }
         Err(error) => return Err(error.into()),
     };
     let mut snapshot: Option<AuthoritySnapshot> = None;
+    let mut bootstrap_snapshot = None;
+    let mut bootstrap_receipt = None;
     let mut expected = 1u64;
     for (index, raw) in bytes.split(|byte| *byte == b'\n').enumerate() {
         if raw.is_empty() {
@@ -105,7 +130,8 @@ pub(crate) fn replay(path: &Path) -> Result<(Option<AuthoritySnapshot>, u64), Au
             Ok(value) => value,
             Err(_)
                 if index == bytes.split(|byte| *byte == b'\n').count() - 1
-                    && !bytes.ends_with(b"\n") =>
+                    && !bytes.ends_with(b"\n")
+                    && (snapshot.is_none() || bootstrap_receipt.is_some()) =>
             {
                 break;
             }
@@ -121,17 +147,20 @@ pub(crate) fn replay(path: &Path) -> Result<(Option<AuthoritySnapshot>, u64), Au
                 if sequence != expected {
                     return Err(AuthorityError::InvalidRecord);
                 }
-                if let Some(state) = snapshot.as_mut() {
-                    state
-                        .unknown_records
-                        .push(String::from_utf8_lossy(raw).into_owned());
+                if bootstrap_receipt.is_none() {
+                    return Err(AuthorityError::InvalidRecord);
                 }
+                let state = snapshot.as_mut().ok_or(AuthorityError::InvalidRecord)?;
+                state
+                    .unknown_records
+                    .push(String::from_utf8_lossy(raw).into_owned());
                 expected += 1;
                 continue;
             }
         };
         let sequence = match &record {
             AuthorityRecord::Bootstrap { sequence, .. }
+            | AuthorityRecord::BootstrapReceipt { sequence, .. }
             | AuthorityRecord::Command { sequence, .. }
             | AuthorityRecord::Transaction { sequence, .. } => *sequence,
         };
@@ -141,9 +170,21 @@ pub(crate) fn replay(path: &Path) -> Result<(Option<AuthoritySnapshot>, u64), Au
         match record {
             AuthorityRecord::Bootstrap {
                 snapshot: initial, ..
-            } if snapshot.is_none() => snapshot = Some(initial),
+            } if snapshot.is_none() && expected == 1 => {
+                bootstrap_snapshot = Some(initial.clone());
+                snapshot = Some(initial);
+            }
             AuthorityRecord::Bootstrap { .. } => return Err(AuthorityError::InvalidRecord),
+            AuthorityRecord::BootstrapReceipt { receipt, .. } => {
+                if snapshot.is_none() || bootstrap_receipt.is_some() || expected != 2 {
+                    return Err(AuthorityError::InvalidRecord);
+                }
+                bootstrap_receipt = Some(receipt.into_bytes());
+            }
             AuthorityRecord::Command { command, .. } => {
+                if bootstrap_receipt.is_none() {
+                    return Err(AuthorityError::InvalidRecord);
+                }
                 apply(
                     snapshot.as_mut().ok_or(AuthorityError::InvalidRecord)?,
                     &command,
@@ -154,6 +195,9 @@ pub(crate) fn replay(path: &Path) -> Result<(Option<AuthoritySnapshot>, u64), Au
                 nonce_command,
                 ..
             } => {
+                if bootstrap_receipt.is_none() {
+                    return Err(AuthorityError::InvalidRecord);
+                }
                 let state = snapshot.as_mut().ok_or(AuthorityError::InvalidRecord)?;
                 apply(state, &command)?;
                 apply(state, &nonce_command)?;
@@ -161,5 +205,30 @@ pub(crate) fn replay(path: &Path) -> Result<(Option<AuthoritySnapshot>, u64), Au
         }
         expected += 1;
     }
-    Ok((snapshot, expected.saturating_sub(1)))
+    Ok((
+        bootstrap_snapshot,
+        snapshot,
+        bootstrap_receipt,
+        expected.saturating_sub(1),
+    ))
+}
+
+/// Remove only an incomplete final record while the authority writer lock is held.
+pub(crate) fn repair_torn_tail(path: &Path) -> Result<(), AuthorityError> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if bytes.is_empty() || bytes.ends_with(b"\n") {
+        return Ok(());
+    }
+    let keep = bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |position| position + 1);
+    let file = OpenOptions::new().write(true).open(path)?;
+    file.set_len(keep as u64)?;
+    file.sync_data()?;
+    Ok(())
 }

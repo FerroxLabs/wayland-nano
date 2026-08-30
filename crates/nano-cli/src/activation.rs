@@ -290,10 +290,11 @@ pub fn run_activation_command(
     out: &mut dyn std::io::Write,
 ) -> i32 {
     let result = match args.first().map(String::as_str) {
+        Some("admin-bootstrap") => bootstrap_admin_cli(home, &args[1..]),
         Some("admin-apply") => apply_admin_cli(home, &args[1..]),
         Some("enable-apply") => apply_enable_cli(home, &args[1..]),
         Some("receipt-verify") => verify_receipt_cli(&args[1..]),
-        _ => Err("usage: wayland-nano activation admin-apply --request <file> --command <file> | enable-apply --request <file> --command <file> | receipt-verify --receipt <file> --public-key <64-hex>".into()),
+        _ => Err("usage: wayland-nano activation admin-bootstrap --admin-id <id> --admin-root-keyref <file> --recovery-root-keyref <file> --receipt-signer-keyref <file> --local-cli-keyref <file> | admin-apply --request <file> --command <file> | enable-apply --request <file> --command <file> | receipt-verify --receipt <file> --public-key <64-hex>".into()),
     };
     match result {
         Ok(message) => {
@@ -305,6 +306,91 @@ pub fn run_activation_command(
             2
         }
     }
+}
+
+pub fn run_admin_command(
+    home: &std::path::Path,
+    args: &[String],
+    out: &mut dyn std::io::Write,
+) -> i32 {
+    if args.first().map(String::as_str) != Some("bootstrap") {
+        eprintln!(
+            "usage: wayland-nano admin bootstrap --admin-id <id> --admin-root-keyref <file> --recovery-root-keyref <file> --receipt-signer-keyref <file> --local-cli-keyref <file>"
+        );
+        return 2;
+    }
+    match bootstrap_admin_cli(home, &args[1..]) {
+        Ok(message) => {
+            let _ = writeln!(out, "{message}");
+            0
+        }
+        Err(message) => {
+            eprintln!("wayland-nano: {message}");
+            2
+        }
+    }
+}
+
+fn bootstrap_admin_cli(home: &std::path::Path, args: &[String]) -> Result<String, String> {
+    let mut values = std::collections::BTreeMap::<&str, &str>::new();
+    let mut chunks = args.chunks_exact(2);
+    for pair in &mut chunks {
+        let name = pair[0].as_str();
+        if !matches!(
+            name,
+            "--admin-id"
+                | "--admin-root-keyref"
+                | "--recovery-root-keyref"
+                | "--receipt-signer-keyref"
+                | "--local-cli-keyref"
+        ) || values.insert(name, pair[1].as_str()).is_some()
+        {
+            return Err("invalid admin bootstrap arguments".into());
+        }
+    }
+    if !chunks.remainder().is_empty() {
+        return Err("invalid admin bootstrap arguments".into());
+    }
+    let required = |name: &str| {
+        values
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("admin bootstrap requires {name}"))
+    };
+    let admin_id = required("--admin-id")?;
+    validate_cli_id(admin_id).map_err(|_| "admin bootstrap administrator id is invalid")?;
+    let paths = nano_activation::admin::BootstrapKeyPaths {
+        admin_root: required("--admin-root-keyref")?.into(),
+        recovery_root: required("--recovery-root-keyref")?.into(),
+        receipt_signer: required("--receipt-signer-keyref")?.into(),
+        local_cli_issuer: required("--local-cli-keyref")?.into(),
+    };
+    let proof =
+        nano_activation::admin::attest_interactive_owner(admin_id).map_err(bootstrap_refusal)?;
+    let store = nano_activation::admin::bootstrap(home, &paths, admin_id, proof)
+        .map_err(bootstrap_refusal)?;
+    let receipt = store
+        .bootstrap_receipt()
+        .ok_or("admin bootstrap receipt unavailable")?;
+    let receipt = std::str::from_utf8(receipt).map_err(|_| "admin bootstrap receipt invalid")?;
+    Ok(format!("activation administrator bootstrapped\n{receipt}"))
+}
+
+fn bootstrap_refusal(error: nano_activation::admin::BootstrapError) -> String {
+    use nano_activation::admin::BootstrapError;
+    match error {
+        BootstrapError::ConfirmationRequired => "admin bootstrap confirmation required",
+        BootstrapError::NoControllingTty => "admin bootstrap requires controlling TTY",
+        BootstrapError::RemoteSession => "admin bootstrap refuses remote session",
+        BootstrapError::AlreadyBootstrapped => "admin bootstrap authority already exists",
+        BootstrapError::InsecureHome => "admin bootstrap Nano home is not owner-only",
+        BootstrapError::RoleKeyReuse => "admin bootstrap role keys must be distinct",
+        BootstrapError::KeyProvider(_) => "admin bootstrap key reference refused",
+        BootstrapError::SignerProvider(_) => "admin bootstrap key binding refused",
+        BootstrapError::Receipt => "admin bootstrap receipt signing refused",
+        BootstrapError::Authority(_) => "admin bootstrap authority commit refused",
+    }
+    .into()
 }
 
 fn two_paths(args: &[String]) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {

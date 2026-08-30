@@ -1,15 +1,29 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signer, SigningKey};
-use nano_activation::admin::{
-    AdminError, BootstrapError, BootstrapKeyPaths, BootstrapPublicKeys, apply_signed_admin,
-    bootstrap,
-};
+use nano_activation::admin::{AdminError, BootstrapError, apply_signed_admin};
 use nano_activation::authority::{AuthorityCommand, AuthoritySnapshot, KeyRole};
 use nano_activation::journal::AuthorityRecord;
 use nano_activation::key_provider::{KeyProviderError, load_key_reference};
+use nano_activation::receipt::{ReceiptError, ReceiptSigner};
 use nano_activation::store::AuthorityStore;
 use serde_json::json;
 use std::process::Command;
+
+struct BootstrapSigner(SigningKey);
+impl ReceiptSigner for BootstrapSigner {
+    fn key_id(&self) -> &str {
+        "test-bootstrap"
+    }
+    fn public_key(&self) -> [u8; 32] {
+        self.0.verifying_key().to_bytes()
+    }
+    fn preflight(&self) -> Result<(), ReceiptError> {
+        Ok(())
+    }
+    fn sign(&self, message: &[u8]) -> Result<[u8; 64], ReceiptError> {
+        Ok(self.0.sign(message).to_bytes())
+    }
+}
 
 #[test]
 fn key_reference_is_role_bound_and_owner_only() {
@@ -110,13 +124,10 @@ fn broad_permissions_are_refused_in_real_child_process() {
 #[test]
 fn bootstrap_requires_confirmation_tty_and_empty_store() {
     if std::env::var_os("NANO_ACTIVATION_DETACHED_CHILD").is_some() {
-        let home = tempfile::tempdir().unwrap();
-        let paths = missing_paths(home.path());
-        let keys = test_public_keys();
         std::process::exit(
             if matches!(
-                bootstrap(home.path(), &paths, keys, "root-1", true),
-                Err(BootstrapError::NoControllingTty)
+                nano_activation::admin::attest_interactive_owner("root-1"),
+                Err(BootstrapError::NoControllingTty | BootstrapError::RemoteSession)
             ) {
                 0
             } else {
@@ -124,17 +135,6 @@ fn bootstrap_requires_confirmation_tty_and_empty_store() {
             },
         );
     }
-    let home = tempfile::tempdir().unwrap();
-    let paths = missing_paths(home.path());
-    let keys = test_public_keys();
-    assert!(matches!(
-        bootstrap(home.path(), &paths, keys.clone(), "root-1", false),
-        Err(BootstrapError::ConfirmationRequired)
-    ));
-    assert!(matches!(
-        bootstrap(home.path(), &paths, keys, "root-1", true),
-        Err(BootstrapError::NoControllingTty)
-    ));
     let status = Command::new(std::env::current_exe().unwrap())
         .arg("--exact")
         .arg("bootstrap_requires_confirmation_tty_and_empty_store")
@@ -146,38 +146,32 @@ fn bootstrap_requires_confirmation_tty_and_empty_store() {
     assert!(status.success());
 }
 
-fn missing_paths(home: &std::path::Path) -> BootstrapKeyPaths {
-    BootstrapKeyPaths {
-        admin_root: home.join("missing-admin"),
-        recovery_root: home.join("missing-recovery"),
-        receipt_signer: home.join("missing-receipt"),
-        local_cli_issuer: home.join("missing-cli"),
-    }
-}
-
-fn test_public_keys() -> BootstrapPublicKeys {
-    BootstrapPublicKeys {
-        admin_root: [1; 32],
-        recovery_root: [2; 32],
-        receipt_signer: [3; 32],
-        local_cli_issuer: [4; 32],
-    }
-}
-
 #[test]
 fn signed_admin_lifecycle_checks_epoch_digests_nonce_and_root_recovery() {
     let home = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[3; 32]);
     let recovery = SigningKey::from_bytes(&[6; 32]);
+    let receipt_signer = BootstrapSigner(SigningKey::from_bytes(&[8; 32]));
     let snapshot = AuthoritySnapshot::empty("root-1", root.verifying_key().to_bytes())
-        .with_recovery_key(recovery.verifying_key().to_bytes());
+        .with_recovery_key(recovery.verifying_key().to_bytes())
+        .with_service_keys(receipt_signer.public_key(), [9; 32]);
     let activation = home.path().join("activation");
     std::fs::create_dir_all(&activation).unwrap();
     let mut bytes = serde_jcs::to_vec(&AuthorityRecord::Bootstrap {
         sequence: 1,
-        snapshot,
+        snapshot: snapshot.clone(),
     })
     .unwrap();
+    bytes.push(b'\n');
+    let receipt =
+        nano_activation::admin::sign_bootstrap_receipt(&snapshot, &receipt_signer).unwrap();
+    bytes.extend_from_slice(
+        &serde_jcs::to_vec(&AuthorityRecord::BootstrapReceipt {
+            sequence: 2,
+            receipt: String::from_utf8(receipt).unwrap(),
+        })
+        .unwrap(),
+    );
     bytes.push(b'\n');
     std::fs::write(activation.join("authority.jsonl"), bytes).unwrap();
     let mut store = AuthorityStore::open(home.path()).unwrap();
