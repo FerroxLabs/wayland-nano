@@ -12,7 +12,7 @@ const LOCK: &str = "3d6ec29f3b19e0b3778a5de222418ec497eaf79be8e93a92dd120d986bdb
 
 #[test]
 fn fixture_uses_reducers_separates_private_handoff_and_enables_exact_artifact() {
-    let parent = tempfile::tempdir().unwrap();
+    let parent = fixture_tempdir();
     let root = parent.path().join("evidence");
     std::fs::create_dir(&root).unwrap();
     restrict_root(&root);
@@ -186,7 +186,7 @@ struct PreparedCase {
 }
 
 fn prepared_case() -> PreparedCase {
-    let parent = tempfile::tempdir().unwrap();
+    let parent = fixture_tempdir();
     let root = parent.path().join("evidence");
     std::fs::create_dir(&root).unwrap();
     restrict_root(&root);
@@ -258,6 +258,23 @@ fn prepared_case() -> PreparedCase {
         root,
         _parent: parent,
     }
+}
+
+#[cfg(windows)]
+fn fixture_tempdir() -> tempfile::TempDir {
+    std::env::var_os("WN_VERIFY_TEMP").map_or_else(
+        || tempfile::tempdir().unwrap(),
+        |root| {
+            tempfile::Builder::new()
+                .tempdir_in(PathBuf::from(root))
+                .unwrap()
+        },
+    )
+}
+
+#[cfg(not(windows))]
+fn fixture_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir().unwrap()
 }
 
 #[cfg(unix)]

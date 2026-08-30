@@ -231,6 +231,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          if (-not $env:WN_VERIFY_TEMP) {
+            throw "WN_VERIFY_TEMP is required for the Phase 2 evidence fixture"
+          }
+          $env:TEMP = $env:WN_VERIFY_TEMP
+          $env:TMP = $env:WN_VERIFY_TEMP
           cargo test --locked -p nano-activation --features phase2-fixture --test phase2_fixture -- --test-threads=1
           if ($LASTEXITCODE -ne 0) {
             throw "Phase 2 evidence fixture tests failed"
