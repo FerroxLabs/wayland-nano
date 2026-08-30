@@ -61,9 +61,9 @@ Assert($protection.enforce_admins.enabled -and $protection.required_conversation
 Assert($r.protection.strict -and $r.protection.required_status_checks -eq 7 -and $r.protection.required_codeowner_approvals -eq 1 -and $r.protection.dismiss_stale_reviews -and $r.protection.require_last_push_approval -and $r.protection.require_conversation_resolution -and $r.protection.enforce_admins -and -not $r.protection.allow_force_pushes -and -not $r.protection.allow_deletions) 'Receipt protection evidence mismatch.'
 Assert(@(Gh @('api',"repos/$Repository/rulesets")).Count -eq 0 -and @($r.protection.bypass_actors).Count -eq 0) 'Protection bypass actors/rulesets must be absent.'
 
-& git merge-base --is-ancestor $r.head_sha $r.merge_commit_sha
+& $gitExe merge-base --is-ancestor $r.head_sha $r.merge_commit_sha
 Assert($LASTEXITCODE -eq 0) 'Reviewed head is not an ancestor of merge commit.'
-& git merge-base --is-ancestor $r.merge_commit_sha "origin/$ExpectedBase"
+& $gitExe merge-base --is-ancestor $r.merge_commit_sha "origin/$ExpectedBase"
 Assert($LASTEXITCODE -eq 0) 'Merge commit is not an ancestor of fresh origin/base.'
 $rules=@((Git @('show',"$($r.merge_commit_sha)`:CODEOWNERS"))-split "`r?`n"|ForEach-Object{$_.Trim()}|Where-Object{$_ -and -not $_.StartsWith('#')})
 Assert($rules.Count -eq 3 -and -not(Compare-Object $rules $requiredCodeowners)) 'Merged exact CODEOWNERS rules mismatch.'
