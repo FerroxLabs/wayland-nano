@@ -2,6 +2,7 @@ mod support;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signer, SigningKey};
+use nano_activation::receipt::{ReceiptError, ReceiptSigner};
 use nano_activation::{
     build_identity,
     enablement::{EnablementCommand, EnablementError, EnablementFault, EnablementStore},
@@ -10,6 +11,22 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 const NOW: &str = "2026-08-30T10:00:00Z";
+
+struct BootstrapSigner(SigningKey);
+impl ReceiptSigner for BootstrapSigner {
+    fn key_id(&self) -> &str {
+        "test-bootstrap"
+    }
+    fn public_key(&self) -> [u8; 32] {
+        self.0.verifying_key().to_bytes()
+    }
+    fn preflight(&self) -> Result<(), ReceiptError> {
+        Ok(())
+    }
+    fn sign(&self, message: &[u8]) -> Result<[u8; 64], ReceiptError> {
+        Ok(self.0.sign(message).to_bytes())
+    }
+}
 
 #[test]
 fn compiled_identity_matches_repository_and_workspace_lock() {
@@ -160,19 +177,32 @@ fn enabled(
 }
 fn bootstrap(home: &std::path::Path) -> SigningKey {
     let root = SigningKey::from_bytes(&[7; 32]);
+    let receipt_signer = BootstrapSigner(SigningKey::from_bytes(&[9; 32]));
     let mut snapshot = nano_activation::authority::AuthoritySnapshot::empty(
         "root",
         root.verifying_key().to_bytes(),
     )
-    .with_service_keys([9; 32], [8; 32]);
+    .with_service_keys(receipt_signer.public_key(), [8; 32]);
     snapshot.issuers = Default::default();
     let dir = home.join("activation");
     std::fs::create_dir_all(&dir).unwrap();
+    let receipt =
+        nano_activation::admin::sign_bootstrap_receipt(&snapshot, &receipt_signer).unwrap();
     let mut bytes = serde_jcs::to_vec(&nano_activation::journal::AuthorityRecord::Bootstrap {
         sequence: 1,
-        snapshot,
+        snapshot: snapshot.clone(),
     })
     .unwrap();
+    bytes.push(b'\n');
+    bytes.extend_from_slice(
+        &serde_jcs::to_vec(
+            &nano_activation::journal::AuthorityRecord::BootstrapReceipt {
+                sequence: 2,
+                receipt: String::from_utf8(receipt).unwrap(),
+            },
+        )
+        .unwrap(),
+    );
     bytes.push(b'\n');
     std::fs::write(dir.join("authority.jsonl"), bytes).unwrap();
     root

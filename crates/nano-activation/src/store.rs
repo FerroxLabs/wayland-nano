@@ -36,15 +36,19 @@ impl AuthorityStore {
                     nano_session::LockError::Io(error) => AuthorityError::Io(error),
                 },
             )?;
-        let (snapshot, bootstrap_receipt, _) = replay(&journal_path)?;
+        let (bootstrap_snapshot, snapshot, bootstrap_receipt, _) = replay(&journal_path)?;
+        let bootstrap_snapshot = bootstrap_snapshot.ok_or(AuthorityError::InvalidRecord)?;
         let snapshot = snapshot.ok_or(AuthorityError::InvalidRecord)?;
+        let bootstrap_receipt = bootstrap_receipt.ok_or(AuthorityError::InvalidRecord)?;
+        crate::admin::verify_bootstrap_receipt_snapshot(&bootstrap_receipt, &bootstrap_snapshot)
+            .map_err(|_| AuthorityError::InvalidRecord)?;
         let db = open_projection(&activation.join("authority.db"), &snapshot)?;
         Ok(Self {
             home: nano_home.to_owned(),
             journal: AuthorityJournal::open(&journal_path)?,
             db,
             snapshot,
-            bootstrap_receipt,
+            bootstrap_receipt: Some(bootstrap_receipt),
             _lock: lock,
         })
     }
@@ -66,6 +70,8 @@ impl AuthorityStore {
         let activation = nano_home.join("activation");
         std::fs::create_dir_all(&activation)?;
         let journal_path = activation.join("authority.jsonl");
+        crate::admin::verify_bootstrap_receipt_snapshot(&receipt, &snapshot)
+            .map_err(|_| AuthorityError::InvalidRecord)?;
         let lock =
             FileLock::try_acquire(&activation.join("authority.lock")).map_err(
                 |error| match error {
@@ -79,7 +85,15 @@ impl AuthorityStore {
             Err(error) => return Err(error.into()),
         };
         let torn = !journal_bytes.is_empty() && !journal_bytes.ends_with(b"\n");
-        let (before_repair, receipt_before_repair, sequence_before_repair) = replay(&journal_path)?;
+        let (_, before_repair, receipt_before_repair, sequence_before_repair) =
+            replay(&journal_path)?;
+        let projection_path = activation.join("authority.db");
+        let residual_projection = std::fs::metadata(&projection_path)
+            .map(|metadata| metadata.len() != 0)
+            .unwrap_or(false);
+        if receipt_before_repair.is_none() && residual_projection {
+            return Err(AuthorityError::OperationConflict);
+        }
         if torn {
             if receipt_before_repair.is_some() || sequence_before_repair > 1 {
                 return Err(AuthorityError::InvalidRecord);
@@ -87,7 +101,8 @@ impl AuthorityStore {
             repair_torn_tail(&journal_path)?;
         }
         let (existing, existing_receipt, _) = if torn {
-            replay(&journal_path)?
+            let (_, snapshot, receipt, sequence) = replay(&journal_path)?;
+            (snapshot, receipt, sequence)
         } else {
             (before_repair, receipt_before_repair, sequence_before_repair)
         };
@@ -108,7 +123,7 @@ impl AuthorityStore {
                 String::from_utf8(receipt.clone()).map_err(|_| AuthorityError::InvalidRecord)?;
             journal.append_bootstrap_receipt(receipt_text)?;
         }
-        let db = open_projection(&activation.join("authority.db"), &snapshot)?;
+        let db = open_projection(&projection_path, &snapshot)?;
         Ok(Self {
             home: nano_home.to_owned(),
             journal,

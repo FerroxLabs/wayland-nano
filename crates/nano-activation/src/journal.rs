@@ -34,14 +34,19 @@ pub(crate) struct AuthorityJournal {
     next_sequence: u64,
 }
 
-type ReplayState = (Option<AuthoritySnapshot>, Option<Vec<u8>>, u64);
+type ReplayState = (
+    Option<AuthoritySnapshot>,
+    Option<AuthoritySnapshot>,
+    Option<Vec<u8>>,
+    u64,
+);
 
 impl AuthorityJournal {
     pub(crate) fn open(path: &Path) -> Result<Self, AuthorityError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let (_, _, sequence) = replay(path)?;
+        let (_, _, _, sequence) = replay(path)?;
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -109,11 +114,12 @@ pub(crate) fn replay(path: &Path) -> Result<ReplayState, AuthorityError> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((None, None, 0));
+            return Ok((None, None, None, 0));
         }
         Err(error) => return Err(error.into()),
     };
     let mut snapshot: Option<AuthoritySnapshot> = None;
+    let mut bootstrap_snapshot = None;
     let mut bootstrap_receipt = None;
     let mut expected = 1u64;
     for (index, raw) in bytes.split(|byte| *byte == b'\n').enumerate() {
@@ -140,11 +146,10 @@ pub(crate) fn replay(path: &Path) -> Result<ReplayState, AuthorityError> {
                 if sequence != expected {
                     return Err(AuthorityError::InvalidRecord);
                 }
-                if let Some(state) = snapshot.as_mut() {
-                    state
-                        .unknown_records
-                        .push(String::from_utf8_lossy(raw).into_owned());
-                }
+                let state = snapshot.as_mut().ok_or(AuthorityError::InvalidRecord)?;
+                state
+                    .unknown_records
+                    .push(String::from_utf8_lossy(raw).into_owned());
                 expected += 1;
                 continue;
             }
@@ -161,7 +166,10 @@ pub(crate) fn replay(path: &Path) -> Result<ReplayState, AuthorityError> {
         match record {
             AuthorityRecord::Bootstrap {
                 snapshot: initial, ..
-            } if snapshot.is_none() => snapshot = Some(initial),
+            } if snapshot.is_none() => {
+                bootstrap_snapshot = Some(initial.clone());
+                snapshot = Some(initial);
+            }
             AuthorityRecord::Bootstrap { .. } => return Err(AuthorityError::InvalidRecord),
             AuthorityRecord::BootstrapReceipt { receipt, .. } => {
                 if snapshot.is_none() || bootstrap_receipt.is_some() {
@@ -187,7 +195,12 @@ pub(crate) fn replay(path: &Path) -> Result<ReplayState, AuthorityError> {
         }
         expected += 1;
     }
-    Ok((snapshot, bootstrap_receipt, expected.saturating_sub(1)))
+    Ok((
+        bootstrap_snapshot,
+        snapshot,
+        bootstrap_receipt,
+        expected.saturating_sub(1),
+    ))
 }
 
 /// Remove only an incomplete final record while the authority writer lock is held.

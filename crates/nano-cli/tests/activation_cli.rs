@@ -208,25 +208,36 @@ fn real_binary_foreground_pty_bootstrap_binds_keys_and_replays_receipt() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn real_binary_pty_refuses_ssh_marker_before_state() {
+fn remote_environment_marker_is_not_session_authority() {
     use std::os::unix::fs::PermissionsExt;
     let home = tempfile::Builder::new()
         .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir_in(std::env::var_os("HOME").unwrap())
         .unwrap();
     let args = bootstrap_process_args(home.path());
+    provision_bootstrap_keys(home.path());
     let command = std::iter::once(shell_quote(env!("CARGO_BIN_EXE_wayland-nano")))
         .chain(args.iter().map(|arg| shell_quote(arg)))
         .collect::<Vec<_>>()
         .join(" ");
-    let output = Command::new("script")
+    let mut child = Command::new("script")
         .args(["-qfec", &command, "/dev/null"])
         .env("NANO_HOME", home.path())
         .env("SSH_CONNECTION", "127.0.0.1 1 127.0.0.1 2")
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
-    assert!(!output.status.success());
-    assert!(!home.path().join("activation/authority.jsonl").exists());
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"BOOTSTRAP owner-1\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(home.path().join("activation/authority.jsonl").exists());
 }
 
 #[test]

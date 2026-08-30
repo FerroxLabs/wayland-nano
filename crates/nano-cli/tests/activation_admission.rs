@@ -266,11 +266,24 @@ fn bootstrap(home: &std::path::Path, issuer_key: &SigningKey, receipt: &SigningK
     );
     let root = home.join("activation");
     std::fs::create_dir_all(&root).unwrap();
+    let bootstrap_receipt = nano_activation::admin::sign_bootstrap_receipt(
+        &snapshot,
+        &TestReceiptSigner(SigningKey::from_bytes(&receipt.to_bytes())),
+    )
+    .unwrap();
     let mut bytes = serde_jcs::to_vec(&AuthorityRecord::Bootstrap {
         sequence: 1,
-        snapshot,
+        snapshot: snapshot.clone(),
     })
     .unwrap();
+    bytes.push(b'\n');
+    bytes.extend_from_slice(
+        &serde_jcs::to_vec(&AuthorityRecord::BootstrapReceipt {
+            sequence: 2,
+            receipt: String::from_utf8(bootstrap_receipt).unwrap(),
+        })
+        .unwrap(),
+    );
     bytes.push(b'\n');
     std::fs::write(root.join("authority.jsonl"), bytes).unwrap();
 }
