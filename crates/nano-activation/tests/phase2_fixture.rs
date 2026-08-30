@@ -41,6 +41,15 @@ fn fixture_uses_reducers_separates_private_handoff_and_enables_exact_artifact() 
         std::process::Command::new("git")
             .arg("-C")
             .arg(git_path(&checkout))
+            .args(["checkout", "--detach", SOURCE])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(git_path(&checkout))
             .args([
                 "remote",
                 "set-url",
@@ -196,6 +205,15 @@ fn prepared_case() -> PreparedCase {
             ])
             .arg(git_path(&source_checkout))
             .arg(git_path(&checkout))
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(git_path(&checkout))
+            .args(["checkout", "--detach", SOURCE])
             .status()
             .unwrap()
             .success()
