@@ -2394,6 +2394,7 @@ mod tests {
     use super::*;
     use crate::receipt::ReceiptError;
     use ed25519_dalek::{Signer as _, SigningKey};
+    #[cfg(windows)]
     use std::process::Command;
 
     struct CrashSigner(SigningKey, String);
