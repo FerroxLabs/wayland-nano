@@ -358,6 +358,7 @@ fn prepare_offline_challenge(
     prepare_offline_challenge_at(nano_home, paths, admin_id, output_path, &global_path)
 }
 
+#[cfg_attr(not(windows), allow(unused_variables))]
 fn prepare_offline_challenge_at(
     nano_home: &Path,
     paths: &BootstrapKeyPaths,
@@ -450,6 +451,7 @@ fn apply_offline_authorization(
     apply_offline_authorization_at(nano_home, paths, admin_id, authorization_path, &global_path)
 }
 
+#[cfg_attr(not(windows), allow(unused_variables))]
 fn apply_offline_authorization_at(
     nano_home: &Path,
     paths: &BootstrapKeyPaths,
