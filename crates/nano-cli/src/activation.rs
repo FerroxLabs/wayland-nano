@@ -313,13 +313,17 @@ pub fn run_admin_command(
     args: &[String],
     out: &mut dyn std::io::Write,
 ) -> i32 {
-    if args.first().map(String::as_str) != Some("bootstrap") {
-        eprintln!(
-            "usage: wayland-nano admin bootstrap --admin-id <id> --admin-root-keyref <file> --recovery-root-keyref <file> --receipt-signer-keyref <file> --local-cli-keyref <file>"
-        );
-        return 2;
+    if matches!(
+        args.first().map(String::as_str),
+        Some("offline-bootstrap-challenge" | "offline-bootstrap-apply")
+    ) {
+        return nano_activation::run_phase2_offline_bootstrap_command(home, args, out);
     }
-    match bootstrap_admin_cli(home, &args[1..]) {
+    let result = match args.first().map(String::as_str) {
+        Some("bootstrap") => bootstrap_admin_cli(home, &args[1..]),
+        _ => Err(admin_usage().into()),
+    };
+    match result {
         Ok(message) => {
             let _ = writeln!(out, "{message}");
             0
@@ -329,6 +333,10 @@ pub fn run_admin_command(
             2
         }
     }
+}
+
+fn admin_usage() -> &'static str {
+    "usage: wayland-nano admin bootstrap --admin-id <id> --admin-root-keyref <file> --recovery-root-keyref <file> --receipt-signer-keyref <file> --local-cli-keyref <file> | offline-bootstrap-challenge --admin-root-keyref <file> --recovery-root-keyref <file> --receipt-signer-keyref <file> --local-cli-keyref <file> --output <owner-only-file> | offline-bootstrap-apply --admin-root-keyref <file> --recovery-root-keyref <file> --receipt-signer-keyref <file> --local-cli-keyref <file> --authorization <owner-only-file>"
 }
 
 fn bootstrap_admin_cli(home: &std::path::Path, args: &[String]) -> Result<String, String> {

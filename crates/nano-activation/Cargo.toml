@@ -17,6 +17,7 @@ serde_jcs.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 nano-session = { path = "../nano-session", version = "0.2.0" }
 
@@ -27,11 +28,16 @@ libc = "0.2"
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
+    "Win32_System_Com",
     "Win32_System_Memory",
     "Win32_System_RemoteDesktop",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

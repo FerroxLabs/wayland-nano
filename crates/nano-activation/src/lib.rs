@@ -11,6 +11,8 @@ pub mod control;
 pub mod enablement;
 pub mod journal;
 pub mod key_provider;
+mod offline_bootstrap;
+pub use offline_bootstrap::verify_offline_consumption_receipt;
 pub mod policy;
 mod raw;
 pub mod receipt;
@@ -23,6 +25,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{collections::HashSet, fmt};
+
+/// The sole cross-crate entry to the signed, one-time Phase-2 exception.
+/// Literal subcommand parsing and all proof/state types remain private.
+pub fn run_phase2_offline_bootstrap_command(
+    home: &std::path::Path,
+    args: &[String],
+    out: &mut dyn std::io::Write,
+) -> i32 {
+    offline_bootstrap::run_cli(home, args, out)
+}
 
 const ACTIVATION_DOMAIN: &[u8] = b"WAYLAND-NANO-ACTIVATION\0v1\0";
 const CONTROL_DOMAIN: &[u8] = b"WAYLAND-NANO-CONTROL\0v1\0";
