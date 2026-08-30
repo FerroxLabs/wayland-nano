@@ -1867,11 +1867,27 @@ fn secure_write_new(path: &Path, bytes: &[u8]) -> Result<(), OfflineBootstrapErr
     }
     audit_owner_only_path(parent).map_err(|_| OfflineBootstrapError::AuthorizationCustody)?;
     if path.exists() {
-        return if secure_read(path)? == bytes {
-            Ok(())
-        } else {
-            Err(OfflineBootstrapError::ReplayConflict)
-        };
+        let existing = secure_read(path)?;
+        if existing == bytes {
+            return Ok(());
+        }
+        if !existing.is_empty() {
+            return Err(OfflineBootstrapError::ReplayConflict);
+        }
+        let mut file = open_write_no_follow(path)?;
+        let before = file_identity(&file)?;
+        #[cfg(windows)]
+        if !file.metadata()?.is_file() || file_link_count(&file)? != 1 {
+            return Err(OfflineBootstrapError::AuthorizationCustody);
+        }
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        let after = file_identity(&file)?;
+        if before.0 != after.0 || before.1 != after.1 || after.2 != bytes.len() as u64 {
+            return Err(OfflineBootstrapError::AuthorizationCustody);
+        }
+        return audit_owner_only_path(path)
+            .map_err(|_| OfflineBootstrapError::AuthorizationCustody);
     }
     let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
     #[cfg(windows)]
@@ -2035,6 +2051,15 @@ fn remote_session_observed() -> Result<bool, OfflineBootstrapError> {
 #[cfg(not(windows))]
 fn open_read_no_follow(path: &Path) -> Result<File, OfflineBootstrapError> {
     Ok(File::open(path)?)
+}
+#[cfg(not(windows))]
+fn open_write_no_follow(path: &Path) -> Result<File, OfflineBootstrapError> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    Ok(OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?)
 }
 #[cfg(not(windows))]
 fn open_running_executable(path: &Path) -> Result<File, OfflineBootstrapError> {
@@ -2281,6 +2306,21 @@ fn open_read_no_follow(path: &Path) -> Result<File, OfflineBootstrapError> {
 }
 
 #[cfg(windows)]
+fn open_write_no_follow(path: &Path) -> Result<File, OfflineBootstrapError> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    let file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    if file.metadata()?.file_attributes() & 0x400 != 0 {
+        return Err(OfflineBootstrapError::AuthorizationCustody);
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
 fn open_running_executable(path: &Path) -> Result<File, OfflineBootstrapError> {
     use std::os::windows::fs::OpenOptionsExt as _;
     use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
@@ -2463,6 +2503,10 @@ mod tests {
         }
 
         fn prepare(&self, output: &Path) -> Result<Vec<u8>, OfflineBootstrapError> {
+            if !output.exists() {
+                std::fs::write(output, []).unwrap();
+                secure_test_file(output);
+            }
             prepare_offline_challenge_at(&self.home, &self.paths, ADMIN_ID, output, &self.global)
         }
     }
