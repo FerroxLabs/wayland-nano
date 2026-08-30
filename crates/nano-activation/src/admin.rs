@@ -435,11 +435,14 @@ fn platform_owner_terminal() -> Result<(std::fs::File, std::fs::File), Bootstrap
 
 #[cfg(unix)]
 fn verify_unix_login_provenance(fd: std::os::fd::RawFd) -> Result<(), BootstrapError> {
-    let mut tty_buffer = [0i8; 256];
+    let mut tty_buffer = [0 as libc::c_char; 256];
     if unsafe { libc::ttyname_r(fd, tty_buffer.as_mut_ptr(), tty_buffer.len()) } != 0 {
         return Err(BootstrapError::NoControllingTty);
     }
-    let tty = unsafe { std::ffi::CStr::from_ptr(tty_buffer.as_ptr()) }.to_string_lossy();
+    let tty = unsafe {
+        std::ffi::CStr::from_ptr(tty_buffer.as_ptr().cast::<std::ffi::c_char>())
+    }
+    .to_string_lossy();
     let tty = tty.strip_prefix("/dev/").unwrap_or(&tty);
     let tty_path =
         std::ffi::CString::new(format!("/dev/{tty}")).map_err(|_| BootstrapError::RemoteSession)?;
