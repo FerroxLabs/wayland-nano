@@ -1,5 +1,5 @@
-use nano_agent::turn::{ToolExecutor, ToolOutcome};
-use nano_model::types::ToolCall;
+use nano_agent::turn::{ModelDriver, ToolExecutor, ToolOutcome};
+use nano_model::types::{ModelEvent, ModelRequest, ModelResponse, ToolCall, Usage};
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -163,4 +163,149 @@ fn production_wiring_omits_legacy_surfaces_and_blocks_environment_reenablement()
     assert!(exec.contains("CronjobExecutor::quarantined"));
     assert!(!exec.contains("vec![nano_agent::cron::cronjob_tool_definition()]"));
     assert!(fire.contains("const fn phase2_cron_quarantined() -> bool"));
+}
+
+#[derive(Debug)]
+enum EphemeralModel {
+    Text,
+    PersistentTool,
+}
+
+#[async_trait::async_trait]
+impl ModelDriver for EphemeralModel {
+    async fn complete(
+        &self,
+        request: &ModelRequest,
+    ) -> Result<ModelResponse, nano_model::types::ModelError> {
+        assert!(request.tools.is_empty());
+        let events = match self {
+            Self::Text => vec![
+                ModelEvent::TextDelta("ephemeral answer".into()),
+                ModelEvent::Done {
+                    stop_reason: "end_turn".into(),
+                },
+            ],
+            Self::PersistentTool => vec![ModelEvent::ToolCallComplete(call(
+                "memory_save",
+                serde_json::json!({"text":"SECRET-CANARY"}),
+            ))],
+        };
+        Ok(ModelResponse {
+            events,
+            usage: Usage::default(),
+            stop_reason: "end_turn".into(),
+            model: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn nonpersistent_prompt_is_in_memory_and_persistent_tool_is_typed_refused() {
+    let session_id = format!("volatile-{}-1", std::process::id());
+    let input = format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/new\",\"params\":{{\"cwd\":\".\"}}}}\n{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/prompt\",\"params\":{{\"sessionId\":\"{session_id}\",\"prompt\":[{{\"type\":\"text\",\"text\":\"hello\"}}]}}}}\n"
+    );
+    let mut output = Vec::new();
+    nano_cli::acp_mode::serve_nonpersistent(
+        std::io::Cursor::new(input),
+        &mut output,
+        "flux-auto",
+        &[],
+        &EphemeralModel::Text,
+    )
+    .await
+    .unwrap();
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("ephemeral answer"));
+    assert!(output.contains("end_turn"));
+    assert!(!output.contains("SECRET-CANARY"));
+
+    let mut refused = Vec::new();
+    nano_cli::acp_mode::serve_nonpersistent(
+        std::io::Cursor::new(format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/new\",\"params\":{{}}}}\n{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/prompt\",\"params\":{{\"sessionId\":\"{session_id}\",\"prompt\":[{{\"type\":\"text\",\"text\":\"persist\"}}]}}}}\n"
+        )),
+        &mut refused,
+        "flux-auto",
+        &[],
+        &EphemeralModel::PersistentTool,
+    )
+    .await
+    .unwrap();
+    let refused = String::from_utf8(refused).unwrap();
+    assert!(refused.contains("unknown_tool"));
+    assert!(refused.contains("exposes no tools or persistent effects"));
+    assert!(!refused.contains("SECRET-CANARY"));
+}
+
+#[test]
+fn explicit_nonpersistent_process_launches_without_carrier_and_writes_no_state() {
+    let home = tempfile::tempdir().unwrap();
+    seed_legacy_state(home.path());
+    let before = inventory(home.path());
+    let key_home = tempfile::tempdir().unwrap();
+    let key = key_home.path().join("flux.key");
+    std::fs::write(&key, "test-only-flux-key").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wayland-nano"))
+        .args(["acp-host", "--nonpersistent"])
+        .env("NANO_HOME", home.path())
+        .env("FLUX_API_KEY_FILE", &key)
+        .env("NANO_MEMORY_WRITE", "true")
+        .env("NANO_CRON_ENABLED", "true")
+        .env("NANO_HOOKS_ENABLED", "true")
+        .current_dir(home.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut frame = String::new();
+    writeln!(
+        stdin,
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{{}}}}"
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    std::io::BufRead::read_line(&mut stdout, &mut frame).unwrap();
+    assert!(frame.contains("wayland-nano-nonpersistent"));
+    frame.clear();
+    writeln!(
+        stdin,
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\",\"params\":{{\"cwd\":\".\"}}}}"
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    std::io::BufRead::read_line(&mut stdout, &mut frame).unwrap();
+    let created: serde_json::Value = serde_json::from_str(&frame).unwrap();
+    let session_id = created["result"]["sessionId"].as_str().unwrap();
+    assert!(session_id.starts_with("volatile-"));
+    let prompt = serde_json::json!({
+        "jsonrpc":"2.0", "id":3, "method":"session/prompt",
+        "params":{"sessionId":session_id,"prompt":[]}
+    });
+    writeln!(stdin, "{}", serde_json::to_string(&prompt).unwrap()).unwrap();
+    stdin.flush().unwrap();
+    frame.clear();
+    std::io::BufRead::read_line(&mut stdout, &mut frame).unwrap();
+    assert!(frame.contains("accepts text prompts only"));
+    writeln!(stdin, "{{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"session/load\",\"params\":{{\"sessionId\":\"main\"}}}}")
+        .unwrap();
+    stdin.flush().unwrap();
+    frame.clear();
+    std::io::BufRead::read_line(&mut stdout, &mut frame).unwrap();
+    assert!(frame.contains("sessions cannot be loaded"));
+    drop(stdin);
+    let mut remainder = String::new();
+    std::io::Read::read_to_string(&mut stdout, &mut remainder).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(remainder.is_empty());
+    assert_eq!(inventory(home.path()), before);
 }

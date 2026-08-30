@@ -19,7 +19,18 @@ fn main() {
                 .build()
                 .expect("tokio runtime");
             let home = nano_home();
-            match runtime.block_on(acp_mode::run(&home)) {
+            let nonpersistent =
+                args.get(2).map(String::as_str) == Some("--nonpersistent") && args.len() == 3;
+            if args.len() > 2 && !nonpersistent {
+                eprintln!("usage: wayland-nano acp-host [--nonpersistent]");
+                std::process::exit(2);
+            }
+            let result = if nonpersistent {
+                runtime.block_on(acp_mode::run_nonpersistent(&home))
+            } else {
+                runtime.block_on(acp_mode::run(&home))
+            };
+            match result {
                 Ok(code) => code,
                 Err(err) => {
                     eprintln!("wayland-nano: acp io error: {err}");

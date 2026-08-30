@@ -1251,6 +1251,255 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
     serve_admitted(reader, writer, &config, make_driver, make_tools, activation).await
 }
 
+/// Explicit Phase 2 compatibility host. It deliberately owns no Nano home,
+/// journal, memory, hook, cron, task, MCP, attachment, or tool capability.
+/// Conversation state exists only in this process and disappears on exit.
+pub async fn run_nonpersistent(_nano_home: &std::path::Path) -> std::io::Result<i32> {
+    let env_reader = |name: &str| std::env::var(name).ok();
+    let now = unix_now_secs();
+    let flux_key = crate::flux_key::flux_api_key();
+    let (router, payload_diag) = crate::provider_router::ProviderRouter::from_env();
+    if let Some(diag) = payload_diag {
+        eprintln!("wayland-nano: {diag}");
+    }
+    let routable = router.credentialed_proven_providers(&env_reader, now);
+    if flux_key.is_none() && routable.is_empty() {
+        eprintln!("wayland-nano: {}", router.no_credential_message());
+        return Ok(2);
+    }
+    let default_model = router
+        .initial_model(flux_key.as_deref(), &env_reader, now)
+        .expect("credentialed provider checked");
+    let binding = match router.resolve_binding(&default_model, &env_reader, now) {
+        Ok(binding) => binding,
+        Err(_) => {
+            eprintln!("wayland-nano: nonpersistent provider binding unavailable");
+            return Ok(2);
+        }
+    };
+    let mut policy = nano_egress::policy::EgressPolicy::flux_only();
+    for provider in router.credentialed_providers(&env_reader, now) {
+        policy = policy.allow_url(provider.spec.base_url);
+    }
+    let driver = runtime_driver(&binding, &policy);
+    let mut available = vec![AvailableModel {
+        id: default_model.clone(),
+        name: default_model.clone(),
+    }];
+    available.extend(
+        router
+            .advertised_models()
+            .into_iter()
+            .filter(|model| model.id != default_model),
+    );
+    serve_nonpersistent(
+        std::io::BufReader::new(std::io::stdin()),
+        std::io::stdout(),
+        &default_model,
+        &available,
+        &driver,
+    )
+    .await
+}
+
+pub async fn serve_nonpersistent<R, W, D>(
+    reader: R,
+    mut writer: W,
+    default_model: &str,
+    available_models: &[AvailableModel],
+    driver: &D,
+) -> std::io::Result<i32>
+where
+    R: BufRead,
+    W: Write,
+    D: ModelDriver,
+{
+    let mut session: Option<(String, Vec<Message>)> = None;
+    let mut next_session = 1u64;
+    for raw in reader.lines() {
+        let raw = raw?;
+        if raw.len() > 32 * 1024 {
+            serde_json::to_writer(
+                &mut writer,
+                &JsonRpcResponse::err_typed(
+                    serde_json::Value::Null,
+                    NanoErrorKind::InvalidParams,
+                    "nonpersistent compatibility frame is too large",
+                    NanoErrorExtras::default(),
+                ),
+            )?;
+            writer.write_all(b"\n")?;
+            writer.flush()?;
+            continue;
+        }
+        let request: JsonRpcRequest = match serde_json::from_str(&raw) {
+            Ok(request) => request,
+            Err(_) => {
+                serde_json::to_writer(
+                    &mut writer,
+                    &JsonRpcResponse::err(serde_json::Value::Null, -32700, "parse error"),
+                )?;
+                writer.write_all(b"\n")?;
+                writer.flush()?;
+                continue;
+            }
+        };
+        let response = match request.method.as_str() {
+            "initialize" => JsonRpcResponse::ok(
+                request.id,
+                serde_json::json!({
+                    "protocolVersion": nano_protocol::acp::ACP_PROTOCOL_VERSION,
+                    "agentCapabilities": {
+                        "loadSession": false,
+                        "promptCapabilities": {"text": true, "image": false, "embeddedContext": false},
+                        "mcpCapabilities": {"http": false, "sse": false},
+                        "nanoExtensions": {}
+                    },
+                    "agentInfo": {"name": "wayland-nano-nonpersistent", "version": env!("CARGO_PKG_VERSION")}
+                }),
+            ),
+            "session/new" => {
+                let session_id = format!("volatile-{}-{next_session}", std::process::id());
+                next_session += 1;
+                session = Some((session_id.clone(), Vec::new()));
+                JsonRpcResponse::ok(
+                    request.id,
+                    session_new_result(&session_id, default_model, available_models),
+                )
+            }
+            "session/load" => JsonRpcResponse::err_typed(
+                request.id,
+                NanoErrorKind::InvalidParams,
+                "nonpersistent compatibility sessions cannot be loaded",
+                NanoErrorExtras::default(),
+            ),
+            "session/prompt" => {
+                let Some((session_id, history)) = session.as_mut() else {
+                    let response = JsonRpcResponse::err_typed(
+                        request.id,
+                        NanoErrorKind::NoSession,
+                        "no session: call session/new first",
+                        NanoErrorExtras::default(),
+                    );
+                    serde_json::to_writer(&mut writer, &response)?;
+                    writer.write_all(b"\n")?;
+                    writer.flush()?;
+                    continue;
+                };
+                let params = request.params.unwrap_or_default();
+                if params.get("sessionId").and_then(serde_json::Value::as_str)
+                    != Some(session_id.as_str())
+                {
+                    JsonRpcResponse::err_typed(
+                        request.id,
+                        NanoErrorKind::InvalidParams,
+                        "nonpersistent session id mismatch",
+                        NanoErrorExtras::default(),
+                    )
+                } else {
+                    let blocks = params
+                        .get("prompt")
+                        .and_then(serde_json::Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut prompt = String::new();
+                    let valid = !blocks.is_empty()
+                        && blocks.iter().all(|block| {
+                            if block.get("type").and_then(serde_json::Value::as_str) != Some("text")
+                            {
+                                return false;
+                            }
+                            let Some(text) = block.get("text").and_then(serde_json::Value::as_str)
+                            else {
+                                return false;
+                            };
+                            prompt.push_str(text);
+                            true
+                        });
+                    if !valid {
+                        JsonRpcResponse::err_typed(
+                            request.id,
+                            NanoErrorKind::InvalidParams,
+                            "nonpersistent compatibility accepts text prompts only",
+                            NanoErrorExtras::default(),
+                        )
+                    } else if prompt.len() > 32 * 1024 || history.len() >= 64 {
+                        JsonRpcResponse::err_typed(
+                            request.id,
+                            NanoErrorKind::BudgetExhausted,
+                            "nonpersistent compatibility context bound reached",
+                            NanoErrorExtras::default(),
+                        )
+                    } else {
+                        let mut messages = history.clone();
+                        messages.push(Message::user(prompt));
+                        let model_request = nano_model::types::ModelRequest {
+                            model: default_model.to_string(),
+                            messages: messages.clone(),
+                            tools: Vec::new(),
+                            stream: true,
+                            ..Default::default()
+                        };
+                        match driver.complete(&model_request).await {
+                            Err(_) => JsonRpcResponse::err_typed(
+                                request.id,
+                                NanoErrorKind::ModelTransport,
+                                "nonpersistent model request failed",
+                                NanoErrorExtras::default(),
+                            ),
+                            Ok(model_response)
+                                if model_response.events.iter().any(|event| {
+                                    matches!(
+                                        event,
+                                        nano_model::types::ModelEvent::ToolCallComplete(_)
+                                    )
+                                }) =>
+                            {
+                                JsonRpcResponse::err_typed(
+                                    request.id,
+                                    NanoErrorKind::UnknownTool,
+                                    "nonpersistent compatibility exposes no tools or persistent effects",
+                                    NanoErrorExtras::default(),
+                                )
+                            }
+                            Ok(model_response) => {
+                                let text = model_response
+                                    .events
+                                    .iter()
+                                    .filter_map(|event| match event {
+                                        nano_model::types::ModelEvent::TextDelta(text) => {
+                                            Some(text.as_str())
+                                        }
+                                        _ => None,
+                                    })
+                                    .collect::<String>();
+                                messages.push(Message {
+                                    role: Role::Assistant,
+                                    content: vec![ContentBlock::Text { text: text.clone() }],
+                                });
+                                *history = messages;
+                                if !text.is_empty() {
+                                    serde_json::to_writer(
+                                        &mut writer,
+                                        &agent_message_chunk(session_id, &text),
+                                    )?;
+                                    writer.write_all(b"\n")?;
+                                }
+                                JsonRpcResponse::ok(request.id, prompt_result("end_turn"))
+                            }
+                        }
+                    }
+                }
+            }
+            _ => JsonRpcResponse::err(request.id, -32601, "method not found"),
+        };
+        serde_json::to_writer(&mut writer, &response)?;
+        writer.write_all(b"\n")?;
+        writer.flush()?;
+    }
+    Ok(0)
+}
+
 /// P2a §5.4 (F-34): the host-startup attachment-store GC sweep. Hygiene
 /// only — every failure mode logs and defers to the next startup, NEVER
 /// blocks the host. The sweep runs ONLY on a complete reference set: a
