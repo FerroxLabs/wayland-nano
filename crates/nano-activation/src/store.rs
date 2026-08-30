@@ -25,6 +25,7 @@ impl std::fmt::Debug for AuthorityStore {
 }
 
 impl AuthorityStore {
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn acquire_authority_lock(nano_home: &Path) -> Result<FileLock, AuthorityError> {
         let activation = nano_home.join("activation");
         std::fs::create_dir_all(&activation)?;
@@ -86,6 +87,7 @@ impl AuthorityStore {
         )
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn bootstrap_initial_with_held_lock(
         nano_home: &Path,
         snapshot: AuthoritySnapshot,

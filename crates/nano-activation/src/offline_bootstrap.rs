@@ -4,6 +4,8 @@
 //! literal CLI commands named by the signed offline-bootstrap amendment; it
 //! exports no proof constructor or generic authorization interface.
 
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use crate::admin::{BootstrapError, BootstrapKeyPaths, sign_bootstrap_receipt};
 use crate::authority::{AuthorityError, AuthoritySnapshot, KeyRole};
 use crate::key_provider::{KeyProviderError, audit_owner_only_path, load_key_reference};
