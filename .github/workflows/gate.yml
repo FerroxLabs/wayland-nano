@@ -226,6 +226,19 @@ jobs:
             throw "Windows workspace tests failed"
           }
 
+      - name: Phase 2 evidence fixture (Windows feature gate)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test --locked -p nano-activation --features phase2-fixture --test phase2_fixture -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Phase 2 evidence fixture tests failed"
+          }
+          cargo clippy --locked -p nano-activation --features phase2-fixture --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) {
+            throw "Phase 2 evidence fixture lint failed"
+          }
+
       - name: gate-test (Windows verifier scoped temp)
         if: runner.os == 'Windows'
         shell: pwsh

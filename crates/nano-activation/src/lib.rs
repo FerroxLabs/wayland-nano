@@ -13,6 +13,8 @@ pub mod journal;
 pub mod key_provider;
 mod offline_bootstrap;
 pub use offline_bootstrap::verify_offline_consumption_receipt;
+#[cfg(feature = "phase2-fixture")]
+pub mod phase2_fixture;
 pub mod policy;
 mod raw;
 pub mod receipt;
