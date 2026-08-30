@@ -61,6 +61,8 @@ pub enum BootstrapError {
     AlreadyBootstrapped,
     #[error("Nano home is not secure and owner controlled")]
     InsecureHome,
+    #[error("bootstrap keys and key references must be distinct across roles")]
+    RoleKeyReuse,
     #[error(transparent)]
     Authority(#[from] AuthorityError),
     #[error(transparent)]
@@ -80,10 +82,21 @@ pub fn bootstrap(
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
         return Err(BootstrapError::NoControllingTty);
     }
-    load_key_reference(&paths.admin_root, KeyRole::AdminRoot)?;
-    load_key_reference(&paths.recovery_root, KeyRole::RecoveryRoot)?;
-    load_key_reference(&paths.receipt_signer, KeyRole::ReceiptSigner)?;
-    load_key_reference(&paths.local_cli_issuer, KeyRole::LocalCliIssuer)?;
+    let references = [
+        load_key_reference(&paths.admin_root, KeyRole::AdminRoot)?,
+        load_key_reference(&paths.recovery_root, KeyRole::RecoveryRoot)?,
+        load_key_reference(&paths.receipt_signer, KeyRole::ReceiptSigner)?,
+        load_key_reference(&paths.local_cli_issuer, KeyRole::LocalCliIssuer)?,
+    ];
+    for left in 0..references.len() {
+        for right in left + 1..references.len() {
+            if (references[left].provider(), references[left].reference())
+                == (references[right].provider(), references[right].reference())
+            {
+                return Err(BootstrapError::RoleKeyReuse);
+            }
+        }
+    }
     let request = BootstrapRequest::new(
         keys.admin_root,
         keys.recovery_root,
@@ -98,6 +111,17 @@ fn bootstrap_attested(
     nano_home: &Path,
     request: BootstrapRequest,
 ) -> Result<AuthorityStore, BootstrapError> {
+    let public_keys = [
+        request.admin_public_key,
+        request.recovery_public_key,
+        request.receipt_signer_public_key,
+        request.local_cli_public_key,
+    ];
+    for left in 0..public_keys.len() {
+        if public_keys[left + 1..].contains(&public_keys[left]) {
+            return Err(BootstrapError::RoleKeyReuse);
+        }
+    }
     if nano_home.join("activation/authority.jsonl").exists() {
         return Err(BootstrapError::AlreadyBootstrapped);
     }
@@ -294,5 +318,34 @@ $directory.SetAccessControl($acl)
             ),
             Err(BootstrapError::AlreadyBootstrapped)
         ));
+    }
+
+    #[test]
+    fn attested_bootstrap_rejects_role_key_reuse() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            bootstrap_attested(
+                home.path(),
+                BootstrapRequest::new([1; 32], [1; 32], [3; 32], [4; 32], "root-1")
+            ),
+            Err(BootstrapError::RoleKeyReuse)
+        ));
+        assert!(!home.path().join("activation").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attested_bootstrap_rejects_insecure_home() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(
+            bootstrap_attested(
+                home.path(),
+                BootstrapRequest::new([1; 32], [2; 32], [3; 32], [4; 32], "root-1")
+            ),
+            Err(BootstrapError::InsecureHome)
+        ));
+        assert!(!home.path().join("activation").exists());
     }
 }

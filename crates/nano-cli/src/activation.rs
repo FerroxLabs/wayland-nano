@@ -290,10 +290,11 @@ pub fn run_activation_command(
     out: &mut dyn std::io::Write,
 ) -> i32 {
     let result = match args.first().map(String::as_str) {
+        Some("admin-bootstrap") => bootstrap_admin_cli(home, &args[1..]),
         Some("admin-apply") => apply_admin_cli(home, &args[1..]),
         Some("enable-apply") => apply_enable_cli(home, &args[1..]),
         Some("receipt-verify") => verify_receipt_cli(&args[1..]),
-        _ => Err("usage: wayland-nano activation admin-apply --request <file> --command <file> | enable-apply --request <file> --command <file> | receipt-verify --receipt <file> --public-key <64-hex>".into()),
+        _ => Err("usage: wayland-nano activation admin-bootstrap --confirm OWNER-BOOTSTRAP --admin-id <id> --admin-root-keyref <file> --admin-root-public-key <64-hex> --recovery-root-keyref <file> --recovery-root-public-key <64-hex> --receipt-signer-keyref <file> --receipt-signer-public-key <64-hex> --local-cli-keyref <file> --local-cli-public-key <64-hex> | admin-apply --request <file> --command <file> | enable-apply --request <file> --command <file> | receipt-verify --receipt <file> --public-key <64-hex>".into()),
     };
     match result {
         Ok(message) => {
@@ -305,6 +306,78 @@ pub fn run_activation_command(
             2
         }
     }
+}
+
+fn bootstrap_admin_cli(home: &std::path::Path, args: &[String]) -> Result<String, String> {
+    const CONFIRMATION: &str = "OWNER-BOOTSTRAP";
+    let mut values = std::collections::BTreeMap::<&str, &str>::new();
+    let mut chunks = args.chunks_exact(2);
+    for pair in &mut chunks {
+        let name = pair[0].as_str();
+        if !matches!(
+            name,
+            "--confirm"
+                | "--admin-id"
+                | "--admin-root-keyref"
+                | "--admin-root-public-key"
+                | "--recovery-root-keyref"
+                | "--recovery-root-public-key"
+                | "--receipt-signer-keyref"
+                | "--receipt-signer-public-key"
+                | "--local-cli-keyref"
+                | "--local-cli-public-key"
+        ) || values.insert(name, pair[1].as_str()).is_some()
+        {
+            return Err("invalid admin bootstrap arguments".into());
+        }
+    }
+    if !chunks.remainder().is_empty() {
+        return Err("invalid admin bootstrap arguments".into());
+    }
+    let required = |name: &str| {
+        values
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("admin bootstrap requires {name}"))
+    };
+    if required("--confirm")? != CONFIRMATION {
+        return Err("admin bootstrap requires explicit OWNER-BOOTSTRAP confirmation".into());
+    }
+    let admin_id = required("--admin-id")?;
+    validate_cli_id(admin_id).map_err(|_| "admin bootstrap administrator id is invalid")?;
+    let paths = nano_activation::admin::BootstrapKeyPaths {
+        admin_root: required("--admin-root-keyref")?.into(),
+        recovery_root: required("--recovery-root-keyref")?.into(),
+        receipt_signer: required("--receipt-signer-keyref")?.into(),
+        local_cli_issuer: required("--local-cli-keyref")?.into(),
+    };
+    let keys = nano_activation::admin::BootstrapPublicKeys {
+        admin_root: decode_bootstrap_public_key(required("--admin-root-public-key")?)?,
+        recovery_root: decode_bootstrap_public_key(required("--recovery-root-public-key")?)?,
+        receipt_signer: decode_bootstrap_public_key(required("--receipt-signer-public-key")?)?,
+        local_cli_issuer: decode_bootstrap_public_key(required("--local-cli-public-key")?)?,
+    };
+    nano_activation::admin::bootstrap(home, &paths, keys, admin_id, true)
+        .map_err(bootstrap_refusal)?;
+    Ok("activation administrator bootstrapped".into())
+}
+
+fn decode_bootstrap_public_key(value: &str) -> Result<[u8; 32], String> {
+    decode_public_key(value).map_err(|_| "admin bootstrap public key is invalid".into())
+}
+
+fn bootstrap_refusal(error: nano_activation::admin::BootstrapError) -> String {
+    use nano_activation::admin::BootstrapError;
+    match error {
+        BootstrapError::ConfirmationRequired => "admin bootstrap confirmation required",
+        BootstrapError::NoControllingTty => "admin bootstrap requires controlling TTY",
+        BootstrapError::AlreadyBootstrapped => "admin bootstrap authority already exists",
+        BootstrapError::InsecureHome => "admin bootstrap Nano home is not owner-only",
+        BootstrapError::RoleKeyReuse => "admin bootstrap role keys must be distinct",
+        BootstrapError::KeyProvider(_) => "admin bootstrap key reference refused",
+        BootstrapError::Authority(_) => "admin bootstrap authority commit refused",
+    }
+    .into()
 }
 
 fn two_paths(args: &[String]) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
