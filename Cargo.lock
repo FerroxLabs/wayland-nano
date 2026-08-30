@@ -1732,6 +1732,7 @@ name = "nano-activation"
 version = "0.2.0"
 dependencies = [
  "base64",
+ "chrono",
  "ed25519-dalek 3.0.0",
  "libc",
  "nano-session",

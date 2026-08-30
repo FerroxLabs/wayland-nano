@@ -25,6 +25,16 @@ impl std::fmt::Debug for AuthorityStore {
 }
 
 impl AuthorityStore {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn acquire_authority_lock(nano_home: &Path) -> Result<FileLock, AuthorityError> {
+        let activation = nano_home.join("activation");
+        std::fs::create_dir_all(&activation)?;
+        FileLock::try_acquire(&activation.join("authority.lock")).map_err(|error| match error {
+            nano_session::LockError::Busy => AuthorityError::Contention,
+            nano_session::LockError::Io(error) => AuthorityError::Io(error),
+        })
+    }
+
     pub fn open(nano_home: &Path) -> Result<Self, AuthorityError> {
         let activation = nano_home.join("activation");
         std::fs::create_dir_all(&activation)?;
@@ -67,18 +77,37 @@ impl AuthorityStore {
         receipt: Vec<u8>,
         after_bootstrap_record: F,
     ) -> Result<Self, AuthorityError> {
+        let lock = Self::acquire_authority_lock(nano_home)?;
+        Self::bootstrap_initial_with_held_lock_and_fault(
+            nano_home,
+            snapshot,
+            receipt,
+            lock,
+            after_bootstrap_record,
+        )
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn bootstrap_initial_with_held_lock(
+        nano_home: &Path,
+        snapshot: AuthoritySnapshot,
+        receipt: Vec<u8>,
+        lock: FileLock,
+    ) -> Result<Self, AuthorityError> {
+        Self::bootstrap_initial_with_held_lock_and_fault(nano_home, snapshot, receipt, lock, || {})
+    }
+
+    fn bootstrap_initial_with_held_lock_and_fault<F: FnOnce()>(
+        nano_home: &Path,
+        snapshot: AuthoritySnapshot,
+        receipt: Vec<u8>,
+        lock: FileLock,
+        after_bootstrap_record: F,
+    ) -> Result<Self, AuthorityError> {
         let activation = nano_home.join("activation");
-        std::fs::create_dir_all(&activation)?;
         let journal_path = activation.join("authority.jsonl");
         crate::admin::verify_bootstrap_receipt_snapshot(&receipt, &snapshot)
             .map_err(|_| AuthorityError::InvalidRecord)?;
-        let lock =
-            FileLock::try_acquire(&activation.join("authority.lock")).map_err(
-                |error| match error {
-                    nano_session::LockError::Busy => AuthorityError::Contention,
-                    nano_session::LockError::Io(error) => AuthorityError::Io(error),
-                },
-            )?;
         let journal_bytes = match std::fs::read(&journal_path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
