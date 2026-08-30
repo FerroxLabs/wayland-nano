@@ -6,14 +6,19 @@
 
 #![cfg_attr(not(windows), allow(dead_code))]
 
-use crate::admin::{BootstrapError, BootstrapKeyPaths, sign_bootstrap_receipt};
+#[cfg(windows)]
+use crate::admin::sign_bootstrap_receipt;
+use crate::admin::{BootstrapError, BootstrapKeyPaths};
 use crate::authority::{AuthorityError, AuthoritySnapshot, KeyRole};
 use crate::key_provider::{KeyProviderError, audit_owner_only_path, load_key_reference};
 use crate::receipt::{ArtifactIdentity, ReceiptSigner};
 use crate::signer_provider::{ExternalReceiptSigner, SignerProviderError, derive_public_key};
+#[cfg(windows)]
 use crate::store::AuthorityStore;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{DateTime, SecondsFormat, Timelike as _, Utc};
+#[cfg(windows)]
+use chrono::Timelike as _;
+use chrono::{DateTime, SecondsFormat, Utc};
 use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use nano_session::FileLock;
 use serde::{Deserialize, Serialize};
