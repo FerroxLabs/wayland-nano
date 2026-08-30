@@ -230,6 +230,7 @@ fn offline_receipt_verification_never_requires_nano_home_or_private_key() {
     assert!(!home.path().join("activation").exists());
 }
 
+#[cfg(any(windows, target_os = "linux"))]
 fn bootstrap_process_args(home: &std::path::Path) -> Vec<String> {
     vec![
         "admin".into(),
