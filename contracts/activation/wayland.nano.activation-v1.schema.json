@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wayland.nano/contracts/wayland.nano.activation-v1.schema.json",
+  "title": "wayland.nano.activation/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "issuer_id", "key_id", "alg", "issued_at", "not_before", "not_after", "nonce", "product_subject_id", "principal_id", "project_id", "activation_id", "idempotency_key", "session_id", "continuity", "capabilities", "budgets", "deadline", "controls", "signature"],
+  "$defs": {
+    "issuer": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "opaque": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "correlation": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "positiveSafeInteger": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+  },
+  "properties": {
+    "schema": {"const": "wayland.nano.activation/v1"},
+    "issuer_id": {"$ref": "#/$defs/issuer"},
+    "key_id": {"$ref": "#/$defs/issuer"},
+    "alg": {"const": "Ed25519"},
+    "issued_at": {"$ref": "#/$defs/utc"},
+    "not_before": {"$ref": "#/$defs/utc"},
+    "not_after": {"$ref": "#/$defs/utc"},
+    "nonce": {"$ref": "#/$defs/correlation"},
+    "product_subject_id": {"$ref": "#/$defs/opaque"},
+    "principal_id": {"$ref": "#/$defs/opaque"},
+    "project_id": {"$ref": "#/$defs/opaque"},
+    "activation_id": {"$ref": "#/$defs/correlation"},
+    "idempotency_key": {"$ref": "#/$defs/correlation"},
+    "session_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/correlation"}]},
+    "continuity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["strategy", "fallback", "resume_fingerprint"],
+      "properties": {
+        "strategy": {"enum": ["fresh", "session_resume", "memory_recall"]},
+        "fallback": {"enum": ["none", "fresh", "memory_recall"]},
+        "resume_fingerprint": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]}
+      }
+    },
+    "capabilities": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"enum": ["filesystem.read", "filesystem.write", "shell.execute", "network.egress", "mcp.invoke", "task.spawn", "checkpoint.mutate", "computer.use"]}},
+    "budgets": {
+      "type": "object", "additionalProperties": false,
+      "required": ["max_turns", "max_tool_calls", "max_input_tokens", "max_output_tokens", "max_cost_microcents", "wall_clock_ms"],
+      "properties": {
+        "max_turns": {"$ref": "#/$defs/positiveSafeInteger"}, "max_tool_calls": {"$ref": "#/$defs/positiveSafeInteger"},
+        "max_input_tokens": {"$ref": "#/$defs/positiveSafeInteger"}, "max_output_tokens": {"$ref": "#/$defs/positiveSafeInteger"},
+        "max_cost_microcents": {"$ref": "#/$defs/positiveSafeInteger"}, "wall_clock_ms": {"$ref": "#/$defs/positiveSafeInteger"}
+      }
+    },
+    "deadline": {"$ref": "#/$defs/utc"},
+    "controls": {"type": "array", "maxItems": 2, "uniqueItems": true, "items": {"enum": ["cancel", "pause"]}},
+    "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{86}$"}
+  }
+}

@@ -147,6 +147,7 @@ fn params(prompt: &str) -> ExecParams {
         goal: None,
         model: None,
         auto: false,
+        activation_request: None,
     }
 }
 
@@ -169,6 +170,7 @@ async fn run_fake_shared(tag: &str, model: FakeModel, params: &ExecParams) -> (E
         &dir,
         &workspace,
         params,
+        None,
         "fake-model",
         move || model.clone(),
         move || ladder_model.clone(),
@@ -620,6 +622,7 @@ async fn resume_restarts_seq_and_continues_journal() {
         &dir,
         &workspace,
         &params("first"),
+        None,
         "fake-model",
         || FakeModel::with(vec![text_response("one")]),
         || FakeModel::with(vec![text_response("one")]),
@@ -650,6 +653,7 @@ async fn resume_restarts_seq_and_continues_journal() {
         &dir,
         &workspace,
         &resumed_params,
+        None,
         "fake-model",
         || FakeModel::with(vec![text_response("two")]),
         || FakeModel::with(vec![text_response("two")]),
@@ -925,6 +929,7 @@ done
         &dir,
         &workspace,
         &params("hello"),
+        None,
         "fake-model",
         || FakeModel::with(vec![text_response("hi")]),
         || FakeModel::with(vec![text_response("hi")]),
@@ -1148,6 +1153,7 @@ async fn run_fake_on(
         dir,
         workspace,
         params,
+        None,
         "fake-model",
         move || model.clone(),
         move || ladder_model.clone(),
@@ -1192,6 +1198,7 @@ async fn s7_exec_checkpoint_create_modify_restore() {
         &dir,
         &workspace,
         &run_params,
+        None,
         "fake-model",
         {
             let script = script.clone();

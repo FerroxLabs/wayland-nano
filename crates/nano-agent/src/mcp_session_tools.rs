@@ -10,7 +10,7 @@
 //! mutate. Append failure ⇒ typed `JournalUnavailable`, set unchanged.
 
 use crate::loop_protection::ProgressSignals;
-use crate::mcp::{McpRegistry, ResourceError};
+use crate::mcp::{DelegatedEffectAuthority, McpRegistry, ResourceError};
 use crate::turn::{ToolExecutor, ToolOutcome};
 use nano_model::types::ToolCall;
 use nano_session::op::{Op, OpEnvelope};
@@ -257,6 +257,7 @@ pub struct McpSessionToolExecutor<'a> {
     /// keep resumes collision-free — the C2 ModeSet pattern).
     op_counter: AtomicU64,
     inner: &'a dyn ToolExecutor,
+    activation: Option<DelegatedEffectAuthority>,
 }
 
 impl std::fmt::Debug for McpSessionToolExecutor<'_> {
@@ -281,6 +282,41 @@ impl<'a> McpSessionToolExecutor<'a> {
             session_id,
             op_counter: AtomicU64::new(0),
             inner,
+            activation: None,
+        }
+    }
+
+    /// Bind resource wire calls to the same admitted activation as ordinary
+    /// namespaced MCP tool calls.
+    pub fn with_activation_authority(mut self, authority: DelegatedEffectAuthority) -> Self {
+        self.activation = Some(authority);
+        self
+    }
+
+    fn execute_remote(
+        &self,
+        call: &ToolCall,
+        operation: impl FnOnce() -> ToolOutcome,
+    ) -> ToolOutcome {
+        let permit = match &self.activation {
+            Some(authority) => match authority.begin(
+                nano_activation::policy::EffectiveCapability::McpInvoke,
+                "mcp.invoke",
+                &serde_json::json!({
+                    "arguments": call.arguments,
+                    "call_id": call.id,
+                    "server_tool": call.name,
+                }),
+            ) {
+                Ok(permit) => Some(permit),
+                Err(outcome) => return outcome,
+            },
+            None => None,
+        };
+        let result = operation();
+        match permit {
+            Some(permit) => permit.complete(&result).unwrap_or_else(|denial| denial),
+            None => result,
         }
     }
 
@@ -326,15 +362,19 @@ impl ToolExecutor for McpSessionToolExecutor<'_> {
                     None,
                 )
             }
-            "mcp_list_resources" => execute_list_resources(
-                registry,
-                call.arguments.get("server").and_then(|v| v.as_str()),
-            ),
-            "mcp_read_resource" => execute_read_resource(
-                registry,
-                call.arguments.get("server").and_then(|v| v.as_str()),
-                call.arguments.get("uri").and_then(|v| v.as_str()),
-            ),
+            "mcp_list_resources" => self.execute_remote(call, || {
+                execute_list_resources(
+                    registry,
+                    call.arguments.get("server").and_then(|v| v.as_str()),
+                )
+            }),
+            "mcp_read_resource" => self.execute_remote(call, || {
+                execute_read_resource(
+                    registry,
+                    call.arguments.get("server").and_then(|v| v.as_str()),
+                    call.arguments.get("uri").and_then(|v| v.as_str()),
+                )
+            }),
             _ => self.inner.execute(call).await,
         }
     }

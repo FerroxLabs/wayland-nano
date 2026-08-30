@@ -160,6 +160,33 @@ pub trait ToolExecutor: Debug + Send + Sync {
     }
 }
 
+#[async_trait::async_trait]
+impl<T: ToolExecutor + ?Sized> ToolExecutor for &T {
+    async fn execute(&self, call: &ToolCall) -> ToolOutcome {
+        (**self).execute(call).await
+    }
+
+    async fn execute_cancellable(
+        &self,
+        call: &ToolCall,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ToolOutcome {
+        (**self).execute_cancellable(call, cancel).await
+    }
+
+    fn take_image_result(&self, call_id: &str) -> Option<LiveImageToolResult> {
+        (**self).take_image_result(call_id)
+    }
+
+    fn image_results_backed(&self) -> bool {
+        (**self).image_results_backed()
+    }
+
+    fn current_mcp_tool_definitions(&self) -> Option<Vec<nano_model::types::ToolDefinition>> {
+        (**self).current_mcp_tool_definitions()
+    }
+}
+
 pub struct LiveImageToolResult {
     pub parts: nano_model::image_result::ImageToolResultParts,
     pub provenance: nano_model::image_result::ImageProvenance,

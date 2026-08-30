@@ -416,6 +416,7 @@ pub fn memory_tool_definitions(write_enabled: bool) -> Vec<ToolDefinition> {
 pub struct MemoryToolExecutor<'a> {
     store: MemoryStore,
     write_enabled: bool,
+    phase2_quarantined: bool,
     inner: &'a dyn ToolExecutor,
 }
 
@@ -424,6 +425,19 @@ impl<'a> MemoryToolExecutor<'a> {
         Self {
             store,
             write_enabled,
+            phase2_quarantined: false,
+            inner,
+        }
+    }
+
+    /// Phase 2 fail-closed wrapper. It deliberately retains the legacy
+    /// implementation for later migration while making every forced
+    /// `memory_*` invocation unreachable before the store is inspected.
+    pub fn quarantined(inner: &'a dyn ToolExecutor) -> Self {
+        Self {
+            store: MemoryStore::from_dir(std::path::PathBuf::new()),
+            write_enabled: false,
+            phase2_quarantined: true,
             inner,
         }
     }
@@ -441,6 +455,17 @@ impl<'a> MemoryToolExecutor<'a> {
 #[async_trait::async_trait]
 impl ToolExecutor for MemoryToolExecutor<'_> {
     async fn execute(&self, call: &ToolCall) -> ToolOutcome {
+        if self.phase2_quarantined && call.name.starts_with("memory_") {
+            return ToolOutcome {
+                ok: false,
+                output: format!(
+                    "{} is unavailable: legacy memory is quarantined during authenticated activation",
+                    call.name
+                ),
+                progress: ProgressSignals::default(),
+                error_kind: Some(nano_session::NanoErrorKind::UnknownTool),
+            };
+        }
         let arg = |key: &str| call.arguments.get(key).and_then(|v| v.as_str());
         match call.name.as_str() {
             "memory_list" => {

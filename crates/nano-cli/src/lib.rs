@@ -3,6 +3,7 @@
 //! doubles. The binaries (`wayland-nano`, `wayland-nano-acp-profile`) stay thin.
 
 pub mod acp_mode;
+pub mod activation;
 pub mod auth_cmds;
 pub mod auto_routing;
 pub mod cron_fire;

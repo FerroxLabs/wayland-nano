@@ -1,6 +1,7 @@
 //! `wayland-nano protocol-host` — runs the NDJSON host loop over stdin/stdout,
 //! driving real turns through the production stack (Flux + tools + sandbox).
 
+use nano_activation::policy::EffectiveCapability;
 use nano_agent::loop_protection::TurnBudget;
 use nano_agent::turn::{TurnEngine, TurnState};
 use nano_agent::wiring::{FluxDriver, RealToolExecutor, v1_tool_definitions};
@@ -27,7 +28,52 @@ fn executor_tool_definitions(
 pub async fn run(
     nano_home: &std::path::Path,
     workspace: &std::path::Path,
+    activation_request: Option<&std::path::Path>,
 ) -> std::io::Result<HostExit> {
+    let Some(request_path) = activation_request else {
+        return Ok(HostExit::Fatal(
+            "protocol-host requires --activation-request".into(),
+        ));
+    };
+    let raw = match std::fs::read(request_path) {
+        Ok(value) => value,
+        Err(_) => return Ok(HostExit::Fatal("activation request unavailable".into())),
+    };
+    let activation_gate = match nano_cli::activation::SharedAdmission::open_production(nano_home) {
+        Ok(value) => value,
+        Err(error) => return Ok(HostExit::Fatal(error)),
+    };
+    let activation_token =
+        match activation_gate.admit_transport(&raw, &nano_cli::activation::now_utc()) {
+            Ok(nano_cli::activation::TransportAdmission::Activation(token)) => {
+                nano_cli::activation::emit_receipt(token.receipt().as_bytes());
+                *token
+            }
+            Ok(_) => {
+                return Ok(HostExit::Fatal(
+                    "activation request has wrong method".into(),
+                ));
+            }
+            Err(error) => {
+                if let Some(receipt) = error.receipt() {
+                    nano_cli::activation::emit_receipt(receipt);
+                }
+                return Ok(HostExit::Fatal(format!(
+                    "activation refused: {}",
+                    error.reason()
+                )));
+            }
+        };
+    if activation_gate
+        .bind_session(&activation_token, "protocol-host")
+        .is_err()
+        || activation_gate.recheck_session("protocol-host").is_err()
+        || activation_gate
+            .mark_dispatch_eligible(&activation_token)
+            .is_err()
+    {
+        return Ok(HostExit::Fatal("activation session binding failed".into()));
+    }
     let Some(api_key) = nano_cli::flux_key::flux_api_key() else {
         eprintln!(
             "wayland-nano: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for protocol-host mode"
@@ -35,20 +81,31 @@ pub async fn run(
         return Ok(HostExit::Fatal("missing FLUX_API_KEY".into()));
     };
 
-    let policy =
-        nano_core::permissions::PermissionProfile::workspace_write().file_system_sandbox_policy();
+    let capabilities = activation_token.policy().capabilities();
+    let policy = if capabilities.contains(&EffectiveCapability::FilesystemWrite) {
+        nano_core::permissions::PermissionProfile::workspace_write().file_system_sandbox_policy()
+    } else {
+        nano_core::permissions::PermissionProfile::read_only().file_system_sandbox_policy()
+    };
     let fs = FsTools::new(policy.clone(), workspace);
     let shell = ShellTool::new(nano_home, workspace);
     let mut executor = RealToolExecutor::new(fs, shell, workspace);
     // C4: web_fetch is inert (typed denial) unless NANO_WEB_FETCH_HOSTS
     // configures the second egress policy domain.
-    if let Some(fetch) = nano_cli::fetch_specs::web_fetch_tool_from_env() {
+    if capabilities.contains(&EffectiveCapability::NetworkEgress)
+        && let Some(fetch) = nano_cli::fetch_specs::web_fetch_tool_from_env()
+    {
         executor = executor.with_web_fetch(fetch);
     }
     // P4 §5.5: the repo_map index rides the same policy + workspace; a
     // construction failure leaves the slot empty (typed denial on call).
-    match nano_tools::repomap::RepoMapTool::new(&policy, workspace) {
-        Ok(tool) => executor = executor.with_repo_map(tool),
+    match capabilities
+        .contains(&EffectiveCapability::FilesystemRead)
+        .then(|| nano_tools::repomap::RepoMapTool::new(&policy, workspace))
+        .transpose()
+    {
+        Ok(Some(tool)) => executor = executor.with_repo_map(tool),
+        Ok(None) => {}
         Err(error) => eprintln!("wayland-nano: repo_map index unavailable: {error}"),
     }
     // P1: web_search — the key-gated ladder, resolved ONCE at host start.
@@ -56,7 +113,10 @@ pub async fn run(
     // seam up (no pricing, no cap authority) until it lands.
     let search_meter: Arc<dyn nano_model::metering::UsageSink> =
         Arc::new(nano_model::metering::StubCostMeter::new());
-    let search = nano_cli::search_specs::web_search_tool_from_env(Some(search_meter.clone()));
+    let search = capabilities
+        .contains(&EffectiveCapability::NetworkEgress)
+        .then(|| nano_cli::search_specs::web_search_tool_from_env(Some(search_meter.clone())))
+        .flatten();
     if let Some(resolved) = &search {
         executor = executor.with_web_search(resolved.tool.clone(), search_meter.clone());
     }
@@ -64,13 +124,22 @@ pub async fn run(
     // host). P3 §6.1: every configured HTTP MCP server's ORIGIN also joins
     // this host's egress policy at construction (inert until the dispatcher
     // HTTP binding lands; deny-by-default otherwise unchanged).
-    let mut mcp_specs = nano_cli::mcp_specs::mcp_specs_from_env();
+    let mut mcp_specs = if capabilities.contains(&EffectiveCapability::McpInvoke) {
+        nano_cli::mcp_specs::mcp_specs_from_env()
+    } else {
+        Vec::new()
+    };
     // S8 activation: installed MCP plugins merge into the SAME registry
     // path as the operator specs (containment/egress/approval posture is
     // identical). A corrupt plugin store is a typed startup refusal (fail
     // closed); an absent store resolves empty.
-    match nano_cli::plugin_cmds::plugin_mcp_specs(nano_home) {
-        Ok(specs) => mcp_specs.extend(specs),
+    match capabilities
+        .contains(&EffectiveCapability::McpInvoke)
+        .then(|| nano_cli::plugin_cmds::plugin_mcp_specs(nano_home))
+        .transpose()
+    {
+        Ok(Some(specs)) => mcp_specs.extend(specs),
+        Ok(None) => {}
         Err(err) => {
             eprintln!("wayland-nano: plugin store unreadable; refusing to start: {err}");
             return Ok(HostExit::Fatal(format!("plugin store: {err}")));
@@ -110,13 +179,18 @@ pub async fn run(
     let journal_tail = nano_session::read_journal(&journal)
         .map(|report| report.envelopes)
         .unwrap_or_default();
-    let checkpoint_store = nano_cli::acp_mode::open_checkpoint_store(
-        nano_home,
-        workspace,
-        &coordinator,
-        "protocol-host",
-        &journal_tail,
-    );
+    let checkpoint_store = capabilities
+        .contains(&EffectiveCapability::CheckpointMutate)
+        .then(|| {
+            nano_cli::acp_mode::open_checkpoint_store(
+                nano_home,
+                workspace,
+                &coordinator,
+                "protocol-host",
+                &journal_tail,
+            )
+        })
+        .flatten();
     let gate = nano_cli::session_tools::PlanAwareApproval::new(plan.clone(), workspace);
 
     // MCP: register configured servers (parsed above for the §6.1 egress
@@ -157,8 +231,24 @@ pub async fn run(
             eprintln!("wayland-nano: {warning}");
         }
     }
+    let (artifact, epochs) = match nano_cli::activation::runtime_authority(&activation_token) {
+        Ok(value) => value,
+        Err(_) => return Ok(HostExit::Fatal("activation receipt incomplete".into())),
+    };
+    let activation_effects = nano_agent::activation_effects::ActivationEffectExecutor::new_live(
+        executor,
+        activation_token.clone(),
+        nano_home,
+        artifact,
+        epochs,
+    );
+    let delegated = match nano_cli::activation::delegated_authority(&activation_token, nano_home) {
+        Ok(value) => value,
+        Err(_) => return Ok(HostExit::Fatal("activation receipt incomplete".into())),
+    };
     let mcp_executor =
-        nano_agent::mcp::McpToolExecutor::from_shared(mcp_registry.clone(), &executor);
+        nano_agent::mcp::McpToolExecutor::from_shared(mcp_registry.clone(), &activation_effects)
+            .with_activation_authority(delegated);
     let mcp_definitions = if executor_has_registry(&mcp_executor) {
         executor_tool_definitions(&mcp_executor)
     } else {
@@ -198,16 +288,10 @@ pub async fn run(
         None => &executor,
     };
 
-    // C5: cross-session memory. The store is <nano_home>/memory; read tools
-    // and injection are always on over the user-managed store, write tools
-    // only behind NANO_MEMORY_WRITE. The block is re-rendered FRESH every
-    // turn (never cached at startup).
-    let memory_write = std::env::var("NANO_MEMORY_WRITE")
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false);
-    let memory_store = nano_agent::memory::MemoryStore::new(nano_home);
-    let executor =
-        nano_agent::memory::MemoryToolExecutor::new(memory_store.clone(), memory_write, executor);
+    // Phase 2: protocol-host is persistent and authenticated, but legacy
+    // filesystem/T2 memory remains quarantined until its later migration.
+    // Keep a forced-call backstop without opening the store.
+    let executor = nano_agent::memory::MemoryToolExecutor::quarantined(executor);
 
     // Skills: default roots are <nano_home>/skills and <workspace>/.nano/skills;
     // installed skills plugins join the same discovery roots. Same fail-closed
@@ -226,6 +310,18 @@ pub async fn run(
     let skill_context = nano_agent::skills::prepare_skill_context(&skill_roots);
 
     let mut tool_definitions = v1_tool_definitions(search.is_some(), false);
+    tool_definitions.retain(|definition| {
+        let needed = match definition.name.as_str() {
+            "fs_read" | "fs_list" | "search" | "repo_map" | "view_image" => {
+                Some(EffectiveCapability::FilesystemRead)
+            }
+            "fs_write" | "fs_edit" => Some(EffectiveCapability::FilesystemWrite),
+            "shell" => Some(EffectiveCapability::ShellExecute),
+            "web_fetch" | "web_search" => Some(EffectiveCapability::NetworkEgress),
+            _ => None,
+        };
+        needed.is_none_or(|capability| capabilities.contains(&capability))
+    });
     tool_definitions.extend(mcp_definitions);
     {
         let registry = mcp_registry.lock().unwrap_or_else(|p| p.into_inner());
@@ -239,10 +335,9 @@ pub async fn run(
             resources_available,
         ));
     }
-    tool_definitions.extend(nano_agent::memory::memory_tool_definitions(memory_write));
     // S7: the checkpoint definitions advertise exactly when the store
     // opened — the executor wrap above is the servicing half.
-    if checkpoint_store.is_some() {
+    if checkpoint_store.is_some() && capabilities.contains(&EffectiveCapability::CheckpointMutate) {
         tool_definitions.extend(nano_agent::wiring::checkpoint_tool_definitions());
     }
     // S9: the protocol host advertises the CUA surface, but its gate
@@ -250,16 +345,22 @@ pub async fn run(
     // (§2.2) — every cua_* call denies there. The engine seam stays unwired
     // on this host (no bridge), so even a gate bypass could never dispatch:
     // the engine journals a failed CuaBackendUnavailable pair instead.
-    tool_definitions.extend(nano_agent::cua::cua_tool_definitions());
-
-    let hooks = nano_hooks::HookEngine::load(nano_home);
-    for warning in hooks.warnings() {
-        eprintln!("wayland-nano: {warning}");
+    if capabilities.contains(&EffectiveCapability::ComputerUse) {
+        tool_definitions.extend(nano_agent::cua::cua_tool_definitions());
     }
+
     let engine = TurnEngine {
         model: &driver,
         tools: &executor,
-        budget: TurnBudget::default(),
+        budget: TurnBudget {
+            max_steps: u32::try_from(activation_token.policy().budgets().max_turns)
+                .unwrap_or(u32::MAX),
+            max_tool_calls: u32::try_from(activation_token.policy().budgets().max_tool_calls)
+                .unwrap_or(u32::MAX),
+            max_wall_time: std::time::Duration::from_millis(
+                activation_token.policy().budgets().wall_clock_ms,
+            ),
+        },
         model_name: "flux-auto".into(),
         tool_definitions,
         approval: Some(&gate),
@@ -283,8 +384,7 @@ pub async fn run(
                 }
             }
         },
-    }
-    .with_hooks(&hooks);
+    };
     let skill_context = std::sync::Arc::new(skill_context);
     let plan_cell = plan;
     let todo_cell = todos;
@@ -300,35 +400,11 @@ pub async fn run(
         let skill_context = std::sync::Arc::clone(&skill_context);
         let plan_cell = plan_cell.clone();
         let todo_cell = todo_cell.clone();
-        let memory_store = memory_store.clone();
         async move {
-            // Fresh per-turn context blocks: the C5 memory block is
-            // re-rendered from the store every turn (a save/delete/hand-edit
-            // in turn N is visible from turn N+1; the combined ceiling uses
-            // the conservative 128k window and the skills block's size);
             // C10: the AGENTS.md block is re-read every turn, the plan
             // instructions ride while the posture is active, and the todo
             // list renders while non-empty.
-            let skills_chars = match skill_context.as_ref() {
-                Some(message) => message
-                    .content
-                    .iter()
-                    .map(|b| match b {
-                        nano_model::types::ContentBlock::Text { text } => text.len(),
-                        _ => 0,
-                    })
-                    .sum::<usize>(),
-                None => 0,
-            };
             let mut context = Vec::new();
-            if let Some(memory_block) = nano_agent::memory::prepare_memory_context(
-                &memory_store,
-                128_000,
-                skills_chars,
-                nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
-            ) {
-                context.push(memory_block);
-            }
             if let Some(message) = nano_agent::skills::prepare_agents_md_context(workspace) {
                 context.push(message);
             }

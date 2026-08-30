@@ -872,6 +872,20 @@ impl std::fmt::Debug for RealToolExecutor {
 }
 
 impl RealToolExecutor {
+    /// Bind this real dispatcher to one admitted activation and its durable effect ledger.
+    pub fn with_activation(
+        self,
+        token: nano_activation::admission::AdmittedToken,
+        home: &std::path::Path,
+        artifact: nano_activation::receipt::ArtifactIdentity,
+        epochs: [u64; 4],
+        now_utc: impl Into<String>,
+    ) -> crate::activation_effects::ActivationEffectExecutor<Self> {
+        crate::activation_effects::ActivationEffectExecutor::new(
+            self, token, home, artifact, epochs, now_utc,
+        )
+    }
+
     pub fn view_image_backed(&self) -> bool {
         self.view_image.is_some() && self.attachment_store.is_some()
     }

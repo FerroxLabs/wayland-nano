@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wayland.nano/contracts/wayland.nano.activation-receipt-v1.schema.json",
+  "title": "wayland.nano.activation-receipt/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "receipt_id", "receipt_key_id", "alg", "decision", "reason", "issuer_id", "key_id", "product_subject_id", "principal_id", "project_id", "activation_id", "session_id", "idempotency_key", "raw_assertion_sha256", "canonical_payload_sha256", "effective_capabilities", "effective_budgets", "effective_deadline", "effective_controls", "intent_state", "result_state", "authority_journal_position", "projection_generation", "issuer_epoch", "grant_epoch", "revocation_epoch", "admin_epoch", "source_commit_sha", "cargo_lock_sha256", "executable_sha256", "issued_at", "decided_at", "rotation_evidence_ref", "signature"],
+  "properties": {
+    "schema": {"const": "wayland.nano.activation-receipt/v1"}, "receipt_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
+    "receipt_key_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"}, "alg": {"const": "Ed25519"},
+    "decision": {"enum": ["admitted", "admitted_narrowed", "refused", "replayed"]},
+    "reason": {"enum": ["none", "carrier_missing", "carrier_oversized", "malformed_json", "duplicate_key", "noncanonical_payload", "unknown_field", "unsupported_schema", "unsupported_algorithm", "invalid_key_encoding", "invalid_signature_encoding", "invalid_signature", "unknown_issuer", "revoked_issuer", "unknown_key", "revoked_key", "key_not_yet_valid", "key_expired", "assertion_not_yet_valid", "assertion_expired", "clock_out_of_bounds", "nonce_replay", "idempotency_conflict", "unknown_product_subject", "retired_product_subject", "principal_mismatch", "principal_remap", "retired_identifier_reuse", "unauthorized_project", "authority_widening", "artifact_mismatch", "resume_fingerprint_missing", "resume_drift", "fallback_unauthorized", "continuity_not_enabled", "control_unauthorized", "control_race_lost", "authority_store_unavailable", "ambiguous_recovery"]},
+    "issuer_id": {"type": "string"}, "key_id": {"type": "string"}, "product_subject_id": {"type": "string"}, "principal_id": {"type": "string"}, "project_id": {"type": "string"},
+    "activation_id": {"type": "string"}, "session_id": {"type": ["string", "null"]}, "idempotency_key": {"type": "string"},
+    "raw_assertion_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "canonical_payload_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "effective_capabilities": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"type": "string"}}, "effective_budgets": {"type": "object"},
+    "effective_deadline": {"type": "string"}, "effective_controls": {"type": "array", "maxItems": 2, "uniqueItems": true, "items": {"type": "string"}},
+    "intent_state": {"enum": ["none", "journaled", "projected"]}, "result_state": {"enum": ["none", "pending", "completed", "refused", "unknown_outcome"]},
+    "authority_journal_position": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "projection_generation": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "issuer_epoch": {"type": "integer", "minimum": 0}, "grant_epoch": {"type": "integer", "minimum": 0}, "revocation_epoch": {"type": "integer", "minimum": 0}, "admin_epoch": {"type": "integer", "minimum": 0},
+    "source_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "cargo_lock_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "executable_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "issued_at": {"type": "string"}, "decided_at": {"type": "string"}, "rotation_evidence_ref": {"type": "string", "minLength": 1, "maxLength": 256},
+    "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{86}$"}
+  }
+}

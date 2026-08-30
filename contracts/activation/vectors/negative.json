@@ -1,0 +1,32 @@
+{
+  "schema": "wayland.nano.activation-negative-vectors/v1",
+  "zero_state": ["session", "journal", "hook", "tool", "effect"],
+  "cases": [
+    {"name":"missing-carrier","family":"presence","raw_utf8":"{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"session/new\",\"params\":{}}","reason":"carrier_missing"},
+    {"name":"outer-duplicate-jsonrpc","family":"duplicate","raw_utf8":"{\"jsonrpc\":\"2.0\",\"jsonrpc\":\"2.0\"}","reason":"duplicate_key"},
+    {"name":"outer-duplicate-id","family":"duplicate","raw_utf8":"{\"id\":1,\"id\":2}","reason":"duplicate_key"},
+    {"name":"outer-duplicate-method","family":"duplicate","raw_utf8":"{\"method\":\"a\",\"method\":\"b\"}","reason":"duplicate_key"},
+    {"name":"outer-duplicate-params","family":"duplicate","raw_utf8":"{\"params\":{},\"params\":{}}","reason":"duplicate_key"},
+    {"name":"outer-duplicate-meta","family":"duplicate","raw_utf8":"{\"_meta\":{},\"_meta\":{}}","reason":"duplicate_key"},
+    {"name":"duplicate-carrier","family":"duplicate","raw_utf8":"{\"waylandNanoActivation\":{},\"waylandNanoActivation\":{}}","reason":"duplicate_key"},
+    {"name":"nested-duplicate-budget","family":"duplicate","raw_utf8":"{\"x\":{\"max_turns\":1,\"max_turns\":2}}","reason":"duplicate_key"},
+    {"name":"nested-duplicate-continuity","family":"duplicate","raw_utf8":"{\"x\":{\"strategy\":\"fresh\",\"strategy\":\"fresh\"}}","reason":"duplicate_key"},
+    {"name":"escaped-key-alias","family":"duplicate","raw_utf8":"{\"method\":1,\"m\\u0065thod\":2}","reason":"duplicate_key"},
+    {"name":"trailing-json","family":"framing","raw_utf8":"{}{}","reason":"malformed_json"},
+    {"name":"trailing-token","family":"framing","raw_utf8":"{}x","reason":"malformed_json"},
+    {"name":"unterminated-object","family":"framing","raw_utf8":"{","reason":"malformed_json"},
+    {"name":"invalid-utf8","family":"ijson","raw_base64":"eyJ4Ijoi/w==","reason":"malformed_json"},
+    {"name":"lone-high-surrogate","family":"ijson","raw_utf8":"{\"x\":\"\\ud800\"}","reason":"malformed_json"},
+    {"name":"unsafe-integer","family":"ijson","raw_utf8":"{\"x\":9007199254740992}","reason":"malformed_json"},
+    {"name":"fractional-number","family":"ijson","raw_utf8":"{\"x\":1.5}","reason":"malformed_json"},
+    {"name":"negative-number","family":"ijson","raw_utf8":"{\"x\":-1}","reason":"malformed_json"},
+    {"name":"lookalike-carrier","family":"decoy","raw_utf8":"{\"_meta\":{\"waylandNanoActivati0n\":{}}}","reason":"carrier_missing"},
+    {"name":"carrier-as-string","family":"shape","raw_utf8":"{\"params\":{\"_meta\":{\"waylandNanoActivation\":\"x\"}}}","reason":"malformed_json"},
+    {"name":"empty-carrier","family":"schema","raw_utf8":"{\"params\":{\"_meta\":{\"waylandNanoActivation\":{}}}}","reason":"unknown_field"},
+    {"name":"unsupported-schema","family":"schema","raw_utf8":"{\"params\":{\"_meta\":{\"waylandNanoActivation\":{\"schema\":\"wayland.nano.activation/v2\"}}}}","reason":"unsupported_schema"},
+    {"name":"unsupported-algorithm","family":"crypto","raw_utf8":"{\"params\":{\"_meta\":{\"waylandNanoActivation\":{\"alg\":\"Ed448\",\"schema\":\"wayland.nano.activation/v1\"}}}}","reason":"unsupported_algorithm"},
+    {"name":"padded-signature","family":"crypto","raw_utf8":"{\"params\":{\"_meta\":{\"waylandNanoActivation\":{\"alg\":\"Ed25519\",\"schema\":\"wayland.nano.activation/v1\",\"signature\":\"AA==\"}}}}","reason":"invalid_signature_encoding"},
+    {"name":"wrong-signature-length","family":"crypto","raw_utf8":"{\"params\":{\"_meta\":{\"waylandNanoActivation\":{\"alg\":\"Ed25519\",\"schema\":\"wayland.nano.activation/v1\",\"signature\":\"AA\"}}}}","reason":"invalid_signature_encoding"},
+    {"name":"unknown-field","family":"schema","raw_utf8":"{\"params\":{\"_meta\":{\"waylandNanoActivation\":{\"alg\":\"Ed25519\",\"extra\":true,\"schema\":\"wayland.nano.activation/v1\"}}}}","reason":"unknown_field"}
+  ]
+}

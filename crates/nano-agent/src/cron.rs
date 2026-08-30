@@ -921,6 +921,7 @@ pub struct CronjobExecutor<'a, T: crate::turn::ToolExecutor, S: CronStoreLike> {
     store: &'a S,
     session_id: String,
     coordinator: &'a nano_session::JournalCoordinator,
+    phase2_quarantined: bool,
 }
 
 impl<'a, T: crate::turn::ToolExecutor, S: CronStoreLike> CronjobExecutor<'a, T, S> {
@@ -935,6 +936,24 @@ impl<'a, T: crate::turn::ToolExecutor, S: CronStoreLike> CronjobExecutor<'a, T, 
             store,
             session_id,
             coordinator,
+            phase2_quarantined: false,
+        }
+    }
+
+    /// Phase 2 fail-closed wrapper. Forced calls are denied before either
+    /// the job store or the session journal is read or written.
+    pub fn quarantined(
+        inner: &'a T,
+        store: &'a S,
+        session_id: String,
+        coordinator: &'a nano_session::JournalCoordinator,
+    ) -> Self {
+        Self {
+            inner,
+            store,
+            session_id,
+            coordinator,
+            phase2_quarantined: true,
         }
     }
 
@@ -963,6 +982,14 @@ impl<T: crate::turn::ToolExecutor, S: CronStoreLike> crate::turn::ToolExecutor
             progress: crate::loop_protection::ProgressSignals::default(),
             error_kind: None,
         };
+        if self.phase2_quarantined {
+            return crate::turn::ToolOutcome {
+                ok: false,
+                output: "cronjob is unavailable: Nano scheduling is quarantined during authenticated activation".into(),
+                progress: crate::loop_protection::ProgressSignals::default(),
+                error_kind: Some(nano_session::NanoErrorKind::UnknownTool),
+            };
+        }
         let arg_str = |key: &str| call.arguments.get(key).and_then(|v| v.as_str());
         match arg_str("action") {
             Some("create") => {

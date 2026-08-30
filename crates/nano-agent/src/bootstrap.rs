@@ -285,6 +285,20 @@ pub fn bootstrap_session(
     bootstrap_base(sessions_dir, cwd, seed)
 }
 
+/// Fresh bootstrap with an already reserved session id. Authenticated hosts
+/// use this only after their trusted activation ledger has durably bound the
+/// id, preserving the same journal format and fold semantics as `New`.
+pub fn bootstrap_bound_session(
+    sessions_dir: &Path,
+    cwd: &Path,
+    session_id: String,
+) -> Result<BootstrappedSession, BootstrapError> {
+    if !is_fs_safe_session_id(&session_id) {
+        return Err(BootstrapError::InvalidSessionId(session_id));
+    }
+    bootstrap_new(sessions_dir, cwd, session_id)
+}
+
 pub fn bootstrap_session_with_hooks(
     sessions_dir: &Path,
     cwd: &Path,
@@ -325,26 +339,7 @@ fn bootstrap_base(
     match seed {
         SessionSeed::New => {
             let session_id = new_session_id();
-            let journal_path = sessions_dir.join(format!("{session_id}.jsonl"));
-            let writer = JournalCoordinator::open(&journal_path)?;
-            writer.append(&OpEnvelope::new(
-                format!("{session_id}-begin-1"),
-                "now",
-                Op::SessionBegin {
-                    session_id: session_id.clone(),
-                    cwd: cwd.display().to_string(),
-                },
-            ))?;
-            let report = read_journal(&journal_path)
-                .map_err(|err| BootstrapError::Corrupt(err.to_string()))?;
-            let state = SessionState::fold_strict(&report.envelopes)?;
-            Ok(BootstrappedSession {
-                session_id,
-                journal_path,
-                envelopes: report.envelopes,
-                state,
-                turn_counter: 0,
-            })
+            bootstrap_new(sessions_dir, cwd, session_id)
         }
         SessionSeed::Resume(id) => {
             if !is_fs_safe_session_id(&id) {
@@ -387,6 +382,33 @@ fn bootstrap_base(
             })
         }
     }
+}
+
+fn bootstrap_new(
+    sessions_dir: &Path,
+    cwd: &Path,
+    session_id: String,
+) -> Result<BootstrappedSession, BootstrapError> {
+    let journal_path = sessions_dir.join(format!("{session_id}.jsonl"));
+    let writer = JournalCoordinator::open(&journal_path)?;
+    writer.append(&OpEnvelope::new(
+        format!("{session_id}-begin-1"),
+        "now",
+        Op::SessionBegin {
+            session_id: session_id.clone(),
+            cwd: cwd.display().to_string(),
+        },
+    ))?;
+    let report =
+        read_journal(&journal_path).map_err(|err| BootstrapError::Corrupt(err.to_string()))?;
+    let state = SessionState::fold_strict(&report.envelopes)?;
+    Ok(BootstrappedSession {
+        session_id,
+        journal_path,
+        envelopes: report.envelopes,
+        state,
+        turn_counter: 0,
+    })
 }
 
 fn run_lifecycle_hook(

@@ -312,7 +312,7 @@ impl Harness {
                     hooks: &hooks,
                     routing: &DEFAULT_ROUTING,
                 };
-                acp_mode::serve(
+                acp_mode::serve_legacy_debug(
                     ChannelReader {
                         rx: in_rx,
                         buf: Vec::new(),
@@ -760,7 +760,7 @@ fn real_executor_denial_maps_through() {
                 requests: Arc::new(Mutex::new(Vec::new())),
             };
             let home = home.clone();
-            acp_mode::serve(
+            acp_mode::serve_legacy_debug(
                 ChannelReader {
                     rx: in_rx,
                     buf: Vec::new(),

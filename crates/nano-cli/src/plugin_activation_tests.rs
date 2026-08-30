@@ -307,6 +307,7 @@ fn exec_advertises_and_gates_installed_plugin_tools() {
         goal: None,
         model: None,
         auto: false,
+        activation_request: None,
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -317,6 +318,7 @@ fn exec_advertises_and_gates_installed_plugin_tools() {
         &fixture.home,
         &workspace,
         &params,
+        None,
         "fake-model",
         move || model.clone(),
         move || ladder.clone(),

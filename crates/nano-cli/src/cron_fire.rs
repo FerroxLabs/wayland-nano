@@ -14,6 +14,13 @@ use nano_protocol::permission_mode::PermissionMode;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+/// Phase 2 deliberately ships no Nano scheduling authority. Keeping this
+/// predicate in the host-side module makes environment/config switches
+/// unable to revive the preserved legacy implementation.
+const fn phase2_cron_quarantined() -> bool {
+    true
+}
+
 /// Generic over the host's driver/tool factories — acp-host (and any other
 /// host) wires its production factories; tests wire scripted doubles.
 pub struct HostCronFire<'a, FD, FT> {
@@ -60,6 +67,11 @@ where
         occurrence_id: &str,
         mode_at_fire: &str,
     ) -> Result<(), CronFireError> {
+        if phase2_cron_quarantined() {
+            return Err(CronFireError::Failed(
+                "Nano cron fire is quarantined until the authenticated scheduler phase".into(),
+            ));
+        }
         let fail = |message: String| CronFireError::Failed(message);
         // The fire-time mode derivation is already capped by the runner
         // (min(session_mode, default)); parse is total over the vocabulary.
@@ -217,6 +229,12 @@ where
     D: ModelDriver,
     T: ToolExecutor,
 {
+    if phase2_cron_quarantined() {
+        return Err(nano_agent::cron::CronStoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Nano cron ticker is quarantined until the authenticated scheduler phase",
+        )));
+    }
     let clock = nano_agent::clock::SystemClock;
     let runner = nano_agent::cron::CronRunner {
         sessions_dir: sessions_dir.to_path_buf(),

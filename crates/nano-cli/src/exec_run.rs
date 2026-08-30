@@ -29,6 +29,10 @@ pub async fn run_exec_with<W, FD, FD2, FT, D, T>(
     nano_home: &Path,
     workspace: &Path,
     params: &ExecParams,
+    activation: Option<(
+        crate::activation::SharedAdmission,
+        nano_activation::admission::AdmittedToken,
+    )>,
     model_name: &str,
     make_driver: FD,
     // P5 §4: the ladder's per-candidate factory — SAME driver output type,
@@ -64,6 +68,36 @@ where
             return 2;
         }
     };
+    // Reserve and durably bind a fresh id, or live-recheck an existing
+    // binding, before bootstrap can lock or append any session journal.
+    let bound_fresh_id = if matches!(seed, nano_agent::bootstrap::SessionSeed::New) {
+        let id = nano_agent::bootstrap::new_session_id();
+        if let Some((gate, token)) = activation.as_ref()
+            && (gate.bind_session(token, &id).is_err()
+                || gate.recheck_session(&id).is_err()
+                || gate.mark_dispatch_eligible(token).is_err())
+        {
+            eprintln!("wayland-nano: activation session binding failed");
+            return 2;
+        }
+        Some(id)
+    } else {
+        if let (Some((gate, _)), nano_agent::bootstrap::SessionSeed::Resume(id)) =
+            (activation.as_ref(), &seed)
+            && gate.recheck_session(id).is_err()
+        {
+            eprintln!("wayland-nano: activation authority changed");
+            return 2;
+        }
+        if let (Some((gate, token)), nano_agent::bootstrap::SessionSeed::Resume(_)) =
+            (activation.as_ref(), &seed)
+            && gate.mark_dispatch_eligible(token).is_err()
+        {
+            eprintln!("wayland-nano: activation dispatch state unavailable");
+            return 2;
+        }
+        None
+    };
     // F-P4-3: a RESUMED session is owned BEFORE bootstrap appends the
     // resume marker — resuming a session another host owns is a typed
     // refusal, never a second writer. (Id validation/existence stay with
@@ -88,12 +122,21 @@ where
         }
         nano_agent::bootstrap::SessionSeed::New => None,
     };
-    let session = match bootstrap_session(sessions_dir, workspace, seed) {
+    let session_result = match bound_fresh_id {
+        Some(id) => nano_agent::bootstrap::bootstrap_bound_session(sessions_dir, workspace, id),
+        None => bootstrap_session(sessions_dir, workspace, seed),
+    };
+    let session = match session_result {
         Ok(session) => session,
         Err(err) => {
             eprintln!("wayland-nano: {err}");
             return 2;
         }
+    };
+    let activation_token = if let Some((_gate, token)) = activation {
+        Some(token)
+    } else {
+        None
     };
     let _ownership = match pre_ownership {
         Some(ownership) => ownership,
@@ -263,17 +306,15 @@ where
         auto_plan = Some(plan);
     }
 
-    // 3. Executor stack: core tools → cronjob store tool → MCP merge.
+    // 3. Executor stack: core tools → Phase-2 cron quarantine → MCP merge.
     //    (The goal control channel wraps this per-goal below; without a
     //    goal the `goal_complete` definition is never advertised.)
     let (tools, policy) = make_tools(workspace, params.mode);
     let cron_store = nano_agent::cron::JsonCronStore::new(nano_home);
-    // F-6: journal-first create/delete ride the session's coordinator. The
-    // exec GATE typed-denies every cronjob action on this non-interactive
-    // surface (create/delete would prompt; list stays out of v1 headless
-    // scope) — the executor is wired so the denial is a gate decision, not
-    // an unwired-tool hole.
-    let with_cron = nano_agent::cron::CronjobExecutor::new(
+    // Persistent scheduling is not part of Phase 2. Retain a forced-call
+    // denial in front of the unchanged legacy implementation without
+    // reading or mutating the jobs cache.
+    let with_cron = nano_agent::cron::CronjobExecutor::quarantined(
         &tools,
         &cron_store,
         session.session_id.clone(),
@@ -298,6 +339,28 @@ where
         }
         None => &with_cron,
     };
+    let activation_effect_tools;
+    let with_cron: &dyn nano_agent::turn::ToolExecutor =
+        if let Some(token) = activation_token.as_ref() {
+            let (artifact, epochs) = match crate::activation::runtime_authority(token) {
+                Ok(value) => value,
+                Err(_) => {
+                    eprintln!("wayland-nano: activation receipt is incomplete");
+                    return 2;
+                }
+            };
+            activation_effect_tools =
+                nano_agent::activation_effects::ActivationEffectExecutor::new_live(
+                    with_cron,
+                    token.clone(),
+                    nano_home,
+                    artifact,
+                    epochs,
+                );
+            &activation_effect_tools
+        } else {
+            with_cron
+        };
     // P3: the registry is SHARED (executor + session-tool wrapper), the
     // elicitation bridge auto-declines on this non-interactive surface
     // (§5.2: would-prompt ⇒ deny), and the journaled hydration state is
@@ -347,14 +410,25 @@ where
             eprintln!("wayland-nano: {notice}");
         }
     }
-    let with_mcp = nano_agent::mcp::McpToolExecutor::from_shared(mcp_registry.clone(), with_cron);
+    let mut with_mcp =
+        nano_agent::mcp::McpToolExecutor::from_shared(mcp_registry.clone(), with_cron);
+    if let Some(token) = activation_token.as_ref() {
+        let delegated = match crate::activation::delegated_authority(token, nano_home) {
+            Ok(value) => value,
+            Err(_) => {
+                eprintln!("wayland-nano: activation receipt is incomplete");
+                return 2;
+            }
+        };
+        with_mcp = with_mcp.with_activation_authority(delegated);
+    }
     let with_mcp = nano_agent::mcp_session_tools::McpSessionToolExecutor::new(
         (!mcp_specs.is_empty()).then(|| mcp_registry.clone()),
         journal.clone(),
         session.session_id.clone(),
         &with_mcp,
     );
-    let mut extra_definitions = vec![nano_agent::cron::cronjob_tool_definition()];
+    let mut extra_definitions = Vec::new();
     // S7: the checkpoint definitions advertise exactly when the store
     // opened — the executor wrap above is the servicing half of the same
     // condition.
@@ -692,16 +766,10 @@ fn finish_exec<W: Write + Send>(
 /// Production entry: Flux driver + real tools, JSONL on stdout. Requires
 /// the Flux key via the standard resolution chain (never embedded).
 pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32 {
-    let Some(api_key) = crate::flux_key::flux_api_key() else {
-        eprintln!("wayland-nano: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for exec mode");
-        return 2;
-    };
-    // P5 §1: exec routing — explicit `--model` pin > configured
-    // NANO_DEFAULT_MODEL pin > explicit Auto opt-in (`--auto` /
-    // NANO_ROUTING_AUTO) > implicit `flux-auto` passthrough. Malformed env
-    // values are typed config errors (exit 2), never silent defaults. Exec
-    // dispatches on the Flux wire only: namespaced references are a typed
-    // usage error here (the acp-host owns the C8 namespaced surface).
+    run_with_local_activation(nano_home, workspace, params, None).await
+}
+
+fn resolve_exec_routing(params: &ExecParams) -> Result<crate::exec_mode::ExecRouting, i32> {
     let bare_only = |value: &str, flag: &str| -> Result<String, i32> {
         match crate::provider_router::ProviderRouter::parse_model_id(value) {
             Ok(crate::provider_router::ModelRef::Flux(_)) => Ok(value.to_string()),
@@ -713,53 +781,118 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
             }
         }
     };
-    let auto_opt_in = match crate::auto_routing::parse_auto_opt_in(
+    let auto_opt_in = crate::auto_routing::parse_auto_opt_in(
         std::env::var(crate::auto_routing::AUTO_ROUTING_ENV).ok(),
-    ) {
-        Ok(env_value) => params.auto || env_value,
-        Err(err) => {
-            eprintln!("wayland-nano: {err}");
-            return 2;
-        }
-    };
-    let configured_default = match crate::auto_routing::parse_configured_default(
+    )
+    .map_err(|err| {
+        eprintln!("wayland-nano: {err}");
+        2
+    })?;
+    let configured_default = crate::auto_routing::parse_configured_default(
         std::env::var(crate::auto_routing::DEFAULT_MODEL_ENV).ok(),
-    ) {
-        Ok(value) => value,
-        Err(err) => {
-            eprintln!("wayland-nano: {err}");
-            return 2;
-        }
-    };
-    // S1 evidence-capture arm (NANO_AUTO_TOOLS_PROBE): same fail-closed
-    // typed parse discipline — malformed is a config error, never a default.
-    let tools_probe = match crate::auto_routing::parse_tools_probe(
+    )
+    .map_err(|err| {
+        eprintln!("wayland-nano: {err}");
+        2
+    })?;
+    let tools_probe = crate::auto_routing::parse_tools_probe(
         std::env::var(crate::auto_routing::AUTO_TOOLS_PROBE_ENV).ok(),
-    ) {
-        Ok(value) => value,
-        Err(err) => {
-            eprintln!("wayland-nano: {err}");
-            return 2;
-        }
-    };
+    )
+    .map_err(|err| {
+        eprintln!("wayland-nano: {err}");
+        2
+    })?;
     let (source, reference) = match (&params.model, &configured_default) {
-        (Some(model), _) => match bare_only(model, "--model") {
-            Ok(model) => (crate::auto_routing::ModelSource::ExplicitPin, model),
-            Err(code) => return code,
-        },
-        (None, Some(default)) => match bare_only(default, crate::auto_routing::DEFAULT_MODEL_ENV) {
-            Ok(default) => (crate::auto_routing::ModelSource::ConfiguredDefault, default),
-            Err(code) => return code,
-        },
+        (Some(model), _) => (
+            crate::auto_routing::ModelSource::ExplicitPin,
+            bare_only(model, "--model")?,
+        ),
+        (None, Some(default)) => (
+            crate::auto_routing::ModelSource::ConfiguredDefault,
+            bare_only(default, crate::auto_routing::DEFAULT_MODEL_ENV)?,
+        ),
         (None, None) => (
             crate::auto_routing::ModelSource::ImplicitDefault,
             crate::auto_routing::FLUX_AUTO.to_string(),
         ),
     };
-    let routing = crate::exec_mode::ExecRouting {
-        mode: crate::auto_routing::resolve_routing(source, &reference, auto_opt_in).mode,
-        reference: reference.clone(),
+    Ok(crate::exec_mode::ExecRouting {
+        mode: crate::auto_routing::resolve_routing(source, &reference, params.auto || auto_opt_in)
+            .mode,
+        reference,
         tools_probe,
+    })
+}
+
+pub async fn run_with_local_activation(
+    nano_home: &Path,
+    workspace: &Path,
+    params: &ExecParams,
+    local: Option<&crate::exec_mode::LocalActivationParams>,
+) -> i32 {
+    // Pure argument/config validation has no authority, state, or effect;
+    // retain typed usage errors before the persistent activation boundary.
+    let routing = match resolve_exec_routing(params) {
+        Ok(routing) => routing,
+        Err(code) => return code,
+    };
+    let local_raw = if let Some(local) = local {
+        match crate::activation::mint_local_cli_request(nano_home, local, params.mode) {
+            Ok(raw) => Some(raw),
+            Err(error) => {
+                eprintln!("wayland-nano: {error}");
+                return 2;
+            }
+        }
+    } else {
+        None
+    };
+    let activation = if params.activation_request.is_some() || local_raw.is_some() {
+        let path_raw;
+        let raw = if let Some(raw) = local_raw {
+            raw
+        } else {
+            let path = params.activation_request.as_ref().expect("checked");
+            path_raw = match std::fs::read(path) {
+                Ok(value) => value,
+                Err(_) => {
+                    eprintln!("wayland-nano: activation request unavailable");
+                    return 2;
+                }
+            };
+            path_raw
+        };
+        let gate = match crate::activation::SharedAdmission::open_production(nano_home) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("wayland-nano: {error}");
+                return 2;
+            }
+        };
+        match gate.admit_transport(&raw, &crate::activation::now_utc()) {
+            Ok(crate::activation::TransportAdmission::Activation(token)) => {
+                crate::activation::emit_receipt(token.receipt().as_bytes());
+                Some((gate, *token))
+            }
+            Ok(_) => {
+                eprintln!("wayland-nano: activation request has the wrong transport method");
+                return 2;
+            }
+            Err(error) => {
+                if let Some(receipt) = error.receipt() {
+                    crate::activation::emit_receipt(receipt);
+                }
+                eprintln!("wayland-nano: activation refused: {}", error.reason());
+                return 2;
+            }
+        }
+    } else {
+        eprintln!("wayland-nano: persistent exec requires authenticated activation");
+        return 2;
+    };
+    let Some(api_key) = crate::flux_key::flux_api_key() else {
+        eprintln!("wayland-nano: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for exec mode");
+        return 2;
     };
     let sessions_dir = nano_home.join("sessions");
     let home = nano_home.to_path_buf();
@@ -855,6 +988,7 @@ pub async fn run(nano_home: &Path, workspace: &Path, params: &ExecParams) -> i32
         nano_home,
         workspace,
         params,
+        activation,
         &routing.reference,
         make_driver,
         make_ladder_driver,

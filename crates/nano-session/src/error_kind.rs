@@ -177,6 +177,84 @@ pub enum NanoErrorKind {
     /// Opaque backend failure, incl. a contained backend panic (§2.5 panic
     /// containment — never a process abort).
     CuaBackend,
+    // Authenticated activation refusals. Each variant preserves the frozen
+    // RejectReason wire vocabulary rather than collapsing denials to params.
+    #[serde(rename = "carrier_missing")]
+    ActivationCarrierMissing,
+    #[serde(rename = "carrier_oversized")]
+    ActivationCarrierOversized,
+    #[serde(rename = "malformed_json")]
+    ActivationMalformedJson,
+    #[serde(rename = "duplicate_key")]
+    ActivationDuplicateKey,
+    #[serde(rename = "noncanonical_payload")]
+    ActivationNoncanonicalPayload,
+    #[serde(rename = "unknown_field")]
+    ActivationUnknownField,
+    #[serde(rename = "unsupported_schema")]
+    ActivationUnsupportedSchema,
+    #[serde(rename = "unsupported_algorithm")]
+    ActivationUnsupportedAlgorithm,
+    #[serde(rename = "invalid_key_encoding")]
+    ActivationInvalidKeyEncoding,
+    #[serde(rename = "invalid_signature_encoding")]
+    ActivationInvalidSignatureEncoding,
+    #[serde(rename = "invalid_signature")]
+    ActivationInvalidSignature,
+    #[serde(rename = "unknown_issuer")]
+    ActivationUnknownIssuer,
+    #[serde(rename = "revoked_issuer")]
+    ActivationRevokedIssuer,
+    #[serde(rename = "unknown_key")]
+    ActivationUnknownKey,
+    #[serde(rename = "revoked_key")]
+    ActivationRevokedKey,
+    #[serde(rename = "key_not_yet_valid")]
+    ActivationKeyNotYetValid,
+    #[serde(rename = "key_expired")]
+    ActivationKeyExpired,
+    #[serde(rename = "assertion_not_yet_valid")]
+    ActivationAssertionNotYetValid,
+    #[serde(rename = "assertion_expired")]
+    ActivationAssertionExpired,
+    #[serde(rename = "clock_out_of_bounds")]
+    ActivationClockOutOfBounds,
+    #[serde(rename = "nonce_replay")]
+    ActivationNonceReplay,
+    #[serde(rename = "idempotency_conflict")]
+    ActivationIdempotencyConflict,
+    #[serde(rename = "unknown_product_subject")]
+    ActivationUnknownProductSubject,
+    #[serde(rename = "retired_product_subject")]
+    ActivationRetiredProductSubject,
+    #[serde(rename = "principal_mismatch")]
+    ActivationPrincipalMismatch,
+    #[serde(rename = "principal_remap")]
+    ActivationPrincipalRemap,
+    #[serde(rename = "retired_identifier_reuse")]
+    ActivationRetiredIdentifierReuse,
+    #[serde(rename = "unauthorized_project")]
+    ActivationUnauthorizedProject,
+    #[serde(rename = "authority_widening")]
+    ActivationAuthorityWidening,
+    #[serde(rename = "artifact_mismatch")]
+    ActivationArtifactMismatch,
+    #[serde(rename = "resume_fingerprint_missing")]
+    ActivationResumeFingerprintMissing,
+    #[serde(rename = "resume_drift")]
+    ActivationResumeDrift,
+    #[serde(rename = "fallback_unauthorized")]
+    ActivationFallbackUnauthorized,
+    #[serde(rename = "continuity_not_enabled")]
+    ActivationContinuityNotEnabled,
+    #[serde(rename = "control_unauthorized")]
+    ActivationControlUnauthorized,
+    #[serde(rename = "control_race_lost")]
+    ActivationControlRaceLost,
+    #[serde(rename = "authority_store_unavailable")]
+    ActivationAuthorityStoreUnavailable,
+    #[serde(rename = "ambiguous_recovery")]
+    ActivationAmbiguousRecovery,
     /// A kind written by a newer build (forward tolerance — deserialize
     /// only; never constructed by this build's mappers).
     #[serde(other)]

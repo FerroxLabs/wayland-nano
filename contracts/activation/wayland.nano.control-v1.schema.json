@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wayland.nano/contracts/wayland.nano.control-v1.schema.json",
+  "title": "wayland.nano.control/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "issuer_id", "key_id", "alg", "activation_id", "session_id", "principal_id", "project_id", "control", "nonce", "issued_at", "not_after", "signature"],
+  "properties": {
+    "schema": {"const": "wayland.nano.control/v1"}, "issuer_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "key_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"}, "alg": {"const": "Ed25519"},
+    "activation_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
+    "session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
+    "principal_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "project_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "control": {"enum": ["cancel", "pause"]}, "nonce": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
+    "issued_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "not_after": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{86}$"}
+  }
+}

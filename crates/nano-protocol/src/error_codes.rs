@@ -178,7 +178,7 @@ mod tests {
     /// computer-use kinds (64 → 70); WP-0.3 added ModelLacksPdf (70 → 71).
     #[test]
     fn shim_re_exports_the_canonical_table() {
-        assert_eq!(ALL_KINDS.len(), 71);
+        assert_eq!(ALL_KINDS.len(), 109);
         assert_eq!(
             spec(NanoErrorKind::ModelLacksPdf).title,
             "Selected model wire cannot carry PDF documents"

@@ -567,6 +567,310 @@
       "surface": "tool_card",
       "title": "The computer-use backend failed",
       "wireCode": -32603
+    },
+    {
+      "hint": "carrier_missing",
+      "kind": "carrier_missing",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "carrier_oversized",
+      "kind": "carrier_oversized",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "malformed_json",
+      "kind": "malformed_json",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "duplicate_key",
+      "kind": "duplicate_key",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "noncanonical_payload",
+      "kind": "noncanonical_payload",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "unknown_field",
+      "kind": "unknown_field",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "unsupported_schema",
+      "kind": "unsupported_schema",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "unsupported_algorithm",
+      "kind": "unsupported_algorithm",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "invalid_key_encoding",
+      "kind": "invalid_key_encoding",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "invalid_signature_encoding",
+      "kind": "invalid_signature_encoding",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "invalid_signature",
+      "kind": "invalid_signature",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "unknown_issuer",
+      "kind": "unknown_issuer",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "revoked_issuer",
+      "kind": "revoked_issuer",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "unknown_key",
+      "kind": "unknown_key",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "revoked_key",
+      "kind": "revoked_key",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "key_not_yet_valid",
+      "kind": "key_not_yet_valid",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "key_expired",
+      "kind": "key_expired",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "assertion_not_yet_valid",
+      "kind": "assertion_not_yet_valid",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "assertion_expired",
+      "kind": "assertion_expired",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "clock_out_of_bounds",
+      "kind": "clock_out_of_bounds",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "nonce_replay",
+      "kind": "nonce_replay",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "idempotency_conflict",
+      "kind": "idempotency_conflict",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "unknown_product_subject",
+      "kind": "unknown_product_subject",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "retired_product_subject",
+      "kind": "retired_product_subject",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "principal_mismatch",
+      "kind": "principal_mismatch",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "principal_remap",
+      "kind": "principal_remap",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "retired_identifier_reuse",
+      "kind": "retired_identifier_reuse",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "unauthorized_project",
+      "kind": "unauthorized_project",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "authority_widening",
+      "kind": "authority_widening",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "artifact_mismatch",
+      "kind": "artifact_mismatch",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "resume_fingerprint_missing",
+      "kind": "resume_fingerprint_missing",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "resume_drift",
+      "kind": "resume_drift",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "fallback_unauthorized",
+      "kind": "fallback_unauthorized",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "continuity_not_enabled",
+      "kind": "continuity_not_enabled",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "control_unauthorized",
+      "kind": "control_unauthorized",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "control_race_lost",
+      "kind": "control_race_lost",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "authority_store_unavailable",
+      "kind": "authority_store_unavailable",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
+    },
+    {
+      "hint": "ambiguous_recovery",
+      "kind": "ambiguous_recovery",
+      "retryable": false,
+      "surface": "error_response",
+      "title": "Activation refused",
+      "wireCode": -32602
     }
   ],
   "generator": "cargo run -p nano-cli --bin gen_error_table",

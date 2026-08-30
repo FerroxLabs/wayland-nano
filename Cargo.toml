@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/nano-activation",
     "crates/nano-core",
     "crates/nano-agent",
     "crates/nano-hooks",
@@ -32,6 +33,9 @@ rust-version = "1.85"
 [workspace.dependencies]
 # P2a §4.7: base64 promoted from nano-sandbox to the workspace table.
 base64 = "0.22"
+ed25519-dalek = "=3.0.0"
+serde_jcs = "=0.2.0"
+sha2 = "0.10"
 async-trait = "0.1"
 parking_lot = "0.12"
 serde = { version = "1", features = ["derive"] }
