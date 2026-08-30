@@ -6,7 +6,7 @@
 use crate::authority::KeyRole;
 use crate::key_provider::{KeyProviderError, KeyReference, audit_owner_only_path};
 use crate::receipt::{ReceiptError, ReceiptSigner};
-use ed25519_dalek::{Signer as DalekSigner, SigningKey};
+use ed25519_dalek::{Signer as DalekSigner, SigningKey, Verifier as _};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::Read;
@@ -45,6 +45,34 @@ pub struct ExternalActivationSigner {
     public_key: [u8; 32],
 }
 
+/// Resolve a role-bound external reference to the public identity proved by
+/// its provider. No caller-supplied public key participates in enrollment.
+pub fn derive_public_key(
+    reference: &KeyReference,
+    expected_role: KeyRole,
+) -> Result<[u8; 32], SignerProviderError> {
+    if reference.role() != expected_role {
+        return Err(SignerProviderError::RoleMismatch);
+    }
+    match reference.provider() {
+        "file" => {
+            let path = PathBuf::from(reference.reference());
+            validate_path(&path)?;
+            let key = load_signing_key(&path)?;
+            let public = key.verifying_key();
+            let mut challenge = b"WAYLAND-NANO-KEY-BINDING\0v1\0".to_vec();
+            challenge.extend_from_slice(format!("{expected_role:?}").as_bytes());
+            let signature = key.sign(&challenge);
+            public
+                .verify(&challenge, &signature)
+                .map_err(|_| SignerProviderError::KeyChanged)?;
+            Ok(public.to_bytes())
+        }
+        "os" => Err(SignerProviderError::OsProviderUnavailable),
+        _ => Err(SignerProviderError::UnsupportedProvider),
+    }
+}
+
 impl ExternalActivationSigner {
     pub fn from_key_reference(reference: &KeyReference) -> Result<Self, SignerProviderError> {
         if reference.role() != KeyRole::LocalCliIssuer {
@@ -53,12 +81,8 @@ impl ExternalActivationSigner {
         match reference.provider() {
             "file" => {
                 let path = PathBuf::from(reference.reference());
-                validate_path(&path)?;
-                let key = load_signing_key(&path)?;
-                Ok(Self {
-                    path,
-                    public_key: key.verifying_key().to_bytes(),
-                })
+                let public_key = derive_public_key(reference, KeyRole::LocalCliIssuer)?;
+                Ok(Self { path, public_key })
             }
             "os" => Err(SignerProviderError::OsProviderUnavailable),
             _ => Err(SignerProviderError::UnsupportedProvider),
@@ -118,9 +142,7 @@ impl ExternalReceiptSigner {
 
     fn from_file_reference(reference: &str) -> Result<Self, SignerProviderError> {
         let path = PathBuf::from(reference);
-        validate_path(&path)?;
-        let signing_key = load_signing_key(&path)?;
-        let public_key = signing_key.verifying_key().to_bytes();
+        let public_key = load_signing_key(&path)?.verifying_key().to_bytes();
         let fingerprint = Sha256::digest(public_key);
         let key_id = format!("receipt-ed25519-{}", hex(&fingerprint[..16]));
         Ok(Self {

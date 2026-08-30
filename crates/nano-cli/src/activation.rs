@@ -294,7 +294,7 @@ pub fn run_activation_command(
         Some("admin-apply") => apply_admin_cli(home, &args[1..]),
         Some("enable-apply") => apply_enable_cli(home, &args[1..]),
         Some("receipt-verify") => verify_receipt_cli(&args[1..]),
-        _ => Err("usage: wayland-nano activation admin-bootstrap --confirm OWNER-BOOTSTRAP --admin-id <id> --admin-root-keyref <file> --admin-root-public-key <64-hex> --recovery-root-keyref <file> --recovery-root-public-key <64-hex> --receipt-signer-keyref <file> --receipt-signer-public-key <64-hex> --local-cli-keyref <file> --local-cli-public-key <64-hex> | admin-apply --request <file> --command <file> | enable-apply --request <file> --command <file> | receipt-verify --receipt <file> --public-key <64-hex>".into()),
+        _ => Err("usage: wayland-nano activation admin-bootstrap --admin-id <id> --admin-root-keyref <file> --recovery-root-keyref <file> --receipt-signer-keyref <file> --local-cli-keyref <file> | admin-apply --request <file> --command <file> | enable-apply --request <file> --command <file> | receipt-verify --receipt <file> --public-key <64-hex>".into()),
     };
     match result {
         Ok(message) => {
@@ -308,24 +308,41 @@ pub fn run_activation_command(
     }
 }
 
+pub fn run_admin_command(
+    home: &std::path::Path,
+    args: &[String],
+    out: &mut dyn std::io::Write,
+) -> i32 {
+    if args.first().map(String::as_str) != Some("bootstrap") {
+        eprintln!(
+            "usage: wayland-nano admin bootstrap --admin-id <id> --admin-root-keyref <file> --recovery-root-keyref <file> --receipt-signer-keyref <file> --local-cli-keyref <file>"
+        );
+        return 2;
+    }
+    match bootstrap_admin_cli(home, &args[1..]) {
+        Ok(message) => {
+            let _ = writeln!(out, "{message}");
+            0
+        }
+        Err(message) => {
+            eprintln!("wayland-nano: {message}");
+            2
+        }
+    }
+}
+
 fn bootstrap_admin_cli(home: &std::path::Path, args: &[String]) -> Result<String, String> {
-    const CONFIRMATION: &str = "OWNER-BOOTSTRAP";
     let mut values = std::collections::BTreeMap::<&str, &str>::new();
     let mut chunks = args.chunks_exact(2);
     for pair in &mut chunks {
         let name = pair[0].as_str();
         if !matches!(
             name,
-            "--confirm"
-                | "--admin-id"
+            "--admin-id"
                 | "--admin-root-keyref"
-                | "--admin-root-public-key"
                 | "--recovery-root-keyref"
-                | "--recovery-root-public-key"
                 | "--receipt-signer-keyref"
-                | "--receipt-signer-public-key"
                 | "--local-cli-keyref"
-                | "--local-cli-public-key"
         ) || values.insert(name, pair[1].as_str()).is_some()
         {
             return Err("invalid admin bootstrap arguments".into());
@@ -340,9 +357,6 @@ fn bootstrap_admin_cli(home: &std::path::Path, args: &[String]) -> Result<String
             .copied()
             .ok_or_else(|| format!("admin bootstrap requires {name}"))
     };
-    if required("--confirm")? != CONFIRMATION {
-        return Err("admin bootstrap requires explicit OWNER-BOOTSTRAP confirmation".into());
-    }
     let admin_id = required("--admin-id")?;
     validate_cli_id(admin_id).map_err(|_| "admin bootstrap administrator id is invalid")?;
     let paths = nano_activation::admin::BootstrapKeyPaths {
@@ -351,19 +365,14 @@ fn bootstrap_admin_cli(home: &std::path::Path, args: &[String]) -> Result<String
         receipt_signer: required("--receipt-signer-keyref")?.into(),
         local_cli_issuer: required("--local-cli-keyref")?.into(),
     };
-    let keys = nano_activation::admin::BootstrapPublicKeys {
-        admin_root: decode_bootstrap_public_key(required("--admin-root-public-key")?)?,
-        recovery_root: decode_bootstrap_public_key(required("--recovery-root-public-key")?)?,
-        receipt_signer: decode_bootstrap_public_key(required("--receipt-signer-public-key")?)?,
-        local_cli_issuer: decode_bootstrap_public_key(required("--local-cli-public-key")?)?,
-    };
-    nano_activation::admin::bootstrap(home, &paths, keys, admin_id, true)
+    confirm_owner_bootstrap(admin_id)?;
+    let store = nano_activation::admin::bootstrap(home, &paths, admin_id, true)
         .map_err(bootstrap_refusal)?;
-    Ok("activation administrator bootstrapped".into())
-}
-
-fn decode_bootstrap_public_key(value: &str) -> Result<[u8; 32], String> {
-    decode_public_key(value).map_err(|_| "admin bootstrap public key is invalid".into())
+    let receipt = store
+        .bootstrap_receipt()
+        .ok_or("admin bootstrap receipt unavailable")?;
+    let receipt = std::str::from_utf8(receipt).map_err(|_| "admin bootstrap receipt invalid")?;
+    Ok(format!("activation administrator bootstrapped\n{receipt}"))
 }
 
 fn bootstrap_refusal(error: nano_activation::admin::BootstrapError) -> String {
@@ -375,9 +384,171 @@ fn bootstrap_refusal(error: nano_activation::admin::BootstrapError) -> String {
         BootstrapError::InsecureHome => "admin bootstrap Nano home is not owner-only",
         BootstrapError::RoleKeyReuse => "admin bootstrap role keys must be distinct",
         BootstrapError::KeyProvider(_) => "admin bootstrap key reference refused",
+        BootstrapError::SignerProvider(_) => "admin bootstrap key binding refused",
+        BootstrapError::Receipt => "admin bootstrap receipt signing refused",
         BootstrapError::Authority(_) => "admin bootstrap authority commit refused",
     }
     .into()
+}
+
+#[cfg(unix)]
+fn confirm_owner_bootstrap(admin_id: &str) -> Result<(), String> {
+    use std::io::{BufRead as _, Write as _};
+    use std::os::fd::AsRawFd as _;
+    if ["SSH_CLIENT", "SSH_CONNECTION", "SSH_TTY"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+    {
+        return Err("admin bootstrap refuses remote terminal sessions".into());
+    }
+    let mut tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|_| "admin bootstrap requires controlling TTY")?;
+    let fd = tty.as_raw_fd();
+    let foreground = unsafe { libc::tcgetpgrp(fd) };
+    let process_group = unsafe { libc::getpgrp() };
+    let session = unsafe { libc::getsid(0) };
+    if foreground < 0 || session < 0 || foreground != process_group {
+        return Err("admin bootstrap requires foreground controlling TTY".into());
+    }
+    let phrase = format!("BOOTSTRAP {admin_id}");
+    writeln!(tty, "Type `{phrase}` to initialize Nano authority:")
+        .map_err(|_| "admin bootstrap controlling TTY unavailable")?;
+    tty.flush()
+        .map_err(|_| "admin bootstrap controlling TTY unavailable")?;
+    let mut answer = String::new();
+    std::io::BufReader::new(tty)
+        .read_line(&mut answer)
+        .map_err(|_| "admin bootstrap controlling TTY unavailable")?;
+    if answer.trim_end_matches(['\r', '\n']) != phrase {
+        return Err("admin bootstrap explicit confirmation refused".into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn confirm_owner_bootstrap(admin_id: &str) -> Result<(), String> {
+    use std::io::{BufRead as _, Write as _};
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{
+        EqualSid, GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    };
+    use windows_sys::Win32::System::Console::{GetConsoleMode, GetConsoleProcessList};
+    use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId,
+    };
+    if ["SSH_CLIENT", "SSH_CONNECTION", "SSH_TTY"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+        || std::env::var_os("SESSIONNAME").is_some_and(|value| {
+            value
+                .to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with("RDP-")
+        })
+    {
+        return Err("admin bootstrap refuses remote terminal sessions".into());
+    }
+    let mut input = std::fs::OpenOptions::new()
+        .read(true)
+        .open("CONIN$")
+        .map_err(|_| "admin bootstrap requires controlling console")?;
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .open("CONOUT$")
+        .map_err(|_| "admin bootstrap requires controlling console")?;
+    use std::os::windows::io::AsRawHandle as _;
+    let mut mode = 0u32;
+    if unsafe { GetConsoleMode(input.as_raw_handle() as _, &mut mode) } == 0
+        || unsafe { GetConsoleMode(output.as_raw_handle() as _, &mut mode) } == 0
+    {
+        return Err("admin bootstrap requires attached console".into());
+    }
+    let mut processes = [0u32; 64];
+    let count = unsafe { GetConsoleProcessList(processes.as_mut_ptr(), processes.len() as u32) };
+    let pid = unsafe { GetCurrentProcessId() };
+    if count == 0 || !processes[..usize::min(count as usize, processes.len())].contains(&pid) {
+        return Err("admin bootstrap requires owning console process".into());
+    }
+    let mut session = 0u32;
+    if unsafe { ProcessIdToSessionId(pid, &mut session) } == 0 || session == 0 {
+        return Err("admin bootstrap requires local process session".into());
+    }
+    let foreground_window = unsafe { GetForegroundWindow() };
+    let mut foreground_pid = 0u32;
+    if foreground_window == 0
+        || unsafe { GetWindowThreadProcessId(foreground_window, &mut foreground_pid) } == 0
+        || foreground_pid == 0
+    {
+        return Err("admin bootstrap requires foreground owning console".into());
+    }
+    let mut foreground_session = 0u32;
+    if unsafe { ProcessIdToSessionId(foreground_pid, &mut foreground_session) } == 0
+        || foreground_session != session
+    {
+        return Err("admin bootstrap requires foreground local session".into());
+    }
+    unsafe fn token_user(process: isize) -> Result<Vec<u8>, String> {
+        let mut token = 0isize;
+        if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+            return Err("admin bootstrap cannot verify console owner".into());
+        }
+        let mut size = 0u32;
+        unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut size) };
+        let mut buffer = vec![0u8; size as usize];
+        if size == 0
+            || unsafe {
+                GetTokenInformation(
+                    token,
+                    TokenUser,
+                    buffer.as_mut_ptr().cast(),
+                    size,
+                    &mut size,
+                )
+            } == 0
+        {
+            unsafe { CloseHandle(token) };
+            return Err("admin bootstrap cannot verify console owner".into());
+        }
+        unsafe { CloseHandle(token) };
+        Ok(buffer)
+    }
+    let foreground_process =
+        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, foreground_pid) };
+    if foreground_process == 0 {
+        return Err("admin bootstrap cannot verify console owner".into());
+    }
+    let current_user = unsafe { token_user(GetCurrentProcess()) }?;
+    let foreground_user = unsafe { token_user(foreground_process) };
+    unsafe { CloseHandle(foreground_process) };
+    let foreground_user = foreground_user?;
+    let current = unsafe { std::ptr::read_unaligned(current_user.as_ptr() as *const TOKEN_USER) };
+    let foreground =
+        unsafe { std::ptr::read_unaligned(foreground_user.as_ptr() as *const TOKEN_USER) };
+    if unsafe { EqualSid(current.User.Sid, foreground.User.Sid) } == 0 {
+        return Err("admin bootstrap console is owned by another account".into());
+    }
+    let phrase = format!("BOOTSTRAP {admin_id}");
+    writeln!(output, "Type `{phrase}` to initialize Nano authority:")
+        .map_err(|_| "admin bootstrap controlling console unavailable")?;
+    output
+        .flush()
+        .map_err(|_| "admin bootstrap controlling console unavailable")?;
+    let mut answer = String::new();
+    std::io::BufReader::new(&mut input)
+        .read_line(&mut answer)
+        .map_err(|_| "admin bootstrap controlling console unavailable")?;
+    if answer.trim_end_matches(['\r', '\n']) != phrase {
+        return Err("admin bootstrap explicit confirmation refused".into());
+    }
+    Ok(())
 }
 
 fn two_paths(args: &[String]) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {

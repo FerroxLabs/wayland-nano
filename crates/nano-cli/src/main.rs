@@ -99,6 +99,11 @@ fn main() {
             let mut out = std::io::stdout();
             nano_cli::activation::run_activation_command(&home, &args[2..], &mut out)
         }
+        Some("admin") => {
+            let home = nano_home();
+            let mut out = std::io::stdout();
+            nano_cli::activation::run_admin_command(&home, &args[2..], &mut out)
+        }
         // C11: session fork — clone a journal prefix under the SessionGuard.
         Some("session") if args.get(2).map(String::as_str) == Some("fork") => {
             let home = nano_home();

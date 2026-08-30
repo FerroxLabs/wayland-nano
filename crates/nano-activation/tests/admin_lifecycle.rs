@@ -1,8 +1,7 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signer, SigningKey};
 use nano_activation::admin::{
-    AdminError, BootstrapError, BootstrapKeyPaths, BootstrapPublicKeys, apply_signed_admin,
-    bootstrap,
+    AdminError, BootstrapError, BootstrapKeyPaths, apply_signed_admin, bootstrap,
 };
 use nano_activation::authority::{AuthorityCommand, AuthoritySnapshot, KeyRole};
 use nano_activation::journal::AuthorityRecord;
@@ -112,10 +111,9 @@ fn bootstrap_requires_confirmation_tty_and_empty_store() {
     if std::env::var_os("NANO_ACTIVATION_DETACHED_CHILD").is_some() {
         let home = tempfile::tempdir().unwrap();
         let paths = missing_paths(home.path());
-        let keys = test_public_keys();
         std::process::exit(
             if matches!(
-                bootstrap(home.path(), &paths, keys, "root-1", true),
+                bootstrap(home.path(), &paths, "root-1", true),
                 Err(BootstrapError::NoControllingTty)
             ) {
                 0
@@ -126,13 +124,12 @@ fn bootstrap_requires_confirmation_tty_and_empty_store() {
     }
     let home = tempfile::tempdir().unwrap();
     let paths = missing_paths(home.path());
-    let keys = test_public_keys();
     assert!(matches!(
-        bootstrap(home.path(), &paths, keys.clone(), "root-1", false),
+        bootstrap(home.path(), &paths, "root-1", false),
         Err(BootstrapError::ConfirmationRequired)
     ));
     assert!(matches!(
-        bootstrap(home.path(), &paths, keys, "root-1", true),
+        bootstrap(home.path(), &paths, "root-1", true),
         Err(BootstrapError::NoControllingTty)
     ));
     let status = Command::new(std::env::current_exe().unwrap())
@@ -152,15 +149,6 @@ fn missing_paths(home: &std::path::Path) -> BootstrapKeyPaths {
         recovery_root: home.join("missing-recovery"),
         receipt_signer: home.join("missing-receipt"),
         local_cli_issuer: home.join("missing-cli"),
-    }
-}
-
-fn test_public_keys() -> BootstrapPublicKeys {
-    BootstrapPublicKeys {
-        admin_root: [1; 32],
-        recovery_root: [2; 32],
-        receipt_signer: [3; 32],
-        local_cli_issuer: [4; 32],
     }
 }
 

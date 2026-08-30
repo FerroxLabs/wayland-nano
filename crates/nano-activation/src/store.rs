@@ -1,7 +1,7 @@
 //! Locked journal-first authority store with a disposable SQLite projection.
 
 use crate::authority::{AuthorityCommand, AuthorityError, AuthoritySnapshot, apply, nonce_command};
-use crate::journal::{AuthorityJournal, replay};
+use crate::journal::{AuthorityJournal, repair_torn_tail, replay};
 use nano_session::FileLock;
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -12,6 +12,7 @@ pub struct AuthorityStore {
     journal: AuthorityJournal,
     db: Connection,
     snapshot: AuthoritySnapshot,
+    bootstrap_receipt: Option<Vec<u8>>,
     _lock: FileLock,
 }
 
@@ -35,7 +36,7 @@ impl AuthorityStore {
                     nano_session::LockError::Io(error) => AuthorityError::Io(error),
                 },
             )?;
-        let (snapshot, _) = replay(&journal_path)?;
+        let (snapshot, bootstrap_receipt, _) = replay(&journal_path)?;
         let snapshot = snapshot.ok_or(AuthorityError::InvalidRecord)?;
         let db = open_projection(&activation.join("authority.db"), &snapshot)?;
         Ok(Self {
@@ -43,6 +44,7 @@ impl AuthorityStore {
             journal: AuthorityJournal::open(&journal_path)?,
             db,
             snapshot,
+            bootstrap_receipt,
             _lock: lock,
         })
     }
@@ -50,6 +52,16 @@ impl AuthorityStore {
     pub(crate) fn bootstrap_initial(
         nano_home: &Path,
         snapshot: AuthoritySnapshot,
+        receipt: Vec<u8>,
+    ) -> Result<Self, AuthorityError> {
+        Self::bootstrap_initial_with_fault(nano_home, snapshot, receipt, || {})
+    }
+
+    pub(crate) fn bootstrap_initial_with_fault<F: FnOnce()>(
+        nano_home: &Path,
+        snapshot: AuthoritySnapshot,
+        receipt: Vec<u8>,
+        after_bootstrap_record: F,
     ) -> Result<Self, AuthorityError> {
         let activation = nano_home.join("activation");
         std::fs::create_dir_all(&activation)?;
@@ -61,19 +73,54 @@ impl AuthorityStore {
                     nano_session::LockError::Io(error) => AuthorityError::Io(error),
                 },
             )?;
-        if journal_path.exists() && std::fs::metadata(&journal_path)?.len() != 0 {
+        let journal_bytes = match std::fs::read(&journal_path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let torn = !journal_bytes.is_empty() && !journal_bytes.ends_with(b"\n");
+        let (before_repair, receipt_before_repair, sequence_before_repair) = replay(&journal_path)?;
+        if torn {
+            if receipt_before_repair.is_some() || sequence_before_repair > 1 {
+                return Err(AuthorityError::InvalidRecord);
+            }
+            repair_torn_tail(&journal_path)?;
+        }
+        let (existing, existing_receipt, _) = if torn {
+            replay(&journal_path)?
+        } else {
+            (before_repair, receipt_before_repair, sequence_before_repair)
+        };
+        if existing.as_ref().is_some_and(|state| state != &snapshot)
+            || existing_receipt
+                .as_ref()
+                .is_some_and(|stored| stored != &receipt)
+        {
             return Err(AuthorityError::OperationConflict);
         }
         let mut journal = AuthorityJournal::open(&journal_path)?;
-        journal.append_bootstrap(snapshot.clone())?;
+        if existing.is_none() {
+            journal.append_bootstrap(snapshot.clone())?;
+            after_bootstrap_record();
+        }
+        if existing_receipt.is_none() {
+            let receipt_text =
+                String::from_utf8(receipt.clone()).map_err(|_| AuthorityError::InvalidRecord)?;
+            journal.append_bootstrap_receipt(receipt_text)?;
+        }
         let db = open_projection(&activation.join("authority.db"), &snapshot)?;
         Ok(Self {
             home: nano_home.to_owned(),
             journal,
             db,
             snapshot,
+            bootstrap_receipt: Some(receipt),
             _lock: lock,
         })
+    }
+
+    pub fn bootstrap_receipt(&self) -> Option<&[u8]> {
+        self.bootstrap_receipt.as_deref()
     }
 
     pub fn commit(&mut self, command: AuthorityCommand) -> Result<(), AuthorityError> {

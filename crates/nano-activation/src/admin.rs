@@ -3,8 +3,12 @@
 use crate::authority::KeyRole;
 use crate::authority::{AuthorityCommand, AuthorityError, AuthoritySnapshot};
 use crate::key_provider::{KeyProviderError, load_key_reference};
+use crate::receipt::ReceiptSigner;
+use crate::signer_provider::{ExternalReceiptSigner, SignerProviderError, derive_public_key};
 use crate::store::AuthorityStore;
 use crate::{ActivationError, VerifiedAdminRequest, verify_admin_request};
+use base64::Engine as _;
+use sha2::Digest as _;
 use std::io::IsTerminal;
 use std::path::Path;
 
@@ -43,14 +47,6 @@ pub struct BootstrapKeyPaths {
     pub local_cli_issuer: std::path::PathBuf,
 }
 
-#[derive(Debug, Clone)]
-pub struct BootstrapPublicKeys {
-    pub admin_root: [u8; 32],
-    pub recovery_root: [u8; 32],
-    pub receipt_signer: [u8; 32],
-    pub local_cli_issuer: [u8; 32],
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum BootstrapError {
     #[error("bootstrap requires explicit confirmation")]
@@ -67,12 +63,15 @@ pub enum BootstrapError {
     Authority(#[from] AuthorityError),
     #[error(transparent)]
     KeyProvider(#[from] KeyProviderError),
+    #[error(transparent)]
+    SignerProvider(#[from] SignerProviderError),
+    #[error("bootstrap receipt signing failed")]
+    Receipt,
 }
 
 pub fn bootstrap(
     nano_home: &Path,
     paths: &BootstrapKeyPaths,
-    keys: BootstrapPublicKeys,
     admin_id: impl Into<String>,
     confirmed: bool,
 ) -> Result<AuthorityStore, BootstrapError> {
@@ -97,19 +96,21 @@ pub fn bootstrap(
             }
         }
     }
+    let receipt_signer = ExternalReceiptSigner::from_key_reference(&references[2])?;
     let request = BootstrapRequest::new(
-        keys.admin_root,
-        keys.recovery_root,
-        keys.receipt_signer,
-        keys.local_cli_issuer,
+        derive_public_key(&references[0], KeyRole::AdminRoot)?,
+        derive_public_key(&references[1], KeyRole::RecoveryRoot)?,
+        receipt_signer.public_key(),
+        derive_public_key(&references[3], KeyRole::LocalCliIssuer)?,
         admin_id,
     );
-    bootstrap_attested(nano_home, request)
+    bootstrap_attested(nano_home, request, &receipt_signer)
 }
 
 fn bootstrap_attested(
     nano_home: &Path,
     request: BootstrapRequest,
+    receipt_signer: &dyn ReceiptSigner,
 ) -> Result<AuthorityStore, BootstrapError> {
     let public_keys = [
         request.admin_public_key,
@@ -122,20 +123,96 @@ fn bootstrap_attested(
             return Err(BootstrapError::RoleKeyReuse);
         }
     }
-    if nano_home.join("activation/authority.jsonl").exists() {
-        return Err(BootstrapError::AlreadyBootstrapped);
-    }
     verify_secure_home(nano_home)?;
-    AuthorityStore::bootstrap_initial(
-        nano_home,
-        AuthoritySnapshot::empty(request.admin_id, request.admin_public_key)
-            .with_recovery_key(request.recovery_public_key)
-            .with_service_keys(
-                request.receipt_signer_public_key,
-                request.local_cli_public_key,
+    let snapshot = AuthoritySnapshot::empty(request.admin_id, request.admin_public_key)
+        .with_recovery_key(request.recovery_public_key)
+        .with_service_keys(
+            request.receipt_signer_public_key,
+            request.local_cli_public_key,
+        );
+    if receipt_signer.public_key() != request.receipt_signer_public_key {
+        return Err(BootstrapError::RoleKeyReuse);
+    }
+    let receipt = sign_bootstrap_receipt(&snapshot, receipt_signer)?;
+    match AuthorityStore::bootstrap_initial(nano_home, snapshot, receipt) {
+        Ok(store) => Ok(store),
+        Err(AuthorityError::OperationConflict) => Err(BootstrapError::AlreadyBootstrapped),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn sign_bootstrap_receipt(
+    snapshot: &AuthoritySnapshot,
+    signer: &dyn ReceiptSigner,
+) -> Result<Vec<u8>, BootstrapError> {
+    signer.preflight().map_err(|_| BootstrapError::Receipt)?;
+    let mut receipt = serde_json::json!({
+        "admin_epoch": snapshot.admin_epoch,
+        "admin_id": snapshot.admin_id,
+        "authority_journal_position": 1,
+        "receipt_signer_key_id": signer.key_id(),
+        "root_public_key_fingerprint": crate::authority::hex(&sha2::Sha256::digest(snapshot.admin_public_key)),
+        "schema": "wayland.nano.admin-bootstrap-receipt/v1"
+    });
+    let canonical = serde_jcs::to_vec(&receipt).map_err(|_| BootstrapError::Receipt)?;
+    let mut message = b"WAYLAND-NANO-ADMIN-BOOTSTRAP\0v1\0".to_vec();
+    message.extend_from_slice(&canonical);
+    let signature = signer.sign(&message).map_err(|_| BootstrapError::Receipt)?;
+    receipt
+        .as_object_mut()
+        .ok_or(BootstrapError::Receipt)?
+        .insert(
+            "signature".into(),
+            serde_json::Value::String(
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature),
             ),
-    )
-    .map_err(Into::into)
+        );
+    serde_jcs::to_vec(&receipt).map_err(|_| BootstrapError::Receipt)
+}
+
+pub fn verify_bootstrap_receipt(raw: &[u8], public_key: &[u8; 32]) -> Result<(), BootstrapError> {
+    use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
+    let mut value = crate::raw::parse_transport_frame(raw).map_err(|_| BootstrapError::Receipt)?;
+    if serde_jcs::to_vec(&value).map_err(|_| BootstrapError::Receipt)? != raw {
+        return Err(BootstrapError::Receipt);
+    }
+    let object = value.as_object_mut().ok_or(BootstrapError::Receipt)?;
+    let expected = [
+        "admin_epoch",
+        "admin_id",
+        "authority_journal_position",
+        "receipt_signer_key_id",
+        "root_public_key_fingerprint",
+        "schema",
+        "signature",
+    ];
+    if object.len() != expected.len() || expected.iter().any(|field| !object.contains_key(*field)) {
+        return Err(BootstrapError::Receipt);
+    }
+    if object.get("schema").and_then(serde_json::Value::as_str)
+        != Some("wayland.nano.admin-bootstrap-receipt/v1")
+        || object
+            .get("authority_journal_position")
+            .and_then(serde_json::Value::as_u64)
+            != Some(1)
+    {
+        return Err(BootstrapError::Receipt);
+    }
+    let encoded = object
+        .remove("signature")
+        .and_then(|signature| signature.as_str().map(str::to_owned))
+        .ok_or(BootstrapError::Receipt)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| BootstrapError::Receipt)?;
+    let signature = Signature::from_slice(&bytes).map_err(|_| BootstrapError::Receipt)?;
+    let canonical = serde_jcs::to_vec(&value).map_err(|_| BootstrapError::Receipt)?;
+    let mut message = b"WAYLAND-NANO-ADMIN-BOOTSTRAP\0v1\0".to_vec();
+    message.extend_from_slice(&canonical);
+    VerifyingKey::from_bytes(public_key)
+        .map_err(|_| BootstrapError::Receipt)?
+        .verify(&message, &signature)
+        .map_err(|_| BootstrapError::Receipt)
 }
 
 pub fn apply_signed_admin(
@@ -264,6 +341,24 @@ fn verify_secure_home(path: &Path) -> Result<(), BootstrapError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer as _, SigningKey};
+
+    struct TestReceiptSigner(SigningKey);
+    impl ReceiptSigner for TestReceiptSigner {
+        fn key_id(&self) -> &str {
+            "test-bootstrap-receipt"
+        }
+        fn public_key(&self) -> [u8; 32] {
+            self.0.verifying_key().to_bytes()
+        }
+        fn preflight(&self) -> Result<(), crate::receipt::ReceiptError> {
+            Ok(())
+        }
+        fn sign(&self, message: &[u8]) -> Result<[u8; 64], crate::receipt::ReceiptError> {
+            Ok(self.0.sign(message).to_bytes())
+        }
+    }
+
     #[test]
     fn attested_bootstrap_is_exactly_once() {
         // GitHub's RUNNER_TEMP and checkout ancestry can be writable by other
@@ -306,27 +401,56 @@ $directory.SetAccessControl($acl)
                     .success()
             );
         }
-        bootstrap_attested(
+        let signer = TestReceiptSigner(SigningKey::from_bytes(&[3; 32]));
+        let first = bootstrap_attested(
             home.path(),
-            BootstrapRequest::new([1; 32], [2; 32], [3; 32], [4; 32], "root-1"),
+            BootstrapRequest::new([1; 32], [2; 32], signer.public_key(), [4; 32], "root-1"),
+            &signer,
         )
         .unwrap();
+        let first_receipt = first.bootstrap_receipt().unwrap().to_vec();
+        verify_bootstrap_receipt(&first_receipt, &signer.public_key()).unwrap();
+        let mut tampered = first_receipt.clone();
+        let index = tampered.iter().position(|byte| *byte == b'r').unwrap();
+        tampered[index] = b's';
+        assert!(verify_bootstrap_receipt(&tampered, &signer.public_key()).is_err());
+        let receipt_text = String::from_utf8(first_receipt.clone()).unwrap();
+        assert!(!receipt_text.contains("reference"));
+        assert!(!receipt_text.contains("private"));
         assert!(matches!(
             bootstrap_attested(
                 home.path(),
-                BootstrapRequest::new([1; 32], [2; 32], [3; 32], [4; 32], "root-1")
+                BootstrapRequest::new([1; 32], [2; 32], signer.public_key(), [4; 32], "root-1"),
+                &signer,
             ),
-            Err(BootstrapError::AlreadyBootstrapped)
+            Err(BootstrapError::Authority(AuthorityError::Contention))
         ));
+        drop(first);
+        let replayed = bootstrap_attested(
+            home.path(),
+            BootstrapRequest::new([1; 32], [2; 32], signer.public_key(), [4; 32], "root-1"),
+            &signer,
+        )
+        .unwrap();
+        assert_eq!(replayed.bootstrap_receipt(), Some(first_receipt.as_slice()));
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("activation/authority.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
     }
 
     #[test]
     fn attested_bootstrap_rejects_role_key_reuse() {
         let home = tempfile::tempdir().unwrap();
+        let signer = TestReceiptSigner(SigningKey::from_bytes(&[3; 32]));
         assert!(matches!(
             bootstrap_attested(
                 home.path(),
-                BootstrapRequest::new([1; 32], [1; 32], [3; 32], [4; 32], "root-1")
+                BootstrapRequest::new([1; 32], [1; 32], signer.public_key(), [4; 32], "root-1"),
+                &signer,
             ),
             Err(BootstrapError::RoleKeyReuse)
         ));
@@ -338,14 +462,91 @@ $directory.SetAccessControl($acl)
     fn attested_bootstrap_rejects_insecure_home() {
         use std::os::unix::fs::PermissionsExt;
         let home = tempfile::tempdir().unwrap();
+        let signer = TestReceiptSigner(SigningKey::from_bytes(&[3; 32]));
         std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(matches!(
             bootstrap_attested(
                 home.path(),
-                BootstrapRequest::new([1; 32], [2; 32], [3; 32], [4; 32], "root-1")
+                BootstrapRequest::new([1; 32], [2; 32], signer.public_key(), [4; 32], "root-1"),
+                &signer,
             ),
             Err(BootstrapError::InsecureHome)
         ));
         assert!(!home.path().join("activation").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attested_bootstrap_repairs_torn_initial_record() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in(std::env::var_os("HOME").unwrap())
+            .unwrap();
+        let activation = home.path().join("activation");
+        std::fs::create_dir_all(&activation).unwrap();
+        std::fs::write(activation.join("authority.jsonl"), b"{\"record_type\":").unwrap();
+        let signer = TestReceiptSigner(SigningKey::from_bytes(&[3; 32]));
+        let store = bootstrap_attested(
+            home.path(),
+            BootstrapRequest::new([1; 32], [2; 32], signer.public_key(), [4; 32], "root-1"),
+            &signer,
+        )
+        .unwrap();
+        assert!(store.bootstrap_receipt().is_some());
+        assert_eq!(
+            std::fs::read_to_string(activation.join("authority.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn killed_between_bootstrap_and_receipt_restarts_idempotently() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Some(home) = std::env::var_os("NANO_BOOTSTRAP_KILL_HOME") {
+            let signer = TestReceiptSigner(SigningKey::from_bytes(&[3; 32]));
+            let snapshot = AuthoritySnapshot::empty("root-1", [1; 32])
+                .with_recovery_key([2; 32])
+                .with_service_keys(signer.public_key(), [4; 32]);
+            let receipt = sign_bootstrap_receipt(&snapshot, &signer).unwrap();
+            let _ = AuthorityStore::bootstrap_initial_with_fault(
+                Path::new(&home),
+                snapshot,
+                receipt,
+                || std::process::abort(),
+            );
+            unreachable!();
+        }
+        let home = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in(std::env::var_os("HOME").unwrap())
+            .unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("admin::tests::killed_between_bootstrap_and_receipt_restarts_idempotently")
+            .arg("--nocapture")
+            .env("NANO_BOOTSTRAP_KILL_HOME", home.path())
+            .status()
+            .unwrap();
+        assert!(!status.success());
+        let signer = TestReceiptSigner(SigningKey::from_bytes(&[3; 32]));
+        let store = bootstrap_attested(
+            home.path(),
+            BootstrapRequest::new([1; 32], [2; 32], signer.public_key(), [4; 32], "root-1"),
+            &signer,
+        )
+        .unwrap();
+        verify_bootstrap_receipt(store.bootstrap_receipt().unwrap(), &signer.public_key()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("activation/authority.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
     }
 }

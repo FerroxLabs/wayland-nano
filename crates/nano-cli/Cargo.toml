@@ -77,4 +77,4 @@ libc = "0.2"
 # assigns it to the nano-sandbox Job Object before resume. windows-sys
 # stays on the workspace-pinned 0.52.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_ProcessStatus", "Win32_System_RemoteDesktop", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
