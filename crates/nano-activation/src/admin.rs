@@ -441,6 +441,24 @@ fn verify_unix_login_provenance(fd: std::os::fd::RawFd) -> Result<(), BootstrapE
     }
     let tty = unsafe { std::ffi::CStr::from_ptr(tty_buffer.as_ptr()) }.to_string_lossy();
     let tty = tty.strip_prefix("/dev/").unwrap_or(&tty);
+    let tty_path =
+        std::ffi::CString::new(format!("/dev/{tty}")).map_err(|_| BootstrapError::RemoteSession)?;
+    let mut descriptor_stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let mut path_stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(fd, descriptor_stat.as_mut_ptr()) } != 0
+        || unsafe { libc::stat(tty_path.as_ptr(), path_stat.as_mut_ptr()) } != 0
+    {
+        return Err(BootstrapError::RemoteSession);
+    }
+    let descriptor_stat = unsafe { descriptor_stat.assume_init() };
+    let path_stat = unsafe { path_stat.assume_init() };
+    if descriptor_stat.st_uid != unsafe { libc::geteuid() }
+        || descriptor_stat.st_dev != path_stat.st_dev
+        || descriptor_stat.st_ino != path_stat.st_ino
+        || descriptor_stat.st_rdev != path_stat.st_rdev
+    {
+        return Err(BootstrapError::RemoteSession);
+    }
     let who = std::process::Command::new("/usr/bin/who")
         .output()
         .map_err(|_| BootstrapError::RemoteSession)?;
@@ -448,6 +466,7 @@ fn verify_unix_login_provenance(fd: std::os::fd::RawFd) -> Result<(), BootstrapE
         return Err(BootstrapError::RemoteSession);
     }
     let who_output = String::from_utf8_lossy(&who.stdout);
+    let username = effective_unix_username()?;
     let ps = if Path::new("/bin/ps").is_file() {
         "/bin/ps"
     } else {
@@ -476,24 +495,126 @@ fn verify_unix_login_provenance(fd: std::os::fd::RawFd) -> Result<(), BootstrapE
         ancestry.push(command);
         pid = parent;
     }
-    if unix_provenance_is_remote(tty, &who_output, &ancestry) {
+    if !unix_login_is_affirmatively_local(tty, &username, &who_output)
+        || unix_ancestry_is_remote(&ancestry)
+    {
         return Err(BootstrapError::RemoteSession);
     }
     Ok(())
 }
 
 #[cfg(unix)]
-fn unix_provenance_is_remote(tty: &str, who: &str, ancestry: &[String]) -> bool {
-    who.lines().any(|line| {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        fields.get(1).copied() == Some(tty)
-            && fields
-                .iter()
-                .skip(2)
-                .any(|field| field.starts_with('(') || field.parse::<std::net::IpAddr>().is_ok())
-    }) || ancestry
+fn unix_ancestry_is_remote(ancestry: &[String]) -> bool {
+    ancestry
         .iter()
         .any(|command| command.contains("sshd") || command.contains("mosh-server"))
+}
+
+#[cfg(unix)]
+fn effective_unix_username() -> Result<String, BootstrapError> {
+    let requested = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
+    let size = if requested <= 0 {
+        16 * 1024
+    } else {
+        usize::try_from(requested)
+            .unwrap_or(16 * 1024)
+            .clamp(1024, 1024 * 1024)
+    };
+    let mut buffer = vec![0u8; size];
+    let mut passwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut result = std::ptr::null_mut();
+    let status = unsafe {
+        libc::getpwuid_r(
+            libc::geteuid(),
+            passwd.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if status != 0 || result.is_null() {
+        return Err(BootstrapError::RemoteSession);
+    }
+    let passwd = unsafe { passwd.assume_init() };
+    if passwd.pw_name.is_null() {
+        return Err(BootstrapError::RemoteSession);
+    }
+    let username = unsafe { std::ffi::CStr::from_ptr(passwd.pw_name) }
+        .to_str()
+        .map_err(|_| BootstrapError::RemoteSession)?;
+    if username.is_empty() {
+        return Err(BootstrapError::RemoteSession);
+    }
+    Ok(username.to_owned())
+}
+
+#[cfg(unix)]
+fn unix_login_is_affirmatively_local(tty: &str, username: &str, who: &str) -> bool {
+    let matching: Vec<Vec<&str>> = who
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>())
+        .filter(|fields| fields.get(1).copied() == Some(tty))
+        .collect();
+    if matching.len() != 1 {
+        return false;
+    }
+    let fields = &matching[0];
+    if fields.len() < 4 || fields[0] != username {
+        return false;
+    }
+    let host_at = if valid_iso_login_date(fields[2]) && valid_login_time(fields[3]) {
+        4
+    } else if matches!(
+        fields[2],
+        "Jan"
+            | "Feb"
+            | "Mar"
+            | "Apr"
+            | "May"
+            | "Jun"
+            | "Jul"
+            | "Aug"
+            | "Sep"
+            | "Oct"
+            | "Nov"
+            | "Dec"
+    ) && fields[3]
+        .parse::<u8>()
+        .is_ok_and(|day| (1..=31).contains(&day))
+        && fields.get(4).is_some_and(|time| valid_login_time(time))
+    {
+        5
+    } else {
+        return false;
+    };
+    match fields.get(host_at..) {
+        Some([]) => true,
+        Some([host]) => matches!(*host, "(:0)" | "(localhost)" | "(127.0.0.1)" | "(::1)"),
+        _ => false,
+    }
+}
+
+#[cfg(unix)]
+fn valid_iso_login_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+}
+
+#[cfg(unix)]
+fn valid_login_time(value: &str) -> bool {
+    let Some((hour, minute)) = value.split_once(':') else {
+        return false;
+    };
+    hour.len() == 2
+        && minute.len() == 2
+        && hour.parse::<u8>().is_ok_and(|hour| hour < 24)
+        && minute.parse::<u8>().is_ok_and(|minute| minute < 60)
 }
 
 #[cfg(windows)]
@@ -693,22 +814,48 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn os_login_probe_detects_remote_host_or_sshd_without_environment() {
-        assert!(unix_provenance_is_remote(
+    fn os_login_probe_requires_one_well_formed_local_owner_row() {
+        assert!(unix_login_is_affirmatively_local(
             "pts/4",
+            "owner",
+            "owner pts/4 2026-08-30 10:00\n",
+        ));
+        assert!(unix_login_is_affirmatively_local(
+            "pts/4",
+            "owner",
+            "owner pts/4 Aug 30 10:00 (localhost)\n",
+        ));
+        assert!(!unix_login_is_affirmatively_local("pts/4", "owner", ""));
+        assert!(!unix_login_is_affirmatively_local(
+            "pts/4",
+            "owner",
+            "owner pts/4 malformed\n",
+        ));
+        assert!(!unix_login_is_affirmatively_local(
+            "pts/4",
+            "owner",
+            "other pts/4 2026-08-30 10:00\n",
+        ));
+        assert!(!unix_login_is_affirmatively_local(
+            "pts/4",
+            "owner",
             "owner pts/4 2026-08-30 10:00 (203.0.113.9)\n",
-            &[],
         ));
-        assert!(unix_provenance_is_remote(
+        assert!(!unix_login_is_affirmatively_local(
             "pts/4",
-            "owner pts/4 2026-08-30 10:00\n",
-            &["bash".into(), "sshd-session".into()],
+            "owner",
+            "owner pts/4 2026-08-30 10:00\nowner pts/4 2026-08-30 10:01\n",
         ));
-        assert!(!unix_provenance_is_remote(
+        assert!(!unix_login_is_affirmatively_local(
             "pts/4",
-            "owner pts/4 2026-08-30 10:00\n",
-            &["bash".into(), "systemd".into()],
+            "owner",
+            "owner pts/5 2026-08-30 10:00\n",
         ));
+        assert!(unix_ancestry_is_remote(&[
+            "bash".into(),
+            "sshd-session".into()
+        ]));
+        assert!(!unix_ancestry_is_remote(&["bash".into(), "systemd".into()]));
     }
 
     #[cfg(windows)]

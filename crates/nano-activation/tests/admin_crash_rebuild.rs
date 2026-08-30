@@ -102,6 +102,88 @@ fn bootstrap_receipt_signature_and_snapshot_binding_are_replay_authority() {
     ));
 }
 
+#[test]
+fn bootstrap_receipt_must_be_the_exact_second_record() {
+    let initial = snapshot();
+    let signer = BootstrapSigner(SigningKey::from_bytes(&[9; 32]));
+    let receipt = nano_activation::admin::sign_bootstrap_receipt(&initial, &signer).unwrap();
+    let command = AuthorityCommand::ConsumeNonce {
+        operation_id: "interposed-command".into(),
+        nonce: "interposed-nonce".into(),
+        tuple_digest: "0".repeat(64),
+        expires_at_unix: 1,
+    };
+    let variants = vec![
+        serde_jcs::to_vec(&AuthorityRecord::Command {
+            sequence: 2,
+            command: command.clone(),
+        })
+        .unwrap(),
+        serde_jcs::to_vec(&AuthorityRecord::Transaction {
+            sequence: 2,
+            command: command.clone(),
+            nonce_command: command,
+        })
+        .unwrap(),
+        br#"{"record_type":"future","sequence":2}"#.to_vec(),
+        serde_jcs::to_vec(&AuthorityRecord::Bootstrap {
+            sequence: 2,
+            snapshot: initial.clone(),
+        })
+        .unwrap(),
+    ];
+    for interposed in variants {
+        let home = tempfile::tempdir().unwrap();
+        let activation = home.path().join("activation");
+        std::fs::create_dir_all(&activation).unwrap();
+        let mut bytes = serde_jcs::to_vec(&AuthorityRecord::Bootstrap {
+            sequence: 1,
+            snapshot: initial.clone(),
+        })
+        .unwrap();
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&interposed);
+        bytes.push(b'\n');
+        bytes.extend_from_slice(
+            &serde_jcs::to_vec(&AuthorityRecord::BootstrapReceipt {
+                sequence: 3,
+                receipt: String::from_utf8(receipt.clone()).unwrap(),
+            })
+            .unwrap(),
+        );
+        bytes.push(b'\n');
+        std::fs::write(activation.join("authority.jsonl"), bytes).unwrap();
+        assert!(matches!(
+            AuthorityStore::open(home.path()),
+            Err(AuthorityError::InvalidRecord)
+        ));
+    }
+
+    let torn_home = tempfile::tempdir().unwrap();
+    let activation = torn_home.path().join("activation");
+    std::fs::create_dir_all(&activation).unwrap();
+    let mut bytes = serde_jcs::to_vec(&AuthorityRecord::Bootstrap {
+        sequence: 1,
+        snapshot: initial,
+    })
+    .unwrap();
+    bytes.extend_from_slice(b"\n{\"record_type\":");
+    std::fs::write(activation.join("authority.jsonl"), bytes).unwrap();
+    assert!(matches!(
+        AuthorityStore::open(torn_home.path()),
+        Err(AuthorityError::InvalidRecord)
+    ));
+
+    let future_home = tempfile::tempdir().unwrap();
+    drop(bootstrapped(future_home.path(), snapshot()));
+    let journal = future_home.path().join("activation/authority.jsonl");
+    let mut bytes = std::fs::read(&journal).unwrap();
+    bytes.extend_from_slice(b"{\"record_type\":\"future\",\"sequence\":3}\n");
+    std::fs::write(&journal, bytes).unwrap();
+    let store = AuthorityStore::open(future_home.path()).unwrap();
+    assert_eq!(store.snapshot().unwrap().unknown_records.len(), 1);
+}
+
 fn write_records(path: &std::path::Path, records: &[AuthorityRecord]) {
     let mut bytes = Vec::new();
     for record in records {

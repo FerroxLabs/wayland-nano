@@ -140,13 +140,12 @@ fn admin_bootstrap_refuses_detached_process_before_creating_authority() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn real_binary_foreground_pty_bootstrap_binds_keys_and_replays_receipt() {
+fn foreground_pty_without_affirmative_utmp_row_fails_closed() {
     use std::os::unix::fs::PermissionsExt;
     let home = tempfile::Builder::new()
         .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir_in(std::env::var_os("HOME").unwrap())
         .unwrap();
-    provision_bootstrap_keys(home.path());
     let args = bootstrap_process_args(home.path());
     let command = std::iter::once(shell_quote(env!("CARGO_BIN_EXE_wayland-nano")))
         .chain(args.iter().map(|arg| shell_quote(arg)))
@@ -172,38 +171,9 @@ fn real_binary_foreground_pty_bootstrap_binds_keys_and_replays_receipt() {
             .unwrap();
         child.wait_with_output().unwrap()
     };
-    let first = run();
-    assert!(
-        first.status.success(),
-        "{}",
-        String::from_utf8_lossy(&first.stderr)
-    );
-    let first_stdout = String::from_utf8_lossy(&first.stdout);
-    assert!(first_stdout.contains("wayland.nano.admin-bootstrap-receipt/v1"));
-    let journal_before = std::fs::read(home.path().join("activation/authority.jsonl")).unwrap();
-    let second = run();
-    assert!(
-        second.status.success(),
-        "{}",
-        String::from_utf8_lossy(&second.stderr)
-    );
-    assert_eq!(
-        journal_before,
-        std::fs::read(home.path().join("activation/authority.jsonl")).unwrap()
-    );
-    let store = nano_activation::store::AuthorityStore::open(home.path()).unwrap();
-    let snapshot = store.snapshot().unwrap();
-    assert_eq!(snapshot.admin_id, "owner-1");
-    assert_eq!(snapshot.admin_epoch, 1);
-    nano_activation::admin::verify_bootstrap_receipt(
-        store.bootstrap_receipt().unwrap(),
-        &snapshot.receipt_signer_public_key.unwrap(),
-    )
-    .unwrap();
-    let receipt = String::from_utf8_lossy(store.bootstrap_receipt().unwrap());
-    assert!(!receipt.contains("SECRET-CANARY"));
-    assert!(!receipt.contains(".seed"));
-    assert!(!receipt.contains("keyref"));
+    let output = run();
+    assert!(!output.status.success());
+    assert!(!home.path().join("activation/authority.jsonl").exists());
 }
 
 #[cfg(target_os = "linux")]
@@ -215,7 +185,6 @@ fn remote_environment_marker_is_not_session_authority() {
         .tempdir_in(std::env::var_os("HOME").unwrap())
         .unwrap();
     let args = bootstrap_process_args(home.path());
-    provision_bootstrap_keys(home.path());
     let command = std::iter::once(shell_quote(env!("CARGO_BIN_EXE_wayland-nano")))
         .chain(args.iter().map(|arg| shell_quote(arg)))
         .collect::<Vec<_>>()
@@ -236,8 +205,8 @@ fn remote_environment_marker_is_not_session_authority() {
         .write_all(b"BOOTSTRAP owner-1\n")
         .unwrap();
     let output = child.wait_with_output().unwrap();
-    assert!(output.status.success(), "{output:?}");
-    assert!(home.path().join("activation/authority.jsonl").exists());
+    assert!(!output.status.success(), "{output:?}");
+    assert!(!home.path().join("activation/authority.jsonl").exists());
 }
 
 #[test]
@@ -276,33 +245,6 @@ fn bootstrap_process_args(home: &std::path::Path) -> Vec<String> {
         "--local-cli-keyref".into(),
         home.join("cli.keyref").display().to_string(),
     ]
-}
-
-#[cfg(target_os = "linux")]
-fn provision_bootstrap_keys(home: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
-    for (name, role, byte) in [
-        ("admin", "admin_root", 1u8),
-        ("recovery", "recovery_root", 2u8),
-        ("receipt", "receipt_signer", 3u8),
-        ("cli", "local_cli_issuer", 4u8),
-    ] {
-        let seed = home.join(format!("{name}.seed"));
-        std::fs::write(&seed, [byte; 32]).unwrap();
-        std::fs::set_permissions(&seed, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let reference = home.join(format!("{name}.keyref"));
-        std::fs::write(
-            &reference,
-            serde_json::to_vec(&serde_json::json!({
-                "provider": "file",
-                "reference": seed,
-                "role": role
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        std::fs::set_permissions(&reference, std::fs::Permissions::from_mode(0o600)).unwrap();
-    }
 }
 
 #[cfg(target_os = "linux")]

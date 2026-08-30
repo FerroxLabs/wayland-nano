@@ -130,7 +130,8 @@ pub(crate) fn replay(path: &Path) -> Result<ReplayState, AuthorityError> {
             Ok(value) => value,
             Err(_)
                 if index == bytes.split(|byte| *byte == b'\n').count() - 1
-                    && !bytes.ends_with(b"\n") =>
+                    && !bytes.ends_with(b"\n")
+                    && (snapshot.is_none() || bootstrap_receipt.is_some()) =>
             {
                 break;
             }
@@ -144,6 +145,9 @@ pub(crate) fn replay(path: &Path) -> Result<ReplayState, AuthorityError> {
                     .and_then(Value::as_u64)
                     .ok_or(AuthorityError::InvalidRecord)?;
                 if sequence != expected {
+                    return Err(AuthorityError::InvalidRecord);
+                }
+                if bootstrap_receipt.is_none() {
                     return Err(AuthorityError::InvalidRecord);
                 }
                 let state = snapshot.as_mut().ok_or(AuthorityError::InvalidRecord)?;
@@ -166,18 +170,21 @@ pub(crate) fn replay(path: &Path) -> Result<ReplayState, AuthorityError> {
         match record {
             AuthorityRecord::Bootstrap {
                 snapshot: initial, ..
-            } if snapshot.is_none() => {
+            } if snapshot.is_none() && expected == 1 => {
                 bootstrap_snapshot = Some(initial.clone());
                 snapshot = Some(initial);
             }
             AuthorityRecord::Bootstrap { .. } => return Err(AuthorityError::InvalidRecord),
             AuthorityRecord::BootstrapReceipt { receipt, .. } => {
-                if snapshot.is_none() || bootstrap_receipt.is_some() {
+                if snapshot.is_none() || bootstrap_receipt.is_some() || expected != 2 {
                     return Err(AuthorityError::InvalidRecord);
                 }
                 bootstrap_receipt = Some(receipt.into_bytes());
             }
             AuthorityRecord::Command { command, .. } => {
+                if bootstrap_receipt.is_none() {
+                    return Err(AuthorityError::InvalidRecord);
+                }
                 apply(
                     snapshot.as_mut().ok_or(AuthorityError::InvalidRecord)?,
                     &command,
@@ -188,6 +195,9 @@ pub(crate) fn replay(path: &Path) -> Result<ReplayState, AuthorityError> {
                 nonce_command,
                 ..
             } => {
+                if bootstrap_receipt.is_none() {
+                    return Err(AuthorityError::InvalidRecord);
+                }
                 let state = snapshot.as_mut().ok_or(AuthorityError::InvalidRecord)?;
                 apply(state, &command)?;
                 apply(state, &nonce_command)?;
