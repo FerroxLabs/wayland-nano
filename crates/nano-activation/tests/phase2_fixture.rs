@@ -262,6 +262,7 @@ fn prepared_case() -> PreparedCase {
 
 #[cfg(windows)]
 fn fixture_tempdir() -> tempfile::TempDir {
+    normalize_test_default_owner();
     std::env::var_os("WN_VERIFY_TEMP").map_or_else(
         || tempfile::tempdir().unwrap(),
         |root| {
@@ -270,6 +271,57 @@ fn fixture_tempdir() -> tempfile::TempDir {
                 .unwrap()
         },
     )
+}
+
+#[cfg(windows)]
+fn normalize_test_default_owner() {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, SetTokenInformation, TOKEN_ADJUST_DEFAULT, TOKEN_OWNER, TOKEN_QUERY,
+        TOKEN_USER, TokenOwner, TokenUser,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    static NORMALIZED: OnceLock<()> = OnceLock::new();
+    NORMALIZED.get_or_init(|| unsafe {
+        let mut token = 0;
+        assert_ne!(
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_ADJUST_DEFAULT | TOKEN_QUERY,
+                &mut token,
+            ),
+            0
+        );
+        let mut size = 0;
+        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut size);
+        assert!(size >= std::mem::size_of::<TOKEN_USER>() as u32);
+        let mut buffer = vec![0_u8; size as usize];
+        assert_ne!(
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                size,
+                &mut size,
+            ),
+            0
+        );
+        let user = &*(buffer.as_ptr() as *const TOKEN_USER);
+        let owner = TOKEN_OWNER {
+            Owner: user.User.Sid,
+        };
+        assert_ne!(
+            SetTokenInformation(
+                token,
+                TokenOwner,
+                (&raw const owner).cast(),
+                std::mem::size_of::<TOKEN_OWNER>() as u32,
+            ),
+            0
+        );
+        assert_ne!(CloseHandle(token), 0);
+    });
 }
 
 #[cfg(not(windows))]
