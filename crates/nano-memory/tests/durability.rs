@@ -3,6 +3,10 @@ use nano_session::{JournalWriter, Op, OpEnvelope};
 use serde::Deserialize;
 use std::path::Path;
 
+fn configured() -> ConfiguredAgents {
+    ConfiguredAgents::try_from_ids(["bot-a".to_owned(), "bot-b".to_owned()]).unwrap()
+}
+
 #[derive(Deserialize)]
 struct Fixture {
     facts: Vec<FactWrite>,
@@ -71,9 +75,14 @@ fn durability_kill_mid_write() {
         std::env::var("NANO_MEMORY_KILL_MARKER"),
     ) {
         let fixture = load();
-        let mut store =
-            MemoryStore::open_at(Path::new(&db), Path::new(&journal), MemoryPolicy::default())
-                .unwrap();
+        let mut store = MemoryStore::open_at(
+            Path::new(&db),
+            Path::new(&journal),
+            MemoryPolicy::default(),
+            "main",
+            configured(),
+        )
+        .unwrap();
         for d in fixture.decisions {
             store.write_decision(d).unwrap();
         }
@@ -96,8 +105,14 @@ fn durability_kill_mid_write() {
     let fixture = load();
     let control_db = temp.path().join("control.db");
     let control_journal = temp.path().join("control.jsonl");
-    let mut control =
-        MemoryStore::open_at(&control_db, &control_journal, MemoryPolicy::default()).unwrap();
+    let mut control = MemoryStore::open_at(
+        &control_db,
+        &control_journal,
+        MemoryPolicy::default(),
+        "main",
+        configured(),
+    )
+    .unwrap();
     ingest(&mut control, &fixture);
     let expected_queries = query_ids(&control, &fixture);
     let expected_facts = control.current_facts().unwrap();
@@ -135,6 +150,8 @@ fn durability_kill_mid_write() {
         &killed_db,
         &temp.path().join("rebuilt-open.jsonl"),
         MemoryPolicy::default(),
+        "main",
+        configured(),
     )
     .unwrap();
     assert_eq!(rebuilt.current_facts().unwrap(), expected_facts);
@@ -149,11 +166,15 @@ fn reopen_keeps_journal_ids_collision_free() {
     let journal = temp.path().join("session.jsonl");
     let fixture = load();
     {
-        let mut store = MemoryStore::open_at(&db, &journal, MemoryPolicy::default()).unwrap();
+        let mut store =
+            MemoryStore::open_at(&db, &journal, MemoryPolicy::default(), "main", configured())
+                .unwrap();
         write_fact(&mut store, fixture.facts[0].clone());
     }
     {
-        let mut store = MemoryStore::open_at(&db, &journal, MemoryPolicy::default()).unwrap();
+        let mut store =
+            MemoryStore::open_at(&db, &journal, MemoryPolicy::default(), "main", configured())
+                .unwrap();
         write_fact(&mut store, fixture.facts[1].clone());
     }
     std::fs::remove_file(&db).unwrap();
@@ -162,6 +183,8 @@ fn reopen_keeps_journal_ids_collision_free() {
         &db,
         &temp.path().join("inspect.jsonl"),
         MemoryPolicy::default(),
+        "main",
+        configured(),
     )
     .unwrap();
     assert_eq!(rebuilt.current_facts().unwrap().len(), 2);
@@ -200,6 +223,8 @@ fn rebuild_ignores_unreceipted_model_write() {
         &db,
         &temp.path().join("inspect.jsonl"),
         MemoryPolicy::default(),
+        "main",
+        configured(),
     )
     .unwrap();
     assert!(store.current_facts().unwrap().is_empty());
