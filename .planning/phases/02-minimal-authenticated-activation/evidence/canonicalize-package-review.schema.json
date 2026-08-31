@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wayland.nano/contracts/canonicalize-package-review-v1.schema.json",
+  "title": "Wayland Nano exact canonicalize package review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "package",
+    "registry",
+    "source",
+    "contents",
+    "runtime",
+    "vectors",
+    "decision"
+  ],
+  "properties": {
+    "schema": { "const": "wayland.nano.canonicalize-package-review/v1" },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "license", "manifest_sha256", "manifest"],
+      "properties": {
+        "name": { "const": "canonicalize" },
+        "version": { "const": "2.1.0" },
+        "license": { "const": "Apache-2.0" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "manifest": { "type": "object" }
+      }
+    },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metadata_url", "tarball_url", "dist_integrity", "dist_shasum", "tarball_sha256", "published_at", "maintainers"],
+      "properties": {
+        "metadata_url": { "const": "https://registry.npmjs.org/canonicalize/2.1.0" },
+        "tarball_url": { "const": "https://registry.npmjs.org/canonicalize/-/canonicalize-2.1.0.tgz" },
+        "dist_integrity": { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]+={0,2}$" },
+        "dist_shasum": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "tarball_sha256": { "$ref": "#/$defs/sha256" },
+        "published_at": { "type": "string", "format": "date-time" },
+        "maintainers": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "tag_object_sha", "commit_sha", "tree_sha", "tag_signature_verified", "all_package_files_match_tree"],
+      "properties": {
+        "repository": { "const": "https://github.com/erdtman/canonicalize.git" },
+        "tag": { "const": "v2.1.0" },
+        "tag_object_sha": { "$ref": "#/$defs/sha1" },
+        "commit_sha": { "$ref": "#/$defs/sha1" },
+        "tree_sha": { "$ref": "#/$defs/sha1" },
+        "tag_signature_verified": { "type": "boolean" },
+        "all_package_files_match_tree": { "const": true }
+      }
+    },
+    "contents": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file_count", "files", "dependencies", "optional_dependencies", "peer_dependencies", "lifecycle_scripts"],
+      "properties": {
+        "file_count": { "const": 20 },
+        "files": {
+          "type": "array",
+          "minItems": 20,
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "sha256", "size"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "sha256": { "$ref": "#/$defs/sha256" },
+              "size": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "dependencies": { "type": "object", "maxProperties": 0 },
+        "optional_dependencies": { "type": "object", "maxProperties": 0 },
+        "peer_dependencies": { "type": "object", "maxProperties": 0 },
+        "lifecycle_scripts": { "type": "object", "maxProperties": 0 }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_version", "bun_version", "commonjs_export", "node_pass", "bun_pass"],
+      "properties": {
+        "node_version": { "type": "string", "pattern": "^v24\\." },
+        "bun_version": { "type": "string", "minLength": 1 },
+        "commonjs_export": { "const": "function" },
+        "node_pass": { "const": true },
+        "bun_pass": { "const": true }
+      }
+    },
+    "vectors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nano_manifest_sha256", "rfc8785_pass", "nano_activation_pass", "nano_receipt_pass", "nano_control_pass", "nano_admin_pass"],
+      "properties": {
+        "nano_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "rfc8785_pass": { "const": true },
+        "nano_activation_pass": { "const": true },
+        "nano_receipt_pass": { "const": true },
+        "nano_control_pass": { "const": true },
+        "nano_admin_pass": { "const": true }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "approved_name", "approved_version", "approved_integrity", "approved_tarball_sha256", "authority_mode", "same_human_controller", "independent_human_review", "statement"],
+      "properties": {
+        "outcome": { "enum": ["approved_exact_package", "in_repo_jcs"] },
+        "approved_name": { "enum": ["canonicalize", "in-repo-jcs"] },
+        "approved_version": { "type": ["string", "null"] },
+        "approved_integrity": { "type": ["string", "null"] },
+        "approved_tarball_sha256": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "authority_mode": { "const": "owner-directed-agent-operated" },
+        "same_human_controller": { "const": true },
+        "independent_human_review": { "const": false },
+        "statement": { "type": "string", "minLength": 20 }
+      }
+    }
+  },
+  "$defs": {
+    "sha1": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": "phase2-nano-artifact-v1",
+  "repository": "FerroxLabs/wayland-nano",
+  "pr_number": 12,
+  "url": "https://github.com/FerroxLabs/wayland-nano/pull/12",
+  "base_sha": "c46092f8d4fda4d0ca296ffe88137a3d067c56b6",
+  "source_commit_sha": "1bebbec9183d17883497bca76d42e0fdcea275ea",
+  "merge_commit_sha": "188b839f44ee4f5907daff37a2b5d2d532ee2ed6",
+  "master_with_verifier_fix": "b3dd9cd13a547c17495bf8d8c10d80782dbbc731",
+  "cargo_lock_sha256": "cbdf22daeda3eb21dbeb81d39e42d8f33cd046e2f5c476b98b4e5eacac31d93d",
+  "cargo_lock_blob_sha": "14df4e17391ced66ae5144cf03c330313c65bfca",
+  "ci_run_id": 33280954211,
+  "required_checks": 7,
+  "reviewer": "TradeCanyon",
+  "merger": "TradeCanyon",
+  "governance_disclosure": "owner-directed agent-operated review under one human controller; not independent human review",
+  "default_off": true,
+  "verifier_corrective_pr": {
+    "number": 13,
+    "head_sha": "a519f1458552020566d62f210187c22649732a6d",
+    "merge_sha": "b3dd9cd13a547c17495bf8d8c10d80782dbbc731",
+    "ci_run_id": 33282943899
+  }
+}

@@ -1,0 +1,89 @@
+﻿{
+    "schema":  "wayland.nano.phase2.worktree-base/v1",
+    "generated_at_utc":  "2026-08-29T16:17:41.3348672Z",
+    "kind":  "Nano",
+    "repository_root":  "D:/Development/waylandnano/wayland-nano",
+    "remote_url":  "https://github.com/FerroxLabs/wayland-nano.git",
+    "git_common_dir":  "D:/Development/waylandnano/wayland-nano/.git",
+    "target_path":  "D:/Development/waylandnano/wayland-nano/.tmp-wt-phase2",
+    "branch":  "feat/p2-minimal-authenticated-activation",
+    "base_ref":  "origin/master",
+    "base_sha":  "c46092f8d4fda4d0ca296ffe88137a3d067c56b6",
+    "target_head":  "c46092f8d4fda4d0ca296ffe88137a3d067c56b6",
+    "target_clean":  true,
+    "exact_reuse":  true,
+    "primary":  {
+                    "path":  "D:/Development/waylandnano/wayland-nano",
+                    "branch_before":  "master",
+                    "branch_after":  "master",
+                    "head_before":  "466f030db615038919d6f367e2b7f0354ac73f06",
+                    "head_after":  "466f030db615038919d6f367e2b7f0354ac73f06",
+                    "status_sha256_before":  "740d8d1e5580403d9436bb28e1da18c3636781082aa2e56cdd7d273c3451c4c6",
+                    "status_sha256_after":  "740d8d1e5580403d9436bb28e1da18c3636781082aa2e56cdd7d273c3451c4c6",
+                    "status_mode":  "porcelain-v1/untracked-normal/exclude:.tmp-wt-phase2",
+                    "untouched":  true
+                },
+    "pr9":  {
+                "number":  9,
+                "state":  "MERGED",
+                "base_ref":  "master",
+                "head_ref":  "plan/persistent-agent-program",
+                "head_sha":  "88322237c1900633977ac82c72b70d2e5451d92d",
+                "merge_sha":  "c46092f8d4fda4d0ca296ffe88137a3d067c56b6",
+                "author":  "FerroxLabs",
+                "approved_head_reviews":  [
+                                              {
+                                                  "author":  "TradeCanyon",
+                                                  "commit":  "88322237c1900633977ac82c72b70d2e5451d92d",
+                                                  "submitted_at":  "2026-08-29T16:02:12Z"
+                                              }
+                                          ],
+                "checks":  [
+                               {
+                                   "name":  "gate (windows-latest, x64)",
+                                   "status":  "COMPLETED",
+                                   "conclusion":  "SUCCESS",
+                                   "details_url":  "https://github.com/FerroxLabs/wayland-nano/actions/runs/33261372645/job/99123792244"
+                               },
+                               {
+                                   "name":  "gate (windows-11-arm, arm64)",
+                                   "status":  "COMPLETED",
+                                   "conclusion":  "SUCCESS",
+                                   "details_url":  "https://github.com/FerroxLabs/wayland-nano/actions/runs/33261372645/job/99123792252"
+                               },
+                               {
+                                   "name":  "gate (macos-14, arm64)",
+                                   "status":  "COMPLETED",
+                                   "conclusion":  "SUCCESS",
+                                   "details_url":  "https://github.com/FerroxLabs/wayland-nano/actions/runs/33261372645/job/99123792237"
+                               },
+                               {
+                                   "name":  "gate (macos-15-intel, x64)",
+                                   "status":  "COMPLETED",
+                                   "conclusion":  "SUCCESS",
+                                   "details_url":  "https://github.com/FerroxLabs/wayland-nano/actions/runs/33261372645/job/99123792276"
+                               },
+                               {
+                                   "name":  "gate (ubuntu-22.04, x64)",
+                                   "status":  "COMPLETED",
+                                   "conclusion":  "SUCCESS",
+                                   "details_url":  "https://github.com/FerroxLabs/wayland-nano/actions/runs/33261372645/job/99123792317"
+                               },
+                               {
+                                   "name":  "gate (ubuntu-24.04-arm, arm64)",
+                                   "status":  "COMPLETED",
+                                   "conclusion":  "SUCCESS",
+                                   "details_url":  "https://github.com/FerroxLabs/wayland-nano/actions/runs/33261372645/job/99123792284"
+                               },
+                               {
+                                   "name":  "gate-cards",
+                                   "status":  "COMPLETED",
+                                   "conclusion":  "SUCCESS",
+                                   "details_url":  "https://github.com/FerroxLabs/wayland-nano/actions/runs/33261372645/job/99123792158"
+                               }
+                           ],
+                "url":  "https://github.com/FerroxLabs/wayland-nano/pull/9"
+            },
+    "desktop_issue":  null,
+    "coordination":  null
+}
