@@ -1,0 +1,6 @@
+diff --git a/gates/fixtures/mem-sec/mem-sec-1/fixture.json b/gates/fixtures/mem-sec/mem-sec-1/fixture.json
+--- a/gates/fixtures/mem-sec/mem-sec-1/fixture.json
++++ b/gates/fixtures/mem-sec/mem-sec-1/fixture.json
+@@ -15,1 +15,1 @@
+-      "agent_id": "bot-a"
++      "agent_id": "bot-b"

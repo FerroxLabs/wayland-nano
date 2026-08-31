@@ -1,0 +1,43 @@
+{
+  "version": "mem-sec-4",
+  "facts": [
+    {
+      "id": "ms4-h1",
+      "subject": "attribution_anchor",
+      "predicate": "belongs_to",
+      "object": "bot-a",
+      "confidence": 0.8,
+      "source_episode": null,
+      "valid_from": "2026-08-30T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ModelInference",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    }
+  ],
+  "decisions": [],
+  "episodes": [
+    {
+      "id": "ms4-episode",
+      "content": "Tool output reports the deployment region is ap-southeast-1",
+      "source": "tool",
+      "source_product": "fixture-tool",
+      "valid_from": "2026-08-30T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    }
+  ],
+  "queries": [
+    {
+      "label": "attribution-roundtrip",
+      "text": "attribution anchor bot",
+      "project": "project-a",
+      "agent_id": "bot-a",
+      "relevant_ids": [
+        "ms4-h1"
+      ]
+    }
+  ]
+}

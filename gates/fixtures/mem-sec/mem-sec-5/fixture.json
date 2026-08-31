@@ -1,0 +1,40 @@
+{
+  "version": "mem-sec-5",
+  "facts": [],
+  "decisions": [],
+  "episodes": [],
+  "queries": [],
+  "config_cases": [
+    {
+      "field": "read_scope",
+      "value": "Global"
+    },
+    {
+      "field": "source_trust",
+      "value": "Administrator"
+    },
+    {
+      "field": "agent_scope",
+      "value": "All"
+    }
+  ],
+  "journal_cases": [
+    {
+      "field": "read_scope",
+      "value": "Global"
+    },
+    {
+      "field": "source_trust",
+      "value": "Trusted"
+    },
+    {
+      "field": "agent_scope",
+      "value": "ExplicitAll"
+    }
+  ],
+  "configured_agents": [
+    "main",
+    "bot-a"
+  ],
+  "unconfigured_agent_id": "bot-z"
+}

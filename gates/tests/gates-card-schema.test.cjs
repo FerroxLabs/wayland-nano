@@ -47,7 +47,7 @@ test('t-card-schema-valid', () => {
 });
 
 test('sealed production cards satisfy the closed schema', () => {
-  for (const gateId of ['install-payload', 'provision-script', 'config-schema']) {
+  for (const gateId of ['install-payload', 'provision-script', 'config-schema', 'mem-sec']) {
     const cardPath = path.join(ROOT, 'gates', gateId, 'card.md');
     const parsed = parseCard(fs.readFileSync(cardPath, 'utf8'));
     assert.equal(parsed.gate_id, gateId);
@@ -70,11 +70,12 @@ test('t-registry-closure-digests', () => {
   const registry = JSON.parse(fs.readFileSync(path.join(ROOT, 'gates', 'registry.json'), 'utf8'));
   assert.equal(registry.schema, 1);
   assert.deepEqual(Object.keys(registry.gates).sort(),
-    ['config-schema', 'install-payload', 'provision-script']);
+    ['config-schema', 'install-payload', 'mem-sec', 'provision-script']);
   assert.deepEqual(registry.requirements, {
     'CARD-05': 'install-payload',
     'CARD-06': 'provision-script',
     'CARD-07': 'config-schema',
+    'MEM-SEC': 'mem-sec',
   });
   for (const [gateId, entry] of Object.entries(registry.gates)) {
     assert.deepEqual(Object.keys(entry).sort(),

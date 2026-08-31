@@ -1,0 +1,6 @@
+diff --git a/gates/fixtures/mem-sec/mem-sec-4/fixture.json b/gates/fixtures/mem-sec/mem-sec-4/fixture.json
+--- a/gates/fixtures/mem-sec/mem-sec-4/fixture.json
++++ b/gates/fixtures/mem-sec/mem-sec-4/fixture.json
+@@ -5,1 +5,1 @@
+-      "id": "ms4-h1",
++      "id": "ms4-mutated",

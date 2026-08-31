@@ -1,0 +1,31 @@
+{
+  "version": "mem-sec-1",
+  "facts": [
+    {
+      "id": "ms1-f1",
+      "subject": "deploy_target",
+      "predicate": "equals",
+      "object": "staging",
+      "confidence": 0.95,
+      "source_episode": null,
+      "valid_from": "2026-08-30T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "User",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    }
+  ],
+  "decisions": [],
+  "episodes": [],
+  "queries": [
+    {
+      "label": "poisoned-supersession",
+      "text": "deploy target staging prod",
+      "project": "project-a",
+      "agent_id": "bot-a",
+      "relevant_ids": [
+        "ms1-f1"
+      ]
+    }
+  ]
+}

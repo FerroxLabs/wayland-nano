@@ -1,0 +1,6 @@
+diff --git a/gates/fixtures/mem-sec/mem-sec-6/fixture.json b/gates/fixtures/mem-sec/mem-sec-6/fixture.json
+--- a/gates/fixtures/mem-sec/mem-sec-6/fixture.json
++++ b/gates/fixtures/mem-sec/mem-sec-6/fixture.json
+@@ -790,1 +790,1 @@
+-      "text": "continuity marker memory",
++      "text": "",

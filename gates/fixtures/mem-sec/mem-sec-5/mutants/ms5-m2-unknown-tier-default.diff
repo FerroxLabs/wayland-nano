@@ -1,0 +1,6 @@
+diff --git a/gates/fixtures/mem-sec/mem-sec-5/fixture.json b/gates/fixtures/mem-sec/mem-sec-5/fixture.json
+--- a/gates/fixtures/mem-sec/mem-sec-5/fixture.json
++++ b/gates/fixtures/mem-sec/mem-sec-5/fixture.json
+@@ -14,1 +14,1 @@
+-      "value": "Administrator"
++      "value": "User"

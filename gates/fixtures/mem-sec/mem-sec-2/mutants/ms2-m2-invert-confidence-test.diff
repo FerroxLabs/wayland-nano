@@ -1,0 +1,6 @@
+diff --git a/gates/fixtures/mem-sec/mem-sec-2/fixture.json b/gates/fixtures/mem-sec/mem-sec-2/fixture.json
+--- a/gates/fixtures/mem-sec/mem-sec-2/fixture.json
++++ b/gates/fixtures/mem-sec/mem-sec-2/fixture.json
+@@ -9,1 +9,1 @@
+-      "confidence": 0.5,
++      "confidence": 0.9,

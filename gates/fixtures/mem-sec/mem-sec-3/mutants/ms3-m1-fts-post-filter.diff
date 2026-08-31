@@ -1,0 +1,6 @@
+diff --git a/gates/fixtures/mem-sec/mem-sec-3/fixture.json b/gates/fixtures/mem-sec/mem-sec-3/fixture.json
+--- a/gates/fixtures/mem-sec/mem-sec-3/fixture.json
++++ b/gates/fixtures/mem-sec/mem-sec-3/fixture.json
+@@ -791,1 +791,1 @@
+-      "project": "project-b",
++      "project": "project-a",
