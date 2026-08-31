@@ -151,12 +151,71 @@ impl ReceiptSigner for FixtureReceiptSigner {
 pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<String, FixtureError> {
     #[cfg(windows)]
     {
+        normalize_process_default_owner()?;
         provision(parse_arguments(args)?)
     }
     #[cfg(not(windows))]
     {
         let _ = args;
         Err(FixtureError::UnsupportedPlatform)
+    }
+}
+
+#[cfg(windows)]
+fn normalize_process_default_owner() -> Result<(), FixtureError> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, SetTokenInformation, TOKEN_ADJUST_DEFAULT, TOKEN_OWNER, TOKEN_QUERY,
+        TOKEN_USER, TokenOwner, TokenUser,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token = 0;
+        if OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_DEFAULT | TOKEN_QUERY,
+            &mut token,
+        ) == 0
+        {
+            return Err(FixtureError::InvalidPath);
+        }
+        let result = (|| {
+            let mut size = 0;
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut size);
+            if size < std::mem::size_of::<TOKEN_USER>() as u32 {
+                return Err(FixtureError::InvalidPath);
+            }
+            let mut buffer = vec![0_u8; size as usize];
+            if GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                size,
+                &mut size,
+            ) == 0
+            {
+                return Err(FixtureError::InvalidPath);
+            }
+            let user = &*(buffer.as_ptr() as *const TOKEN_USER);
+            let owner = TOKEN_OWNER {
+                Owner: user.User.Sid,
+            };
+            if SetTokenInformation(
+                token,
+                TokenOwner,
+                (&raw const owner).cast(),
+                std::mem::size_of::<TOKEN_OWNER>() as u32,
+            ) == 0
+            {
+                return Err(FixtureError::InvalidPath);
+            }
+            Ok(())
+        })();
+        if CloseHandle(token) == 0 {
+            return Err(FixtureError::InvalidPath);
+        }
+        result
     }
 }
 
