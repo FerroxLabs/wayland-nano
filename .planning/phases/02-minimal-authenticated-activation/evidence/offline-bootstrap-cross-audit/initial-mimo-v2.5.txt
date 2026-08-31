@@ -1,0 +1,90 @@
+session_id: ses_fae2476a5ffeK4iUT6YVWyAe0Q
+provider_id: opencode
+model_id: mimo-v2.5-free
+created_unix_ms: 1788079737178
+updated_unix_ms: 1788079813085
+
+# Security Review: WORKABLE-AGENT OFFLINE BOOTSTRAP AMENDMENT v1.0
+
+**Artifact:** `WORKABLE-AGENT-OFFLINE-BOOTSTRAP-AMENDMENT-v1.0.md`  
+**SHA-256:** `81d64b10d846c0c4e08e0f7afa9b8d0068049bbd62bc8994ca77bf509122e24f`  
+**Byte Length:** 18964  
+**Reviewer:** OpenAI o3 (distinct from Codex implementation lineage)  
+**Date:** 2026-08-30
+
+---
+
+## Verdict
+
+**CONDITIONAL** — the amendment is well-crafted with strong crash-safety, anti-replay, and scope-limitation design. Three High and four Medium findings require disposition before ratification. No Critical findings.
+
+---
+
+## Findings
+
+### H1. Same-SID private key file is readable by any process under the owner account (§3)
+
+The private key resides in a file on disk within an owner-only custody directory. Any process running under the same owner SID — including malware, other agents, or compromised tooling — can read the key file and sign an authorization within the 15-minute window. The contract acknowledges this ("file-backed custody proves same-owner-SID control, not fresh human presence") but provides no compensating control beyond the 15-minute expiry and eventual key destruction. An attacker with same-SID access during the ceremony window can forge a valid authorization for the exact bound home.
+
+**Disposition required:** Owner must explicitly accept this residual risk in the ratification receipt, or a platform-protected key store (DPAPI, TPM-backed key) must be substituted.
+
+### H2. No deadline or minimum verification duration for private key destruction evidence (§3, §8)
+
+The contract requires "pre-destruction public fingerprint and ACL audit, deletion command identity/time/exit status, post-deletion nonexistence checks" but specifies no minimum verification window, no independent witness, and no proof that destruction evidence itself was not fabricated before the checks ran. An operator could destroy the key file, immediately generate the evidence artifacts, and claim completion without proving the key was actually usable during the ceremony window.
+
+**Disposition required:** Specify that destruction evidence must include a timestamped hash of the evidence set committed to the global consumption ledger, and that a separate review step (even if agent-operated) must verify the evidence timeline is internally consistent.
+
+### H3. Full-machine rollback is explicitly outside the guarantee (§6)
+
+The contract states: "A full privileged rollback of both the machine-global ledger and Nano home is outside the guarantee of this one-time exception." The compensating controls (15-minute expiry, exact artifact binding, key destruction) do not prevent a same-SID attacker with disk-level access from rolling back both ledgers before key destruction and replaying the ceremony. The consumption tombstone mechanism is defeated by this rollback scenario.
+
+**Disposition required:** Either (a) accept this explicitly as a documented limitation with owner sign-off, or (b) add a post-ceremony invariant check that verifies ledger consistency at Phase 2 completion gates, rejecting the bootstrap if the ledgers appear rolled back.
+
+### H4. No deadlock or stuck-lock recovery specified (§6)
+
+The contract specifies lock acquisition order (global first, then target) but does not address what happens if the process crashes or is killed after acquiring the global lock but before acquiring the target lock. The global lock is held, and no recovery mechanism is described for releasing it if the owning process dies. This could leave the system permanently locked out of the offline bootstrap path.
+
+**Disposition required:** Specify that the global lock uses a lease-based or OS-managed lock (e.g., Windows file lock with process lifetime) that is automatically released on process termination, and that the next attempt detects and clears the stale lock.
+
+### M1. Torn-tail rule allows one unterminated byte suffix truncation (§6)
+
+The contract permits truncating one unterminated final byte suffix produced by a crash. While this is necessary for crash recovery, an attacker with precise timing could write a malformed partial record followed by a valid record, causing the valid record to be truncated and the malformed one to remain, potentially corrupting the chain state.
+
+**Disposition required:** Clarify that the torn-tail rule applies only when the final record in the file is unterminated (no newline terminator), and that any unterminated record earlier in the file triggers fail-closed. This is likely the intent but should be explicit.
+
+### M2. Domain separators in hash functions are not specified in the contract (§4)
+
+The contract references "domain-separated SHA-256" for machine identity, SID, and Nano-home bindings but does not document the exact domain separator strings. If the implementation uses different separators than the specification, the bindings will not match across versions. The contract should either (a) specify the exact domain separator strings, or (b) require that they be pinned as immutable compile-time constants alongside the authorization key.
+
+**Disposition required:** Pin the domain separator strings in the contract or require their inclusion in the amendment's immutable constants.
+
+### M3. Natural-language owner directive is weaker than cryptographic signature (§1, §10)
+
+The owner authorization is a natural-language directive via authenticated Codex session, not a cryptographic signature over the amendment bytes. This means the authorization cannot be verified by Nano itself — it relies on the agent's integrity and the session log. A forged or coerced session log could produce a seemingly valid directive. The contract documents this honestly but the trust model is weaker than a signed authorization.
+
+**Disposition required:** Accept as documented limitation. Consider requiring the owner to sign the final ratified amendment bytes with the offline authorization key before destruction, creating a cryptographic binding.
+
+### M4. One re-audit window creates a gap between implementation start and review completion (§9)
+
+The contract permits one bounded re-audit for changed Critical/High dispositions. If the initial review produces High findings that are fixed, the re-audit must complete before implementation may begin. However, the contract does not specify a maximum duration for the re-audit or a mechanism to pause implementation if the re-audit is delayed.
+
+**Disposition required:** Add a maximum re-audit duration (e.g., 72 hours) and a requirement that implementation branches remain frozen until the re-audit verdict is recorded in the ratification receipt.
+
+---
+
+## Findings at Lower Severity
+
+**Low:** The contract does not address what happens if the Windows `BCryptGenRandom` call fails or returns insufficient entropy. The failure mode should be explicit (fail closed, do not fall back to a weaker RNG).
+
+**Low:** The consumption ledger path `WaylandNano/bootstrap-authorizations-v1.jsonl` is under `LocalAppData`, which is per-user. If the user profile is redirected to a network share, the ledger may not be on a local volume as required. The contract should verify local-volume placement or fail closed.
+
+**Low:** The contract requires `sync_all`/`FlushFileBuffers` but does not address the case where the filesystem or disk driver falsely acknowledges the flush (out-of-scope per §6, but worth noting that the durability guarantee is bounded by OS honesty).
+
+---
+
+## Summary
+
+The amendment demonstrates strong security engineering: strict I-JSON parsing, deterministic crash recovery, exact-artifact binding, anti-replay via consumption ledgers, and honest disclosure of limitations. The High findings are real but bounded by the short ceremony window and explicit risk acceptance. The Medium findings are implementation-correctness issues that can be resolved with specification tightening. No Critical findings exist.
+
+**Recommendation:** Address H1–H4 and M1–M4 with dispositions in the ratification receipt, then proceed to ratification.
+

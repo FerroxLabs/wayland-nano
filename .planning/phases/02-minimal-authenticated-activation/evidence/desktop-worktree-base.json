@@ -1,0 +1,54 @@
+﻿{
+    "schema":  "wayland.nano.phase2.worktree-base/v1",
+    "generated_at_utc":  "2026-08-29T16:17:43.2009898Z",
+    "kind":  "Desktop",
+    "repository_root":  "D:/Development/waylandnano/desktop",
+    "remote_url":  "https://github.com/FerroxLabs/wayland.git",
+    "git_common_dir":  "D:/Development/waylandnano/desktop/.git",
+    "target_path":  "D:/Development/waylandnano/desktop/.tmp-wt-phase2",
+    "branch":  "feat/nano-activation-boundary",
+    "base_ref":  "origin/feature/wayland-nano",
+    "base_sha":  "a59f8404d736dfc8998916d805bd09920e044414",
+    "target_head":  "a59f8404d736dfc8998916d805bd09920e044414",
+    "target_clean":  true,
+    "exact_reuse":  true,
+    "primary":  {
+                    "path":  "D:/Development/waylandnano/desktop",
+                    "branch_before":  "feature/wayland-nano",
+                    "branch_after":  "feature/wayland-nano",
+                    "head_before":  "a59f8404d736dfc8998916d805bd09920e044414",
+                    "head_after":  "a59f8404d736dfc8998916d805bd09920e044414",
+                    "status_sha256_before":  "f5b57ca0cd9c99f2e6c6cce3717628c6f5bee05bb989a688373dc89ba4b184ed",
+                    "status_sha256_after":  "f5b57ca0cd9c99f2e6c6cce3717628c6f5bee05bb989a688373dc89ba4b184ed",
+                    "status_mode":  "porcelain-v1/untracked-normal/exclude:.tmp-wt-phase2",
+                    "untouched":  true
+                },
+    "pr9":  null,
+    "desktop_issue":  {
+                          "repository":  "FerroxLabs/wayland",
+                          "number":  1201,
+                          "state":  "OPEN",
+                          "title":  "[Desktop] Wayland Nano authenticated activation boundary",
+                          "author":  "FerroxLabs",
+                          "assignees":  [
+                                            "FerroxLabs"
+                                        ],
+                          "labels":  [
+                                         "area:desktop-ui",
+                                         "state:in-progress",
+                                         "needs:desktop"
+                                     ],
+                          "url":  "https://github.com/FerroxLabs/wayland/issues/1201"
+                      },
+    "coordination":  {
+                         "lane":  "desktop",
+                         "mechanism":  "owner-directed authenticated GitHub board fallback",
+                         "issue_number":  1201,
+                         "issue_output_sha256":  "ed6bbcff489168d95fdb50d87ef20c76c3a6ce15ef7099ebb57d0d375074a646",
+                         "wl_available":  false,
+                         "wl_attempts":  2,
+                         "wl_deviation":  "wl wrapper proven absent in PowerShell, Git Bash, common roots, and public search; owner authorized live GitHub issue #1201 as coordination authority; wl was not retried or fabricated",
+                         "owner_authorization":  "owner-authorized remote origin/feature/wayland-nano at freshly fetched exact SHA; issue #1201",
+                         "owner_authorization_sha256":  "e74e98ab762d515c707803d19431ec64a4d7892d3c6ea9c84c7f7301451f8898"
+                     }
+}

@@ -1,0 +1,7 @@
+Re-audit the attached exact amended candidate `WORKABLE-AGENT-OFFLINE-BOOTSTRAP-AMENDMENT-v1.0.md` at SHA-256 `bb2b2b5e0b747456227c78a3eb8b6558b239d88a629715bb68bdc9516d231d59` and byte length `21622`.
+
+This is a one-time Windows offline signed administrator-bootstrap exception replacing physical-console presence. Verify the artifact identity, read it completely, and adversarially identify Critical/High/Medium/Low security, logic, durability, replay, trust-anchor, key-custody, artifact-binding, and acceptance-test gaps. Pay special attention to the global/target two-ledger crash protocol, full-machine rollback disclosure, exact-artifact self-measurement, pinned authorization chain, and whether the contract is implementable without scope drift.
+
+This is the one permitted re-audit. Confirm or reject the changed High dispositions: non-self-referential challenge hashing, fixed genesis derivation, same-SID key-risk acceptance/destruction evidence, OS-lifetime locks, full-rollback disclosure/final consistency check, exact on-disk executable hashing, compile-time build identity, signer invocation custody, and post-freeze quarantine. Do not introduce unrelated scope.
+
+Return a substantive verdict and numbered findings with concrete contract evidence. Do not edit any file. Do not infer unstated controls. If no issue exists at a severity, say so explicitly.

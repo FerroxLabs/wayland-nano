@@ -1,0 +1,38 @@
+{
+  "schema_version": "phase2-nano-local-gates-v1",
+  "status": "green",
+  "worktree": "D:/Development/waylandnano/wayland-nano/.tmp-wt-phase2",
+  "head_sha": "e726cf5c9df7ea8e15feae9948661f996565962d",
+  "base_sha": "c46092f8d4fda4d0ca296ffe88137a3d067c56b6",
+  "commands": [
+    "cargo test -p nano-cli --tests -- --test-threads=1",
+    "just gate-all"
+  ],
+  "focused": {
+    "nano_activation": "37/37",
+    "activation_effects": "2/2",
+    "activation_delegated_effects": "5/5",
+    "activation_admission": "3/3",
+    "activation_cli": "4/4",
+    "activation_quarantine": "3/3",
+    "activation_legacy_replay": "1/1",
+    "nano_agent": "308/308",
+    "nano_session": "121/121",
+    "nano_cli_library": "194 passed; 1 live-gated ignored",
+    "p5_auto_routing": "36/36"
+  },
+  "gate_all": {
+    "status": "green",
+    "fmt": "green",
+    "workspace_clippy_deny_warnings": "green",
+    "workspace_tests": "green",
+    "generated_error_table": "green across Nano/shared/Desktop Phase2 worktree",
+    "generated_contracts": "green"
+  },
+  "strike_record": {
+    "attempt_1": "generated error mirrors stale",
+    "hypothesis": "Nano canonical error vocabulary was not mirrored mechanically",
+    "isolated_proof": "gen_error_table --check green after supported NANO_ERROR_TABLE_DESKTOP_DIR generation",
+    "attempt_2": "green at f6e1a2b; exact final-head rerun green at e726cf5"
+  }
+}

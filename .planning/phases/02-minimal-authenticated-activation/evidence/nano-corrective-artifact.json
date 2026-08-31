@@ -1,0 +1,14 @@
+{
+  "schema_version":"phase2-nano-corrective-artifact-v1",
+  "pr_number":14,
+  "source_commit_sha":"b95ea1a0397f16a76d8a9a90311f0ba49f271ee1",
+  "merge_commit_sha":"d0f96d84082b7ca1cc90661fdd0ee2029201b964",
+  "cargo_lock_sha256":"cbdf22daeda3eb21dbeb81d39e42d8f33cd046e2f5c476b98b4e5eacac31d93d",
+  "cargo_lock_blob_sha":"14df4e17391ced66ae5144cf03c330313c65bfca",
+  "ci_run_id":33288835807,
+  "required_checks":7,
+  "reviewer":"TradeCanyon",
+  "merger":"TradeCanyon",
+  "default_off":true,
+  "delivers":["interactive owner bootstrap","receipt-bound crash-safe authority replay","bounded acp-host --nonpersistent"]
+}

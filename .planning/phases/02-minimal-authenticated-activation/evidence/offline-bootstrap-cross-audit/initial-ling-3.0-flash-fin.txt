@@ -1,0 +1,77 @@
+session_id: ses_fae2031b8ffeYqo8cqg0yvt51f
+provider_id: opencode
+model_id: ling-3.0-flash-fin-free
+created_unix_ms: 1788080016967
+updated_unix_ms: 1788080176772
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Artifact identity verified: SHA-256 `81d64b10d846c0c4e08e0f7afa9b8d0068049bbd62bc8994ca77bf509122e24f` and byte length `18964` match exactly. Audit prompt hash `B0BC65845291D475200356DEEBBE819F24CDCEB338CFF4AEC9ECA72A6BEA59A7`.
+
+**Selected model: inclusionAI Ling 3.0 Flash Fin**
+
+---
+
+## Verdict: CONDITIONAL — document is coherent and well-disclosed but contains six findings requiring resolution before ratification, including one High-severity logic gap in the challenge self-measurement definition.
+
+**Medium pass:** No gaps in the two-ledger ordering, crash-recovery state machine coverage, typed refusal taxonomy, or scope-exclusion list. The global/target ledger lock ordering (global first, target second) and the "position 1 without position 2 is incomplete but resumable" semantics are correctly specified. The disclosure that full-machine rollback is outside the guarantee is honest and paired with explicit compensating controls.
+
+---
+
+## Critical
+
+None identified. The document's honest admissions (key erasure non-cryptographic provability, full-machine-rollback exclusion, storage-hardware false-acknowledge disclaimer) appropriately bound the threat model.
+
+## High
+
+**1. Circular `challenge_sha256` definition (§4).** The document states `challenge_sha256 is SHA-256 of the complete canonical JCS challenge bytes` but the challenge record *contains* the `challenge_sha256` field. If the hash includes itself, it is self-referential and uncomputable; if it excludes itself, the document must explicitly state that the field is omitted or placeholder-substituted before hashing. The signature domain string `WAYLAND-NANO-OFFLINE-BOOTSTRAP\0v1\0` and the authorization's `challenge_sha256` both depend on this value. Without explicit canonicalization excluding the field, the contract is unimplementable as written.
+
+**2. Genesis digest undefined (§6).** The global ledger chain "form[s] an unbroken chain from a fixed genesis digest," but the genesis digest value, its derivation method, and its storage/verification mechanism are not specified anywhere in the amendment. The two-ledger anti-copy/anti-rollback guarantee depends on this root of trust. If an attacker destroys both ledgers and recreates one with an arbitrary genesis, the chain integrity appears valid within the new ledger. The amendment must either specify the genesis digest as a compile-time constant (with the same rigor as the pinned key) or define its derivation from the pinned authorization key or amendment SHA.
+
+## Medium
+
+**3. Executable SHA computation method unspecified (§4, §5).** The document states the executable SHA "comes from a stable open hold to the running executable whose file identity is rechecked." It does not clarify whether the hash is computed from the on-disk file bytes read through the handle or from the loaded in-memory image. On Windows, ASLR, import table resolution, and loader relocations cause the in-memory image to differ from the on-disk PE. The artifact-binding guarantee requires a deterministic, reproducible hash; the contract must specify the representation being hashed.
+
+**4. Build-identity embedding mechanism unspecified (§4, §5).** The document states source SHA and Cargo.lock SHA "come from compiled build identity" and that "paths, branch names, mutable manifests, caller claims, and PATH are not trust sources." It does not specify how these values are embedded in the compiled binary (compile-time constants, build-time generation, runtime file reads). If they are read from files at runtime, they could be spoofed by modifying the files before execution. The compile-time constant pattern used for the key pin and amendment SHA is not consistently extended to these fields.
+
+**5. Signing process invocation and IPC unspecified (§3).** The document states the executor "may invoke the key through a local signing process without observing its bytes" but does not specify the mechanism: how the signing process path is determined, how the key file path is communicated, what IPC channel is used, or how the signing process is authenticated to the correct key file. The private key is in an "owner-only local custody directory," but the document does not specify the OS-level ACL or permission model enforcing that ownership. On Windows, default directory permissions may not provide the claimed isolation.
+
+**6. Post-acceptance check-failure procedure absent (§8).** The acceptance criteria require all CI checks to be green, but the document specifies key destruction occurs "only after the successful exact-artifact receipt and its evidence are frozen." If a post-freeze check fails (e.g., an undiscovered vulnerability in the installed authority), no rollback or remediation procedure is specified. The document acknowledges full rollback is outside the guarantee but provides no reconciliation path for this scenario.
+
+## Low
+
+**7. Authorization issuance/chronology ordering unspecified (§4, §5).** The document requires `not_after` ≤ challenge expiry and ≤ 15 minutes after authorization issuance, but does not explicitly require authorization `issued_at` ≥ challenge `issued_at`. A clock skew between challenge creation and authorization issuance could produce a negative or zero authorization window.
+
+**8. Complete ledger destruction/recreation not addressed (§6).** The recovery semantics cover rollback (ledger present but reverted) but not complete destruction and recreation. If both ledgers are wiped and recreated from the same genesis digest, there is no mechanism to distinguish a legitimate empty ledger from an attacker's fabricated one. The document should specify whether the genesis digest alone suffices as a freshness check or whether additional entropy is required.
+
+**9. `remote_session_observed` flag verifiability unspecified (§5, §7).** The flag is included in the authorization record and consumption receipt, but the document does not clarify whether it is a runtime-verifiable property or declarative metadata. If verifiable, the mechanism is not specified; if declarative, the flag adds no security value and could be misleading.
+
+**10. Architectural guardrails against scope drift unspecified (§2, §6).** The document prohibits representing the mechanism as "a general reusable offline-bootstrap facility" but specifies no code-level or architectural constraints (module visibility, abstract type bounds, trait restrictions) preventing future refactoring of the ledger, challenge/apply, or crash-recovery patterns into a reusable abstraction. The prohibition relies on documentation discipline rather than enforcement.
+
+---
+
+**Explicit passes:** No Medium/Low issues at: typed refusal taxonomy completeness, scope-exclusion list exhaustiveness (§2), challenge nonce generation (`BCryptGenRandom` with `BCRYPT_USE_SYSTEM_PREFERRED_RNG`), constant-time comparison requirement, JCS canonicalization and `deny_unknown_fields` parsing, `sync_all`/`FlushFileBuffers` durability contract, receipt separation of concerns, key-destruction attestation contents, or the bounded-review/ratification gate structure (§9).
+
+**Note:** Finding 1 (circular hash) must be resolved before the detached ratification receipt can bind the exact amendment bytes, as the challenge schema depends on it. The remaining findings are dispositioned without expanding Phase 2 scope per §9.
+
