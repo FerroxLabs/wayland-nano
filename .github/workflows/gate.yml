@@ -414,7 +414,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with: { toolchain: "1.95.0" }
       - name: Build CLI and run mem-sec through WP-3 verify
-        run: cargo run --locked -p nano-cli -- verify --gate mem-sec --run-only
+        run: cargo run --locked -p nano-cli --bin wayland-nano -- verify --gate mem-sec --run-only
 
   gate-cards:
     runs-on: windows-2022
