@@ -2,6 +2,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -42,23 +43,52 @@ if (!fs.existsSync(harness)) failAll();
 const testArgs = ['mem_sec_gate_summary', '--exact', '--nocapture', '--test-threads=1'];
 const restrictedWindows = process.platform === 'win32'
   && /^f:\\tmp\\wngc[0-9a-f]{12}-home$/i.test(process.env.USERPROFILE || '');
-let result;
-if (restrictedWindows) {
-  const protectedHarness = String.raw`F:\gate-cards-bin\mem_sec_cards.exe`;
-  let resolvedHarness;
-  let harnessStat;
+function checkedHarness(expectedPath, expectedHashPath) {
+  let resolved;
+  let stat;
   try {
-    resolvedHarness = fs.realpathSync.native(protectedHarness).replace(/^\\\\\?\\/, '').toLowerCase();
-    harnessStat = fs.lstatSync(protectedHarness);
+    resolved = fs.realpathSync.native(expectedPath).replace(/^\\\\\?\\/, '').toLowerCase();
+    stat = fs.lstatSync(expectedPath);
   } catch {
     failAll();
   }
-  if (!harnessStat.isFile() || harnessStat.isSymbolicLink()
-      || resolvedHarness !== protectedHarness.toLowerCase()) failAll();
-  result = spawnSync(protectedHarness, testArgs, {
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size === 0 || stat.size > 256 * 1024 * 1024
+      || resolved !== expectedPath.toLowerCase()) failAll();
+  if (expectedHashPath) {
+    let expectedHash;
+    try {
+      const hashStat = fs.lstatSync(expectedHashPath);
+      if (!hashStat.isFile() || hashStat.isSymbolicLink() || hashStat.size !== 64) failAll();
+      expectedHash = fs.readFileSync(expectedHashPath, 'utf8');
+    } catch {
+      failAll();
+    }
+    if (!/^[0-9a-f]{64}$/.test(expectedHash)) failAll();
+    const actualHash = crypto.createHash('sha256').update(fs.readFileSync(expectedPath)).digest('hex');
+    if (actualHash !== expectedHash) failAll();
+  }
+  return expectedPath;
+}
+
+let result;
+if (restrictedWindows) {
+  const protectedHarness = String.raw`F:\gate-cards-bin\mem_sec_cards.exe`;
+  result = spawnSync(checkedHarness(protectedHarness), testArgs, {
     cwd: process.cwd(), env: process.env, encoding: 'utf8', windowsHide: true,
   });
-} else {
+} else if (process.platform === 'win32') {
+  const prebuiltHarness = path.resolve('target', 'mem_sec_cards.exe');
+  const prebuiltHash = path.resolve('target', 'mem_sec_cards.sha256');
+  const hasHarness = fs.existsSync(prebuiltHarness);
+  const hasHash = fs.existsSync(prebuiltHash);
+  if (hasHarness !== hasHash) failAll();
+  if (hasHarness) {
+    result = spawnSync(checkedHarness(prebuiltHarness, prebuiltHash), testArgs, {
+      cwd: process.cwd(), env: process.env, encoding: 'utf8', windowsHide: true,
+    });
+  }
+}
+if (!result) {
   const target = path.join(os.tmpdir(), 'wayland-nano-p3-mem-sec-target');
   result = spawnSync('cargo', [
     'test',

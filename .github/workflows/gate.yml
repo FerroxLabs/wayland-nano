@@ -465,10 +465,48 @@ jobs:
           TMP: ${{ runner.temp }}
           TMPDIR: ${{ runner.temp }}
         run: cargo run --locked -p nano-cli --bin wayland-nano -- verify --gate mem-sec --run-only
+      - name: Prebuild exact mem-sec harness on F
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: F:\repo
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $messages = @(cargo test --locked -p nano-memory --test mem_sec_cards --no-run --message-format=json)
+          if ($LASTEXITCODE -ne 0) { throw 'mem-sec harness build failed' }
+          $artifacts = @($messages | ForEach-Object {
+            try { $_ | ConvertFrom-Json -ErrorAction Stop } catch { $null }
+          } | Where-Object {
+            $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'mem_sec_cards' -and
+            @($_.target.kind) -contains 'test' -and $_.executable
+          })
+          if ($artifacts.Count -ne 1) { throw "mem-sec harness artifact count: $($artifacts.Count)" }
+          $source = [IO.Path]::GetFullPath([string]$artifacts[0].executable)
+          $targetRoot = [IO.Path]::GetFullPath('F:\repo\target').TrimEnd('\') + '\'
+          $sourceItem = Get-Item -LiteralPath $source -Force
+          if (!$source.StartsWith($targetRoot, [StringComparison]::OrdinalIgnoreCase) -or
+              $sourceItem.PSIsContainer -or ($sourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+              [IO.Path]::GetExtension($source) -ne '.exe') { throw 'invalid mem-sec harness artifact' }
+          $staged = 'F:\repo\target\mem_sec_cards.exe'
+          $seal = 'F:\repo\target\mem_sec_cards.sha256'
+          Copy-Item -LiteralPath $source -Destination $staged
+          $hash = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText($seal, $hash, [Text.UTF8Encoding]::new($false))
       - name: Build CLI and run mem-sec through WP-3 verify on F
         if: runner.os == 'Windows'
         working-directory: F:\repo
         run: cargo run --locked -p nano-cli --bin wayland-nano -- verify --gate mem-sec --run-only
+      - name: Require unchanged mem-sec harness
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: F:\repo
+        run: |
+          $staged = [IO.Path]::GetFullPath('F:\repo\target\mem_sec_cards.exe')
+          $seal = [IO.Path]::GetFullPath('F:\repo\target\mem_sec_cards.sha256')
+          $item = Get-Item -LiteralPath $staged -Force
+          if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'invalid staged harness' }
+          $expected = [IO.File]::ReadAllText($seal)
+          $actual = (Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($expected -notmatch '^[0-9a-f]{64}$' -or $actual -ne $expected) { throw 'mem-sec harness seal drift' }
       - name: Remove owned F volume
         if: always() && runner.os == 'Windows'
         shell: pwsh
