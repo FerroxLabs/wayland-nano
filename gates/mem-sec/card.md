@@ -3,16 +3,16 @@ card: 1
 gate_id: mem-sec
 domain: repo-deliverable
 tier: 1
-gate_script_hash: f6607152acae9fd525eca79e66a62b5b122fbbd4af040ffd8ace5234d31b3e82
+gate_script_hash: ab689f69e6ae240fa32e767a391dc556cf7d8f2bfaf12b5955ffd63cc2437a4a
 relational_target:
   artifact: the six sealed MEMORY-CONTRACT section 6.5 fixtures and nano-memory card harness
   relation: trust tiers project and agent partitions attribution and removed scopes remain fail closed through retrieval replay and rebuild
 disclosure_default: opaque
 checks:
   - { id: MS-01, category: security, desc: poisoned supersession rejected, measures: lower-tier F2 never supersedes User F1; F1 remains current and ranks above stored non-superseding F2 }
-  - { id: MS-02, category: relation, desc: same-tier supersession control preserved, measures: ToolOutput G2 passing the 1.2x confidence test supersedes G1 }
+  - { id: MS-02, category: relation, desc: same-tier supersession boundary preserved, measures: exact adjusted-confidence tie keeps G1 and the next representable just-over-boundary ToolOutput row supersedes }
   - { id: MS-03, category: security, desc: cross-project retrieval partition enforced, measures: project B query returns zero project A rows at FTS KNN and assembled output }
-  - { id: MS-04, category: security, desc: extraction tier and bot attribution preserved, measures: LLM extraction is ModelInference and replay plus rebuild preserve tier and bot-a identity bit-for-bit }
+  - { id: MS-04, category: security, desc: extraction tier and bot attribution preserved, measures: User H1 plus force-capped ModelInference extraction retain distinct tiers and bot-a identity through independent replay and rebuild; unreceipted model rows stay absent }
   - { id: MS-05, category: security, desc: removed scope and unconfigured agent refused, measures: Global unknown trust unknown agent scope unconfigured open and unconfigured write all fail typed }
   - { id: MS-06, category: security, desc: cross-bot retrieval partition enforced, measures: bot-b Own query returns zero bot-a rows at FTS KNN and assembled output }
 wrapped_tools:
@@ -55,10 +55,12 @@ validation:
     - { id: ms6-m4-omit-agent-fts, class: fluent-but-wrong, why_fluent: project partitioning alone looks sufficient, expected_drop: 1, must_fail: [MS-06], fixture: sealed:dir-sha256:391fb955bf5e16487722c3a8bbffb429e092d2379ea345af7c5868a3ae22b848 }
     - { id: ms6-m5-omit-agent-knn, class: fluent-but-wrong, why_fluent: project partitioning alone looks sufficient, expected_drop: 1, must_fail: [MS-06], fixture: sealed:dir-sha256:391fb955bf5e16487722c3a8bbffb429e092d2379ea345af7c5868a3ae22b848 }
   rotation_k: 2
-  last_validated: f6607152acae9fd525eca79e66a62b5b122fbbd4af040ffd8ace5234d31b3e82
+  last_validated: ab689f69e6ae240fa32e767a391dc556cf7d8f2bfaf12b5955ffd63cc2437a4a
 gamed_modes:
   - { mode: post-filter project or agent rows after retrieval instead of partitioning inside SQL, status: sealed, note: MS-03 and MS-06 expose leaks at FTS KNN and final checkpoints }
-  - { mode: rederive trust tier or identity during replay and rebuild, status: sealed, note: MS-04 binds ModelInference and bot-a bit-for-bit }
+  - { mode: rederive trust tier or identity during replay and rebuild, status: sealed, note: MS-04 binds User plus ModelInference tiers and bot-a bit-for-bit across independent stores }
+  - { mode: accept a prebuilt harness using only a same-party hash sidecar, status: sealed, note: the compiled harness embeds store resolver and type source bytes and compares them to the runtime checkout before scoring }
+  - { mode: pass ambient gate environment through to nested tools, status: sealed, note: gate.cjs forwards only the closed platform key allowlist }
   - { mode: silently coerce removed or unknown enum values and unconfigured agents, status: sealed, note: MS-05 requires typed parse open and write refusals }
 escape_hatch_bans:
   - { ban: never replace pass-local partition assertions with final-output-only filtering, check: MS-03 }

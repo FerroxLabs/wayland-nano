@@ -14,7 +14,8 @@ pub use store::{MemoryStore, rebuild_from_journals};
 pub use types::{
     AgentScope, ConfiguredAgents, DecisionWrite, DeletionRule, EmbedderChoice, EpisodeWrite,
     FactState, FactWrite, MemoryError, MemoryPolicy, MemoryResult, ProcedureWrite, ReadScope,
-    RetentionCaps, RetrievalEvidence, RetrieveHit, RetrieveQuery, SourceTrust, WriteScope,
+    RetentionCaps, RetrievalEvidence, RetrievalIdentity, RetrieveHit, RetrieveQuery, SourceTrust,
+    WriteScope,
 };
 
 use rusqlite::Connection;

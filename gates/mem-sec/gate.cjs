@@ -15,6 +15,17 @@ const INVENTORY = [
   ['MS-05', 'security'],
   ['MS-06', 'security'],
 ];
+const CHILD_ENV_KEYS = process.platform === 'win32'
+  ? ['PATH', 'HOME', 'TMPDIR', 'TEMP', 'TMP', 'SYSTEMROOT', 'PATHEXT', 'USERPROFILE', 'COMSPEC']
+  : ['PATH', 'HOME', 'TMPDIR', 'TEMP', 'TMP'];
+
+function childEnv() {
+  const env = {};
+  for (const key of CHILD_ENV_KEYS) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
+  return env;
+}
 
 function failAll() {
   for (const [id, category] of INVENTORY) process.stdout.write(`FAIL ${id} ${category}\n`);
@@ -74,7 +85,7 @@ let result;
 if (restrictedWindows) {
   const protectedHarness = String.raw`F:\gate-cards-bin\mem_sec_cards.exe`;
   result = spawnSync(checkedHarness(protectedHarness), testArgs, {
-    cwd: process.cwd(), env: process.env, encoding: 'utf8', windowsHide: true,
+    cwd: process.cwd(), env: childEnv(), encoding: 'utf8', windowsHide: true,
   });
 } else if (process.platform === 'win32') {
   const prebuiltHarness = path.resolve('target', 'mem_sec_cards.exe');
@@ -84,7 +95,7 @@ if (restrictedWindows) {
   if (hasHarness !== hasHash) failAll();
   if (hasHarness) {
     result = spawnSync(checkedHarness(prebuiltHarness, prebuiltHash), testArgs, {
-      cwd: process.cwd(), env: process.env, encoding: 'utf8', windowsHide: true,
+      cwd: process.cwd(), env: childEnv(), encoding: 'utf8', windowsHide: true,
     });
   }
 }
@@ -101,12 +112,13 @@ if (!result) {
     'mem_sec_cards',
     '--',
     ...testArgs,
-  ], { cwd: process.cwd(), env: process.env, encoding: 'utf8', windowsHide: true });
+  ], { cwd: process.cwd(), env: childEnv(), encoding: 'utf8', windowsHide: true });
 }
-if (result.error || result.status !== 0) failAll();
+if (result.error) failAll();
 const lines = (result.stdout || '').split(/\r?\n/).filter((line) =>
   /^FAIL MS-0[1-6] (structure|value|relation|grounding|execution|security)$/.test(line)
   || /^gate: \d+\/6$/.test(line),
 );
 if (lines.filter((line) => /^gate: /.test(line)).length !== 1) failAll();
 process.stdout.write(`${lines.join('\n')}\n`);
+if (result.status !== 0) process.exit(2);

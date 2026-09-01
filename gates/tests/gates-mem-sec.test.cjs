@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
@@ -77,4 +78,72 @@ test('mem-sec green harness emits the exact gate output contract', () => {
     failures: [],
     failClosed: null,
   });
+});
+
+test('every sealed implementation mutant makes its named check fail at runtime', {
+  timeout: 20 * 60_000,
+}, () => {
+  requireSubjects();
+  const card = loadCard(CARD);
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'wayland-nano-mem-sec-mutants-'));
+  const repo = path.join(scratch, 'repo');
+  const target = path.join(scratch, 'target');
+  try {
+    let result = spawnSync('git', ['clone', '--quiet', '--no-local', '--no-hardlinks', ROOT, repo], {
+      encoding: 'utf8', windowsHide: true,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    result = spawnSync('git', ['-C', repo, 'checkout', '--detach', 'HEAD'], {
+      encoding: 'utf8', windowsHide: true,
+    });
+    assert.equal(result.status, 0, result.stderr);
+
+    for (const mutant of card.validation.mutants) {
+      assert.equal(mutant.must_fail.length, 1, `${mutant.id} must bind one check`);
+      const number = mutant.must_fail[0].slice(3);
+      const patchFile = path.join(
+        repo,
+        'gates',
+        'fixtures',
+        'mem-sec',
+        `mem-sec-${Number(number)}`,
+        'mutants',
+        `${mutant.id}.diff`,
+      );
+      const patchBytes = fs.readFileSync(patchFile, 'utf8');
+      assert.match(patchBytes, /^diff --git a\/crates\/nano-memory\/src\//u, mutant.id);
+      assert.doesNotMatch(patchBytes, /gates\/fixtures/u, mutant.id);
+
+      result = spawnSync('git', ['-C', repo, 'apply', '--unidiff-zero', patchFile], {
+        encoding: 'utf8', windowsHide: true,
+      });
+      assert.equal(result.status, 0, `${mutant.id}: ${result.stderr}`);
+      result = spawnSync('cargo', [
+        'test', '--locked', '-p', 'nano-memory', '--test', 'mem_sec_cards',
+        `mem_sec_${Number(number)}`, '--', '--exact', '--nocapture', '--test-threads=1',
+      ], {
+        cwd: repo,
+        env: { ...process.env, CARGO_TARGET_DIR: target },
+        encoding: 'utf8',
+        timeout: 2 * 60_000,
+        windowsHide: true,
+      });
+      const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+      assert.notEqual(result.status, 0, `${mutant.id} survived`);
+      assert.doesNotMatch(output, /could not compile/u, `${mutant.id} only broke compilation`);
+      assert.match(output, new RegExp(`test mem_sec_${Number(number)} \\.\\.\\. FAILED`, 'u'),
+        `${mutant.id} did not fail its named runtime check`);
+
+      result = spawnSync('git', ['-C', repo, 'apply', '--reverse', '--unidiff-zero', patchFile], {
+        encoding: 'utf8', windowsHide: true,
+      });
+      assert.equal(result.status, 0, `${mutant.id} reverse: ${result.stderr}`);
+      result = spawnSync('git', ['-C', repo, 'diff', '--quiet'], {
+        encoding: 'utf8', windowsHide: true,
+      });
+      assert.equal(result.status, 0, `${mutant.id} left source drift`);
+    }
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
 });

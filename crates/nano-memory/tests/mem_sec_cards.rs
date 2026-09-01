@@ -1,5 +1,5 @@
 use nano_memory::*;
-use nano_session::{Op, read_journal};
+use nano_session::{JournalWriter, Op, OpEnvelope, read_journal};
 use rusqlite::Connection;
 use serde::Deserialize;
 
@@ -25,6 +25,8 @@ struct Query {
     text: String,
     project: String,
     agent_id: String,
+    #[serde(default)]
+    relevant_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,21 +87,8 @@ fn ms_01() -> Result<(), String> {
     store
         .write_fact(fixture.facts[0].clone())
         .map_err(|error| error.to_string())?;
-    let poisoned = FactWrite {
-        id: "ms1-f2".into(),
-        subject: "deploy_target".into(),
-        predicate: "equals".into(),
-        object: "prod".into(),
-        confidence: 1.0,
-        source_episode: None,
-        valid_from: "2026-08-31T00:00:00Z".into(),
-        valid_to: None,
-        source_trust: SourceTrust::ToolOutput,
-        project: "project-a".into(),
-        agent_id: "bot-a".into(),
-    };
     let resolution = store
-        .write_fact(poisoned)
+        .write_fact(fixture.facts[1].clone())
         .map_err(|error| error.to_string())?;
     if resolution != ContradictionResolution::KeepExisting {
         return Err(format!("lower-tier resolution was {resolution:?}"));
@@ -119,7 +108,12 @@ fn ms_01() -> Result<(), String> {
     if evidence.fts_hits == 0 || evidence.knn_hits == 0 {
         return Err("retrieval checkpoint was empty".into());
     }
-    if evidence.assembled.first().map(|hit| hit.id.as_str()) != Some("ms1-f1") {
+    if evidence.assembled.first().map(|hit| hit.id.as_str()) != Some("ms1-f1")
+        || !fixture.queries[0]
+            .relevant_ids
+            .iter()
+            .all(|id| evidence.assembled.iter().any(|hit| &hit.id == id))
+    {
         return Err("F1 did not rank first".into());
     }
     drop(store);
@@ -142,33 +136,36 @@ fn ms_02() -> Result<(), String> {
     store
         .write_fact(fixture.facts[0].clone())
         .map_err(|error| error.to_string())?;
-    let control = FactWrite {
-        id: "ms2-g2".into(),
-        subject: "release_channel".into(),
-        predicate: "equals".into(),
-        object: "candidate".into(),
-        confidence: 0.7,
-        source_episode: None,
-        valid_from: "2026-08-31T00:00:00Z".into(),
-        valid_to: None,
-        source_trust: SourceTrust::ToolOutput,
-        project: "project-a".into(),
-        agent_id: "bot-a".into(),
-    };
+    let tie = store
+        .write_fact(fixture.facts[1].clone())
+        .map_err(|error| error.to_string())?;
+    if tie != ContradictionResolution::KeepExisting {
+        return Err(format!("exact 1.2x tie resolution was {tie:?}"));
+    }
     let resolution = store
-        .write_fact(control)
+        .write_fact(fixture.facts[2].clone())
         .map_err(|error| error.to_string())?;
     if resolution != ContradictionResolution::Supersede {
-        return Err(format!("same-tier resolution was {resolution:?}"));
+        return Err(format!("just-over-1.2x resolution was {resolution:?}"));
     }
     let current = store.current_facts().map_err(|error| error.to_string())?;
     if current
         .iter()
         .map(|fact| fact.id.as_str())
         .collect::<Vec<_>>()
-        != ["ms2-g2"]
+        != ["ms2-g3"]
     {
-        return Err("G2 did not supersede G1".into());
+        return Err("G3 did not supersede G1 after the exact-tie control".into());
+    }
+    let evidence = store
+        .retrieve_with_evidence(&query(&fixture))
+        .map_err(|error| error.to_string())?;
+    if !fixture.queries[0]
+        .relevant_ids
+        .iter()
+        .all(|id| evidence.assembled.iter().any(|hit| &hit.id == id))
+    {
+        return Err("labeled same-tier control row was not retrieved".into());
     }
     Ok(())
 }
@@ -190,11 +187,20 @@ fn assert_partitioned(
     if evidence.fts_hits == 0 || evidence.knn_hits == 0 {
         return Err("partition checkpoint was empty".into());
     }
-    if evidence
-        .assembled
-        .iter()
-        .any(|hit| hit.project != project || hit.agent_id != agent_id)
-    {
+    for (name, identities) in [
+        ("FTS", evidence.fts_ids.as_slice()),
+        ("KNN", evidence.knn_ids.as_slice()),
+    ] {
+        if identities
+            .iter()
+            .any(|identity| identity.project != project || identity.agent_id != agent_id)
+        {
+            return Err(format!("{name} checkpoint leaked a foreign partition"));
+        }
+    }
+    if evidence.assembled.iter().any(|hit| {
+        hit.project != project || hit.agent_id != agent_id
+    }) {
         return Err("assembled output leaked a foreign partition".into());
     }
     Ok(())
@@ -208,7 +214,8 @@ fn ms_03() -> Result<(), String> {
     let evidence = store
         .retrieve_with_evidence(&query(&fixture))
         .map_err(|error| error.to_string())?;
-    assert_partitioned(&evidence, "project-b", "bot-a")
+    assert_partitioned(&evidence, "project-b", "bot-a")?;
+    assert_relevant(&fixture.queries[0], &evidence)
 }
 
 fn ms_04() -> Result<(), String> {
@@ -220,36 +227,58 @@ fn ms_04() -> Result<(), String> {
     store
         .write_episode(fixture.episodes[0].clone())
         .map_err(|error| error.to_string())?;
-    for fact in [
-        fixture.facts[0].clone(),
-        FactWrite {
-            id: "ms4-extracted".into(),
-            subject: "deployment_region".into(),
-            predicate: "equals".into(),
-            object: "ap-southeast-1".into(),
-            confidence: 0.9,
-            source_episode: Some("ms4-episode".into()),
-            valid_from: "2026-08-31T00:00:00Z".into(),
-            valid_to: None,
-            source_trust: SourceTrust::ToolOutput,
-            project: "project-a".into(),
-            agent_id: "bot-a".into(),
-        },
-    ] {
-        store
-            .commit_proposal(MemoryProposal {
-                kind: ProposalKind::Fact(fact),
-            })
-            .map_err(|error| error.to_string())?;
+    store
+        .write_fact(fixture.facts[0].clone())
+        .map_err(|error| error.to_string())?;
+    store
+        .commit_proposal(MemoryProposal {
+            kind: ProposalKind::Fact(fixture.facts[1].clone()),
+        })
+        .map_err(|error| error.to_string())?;
+    let mut direct = fixture.facts[1].clone();
+    direct.id = "ms4-direct-model-write".into();
+    direct.source_trust = SourceTrust::ModelInference;
+    if !matches!(store.write_fact(direct), Err(MemoryError::MediationRequired)) {
+        return Err("direct ModelInference write bypassed mediation".into());
     }
     let live = store.current_facts().map_err(|error| error.to_string())?;
-    if live
-        .iter()
-        .any(|fact| fact.source_trust != SourceTrust::ModelInference || fact.agent_id != "bot-a")
+    if live.len() != 2
+        || live.iter().any(|fact| fact.agent_id != "bot-a")
+        || live
+            .iter()
+            .find(|fact| fact.id == "ms4-h1")
+            .is_none_or(|fact| fact.source_trust != SourceTrust::User)
+        || live
+            .iter()
+            .find(|fact| fact.id == "ms4-extracted")
+            .is_none_or(|fact| fact.source_trust != SourceTrust::ModelInference)
     {
         return Err("live extraction tier or attribution was laundered".into());
     }
     drop(store);
+    let mut writer = JournalWriter::open(&journal).map_err(|error| error.to_string())?;
+    writer
+        .append(&OpEnvelope::new(
+            "ms4-unreceipted-op",
+            "2026-08-31T00:00:02Z",
+            Op::MemoryWriteFact {
+                fact_id: "ms4-unreceipted".into(),
+                subject: "unreceipted".into(),
+                predicate: "equals".into(),
+                object: "must-not-land".into(),
+                confidence_micros: 900_000,
+                source_episode: None,
+                valid_from: "2026-08-31T00:00:02Z".into(),
+                valid_to: None,
+                source_trust: "ModelInference".into(),
+                project: "project-a".into(),
+                agent_id: "bot-a".into(),
+                session_id: None,
+                resolver_outcome: "coexist".into(),
+            },
+        ))
+        .map_err(|error| error.to_string())?;
+    drop(writer);
     let report = read_journal(&journal).map_err(|error| error.to_string())?;
     let journaled = report
         .envelopes
@@ -261,32 +290,42 @@ fn ms_04() -> Result<(), String> {
                 agent_id,
                 ..
             } if fact_id == "ms4-h1" || fact_id == "ms4-extracted" => {
-                Some((source_trust.as_str(), agent_id.as_str()))
+                Some((fact_id.as_str(), source_trust.as_str(), agent_id.as_str()))
             }
             _ => None,
-        });
-    if journaled.count() != 2
-        || report
-            .envelopes
-            .iter()
-            .filter_map(|envelope| match &envelope.op {
-                Op::MemoryWriteFact {
-                    fact_id,
-                    source_trust,
-                    agent_id,
-                    ..
-                } if fact_id == "ms4-h1" || fact_id == "ms4-extracted" => {
-                    Some((source_trust.as_str(), agent_id.as_str()))
-                }
-                _ => None,
-            })
-            .any(|pair| pair != ("ModelInference", "bot-a"))
+        })
+        .collect::<Vec<_>>();
+    if journaled
+        != [
+            ("ms4-h1", "User", "bot-a"),
+            ("ms4-extracted", "ModelInference", "bot-a"),
+        ]
     {
         return Err("journal tier or attribution changed".into());
     }
-    std::fs::remove_file(&db).map_err(|error| error.to_string())?;
-    rebuild_from_journals(&db, std::slice::from_ref(&journal), MemoryPolicy::default())
+
+    let replay_db = temp.path().join("replayed.db");
+    let mut replayed = MemoryStore::open_at(
+        &replay_db,
+        &temp.path().join("replayed-audit.jsonl"),
+        MemoryPolicy::default(),
+        "bot-a",
+        configured(&["bot-a"]),
+    )
+    .map_err(|error| error.to_string())?;
+    replayed
+        .replay_journals(std::slice::from_ref(&journal))
         .map_err(|error| error.to_string())?;
+    assert_ms4_roundtrip(&replayed.current_facts().map_err(|error| error.to_string())?)?;
+
+    std::fs::remove_file(&db).map_err(|error| error.to_string())?;
+    rebuild_from_journals(
+        &db,
+        std::slice::from_ref(&journal),
+        MemoryPolicy::default(),
+        configured(&["bot-a"]),
+    )
+    .map_err(|error| error.to_string())?;
     let rebuilt = MemoryStore::open_at(
         &db,
         &temp.path().join("inspect.jsonl"),
@@ -296,12 +335,23 @@ fn ms_04() -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     let rebuilt_facts = rebuilt.current_facts().map_err(|error| error.to_string())?;
-    if rebuilt_facts.len() != 2
-        || rebuilt_facts.iter().any(|fact| {
-            fact.source_trust != SourceTrust::ModelInference || fact.agent_id != "bot-a"
-        })
+    assert_ms4_roundtrip(&rebuilt_facts)
+}
+
+fn assert_ms4_roundtrip(facts: &[FactState]) -> Result<(), String> {
+    if facts.len() != 2
+        || facts.iter().any(|fact| fact.agent_id != "bot-a")
+        || facts
+            .iter()
+            .find(|fact| fact.id == "ms4-h1")
+            .is_none_or(|fact| fact.source_trust != SourceTrust::User)
+        || facts
+            .iter()
+            .find(|fact| fact.id == "ms4-extracted")
+            .is_none_or(|fact| fact.source_trust != SourceTrust::ModelInference)
+        || facts.iter().any(|fact| fact.id == "ms4-unreceipted")
     {
-        return Err("rebuild tier or attribution changed".into());
+        return Err("replay/rebuild tier, attribution, or receipt gate changed".into());
     }
     Ok(())
 }
@@ -327,6 +377,9 @@ fn ms_05() -> Result<(), String> {
     }
     let configured_agents = ConfiguredAgents::try_from_ids(fixture.configured_agents.clone())
         .map_err(|e| e.to_string())?;
+    if !configured_agents.contains("main") || configured_agents.contains("bot-z") {
+        return Err("implicit-main configured-agent semantics drifted".into());
+    }
     let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
     let open_error = match MemoryStore::open_at(
         &temp.path().join("rejected.db"),
@@ -380,7 +433,20 @@ fn ms_06() -> Result<(), String> {
     let evidence = store
         .retrieve_with_evidence(&query(&fixture))
         .map_err(|error| error.to_string())?;
-    assert_partitioned(&evidence, "project-shared", "bot-b")
+    assert_partitioned(&evidence, "project-shared", "bot-b")?;
+    assert_relevant(&fixture.queries[0], &evidence)
+}
+
+fn assert_relevant(query: &Query, evidence: &RetrievalEvidence) -> Result<(), String> {
+    if query
+        .relevant_ids
+        .iter()
+        .all(|id| evidence.assembled.iter().any(|hit| &hit.id == id))
+    {
+        Ok(())
+    } else {
+        Err("labeled relevant row was not retrieved".into())
+    }
 }
 
 #[test]
@@ -424,6 +490,14 @@ fn mem_sec_gate_summary() {
         (ms_05, "MS-05", "security"),
         (ms_06, "MS-06", "security"),
     ];
+    if let Err(error) = assert_source_binding() {
+        eprintln!("source binding: {error}");
+        for (_, id, category) in checks {
+            println!("FAIL {id} {category}");
+        }
+        println!("gate: 0/6");
+        panic!("mem-sec harness source binding failed");
+    }
     let mut passed = 0;
     let mut failures = Vec::new();
     for (run, id, category) in checks {
@@ -441,4 +515,29 @@ fn mem_sec_gate_summary() {
     }
     println!("gate: {passed}/6");
     assert!(failures.is_empty(), "mem-sec gate failed");
+}
+
+fn assert_source_binding() -> Result<(), String> {
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for (compiled, source) in [
+        (
+            include_bytes!("../src/store.rs").as_slice(),
+            "store.rs",
+        ),
+        (
+            include_bytes!("../src/resolver.rs").as_slice(),
+            "resolver.rs",
+        ),
+        (
+            include_bytes!("../src/types.rs").as_slice(),
+            "types.rs",
+        ),
+    ] {
+        let runtime = source_root.join(source);
+        let current = std::fs::read(&runtime).map_err(|error| error.to_string())?;
+        if current != compiled {
+            return Err(format!("prebuilt harness does not match {}", runtime.display()));
+        }
+    }
+    Ok(())
 }

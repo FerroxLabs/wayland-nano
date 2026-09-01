@@ -144,6 +144,7 @@ fn durability_kill_mid_write() {
         &killed_db,
         std::slice::from_ref(&killed_journal),
         MemoryPolicy::default(),
+        configured(),
     )
     .unwrap();
     let rebuilt = MemoryStore::open_at(
@@ -178,7 +179,13 @@ fn reopen_keeps_journal_ids_collision_free() {
         write_fact(&mut store, fixture.facts[1].clone());
     }
     std::fs::remove_file(&db).unwrap();
-    rebuild_from_journals(&db, std::slice::from_ref(&journal), MemoryPolicy::default()).unwrap();
+    rebuild_from_journals(
+        &db,
+        std::slice::from_ref(&journal),
+        MemoryPolicy::default(),
+        configured(),
+    )
+    .unwrap();
     let rebuilt = MemoryStore::open_at(
         &db,
         &temp.path().join("inspect.jsonl"),
@@ -218,7 +225,7 @@ fn rebuild_ignores_unreceipted_model_write() {
         .unwrap();
     drop(writer);
     let db = temp.path().join("memory.db");
-    rebuild_from_journals(&db, &[journal], MemoryPolicy::default()).unwrap();
+    rebuild_from_journals(&db, &[journal], MemoryPolicy::default(), configured()).unwrap();
     let store = MemoryStore::open_at(
         &db,
         &temp.path().join("inspect.jsonl"),

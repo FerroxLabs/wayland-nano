@@ -79,3 +79,28 @@ Per the non-self-reference rule, the exact commit-2 `just gate-all`, WP-3
 `verify --gate mem-sec --run-only`, PR review, and seven-leg CI results are recorded in
 the external PR receipt/body against the immutable PR-head SHA. Commit 2 is never
 amended to describe its own result.
+
+## Post-review corrective round
+
+The Codex/Claude cross-audit required a corrective round before merge. The correction
+preserves the fixture-before-implementation boundary and strengthens the pack:
+
+- `RetrievalEvidence` exposes FTS and KNN row identities; MS-03/MS-06 assert project
+  and agent purity directly at both passes and assembled output. Store assertions remain
+  a second fail-closed defense, not the card oracle.
+- All 30 sealed mutants patch `crates/nano-memory/src/**`. The meta-test applies each
+  patch and requires its named MS check to fail at runtime; metadata counting is not
+  treated as mutation evidence.
+- Contract-required implicit `main` is explicit and tested; MS-05 uses `bot-z` as the
+  unconfigured id. Replay/rebuild receive the configured set and reject foreign ids.
+- MS-02 proves the exact 1.2x tie and a just-over-boundary control; fixture
+  `relevant_ids` are consumed by the harness.
+- MS-04 begins with a User-tier anchor, force-caps the extracted proposal, rejects a
+  direct ModelInference write and an unreceipted journal row, and independently reads
+  replayed and rebuilt stores for exact tier/agent identity.
+- The Windows prebuilt harness compares compile-time embedded store/resolver/type
+  source bytes to the runtime checkout. Its SHA sidecar detects post-stage mutation; it
+  is not claimed as provenance. Gate children receive a fixed environment allowlist.
+- `gate.cjs` preserves coherent per-check FAIL output on a red Rust summary and emits
+  synthetic 0/6 only when no coherent summary exists.
+- Adversarial write inputs come from the sealed fixtures, not harness literals.

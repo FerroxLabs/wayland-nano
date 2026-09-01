@@ -34,6 +34,8 @@ pub struct ConfiguredAgents {
     ids: HashSet<String>,
 }
 impl ConfiguredAgents {
+    /// MEMORY-CONTRACT §5: `main` is always the implicit configured
+    /// orchestrator; callers provide only additional configured agents.
     pub fn try_from_ids(ids: impl IntoIterator<Item = String>) -> MemoryResult<Self> {
         let mut configured = HashSet::from(["main".to_owned()]);
         for id in ids {
@@ -287,9 +289,18 @@ pub struct RetrieveHit {
     pub agent_id: String,
 }
 #[derive(Debug, Clone, PartialEq)]
+pub struct RetrievalIdentity {
+    pub id: String,
+    pub project: String,
+    pub agent_id: String,
+    pub session_id: String,
+}
+#[derive(Debug, Clone, PartialEq)]
 pub struct RetrievalEvidence {
     pub fts_hits: usize,
     pub knn_hits: usize,
+    pub fts_ids: Vec<RetrievalIdentity>,
+    pub knn_ids: Vec<RetrievalIdentity>,
     pub assembled: Vec<RetrieveHit>,
 }
 #[derive(Debug, Clone, PartialEq)]

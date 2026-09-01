@@ -74,6 +74,7 @@ fn recovery_rejects_invalid_partition_attribution() {
         &temp.path().join("memory.db"),
         &[journal],
         MemoryPolicy::default(),
+        configured(),
     )
     .unwrap_err();
     assert!(matches!(
@@ -82,6 +83,27 @@ fn recovery_rejects_invalid_partition_attribution() {
             field: "agent_id",
             ..
         }
+    ));
+}
+
+#[test]
+fn recovery_rejects_an_unconfigured_agent() {
+    let temp = tempfile::tempdir().unwrap();
+    let journal = temp.path().join("unconfigured.jsonl");
+    let mut writer = JournalWriter::open(&journal).unwrap();
+    append_fact(&mut writer, "foreign", "agent-z", None);
+    drop(writer);
+
+    let error = rebuild_from_journals(
+        &temp.path().join("memory.db"),
+        &[journal],
+        MemoryPolicy::default(),
+        configured(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        MemoryError::UnconfiguredAgent(ref id) if id == "agent-z"
     ));
 }
 
@@ -125,7 +147,7 @@ fn recovery_does_not_apply_receipt_from_a_different_agent() {
     drop(writer);
 
     let db = temp.path().join("memory.db");
-    rebuild_from_journals(&db, &[journal], MemoryPolicy::default()).unwrap();
+    rebuild_from_journals(&db, &[journal], MemoryPolicy::default(), configured()).unwrap();
     let store = MemoryStore::open_at(
         &db,
         &temp.path().join("inspect.jsonl"),
@@ -157,7 +179,8 @@ fn rebuild_contention_preserves_original_database() {
     let mut writer = JournalWriter::open(&source).unwrap();
     append_fact(&mut writer, "replacement", "agent-a", None);
     drop(writer);
-    let error = rebuild_from_journals(&db, &[source], MemoryPolicy::default()).unwrap_err();
+    let error = rebuild_from_journals(&db, &[source], MemoryPolicy::default(), configured())
+        .unwrap_err();
     assert!(matches!(error, MemoryError::Contention(_)));
     assert_eq!(std::fs::read(&db).unwrap(), before);
     assert_eq!(target.current_facts().unwrap()[0].id, "original");
@@ -196,6 +219,7 @@ fn rebuild_atomically_replaces_target_and_cleans_siblings() {
         &db,
         std::slice::from_ref(&source_journal),
         MemoryPolicy::default(),
+        configured(),
     )
     .unwrap();
     let rebuilt = MemoryStore::open_at(
@@ -322,6 +346,7 @@ fn retention_policy_rebuild_is_query_equivalent() {
         &rebuilt_db,
         std::slice::from_ref(&journal),
         MemoryPolicy::default(),
+        configured(),
     )
     .unwrap();
     let rebuilt = MemoryStore::open_at(
