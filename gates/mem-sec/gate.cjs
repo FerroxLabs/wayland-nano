@@ -39,10 +39,28 @@ if (!artifactStat.isDirectory() || artifactStat.isSymbolicLink() || artifact !==
 const harness = path.resolve('crates', 'nano-memory', 'tests', 'mem_sec_cards.rs');
 if (!fs.existsSync(harness)) failAll();
 
-const target = path.join(os.tmpdir(), 'wayland-nano-p3-mem-sec-target');
-const result = spawnSync(
-  'cargo',
-  [
+const testArgs = ['mem_sec_gate_summary', '--exact', '--nocapture', '--test-threads=1'];
+const restrictedWindows = process.platform === 'win32'
+  && /^f:\\tmp\\wngc[0-9a-f]{12}-home$/i.test(process.env.USERPROFILE || '');
+let result;
+if (restrictedWindows) {
+  const protectedHarness = String.raw`F:\gate-cards-bin\mem_sec_cards.exe`;
+  let resolvedHarness;
+  let harnessStat;
+  try {
+    resolvedHarness = fs.realpathSync.native(protectedHarness).replace(/^\\\\\?\\/, '').toLowerCase();
+    harnessStat = fs.lstatSync(protectedHarness);
+  } catch {
+    failAll();
+  }
+  if (!harnessStat.isFile() || harnessStat.isSymbolicLink()
+      || resolvedHarness !== protectedHarness.toLowerCase()) failAll();
+  result = spawnSync(protectedHarness, testArgs, {
+    cwd: process.cwd(), env: process.env, encoding: 'utf8', windowsHide: true,
+  });
+} else {
+  const target = path.join(os.tmpdir(), 'wayland-nano-p3-mem-sec-target');
+  result = spawnSync('cargo', [
     'test',
     '--locked',
     '--target-dir',
@@ -51,14 +69,10 @@ const result = spawnSync(
     'nano-memory',
     '--test',
     'mem_sec_cards',
-    'mem_sec_gate_summary',
     '--',
-    '--exact',
-    '--nocapture',
-    '--test-threads=1',
-  ],
-  { cwd: process.cwd(), env: process.env, encoding: 'utf8', windowsHide: true },
-);
+    ...testArgs,
+  ], { cwd: process.cwd(), env: process.env, encoding: 'utf8', windowsHide: true });
+}
 if (result.error || result.status !== 0) failAll();
 const lines = (result.stdout || '').split(/\r?\n/).filter((line) =>
   /^FAIL MS-0[1-6] (structure|value|relation|grounding|execution|security)$/.test(line)

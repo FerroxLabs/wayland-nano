@@ -413,12 +413,88 @@ jobs:
         with: { node-version: "20" }
       - uses: dtolnay/rust-toolchain@master
         with: { toolchain: "1.95.0" }
+      - name: Create owned F volume and exact-SHA clone
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((Get-PSDrive F -ErrorAction SilentlyContinue) -or (Test-Path 'F:\')) { throw 'F: already exists' }
+          $token = [Guid]::NewGuid().ToString('N')
+          $vhd = Join-Path $env:RUNNER_TEMP "wayland-nano-mem-sec-$token.vhdx"
+          $setup = Join-Path $env:RUNNER_TEMP "mem-sec-setup-$token.txt"
+          $detach = Join-Path $env:RUNNER_TEMP "mem-sec-detach-$token.txt"
+          try {
+            @("create vdisk file=`"$vhd`" maximum=8192 type=expandable", "select vdisk file=`"$vhd`"", 'attach vdisk',
+              'create partition primary', 'format fs=ntfs quick label=WNMEMSEC', 'assign letter=F') |
+              Set-Content -LiteralPath $setup -Encoding ascii
+            & diskpart.exe /s $setup
+            if ($LASTEXITCODE -ne 0) { throw 'diskpart setup failed' }
+            $volume = Get-Volume -DriveLetter F -ErrorAction Stop
+            if ($volume.FileSystem -ne 'NTFS' -or $volume.FileSystemLabel -ne 'WNMEMSEC') { throw 'unowned F volume' }
+            "WN_MS_VHD=$vhd" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            'WN_MS_VHD_OWNED=1' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            New-Item -ItemType Directory -Force F:\tmp | Out-Null
+            'TEMP=F:\tmp' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            'TMP=F:\tmp' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            'TMPDIR=F:\tmp' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            git clone --no-local --no-hardlinks --no-checkout . F:\repo
+            if ($LASTEXITCODE -ne 0) { throw 'self-contained clone failed' }
+            git -C F:\repo checkout --detach $env:GITHUB_SHA
+            if (($LASTEXITCODE -ne 0) -or ((git -C F:\repo rev-parse HEAD).Trim() -ne $env:GITHUB_SHA)) { throw 'clone identity failed' }
+            $gitDir = (git -C F:\repo rev-parse --path-format=absolute --git-dir).Trim()
+            $expectedGitDir = [IO.Path]::GetFullPath('F:\repo\.git').TrimEnd('\')
+            if (($LASTEXITCODE -ne 0) -or ([IO.Path]::GetFullPath($gitDir).TrimEnd('\') -ne $expectedGitDir) -or
+                !(Test-Path -LiteralPath $expectedGitDir -PathType Container) -or
+                (Test-Path -LiteralPath 'F:\repo\.git' -PathType Leaf)) { throw 'clone Git administration is not self-contained' }
+          } catch {
+            if (Test-Path $vhd) {
+              @("select vdisk file=`"$vhd`"", 'detach vdisk') | Set-Content $detach -Encoding ascii
+              & diskpart.exe /s $detach | Out-Null
+              if (-not (Get-DiskImage $vhd -ErrorAction SilentlyContinue).Attached) {
+                Remove-Item $vhd -Force -ErrorAction SilentlyContinue
+              }
+            }
+            throw
+          } finally {
+            Remove-Item $setup, $detach -Force -ErrorAction SilentlyContinue
+          }
       - name: Build CLI and run mem-sec through WP-3 verify
+        if: runner.os != 'Windows'
         env:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
           TMPDIR: ${{ runner.temp }}
         run: cargo run --locked -p nano-cli --bin wayland-nano -- verify --gate mem-sec --run-only
+      - name: Build CLI and run mem-sec through WP-3 verify on F
+        if: runner.os == 'Windows'
+        working-directory: F:\repo
+        run: cargo run --locked -p nano-cli --bin wayland-nano -- verify --gate mem-sec --run-only
+      - name: Remove owned F volume
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ($env:WN_MS_VHD_OWNED -ne '1') { exit 0 }
+          $root = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+          $vhd = [IO.Path]::GetFullPath($env:WN_MS_VHD)
+          $leaf = Split-Path -Leaf $vhd
+          if (!$vhd.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or
+              $leaf -notmatch '^wayland-nano-mem-sec-[0-9a-f]{32}\.vhdx$') { throw 'unowned cleanup path' }
+          if (Get-CimInstance Win32_Process | Where-Object {
+              $_.ExecutablePath -and $_.ExecutablePath.StartsWith('F:\', [StringComparison]::OrdinalIgnoreCase)
+            }) { throw 'owned volume still has a running process' }
+          $script = Join-Path $env:RUNNER_TEMP "mem-sec-cleanup-$([Guid]::NewGuid().ToString('N')).txt"
+          try {
+            @("select vdisk file=`"$vhd`"", 'detach vdisk') | Set-Content $script -Encoding ascii
+            & diskpart.exe /s $script
+            if ($LASTEXITCODE -ne 0) { throw 'vhd detach failed' }
+            $image = Get-DiskImage $vhd -ErrorAction SilentlyContinue
+            if ($image -and $image.Attached) { throw 'vhd remains attached' }
+            if (Test-Path $vhd) { Remove-Item $vhd -Force }
+            if (Test-Path $vhd) { throw 'vhd residue' }
+            if (Test-Path -LiteralPath 'F:\repo') { throw 'clone visible after detach' }
+          } finally {
+            Remove-Item $script -Force -ErrorAction SilentlyContinue
+          }
 
   gate-cards:
     runs-on: windows-2022
@@ -469,8 +545,28 @@ jobs:
           } finally { Remove-Item $setup, $detach -Force -ErrorAction SilentlyContinue }
 
       - name: Build landed verifier and helpers
+        shell: pwsh
         working-directory: F:\repo
-        run: cargo build -p nano-cli -p nano-sandbox --bins
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build -p nano-cli -p nano-sandbox --bins
+          if ($LASTEXITCODE -ne 0) { throw 'binary build failed' }
+          $messages = @(cargo test --locked -p nano-memory --test mem_sec_cards --no-run --message-format=json)
+          if ($LASTEXITCODE -ne 0) { throw 'mem-sec harness build failed' }
+          $artifacts = @($messages | ForEach-Object {
+            try { $_ | ConvertFrom-Json -ErrorAction Stop } catch { $null }
+          } | Where-Object {
+            $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'mem_sec_cards' -and
+            @($_.target.kind) -contains 'test' -and $_.executable
+          })
+          if ($artifacts.Count -ne 1) { throw "mem-sec harness artifact count: $($artifacts.Count)" }
+          $source = [IO.Path]::GetFullPath([string]$artifacts[0].executable)
+          $targetRoot = [IO.Path]::GetFullPath('F:\repo\target').TrimEnd('\') + '\'
+          $sourceItem = Get-Item -LiteralPath $source -Force
+          if (!$source.StartsWith($targetRoot, [StringComparison]::OrdinalIgnoreCase) -or
+              $sourceItem.PSIsContainer -or ($sourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+              [IO.Path]::GetExtension($source) -ne '.exe') { throw 'invalid mem-sec harness artifact' }
+          Copy-Item -LiteralPath $source -Destination 'F:\repo\target\mem_sec_cards.exe'
 
       - name: Stage authentic sealed npm payload
         shell: pwsh
@@ -507,7 +603,7 @@ jobs:
           $gateIds = Assert-Registry (Get-Content gates/registry.json -Raw | ConvertFrom-Json)
           & $nodePath -e "const c=require('crypto'),r=require('./gates/registry.json');for(const [id,e] of Object.entries(r.gates))if(c.createHash('sha256').update(JSON.stringify(e.closure)).digest('hex')!==e.closure_digest)throw Error(id)"
           if ($LASTEXITCODE -ne 0) { throw 'closure digest drift' }
-          $protectedDir='F:\gate-cards-bin';$protectedBinary=Join-Path $protectedDir 'wayland-nano.exe';$protectedGitConfig=Join-Path $protectedDir 'gitconfig'
+          $protectedDir='F:\gate-cards-bin';$protectedBinary=Join-Path $protectedDir 'wayland-nano.exe';$protectedHarness=Join-Path $protectedDir 'mem_sec_cards.exe';$protectedGitConfig=Join-Path $protectedDir 'gitconfig'
           if(Test-Path -LiteralPath $protectedDir){throw 'protected binary directory is not pristine'}
           $accountName=('wngc'+[Guid]::NewGuid().ToString('N').Substring(0,12));$random=[byte[]]::new(32);[Security.Cryptography.RandomNumberGenerator]::Fill($random);$accountPassword='Aa1!'+[Convert]::ToHexString($random)
           $brokerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -520,6 +616,7 @@ jobs:
           if($adminMembers-contains$accountName){throw 'ephemeral account is an Administrator'}
           New-Item -ItemType Directory -Path $protectedDir | Out-Null
           Copy-Item -LiteralPath 'F:\repo\target\debug\wayland-nano.exe' -Destination $protectedBinary
+          Copy-Item -LiteralPath 'F:\repo\target\mem_sec_cards.exe' -Destination $protectedHarness
           if(Test-Path Env:GIT_CONFIG_GLOBAL){throw 'unexpected Git config environment'}
           [IO.File]::WriteAllText($protectedGitConfig,"[safe]`n`tdirectory = F:/repo`n",[Text.UTF8Encoding]::new($false))
           $systemSid=[Security.Principal.SecurityIdentifier]::new('S-1-5-18');$adminSid=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544');$userIdentity=[Security.Principal.SecurityIdentifier]::new($userSid)
@@ -536,7 +633,7 @@ jobs:
           Set-ExactAcl 'F:\' $true $rx;Set-ExactAcl 'F:\repo' $true $rx
           & icacls.exe 'F:\repo' /reset /T /C | Out-Null;if($LASTEXITCODE-ne 0){throw 'repository descendant ACL reset failed'}
           & icacls.exe 'F:\repo' /setowner '*S-1-5-18' /T /C | Out-Null;if($LASTEXITCODE-ne 0){throw 'repository descendant ownership failed'}
-          Set-ExactAcl 'F:\repo' $true $rx;Set-ExactAcl 'F:\tmp' $true $modify;Set-ExactAcl $protectedDir $true $rx;Set-ExactAcl $protectedBinary $false $rx;Set-ExactAcl $protectedGitConfig $false $rx
+          Set-ExactAcl 'F:\repo' $true $rx;Set-ExactAcl 'F:\tmp' $true $modify;Set-ExactAcl $protectedDir $true $rx;Set-ExactAcl $protectedBinary $false $rx;Set-ExactAcl $protectedHarness $false $rx;Set-ExactAcl $protectedGitConfig $false $rx
           function Assert-ProtectedAcl($path,$directory,$expectedUserRights){
             $acl=Get-Acl -LiteralPath $path
             if(!$acl.AreAccessRulesProtected-or$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value-ne'S-1-5-18'){throw 'protected ACL owner/inheritance'}
@@ -549,13 +646,13 @@ jobs:
             if($expectedUserRights-eq$rx-and(($userRule.FileSystemRights-band$forbidden)-ne 0-or($userRule.FileSystemRights-band$rx)-ne$rx)){throw 'protected ACL user rights'}
             if($expectedUserRights-eq$modify-and($userRule.FileSystemRights-band$modify)-ne$modify){throw 'runtime temp ACL user rights'}
           }
-          Assert-ProtectedAcl 'F:\' $true $rx;Assert-ProtectedAcl 'F:\repo' $true $rx;Assert-ProtectedAcl 'F:\tmp' $true $modify;Assert-ProtectedAcl $protectedDir $true $rx;Assert-ProtectedAcl $protectedBinary $false $rx;Assert-ProtectedAcl $protectedGitConfig $false $rx
+          Assert-ProtectedAcl 'F:\' $true $rx;Assert-ProtectedAcl 'F:\repo' $true $rx;Assert-ProtectedAcl 'F:\tmp' $true $modify;Assert-ProtectedAcl $protectedDir $true $rx;Assert-ProtectedAcl $protectedBinary $false $rx;Assert-ProtectedAcl $protectedHarness $false $rx;Assert-ProtectedAcl $protectedGitConfig $false $rx
           $accountHome="F:\tmp\$accountName-home";if($accountName-notmatch'^wngc[0-9a-f]{12}$'-or(Test-Path -LiteralPath $accountHome)){throw 'account home is not pristine'};New-Item -ItemType Directory -Path $accountHome|Out-Null
           $homeItem=Get-Item -LiteralPath $accountHome -Force;if($homeItem.Attributes-band[IO.FileAttributes]::ReparsePoint){throw 'account home is a reparse point'};$homeAcl=Get-Acl -LiteralPath $accountHome;$homeRule=@($homeAcl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])|Where-Object {$_.IdentityReference.Value-eq$userSid});if($homeRule.Count-ne 1-or($homeRule[0].FileSystemRights-band$modify)-ne$modify){throw 'account home does not inherit account Modify'}
           $gateScratch=[IO.Path]::GetFullPath('F:\repo\target\wp4-install-gate');if($gateScratch-ne'F:\repo\target\wp4-install-gate'){throw 'gate scratch identity'}
           New-Item -ItemType Directory -Force $gateScratch|Out-Null
           & icacls.exe $gateScratch /grant "*$($userSid):(OI)(CI)(M)" | Out-Null;if($LASTEXITCODE-ne 0){throw 'gate scratch grant failed'}
-          $protectedHash=(Get-FileHash -LiteralPath $protectedBinary -Algorithm SHA256).Hash;$gitConfigHash=(Get-FileHash -LiteralPath $protectedGitConfig -Algorithm SHA256).Hash
+          $protectedHash=(Get-FileHash -LiteralPath $protectedBinary -Algorithm SHA256).Hash;$protectedHarnessHash=(Get-FileHash -LiteralPath $protectedHarness -Algorithm SHA256).Hash;$gitConfigHash=(Get-FileHash -LiteralPath $protectedGitConfig -Algorithm SHA256).Hash
           $env:GIT_CONFIG_GLOBAL=$protectedGitConfig
           $brokerPath="C:\Program Files\Git\usr\bin;C:\Program Files\Git\bin;"+$env:PATH;$brokerPathExt=$env:PATHEXT;$brokerSystemRoot=$env:SystemRoot;$brokerWinDir=$env:WINDIR;$brokerComSpec=$env:COMSPEC
           foreach($value in @($brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec)){if([string]::IsNullOrWhiteSpace($value)-or$value.Contains([char]0)){throw 'invalid broker environment source'}}
@@ -916,14 +1013,14 @@ jobs:
           if(!(Test-Path -LiteralPath $binary -PathType Leaf)){throw 'landed WP-3 binary is missing'}
           $binaryHash=(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash
           function Invoke-ProtectedGate($gateId,$diagnoseUnexpected){
-            if(!(Test-Path -LiteralPath $protectedDir -PathType Container)-or!(Test-Path -LiteralPath $binary -PathType Leaf)-or(Get-Item -LiteralPath $binary).FullName-ne'F:\gate-cards-bin\wayland-nano.exe'-or(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash-ne$binaryHash-or(Get-FileHash -LiteralPath $protectedGitConfig -Algorithm SHA256).Hash-ne$gitConfigHash){throw 'protected identity changed before gate'}
+            if(!(Test-Path -LiteralPath $protectedDir -PathType Container)-or!(Test-Path -LiteralPath $binary -PathType Leaf)-or!(Test-Path -LiteralPath $protectedHarness -PathType Leaf)-or(Get-Item -LiteralPath $binary).FullName-ne'F:\gate-cards-bin\wayland-nano.exe'-or(Get-Item -LiteralPath $protectedHarness).FullName-ne'F:\gate-cards-bin\mem_sec_cards.exe'-or(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash-ne$binaryHash-or(Get-FileHash -LiteralPath $protectedHarness -Algorithm SHA256).Hash-ne$protectedHarnessHash-or(Get-FileHash -LiteralPath $protectedGitConfig -Algorithm SHA256).Hash-ne$gitConfigHash){throw 'protected identity changed before gate'}
             $script:LastGateDiagnostic='none'
             try{$exit=[GateCardsRestrictedProcess]::RunGate($gateId,$accountName,$accountPassword,$userSid,$brokerSid,$brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec);if(($exit-ne 0) -and $diagnoseUnexpected){try{$script:LastGateDiagnostic=[GateCardsRestrictedProcess]::RunDiagnostic($gateId,$accountName,$accountPassword,$userSid,$brokerSid,$brokerPath,$brokerPathExt,$brokerSystemRoot,$brokerWinDir,$brokerComSpec);if($script:LastGateDiagnostic-notmatch'^(none|outcome=(green|red|fail_closed)(;[A-Z]{2}-[0-9]{2}:(structure|value|relation|grounding|execution|security):(true|false)){0,32})$'){throw 'diagnostic sanitizer contract'}}catch{$script:LastGateDiagnostic='none'}}}finally{
               if($gateId-eq'install-payload'-and(Test-Path -LiteralPath $scratchRoot)){
                 Remove-VerifiedScratch $scratchRoot
               }
             }
-            if(!(Test-Path -LiteralPath $protectedDir -PathType Container)-or!(Test-Path -LiteralPath $binary -PathType Leaf)-or(Get-Item -LiteralPath $binary).FullName-ne'F:\gate-cards-bin\wayland-nano.exe'-or(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash-ne$binaryHash-or(Get-FileHash -LiteralPath $protectedGitConfig -Algorithm SHA256).Hash-ne$gitConfigHash){throw 'protected identity changed after gate'}
+            if(!(Test-Path -LiteralPath $protectedDir -PathType Container)-or!(Test-Path -LiteralPath $binary -PathType Leaf)-or!(Test-Path -LiteralPath $protectedHarness -PathType Leaf)-or(Get-Item -LiteralPath $binary).FullName-ne'F:\gate-cards-bin\wayland-nano.exe'-or(Get-Item -LiteralPath $protectedHarness).FullName-ne'F:\gate-cards-bin\mem_sec_cards.exe'-or(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash-ne$binaryHash-or(Get-FileHash -LiteralPath $protectedHarness -Algorithm SHA256).Hash-ne$protectedHarnessHash-or(Get-FileHash -LiteralPath $protectedGitConfig -Algorithm SHA256).Hash-ne$gitConfigHash){throw 'protected identity changed after gate'}
             return $exit
           }
           $wnBnoLinksSource = @'

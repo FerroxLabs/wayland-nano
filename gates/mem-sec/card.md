@@ -3,7 +3,7 @@ card: 1
 gate_id: mem-sec
 domain: repo-deliverable
 tier: 1
-gate_script_hash: eb922534457c6b9af9c9a5b420290507491fee9fff8ad03865ad481decc4b87c
+gate_script_hash: 017ac461b96bee163954197ac3e9e1b5e0e77786208d5122e016218f674bbc98
 relational_target:
   artifact: the six sealed MEMORY-CONTRACT section 6.5 fixtures and nano-memory card harness
   relation: trust tiers project and agent partitions attribution and removed scopes remain fail closed through retrieval replay and rebuild
@@ -55,7 +55,7 @@ validation:
     - { id: ms6-m4-omit-agent-fts, class: fluent-but-wrong, why_fluent: project partitioning alone looks sufficient, expected_drop: 1, must_fail: [MS-06], fixture: sealed:dir-sha256:9e962846631bb8e172619505ced1329b3361ddfc496e7ec7745119ebda4db695 }
     - { id: ms6-m5-omit-agent-knn, class: fluent-but-wrong, why_fluent: project partitioning alone looks sufficient, expected_drop: 1, must_fail: [MS-06], fixture: sealed:dir-sha256:9e962846631bb8e172619505ced1329b3361ddfc496e7ec7745119ebda4db695 }
   rotation_k: 2
-  last_validated: eb922534457c6b9af9c9a5b420290507491fee9fff8ad03865ad481decc4b87c
+  last_validated: 017ac461b96bee163954197ac3e9e1b5e0e77786208d5122e016218f674bbc98
 gamed_modes:
   - { mode: post-filter project or agent rows after retrieval instead of partitioning inside SQL, status: sealed, note: MS-03 and MS-06 expose leaks at FTS KNN and final checkpoints }
   - { mode: rederive trust tier or identity during replay and rebuild, status: sealed, note: MS-04 binds ModelInference and bot-a bit-for-bit }
