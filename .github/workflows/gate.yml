@@ -388,10 +388,6 @@ jobs:
 
   mem-sec:
     name: mem-sec (${{ matrix.os }})
-    env:
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
-      TMPDIR: ${{ runner.temp }}
     strategy:
       fail-fast: false
       matrix:
@@ -418,6 +414,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with: { toolchain: "1.95.0" }
       - name: Build CLI and run mem-sec through WP-3 verify
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TMPDIR: ${{ runner.temp }}
         run: cargo run --locked -p nano-cli --bin wayland-nano -- verify --gate mem-sec --run-only
 
   gate-cards:
