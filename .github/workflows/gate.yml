@@ -388,6 +388,10 @@ jobs:
 
   mem-sec:
     name: mem-sec (${{ matrix.os }})
+    env:
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
+      TMPDIR: ${{ runner.temp }}
     strategy:
       fail-fast: false
       matrix:
