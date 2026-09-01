@@ -1,6 +1,9 @@
-diff --git a/gates/fixtures/mem-sec/mem-sec-5/fixture.json b/gates/fixtures/mem-sec/mem-sec-5/fixture.json
---- a/gates/fixtures/mem-sec/mem-sec-5/fixture.json
-+++ b/gates/fixtures/mem-sec/mem-sec-5/fixture.json
-@@ -18,1 +18,1 @@
--      "value": "All"
-+      "value": "Own"
+diff --git a/crates/nano-memory/src/types.rs b/crates/nano-memory/src/types.rs
+--- a/crates/nano-memory/src/types.rs
++++ b/crates/nano-memory/src/types.rs
+@@ -95,4 +95,1 @@
+-            _ => Err(MemoryError::InvalidValue {
+-                field: "agent_scope",
+-                value: value.into(),
+-            }),
++            _ => Ok(Self::Own),

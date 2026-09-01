@@ -1,6 +1,6 @@
-diff --git a/gates/fixtures/mem-sec/mem-sec-1/fixture.json b/gates/fixtures/mem-sec/mem-sec-1/fixture.json
---- a/gates/fixtures/mem-sec/mem-sec-1/fixture.json
-+++ b/gates/fixtures/mem-sec/mem-sec-1/fixture.json
-@@ -14,1 +14,1 @@
--      "project": "project-a",
-+      "project": "project-b",
+diff --git a/crates/nano-memory/src/store.rs b/crates/nano-memory/src/store.rs
+--- a/crates/nano-memory/src/store.rs
++++ b/crates/nano-memory/src/store.rs
+@@ -414,1 +414,1 @@
+-        let old=self.db.query_row("SELECT object,confidence,source_trust FROM facts WHERE project=?1 AND agent_id=?2 AND session_id=?3 AND subject=?4 AND predicate=?5 AND valid_to IS NULL ORDER BY system_time DESC LIMIT 1",params![new.project,new.agent_id,self.write_session_key(),new.subject,new.predicate],|r|Ok((r.get::<_,String>(0)?,r.get::<_,f64>(1)?,r.get::<_,String>(2)?))).optional()?;
++        let old=self.db.query_row("SELECT object,confidence,source_trust FROM facts WHERE project=?1 AND agent_id<>?2 AND session_id=?3 AND subject=?4 AND predicate=?5 AND valid_to IS NULL ORDER BY system_time DESC LIMIT 1",params![new.project,new.agent_id,self.write_session_key(),new.subject,new.predicate],|r|Ok((r.get::<_,String>(0)?,r.get::<_,f64>(1)?,r.get::<_,String>(2)?))).optional()?;

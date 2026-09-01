@@ -1,6 +1,6 @@
-diff --git a/gates/fixtures/mem-sec/mem-sec-2/fixture.json b/gates/fixtures/mem-sec/mem-sec-2/fixture.json
---- a/gates/fixtures/mem-sec/mem-sec-2/fixture.json
-+++ b/gates/fixtures/mem-sec/mem-sec-2/fixture.json
-@@ -8,1 +8,1 @@
--      "object": "stable",
-+      "object": "candidate",
+diff --git a/crates/nano-memory/src/resolver.rs b/crates/nano-memory/src/resolver.rs
+--- a/crates/nano-memory/src/resolver.rs
++++ b/crates/nano-memory/src/resolver.rs
+@@ -26,1 +26,1 @@
+-            if new.confidence * 1.2 > existing.confidence {
++            if new.confidence > existing.confidence {

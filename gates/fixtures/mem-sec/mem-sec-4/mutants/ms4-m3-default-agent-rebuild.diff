@@ -1,6 +1,6 @@
-diff --git a/gates/fixtures/mem-sec/mem-sec-4/fixture.json b/gates/fixtures/mem-sec/mem-sec-4/fixture.json
---- a/gates/fixtures/mem-sec/mem-sec-4/fixture.json
-+++ b/gates/fixtures/mem-sec/mem-sec-4/fixture.json
-@@ -15,1 +15,1 @@
--      "agent_id": "bot-a"
-+      "agent_id": "main"
+diff --git a/crates/nano-memory/src/store.rs b/crates/nano-memory/src/store.rs
+--- a/crates/nano-memory/src/store.rs
++++ b/crates/nano-memory/src/store.rs
+@@ -985,1 +985,1 @@
+-                            agent_id,
++                            agent_id: "main".into(),

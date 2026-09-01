@@ -1,6 +1,8 @@
-diff --git a/gates/fixtures/mem-sec/mem-sec-3/fixture.json b/gates/fixtures/mem-sec/mem-sec-3/fixture.json
---- a/gates/fixtures/mem-sec/mem-sec-3/fixture.json
-+++ b/gates/fixtures/mem-sec/mem-sec-3/fixture.json
-@@ -792,1 +792,1 @@
--      "agent_id": "bot-a",
-+      "agent_id": "bot-b",
+diff --git a/crates/nano-memory/src/store.rs b/crates/nano-memory/src/store.rs
+--- a/crates/nano-memory/src/store.rs
++++ b/crates/nano-memory/src/store.rs
+@@ -710,1 +710,1 @@
+-                    s.query_map(params![vector, q.project, agent, session_key], |r| {
++                    s.query_map(params![vector, "project-a", agent, session_key], |r| {
+@@ -720,1 +720,0 @@
+-        self.assert_checkpoint_partitions(&knn_evidence, q, &ids, &session_keys)?;

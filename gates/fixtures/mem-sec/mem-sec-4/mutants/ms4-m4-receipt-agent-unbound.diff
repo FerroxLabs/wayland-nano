@@ -1,6 +1,6 @@
-diff --git a/gates/fixtures/mem-sec/mem-sec-4/fixture.json b/gates/fixtures/mem-sec/mem-sec-4/fixture.json
---- a/gates/fixtures/mem-sec/mem-sec-4/fixture.json
-+++ b/gates/fixtures/mem-sec/mem-sec-4/fixture.json
-@@ -29,1 +29,1 @@
--      "agent_id": "bot-a"
-+      "agent_id": "bot-b"
+diff --git a/crates/nano-memory/src/store.rs b/crates/nano-memory/src/store.rs
+--- a/crates/nano-memory/src/store.rs
++++ b/crates/nano-memory/src/store.rs
+@@ -957,1 +957,1 @@
+-                        && !receipts.contains(&(fact_id.clone(), agent_id.clone()))
++                        && false

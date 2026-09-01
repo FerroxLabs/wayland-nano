@@ -13,6 +13,19 @@
       "source_trust": "User",
       "project": "project-a",
       "agent_id": "bot-a"
+    },
+    {
+      "id": "ms1-f2",
+      "subject": "deploy_target",
+      "predicate": "equals",
+      "object": "prod",
+      "confidence": 1.0,
+      "source_episode": null,
+      "valid_from": "2026-08-31T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-a"
     }
   ],
   "decisions": [],

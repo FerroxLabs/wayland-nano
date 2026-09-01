@@ -10,7 +10,20 @@
       "source_episode": null,
       "valid_from": "2026-08-30T00:00:00Z",
       "valid_to": null,
-      "source_trust": "ModelInference",
+      "source_trust": "User",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "ms4-extracted",
+      "subject": "deployment_region",
+      "predicate": "equals",
+      "object": "ap-southeast-1",
+      "confidence": 0.9,
+      "source_episode": "ms4-episode",
+      "valid_from": "2026-08-31T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
       "project": "project-a",
       "agent_id": "bot-a"
     }

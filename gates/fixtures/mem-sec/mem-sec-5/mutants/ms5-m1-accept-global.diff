@@ -1,6 +1,9 @@
-diff --git a/gates/fixtures/mem-sec/mem-sec-5/fixture.json b/gates/fixtures/mem-sec/mem-sec-5/fixture.json
---- a/gates/fixtures/mem-sec/mem-sec-5/fixture.json
-+++ b/gates/fixtures/mem-sec/mem-sec-5/fixture.json
-@@ -10,1 +10,1 @@
--      "value": "Global"
-+      "value": "Session"
+diff --git a/crates/nano-memory/src/types.rs b/crates/nano-memory/src/types.rs
+--- a/crates/nano-memory/src/types.rs
++++ b/crates/nano-memory/src/types.rs
+@@ -133,4 +133,1 @@
+-            _ => Err(MemoryError::InvalidValue {
+-                field: "read_scope",
+-                value: value.into(),
+-            }),
++            _ => Ok(Self::SessionAndProject),

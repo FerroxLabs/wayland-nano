@@ -33,7 +33,6 @@
     }
   ],
   "configured_agents": [
-    "main",
     "bot-a"
   ],
   "unconfigured_agent_id": "bot-z"

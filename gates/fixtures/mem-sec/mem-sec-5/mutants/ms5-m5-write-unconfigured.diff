@@ -1,6 +1,6 @@
-diff --git a/gates/fixtures/mem-sec/mem-sec-5/fixture.json b/gates/fixtures/mem-sec/mem-sec-5/fixture.json
---- a/gates/fixtures/mem-sec/mem-sec-5/fixture.json
-+++ b/gates/fixtures/mem-sec/mem-sec-5/fixture.json
-@@ -38,1 +38,1 @@
--    "bot-a"
-+    "bot-z"
+diff --git a/crates/nano-memory/src/store.rs b/crates/nano-memory/src/store.rs
+--- a/crates/nano-memory/src/store.rs
++++ b/crates/nano-memory/src/store.rs
+@@ -351,1 +351,1 @@
+-            .is_some_and(|configured| !configured.contains(agent_id))
++            .is_some_and(|_| false)
