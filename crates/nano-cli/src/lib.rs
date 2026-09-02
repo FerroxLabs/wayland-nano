@@ -12,6 +12,7 @@ pub mod exec_run;
 pub mod fetch_specs;
 pub mod flux_key;
 pub mod mcp_specs;
+pub mod memory_policy;
 pub mod model_params;
 pub mod plugin_cmds;
 pub mod provider_key;

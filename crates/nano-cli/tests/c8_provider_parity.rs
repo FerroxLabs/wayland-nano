@@ -630,6 +630,7 @@ impl Host {
                     dir: sessions_dir.parent().expect("root").join("memory"),
                     write_enabled: false,
                     block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
+                    policy: nano_cli::memory_policy::ResolvedMemoryPolicy::disabled(),
                 };
                 // P2a: lane-A vision catalog (vendored, fail-closed) + the attachment
                 // store root beside the session journals (lane-B boundary use).

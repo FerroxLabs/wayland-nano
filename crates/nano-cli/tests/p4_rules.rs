@@ -210,6 +210,7 @@ fn session_start_surfaces_rule_file_invalid_on_stderr() {
         dir: home.path().join("memory"),
         write_enabled: false,
         block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
+        policy: nano_cli::memory_policy::ResolvedMemoryPolicy::disabled(),
     };
     let available_models = [AvailableModel {
         id: "mock".into(),
