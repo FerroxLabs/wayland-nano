@@ -252,7 +252,7 @@ fn load_configured_agents(nano_home: &Path) -> Result<ConfiguredAgents, MemoryPo
         if parsed.id == "main" {
             return Err(MemoryPolicyError::ReservedAgent { id: parsed.id });
         }
-        if declared.iter().any(|id| *id == parsed.id) {
+        if declared.contains(&parsed.id) {
             return Err(MemoryPolicyError::DuplicateAgent { id: parsed.id });
         }
         if parsed.id != stem {
