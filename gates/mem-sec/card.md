@@ -20,7 +20,7 @@ wrapped_tools:
   - { name: cargo, version: workspace, license: Apache-2.0 OR MIT, role: build and execute the Rust card harness }
   - { name: wayland-nano, version: workspace, license: Apache-2.0, role: WP-3 verify CLI entry authority }
 validation:
-  reference: sealed:dir-sha256:6593822c2b584ce895b074aa217269a053ad8914734a8ebdea199720f85706a4
+  reference: sealed:dir-sha256:32aef24a5c59dfcdee6a4d6827b5d2a55059d19e929850a9fcf7c037ecae53c7
   pool_min: 30
   pool_status: full
   mutants:
@@ -39,11 +39,11 @@ validation:
     - { id: ms3-m3-omit-project-fts, class: fluent-but-wrong, why_fluent: removing a redundant-looking FTS partition predicate simplifies SQL, expected_drop: 1, must_fail: [MS-03], fixture: sealed:dir-sha256:35d65abc24b3b67cc00634998570ac919524d895ab973ed8aec682f50dab8072 }
     - { id: ms3-m4-omit-project-knn, class: fluent-but-wrong, why_fluent: removing a redundant-looking vec partition predicate simplifies SQL, expected_drop: 1, must_fail: [MS-03], fixture: sealed:dir-sha256:35d65abc24b3b67cc00634998570ac919524d895ab973ed8aec682f50dab8072 }
     - { id: ms3-m5-final-only-assert, class: fluent-but-wrong, why_fluent: checking only assembled output appears sufficient, expected_drop: 1, must_fail: [MS-03], fixture: sealed:dir-sha256:35d65abc24b3b67cc00634998570ac919524d895ab973ed8aec682f50dab8072 }
-    - { id: ms4-m1-inherit-tool-tier, class: fluent-but-wrong, why_fluent: preserving the source episode tier looks provenance-friendly, expected_drop: 1, must_fail: [MS-04], fixture: sealed:dir-sha256:f58e0a8a925324f63a31d4ad4a7c5672672a3423e90d2a57a0277e99ba7c1210 }
-    - { id: ms4-m2-rederive-tier-replay, class: fluent-but-wrong, why_fluent: recomputing trust during replay looks like normalization, expected_drop: 1, must_fail: [MS-04], fixture: sealed:dir-sha256:f58e0a8a925324f63a31d4ad4a7c5672672a3423e90d2a57a0277e99ba7c1210 }
-    - { id: ms4-m3-default-agent-rebuild, class: fluent-but-wrong, why_fluent: defaulting missing rebuild identity to main looks backward compatible, expected_drop: 1, must_fail: [MS-04], fixture: sealed:dir-sha256:f58e0a8a925324f63a31d4ad4a7c5672672a3423e90d2a57a0277e99ba7c1210 }
-    - { id: ms4-m4-receipt-agent-unbound, class: fluent-but-wrong, why_fluent: accepting a receipt from any agent looks resilient, expected_drop: 1, must_fail: [MS-04], fixture: sealed:dir-sha256:f58e0a8a925324f63a31d4ad4a7c5672672a3423e90d2a57a0277e99ba7c1210 }
-    - { id: ms4-m5-direct-model-write, class: fluent-but-wrong, why_fluent: letting direct ModelInference writes land avoids mediation overhead, expected_drop: 1, must_fail: [MS-04], fixture: sealed:dir-sha256:f58e0a8a925324f63a31d4ad4a7c5672672a3423e90d2a57a0277e99ba7c1210 }
+    - { id: ms4-m1-inherit-tool-tier, class: fluent-but-wrong, why_fluent: preserving the source episode tier looks provenance-friendly, expected_drop: 1, must_fail: [MS-04], fixture: sealed:dir-sha256:245f69f7af543a9837d490f5e43850eda8dfe38296c80a995768684934a781f2 }
+    - { id: ms4-m2-rederive-tier-replay, class: fluent-but-wrong, why_fluent: recomputing trust during replay looks like normalization, expected_drop: 1, must_fail: [MS-04], fixture: sealed:dir-sha256:245f69f7af543a9837d490f5e43850eda8dfe38296c80a995768684934a781f2 }
+    - { id: ms4-m3-default-agent-rebuild, class: fluent-but-wrong, why_fluent: defaulting missing rebuild identity to main looks backward compatible, expected_drop: 1, must_fail: [MS-04], fixture: sealed:dir-sha256:245f69f7af543a9837d490f5e43850eda8dfe38296c80a995768684934a781f2 }
+    - { id: ms4-m4-receipt-agent-unbound, class: fluent-but-wrong, why_fluent: accepting a receipt from any agent looks resilient, expected_drop: 1, must_fail: [MS-04], fixture: sealed:dir-sha256:245f69f7af543a9837d490f5e43850eda8dfe38296c80a995768684934a781f2 }
+    - { id: ms4-m5-direct-model-write, class: fluent-but-wrong, why_fluent: letting direct ModelInference writes land avoids mediation overhead, expected_drop: 1, must_fail: [MS-04], fixture: sealed:dir-sha256:245f69f7af543a9837d490f5e43850eda8dfe38296c80a995768684934a781f2 }
     - { id: ms5-m1-accept-global, class: fluent-but-wrong, why_fluent: retaining a legacy Global spelling looks migration-friendly, expected_drop: 1, must_fail: [MS-05], fixture: sealed:dir-sha256:98ae2f795ac76f8e5f5f59a2dbeef1eea6ef23c00db934052e13588ab507ccfd }
     - { id: ms5-m2-unknown-tier-default, class: fluent-but-wrong, why_fluent: defaulting unknown trust to ModelInference looks fail-safe, expected_drop: 1, must_fail: [MS-05], fixture: sealed:dir-sha256:98ae2f795ac76f8e5f5f59a2dbeef1eea6ef23c00db934052e13588ab507ccfd }
     - { id: ms5-m3-unknown-scope-own, class: fluent-but-wrong, why_fluent: defaulting unknown agent scope to Own looks narrow, expected_drop: 1, must_fail: [MS-05], fixture: sealed:dir-sha256:98ae2f795ac76f8e5f5f59a2dbeef1eea6ef23c00db934052e13588ab507ccfd }
