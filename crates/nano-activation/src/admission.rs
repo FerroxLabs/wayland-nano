@@ -51,6 +51,41 @@ pub struct SessionBinding {
     pub artifact: ArtifactIdentity,
 }
 
+/// The continuity choice validated at admission (03-02/D3-04): the signed
+/// carrier's strategy and its pinned fallback, retained on the token so the
+/// 03-03 seam enforces the degradation contract (refuse typed on `none`,
+/// degrade with a journaled receipt on `fresh`) without reparsing transport
+/// bytes. Read-only; constructed only by the admission validator, so
+/// `AdmittedFallback::Fresh` can never appear beside `Fresh`/`SessionResume`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdmittedContinuity {
+    strategy: AdmittedStrategy,
+    fallback: AdmittedFallback,
+}
+
+impl AdmittedContinuity {
+    pub fn strategy(&self) -> AdmittedStrategy {
+        self.strategy
+    }
+
+    pub fn fallback(&self) -> AdmittedFallback {
+        self.fallback
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmittedStrategy {
+    Fresh,
+    SessionResume,
+    MemoryRecall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmittedFallback {
+    None,
+    Fresh,
+}
+
 #[derive(Debug, Clone)]
 pub struct AdmittedToken {
     issuer_id: String,
@@ -60,6 +95,7 @@ pub struct AdmittedToken {
     project_id: String,
     activation_id: String,
     session_id: Option<String>,
+    continuity: AdmittedContinuity,
     policy: EffectivePolicy,
     receipt: SignedReceipt,
 }
@@ -120,6 +156,9 @@ impl AdmittedToken {
     }
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
+    }
+    pub fn continuity(&self) -> AdmittedContinuity {
+        self.continuity
     }
     pub fn policy(&self) -> &EffectivePolicy {
         &self.policy
@@ -277,7 +316,7 @@ impl AdmissionGate {
             None
         };
         let resolved_resume = owned_resume.as_ref().map(SessionBinding::as_resume);
-        validate_continuity(
+        let continuity = validate_continuity(
             carrier,
             resume.or(resolved_resume.as_ref()),
             &snapshot,
@@ -309,6 +348,7 @@ impl AdmissionGate {
             if let Some(bytes) = &existing.receipt {
                 return Ok(token_from(
                     carrier,
+                    continuity,
                     policy,
                     SignedReceipt::from_stored(bytes.clone()),
                 ));
@@ -369,7 +409,7 @@ impl AdmissionGate {
         if fault == AdmissionFault::AfterDecision {
             panic!("injected crash after durable activation decision");
         }
-        Ok(token_from(carrier, policy, receipt))
+        Ok(token_from(carrier, continuity, policy, receipt))
     }
 
     pub fn mark_dispatch_eligible(&mut self, activation_id: &str) -> Result<(), ActivationError> {
@@ -758,6 +798,7 @@ impl SessionBinding {
 
 fn token_from(
     carrier: &ActivationCarrier,
+    continuity: AdmittedContinuity,
     policy: EffectivePolicy,
     receipt: SignedReceipt,
 ) -> AdmittedToken {
@@ -769,6 +810,7 @@ fn token_from(
         project_id: carrier.project_id.clone(),
         activation_id: carrier.activation_id.clone(),
         session_id: carrier.session_id.clone(),
+        continuity,
         policy,
         receipt,
     }
@@ -880,17 +922,33 @@ fn validate_continuity(
     resume: Option<&ResumeBinding>,
     snapshot: &AuthoritySnapshot,
     issuer_epoch: u64,
-) -> Result<(), ActivationError> {
+) -> Result<AdmittedContinuity, ActivationError> {
     match carrier.continuity.strategy {
         ContinuityStrategy::Fresh => {
             if !matches!(carrier.continuity.fallback, Fallback::None) {
                 return Err(ActivationError::new(RejectReason::FallbackUnauthorized));
             }
-            Ok(())
+            Ok(AdmittedContinuity {
+                strategy: AdmittedStrategy::Fresh,
+                fallback: AdmittedFallback::None,
+            })
         }
-        ContinuityStrategy::MemoryRecall => {
-            Err(ActivationError::new(RejectReason::ContinuityNotEnabled))
-        }
+        // D3-04: memory_recall is a validated admission mode. The signed
+        // fallback is pinned here; seam-time unavailability or a
+        // policy-disabled memory layer is the 03-03 seam's typed
+        // ContinuityNotEnabled (none) or journaled degradation receipt
+        // (fresh) — the refusal moved, it was never removed.
+        ContinuityStrategy::MemoryRecall => match carrier.continuity.fallback {
+            Fallback::None => Ok(AdmittedContinuity {
+                strategy: AdmittedStrategy::MemoryRecall,
+                fallback: AdmittedFallback::None,
+            }),
+            Fallback::Fresh => Ok(AdmittedContinuity {
+                strategy: AdmittedStrategy::MemoryRecall,
+                fallback: AdmittedFallback::Fresh,
+            }),
+            Fallback::MemoryRecall => Err(ActivationError::new(RejectReason::FallbackUnauthorized)),
+        },
         ContinuityStrategy::SessionResume => {
             if !matches!(carrier.continuity.fallback, Fallback::None) {
                 return Err(ActivationError::new(RejectReason::FallbackUnauthorized));
@@ -908,7 +966,10 @@ fn validate_continuity(
             {
                 return Err(ActivationError::new(RejectReason::ResumeDrift));
             }
-            Ok(())
+            Ok(AdmittedContinuity {
+                strategy: AdmittedStrategy::SessionResume,
+                fallback: AdmittedFallback::None,
+            })
         }
     }
 }

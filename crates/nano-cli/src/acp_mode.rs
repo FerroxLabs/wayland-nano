@@ -1161,10 +1161,24 @@ pub async fn run(nano_home: &std::path::Path) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
+    // 03-02 (D3-04/D3-05): the host MemoryPolicy source — strict
+    // $NANO_HOME/memory-policy.toml plus the §6.8 agent registry, default-off
+    // and tighten-only. A resolution failure is a typed startup error (fail
+    // closed, same posture as the pricing catalog); the seam's store-open
+    // validation and policy journaling are 03-03's. The legacy env-driven
+    // fields below are untouched.
+    let memory_policy = match crate::activation::resolve_memory_policy(nano_home) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            eprintln!("wayland-nano: {error}");
+            return Ok(2);
+        }
+    };
     let memory_config = MemoryHostConfig {
         dir: nano_home.join("memory"),
         write_enabled: memory_write,
         block_cap: memory_block_cap,
+        policy: memory_policy,
     };
     // P2a §6.3 (LANE-A BOUNDARY): the fail-closed static vision catalog —
     // vendored exact-id entries only; aliases are never blessed in v1. Lane
@@ -1675,6 +1689,11 @@ pub struct MemoryHostConfig {
     /// NANO_MEMORY_BLOCK_CHARS: downward-only override of the 24k injected
     /// block cap.
     pub block_cap: usize,
+    /// 03-02: the resolved host MemoryPolicy + §6.8 configured-agent set
+    /// (typed, default-off, tighten-only). 03-03's seam consumes it for the
+    /// real store-open validation and policy journaling; the legacy `.md`
+    /// fields above are a separate quarantined channel (03-04's target).
+    pub policy: crate::memory_policy::ResolvedMemoryPolicy,
 }
 
 /// How a finished prompt answers the client (C7/D1): a normal `stopReason`
@@ -11812,6 +11831,7 @@ mod tests {
                 dir: home.join("memory"),
                 write_enabled: false,
                 block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
+                policy: crate::memory_policy::ResolvedMemoryPolicy::disabled(),
             };
             let vision = nano_model::vision_catalog::VisionCatalog::vendored().unwrap();
             let hooks = nano_hooks::HookEngine::empty();
@@ -12151,6 +12171,7 @@ mod tests {
             dir: home.join("memory"),
             write_enabled: false,
             block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
+            policy: crate::memory_policy::ResolvedMemoryPolicy::disabled(),
         };
         let vision =
             nano_model::vision_catalog::VisionCatalog::vendored().expect("vendored vision catalog");

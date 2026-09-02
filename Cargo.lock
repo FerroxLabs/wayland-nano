@@ -1808,6 +1808,7 @@ dependencies = [
  "nano-egress",
  "nano-hooks",
  "nano-mcp",
+ "nano-memory",
  "nano-model",
  "nano-plugins",
  "nano-protocol",
@@ -1822,6 +1823,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tokio",
+ "toml",
  "windows-sys 0.52.0",
 ]
 

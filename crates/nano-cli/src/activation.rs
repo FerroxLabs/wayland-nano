@@ -175,6 +175,16 @@ pub fn now_utc() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
+/// 03-02 (D3-04/D3-05): resolve the one typed host memory-policy handle
+/// (strict `$NANO_HOME/memory-policy.toml` + the §6.8 agent registry) at host
+/// startup. Resolution only — 03-03's seam owns the store-open validation and
+/// the journaled policy record; no store or journal is opened here.
+pub fn resolve_memory_policy(
+    nano_home: &std::path::Path,
+) -> Result<crate::memory_policy::ResolvedMemoryPolicy, crate::memory_policy::MemoryPolicyError> {
+    crate::memory_policy::resolve(nano_home)
+}
+
 pub fn emit_receipt(receipt: &[u8]) {
     use std::io::Write as _;
     let mut stderr = std::io::stderr().lock();

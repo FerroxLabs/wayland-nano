@@ -68,6 +68,7 @@ fn debug_exchange(home: &std::path::Path, frames: &[serde_json::Value]) -> Vec<s
         dir: home.join("memory"),
         write_enabled: false,
         block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
+        policy: nano_cli::memory_policy::ResolvedMemoryPolicy::disabled(),
     };
     let available_models = [AvailableModel {
         id: "mock".into(),

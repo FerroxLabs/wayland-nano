@@ -2122,6 +2122,7 @@ mod acp_harness {
                         dir: sessions_dir_thread.parent().expect("root").join("memory"),
                         write_enabled: false,
                         block_cap: nano_agent::memory::MEMORY_BLOCK_CHAR_CAP,
+                        policy: nano_cli::memory_policy::ResolvedMemoryPolicy::disabled(),
                     };
                     let vision_catalog = nano_model::vision_catalog::VisionCatalog::vendored()
                         .expect("vendored vision catalog parses");
