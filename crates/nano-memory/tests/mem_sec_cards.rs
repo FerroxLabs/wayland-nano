@@ -198,9 +198,11 @@ fn assert_partitioned(
             return Err(format!("{name} checkpoint leaked a foreign partition"));
         }
     }
-    if evidence.assembled.iter().any(|hit| {
-        hit.project != project || hit.agent_id != agent_id
-    }) {
+    if evidence
+        .assembled
+        .iter()
+        .any(|hit| hit.project != project || hit.agent_id != agent_id)
+    {
         return Err("assembled output leaked a foreign partition".into());
     }
     Ok(())
@@ -238,7 +240,10 @@ fn ms_04() -> Result<(), String> {
     let mut direct = fixture.facts[1].clone();
     direct.id = "ms4-direct-model-write".into();
     direct.source_trust = SourceTrust::ModelInference;
-    if !matches!(store.write_fact(direct), Err(MemoryError::MediationRequired)) {
+    if !matches!(
+        store.write_fact(direct),
+        Err(MemoryError::MediationRequired)
+    ) {
         return Err("direct ModelInference write bypassed mediation".into());
     }
     let live = store.current_facts().map_err(|error| error.to_string())?;
@@ -316,7 +321,11 @@ fn ms_04() -> Result<(), String> {
     replayed
         .replay_journals(std::slice::from_ref(&journal))
         .map_err(|error| error.to_string())?;
-    assert_ms4_roundtrip(&replayed.current_facts().map_err(|error| error.to_string())?)?;
+    assert_ms4_roundtrip(
+        &replayed
+            .current_facts()
+            .map_err(|error| error.to_string())?,
+    )?;
 
     std::fs::remove_file(&db).map_err(|error| error.to_string())?;
     rebuild_from_journals(
@@ -520,23 +529,20 @@ fn mem_sec_gate_summary() {
 fn assert_source_binding() -> Result<(), String> {
     let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     for (compiled, source) in [
-        (
-            include_bytes!("../src/store.rs").as_slice(),
-            "store.rs",
-        ),
+        (include_bytes!("../src/store.rs").as_slice(), "store.rs"),
         (
             include_bytes!("../src/resolver.rs").as_slice(),
             "resolver.rs",
         ),
-        (
-            include_bytes!("../src/types.rs").as_slice(),
-            "types.rs",
-        ),
+        (include_bytes!("../src/types.rs").as_slice(), "types.rs"),
     ] {
         let runtime = source_root.join(source);
         let current = std::fs::read(&runtime).map_err(|error| error.to_string())?;
         if current != compiled {
-            return Err(format!("prebuilt harness does not match {}", runtime.display()));
+            return Err(format!(
+                "prebuilt harness does not match {}",
+                runtime.display()
+            ));
         }
     }
     Ok(())

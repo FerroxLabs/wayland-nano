@@ -768,10 +768,7 @@ impl MemoryStore {
             assembled: hits,
         })
     }
-    fn checkpoint_identities(
-        &self,
-        record_ids: &[String],
-    ) -> MemoryResult<Vec<RetrievalIdentity>> {
+    fn checkpoint_identities(&self, record_ids: &[String]) -> MemoryResult<Vec<RetrievalIdentity>> {
         record_ids
             .iter()
             .map(|id| {
@@ -896,13 +893,7 @@ pub fn rebuild_from_journals(
             "stale rebuild sibling exists".into(),
         ));
     }
-    let result = rebuild_into_sibling(
-        &temp_db,
-        &temp_journal,
-        journals,
-        policy,
-        configured_agents,
-    );
+    let result = rebuild_into_sibling(&temp_db, &temp_journal, journals, policy, configured_agents);
     if let Err(error) = result {
         let _ = std::fs::remove_file(&temp_db);
         let _ = std::fs::remove_file(&temp_journal);
@@ -949,10 +940,7 @@ fn rebuild_into_sibling(
     Ok(())
 }
 
-fn replay_journals_into_store(
-    store: &mut MemoryStore,
-    journals: &[PathBuf],
-) -> MemoryResult<()> {
+fn replay_journals_into_store(store: &mut MemoryStore, journals: &[PathBuf]) -> MemoryResult<()> {
     for path in journals {
         let report = read_journal(path)?;
         let receipts: HashSet<(String, String)> = report

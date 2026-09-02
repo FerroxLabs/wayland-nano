@@ -55,10 +55,11 @@ Direct failing-first exit: `2`. Missing subject never skipped.
 
 ## Mutant-caught evidence
 
-Detached candidate `17a1b5e52edb3a3f5ac2777b2a3954e24a4a7c48` was created without moving the
-feature branch. Each committed zero-context mutant patch was applied alone, its bound
-`mem_sec_N` test was run, and the patch was reversed. Runtime failures—not compile
-failures—caught every mutant, with a clean detached worktree afterward:
+The committed Node meta-test creates a self-contained exact-head clone. Each sealed
+zero-context patch modifies `crates/nano-memory/src/**`, is applied alone, and runs only
+its bound `mem_sec_N` test. A mutant counts as caught only when that named test fails at
+runtime; compile-only failures are rejected. The clone restores the source tree from
+HEAD and proves it clean between every case:
 
 | Check | Caught |
 |---|---:|

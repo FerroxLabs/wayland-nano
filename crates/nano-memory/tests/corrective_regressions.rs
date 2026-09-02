@@ -179,8 +179,8 @@ fn rebuild_contention_preserves_original_database() {
     let mut writer = JournalWriter::open(&source).unwrap();
     append_fact(&mut writer, "replacement", "agent-a", None);
     drop(writer);
-    let error = rebuild_from_journals(&db, &[source], MemoryPolicy::default(), configured())
-        .unwrap_err();
+    let error =
+        rebuild_from_journals(&db, &[source], MemoryPolicy::default(), configured()).unwrap_err();
     assert!(matches!(error, MemoryError::Contention(_)));
     assert_eq!(std::fs::read(&db).unwrap(), before);
     assert_eq!(target.current_facts().unwrap()[0].id, "original");
