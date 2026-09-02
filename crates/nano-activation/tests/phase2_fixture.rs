@@ -37,6 +37,19 @@ fn fixture_uses_reducers_separates_private_handoff_and_enables_exact_artifact() 
             .unwrap()
             .success()
     );
+    // Pin autocrlf in the nested repo: the clone-time `-c` flag does not
+    // persist, and any outer-lock change makes the detach checkout rewrite
+    // Cargo.lock with ambient config (CRLF on Windows) — the frozen byte-exact
+    // lock hash must not depend on ambient git config.
+    assert!(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(git_path(&checkout))
+            .args(["config", "core.autocrlf", "false"])
+            .status()
+            .unwrap()
+            .success()
+    );
     assert!(
         std::process::Command::new("git")
             .arg("-C")
@@ -205,6 +218,19 @@ fn prepared_case() -> PreparedCase {
             ])
             .arg(git_path(&source_checkout))
             .arg(git_path(&checkout))
+            .status()
+            .unwrap()
+            .success()
+    );
+    // Pin autocrlf in the nested repo: the clone-time `-c` flag does not
+    // persist, and any outer-lock change makes the detach checkout rewrite
+    // Cargo.lock with ambient config (CRLF on Windows) — the frozen byte-exact
+    // lock hash must not depend on ambient git config.
+    assert!(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(git_path(&checkout))
+            .args(["config", "core.autocrlf", "false"])
             .status()
             .unwrap()
             .success()
