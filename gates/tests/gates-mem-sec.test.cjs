@@ -134,10 +134,12 @@ test('every sealed implementation mutant makes its named check fail at runtime',
       assert.match(output, new RegExp(`test mem_sec_${Number(number)} \\.\\.\\. FAILED`, 'u'),
         `${mutant.id} did not fail its named runtime check`);
 
-      result = spawnSync('git', ['-C', repo, 'apply', '--reverse', '--unidiff-zero', patchFile], {
+      result = spawnSync('git', [
+        '-C', repo, 'restore', '--source=HEAD', '--', 'crates/nano-memory/src',
+      ], {
         encoding: 'utf8', windowsHide: true,
       });
-      assert.equal(result.status, 0, `${mutant.id} reverse: ${result.stderr}`);
+      assert.equal(result.status, 0, `${mutant.id} restore: ${result.stderr}`);
       result = spawnSync('git', ['-C', repo, 'diff', '--quiet'], {
         encoding: 'utf8', windowsHide: true,
       });
