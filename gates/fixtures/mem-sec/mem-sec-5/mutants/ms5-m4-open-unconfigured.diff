@@ -1,0 +1,6 @@
+diff --git a/crates/nano-memory/src/store.rs b/crates/nano-memory/src/store.rs
+--- a/crates/nano-memory/src/store.rs
++++ b/crates/nano-memory/src/store.rs
+@@ -1154,1 +1154,1 @@
+-            if configured.contains(agent_id) {
++            if true || configured.contains(agent_id) {

@@ -1,0 +1,6 @@
+diff --git a/crates/nano-memory/src/store.rs b/crates/nano-memory/src/store.rs
+--- a/crates/nano-memory/src/store.rs
++++ b/crates/nano-memory/src/store.rs
+@@ -440,1 +440,1 @@
+-        if res == ContradictionResolution::KeepExisting && stored.valid_to.is_none() {
++        if false && res == ContradictionResolution::KeepExisting && stored.valid_to.is_none() {

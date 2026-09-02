@@ -1,6 +1,10 @@
 use nano_memory::*;
 use nano_session::{Op, read_journal};
 
+fn configured() -> ConfiguredAgents {
+    ConfiguredAgents::try_from_ids(["bot-a".to_owned()]).unwrap()
+}
+
 fn fact(tier: SourceTrust) -> FactWrite {
     FactWrite {
         id: "f-model".into(),
@@ -25,6 +29,8 @@ fn model_proposes_host_commits_and_receipts() {
         &temp.path().join("memory.db"),
         &journal,
         MemoryPolicy::default(),
+        "bot-a",
+        configured(),
     )
     .unwrap();
     assert!(matches!(

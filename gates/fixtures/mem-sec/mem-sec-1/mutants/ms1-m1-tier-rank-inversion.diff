@@ -1,0 +1,6 @@
+diff --git a/crates/nano-memory/src/resolver.rs b/crates/nano-memory/src/resolver.rs
+--- a/crates/nano-memory/src/resolver.rs
++++ b/crates/nano-memory/src/resolver.rs
+@@ -24,1 +24,1 @@
+-        std::cmp::Ordering::Less => ContradictionResolution::KeepExisting,
++        std::cmp::Ordering::Less => ContradictionResolution::Supersede,

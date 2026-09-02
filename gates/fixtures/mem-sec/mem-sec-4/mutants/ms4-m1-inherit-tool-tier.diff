@@ -1,0 +1,10 @@
+diff --git a/crates/nano-memory/src/mediation.rs b/crates/nano-memory/src/mediation.rs
+--- a/crates/nano-memory/src/mediation.rs
++++ b/crates/nano-memory/src/mediation.rs
+@@ -28,1 +28,0 @@
+-                v.source_trust = SourceTrust::ModelInference;
+diff --git a/crates/nano-memory/src/store.rs b/crates/nano-memory/src/store.rs
+--- a/crates/nano-memory/src/store.rs
++++ b/crates/nano-memory/src/store.rs
+@@ -141,1 +141,0 @@
+-        fact.source_trust = SourceTrust::ModelInference;

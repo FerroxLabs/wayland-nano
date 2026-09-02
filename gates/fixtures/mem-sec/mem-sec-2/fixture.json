@@ -1,0 +1,57 @@
+{
+  "version": "mem-sec-2",
+  "facts": [
+    {
+      "id": "ms2-g1",
+      "subject": "release_channel",
+      "predicate": "equals",
+      "object": "stable",
+      "confidence": 0.6,
+      "source_episode": null,
+      "valid_from": "2026-08-30T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "ms2-g2-tie",
+      "subject": "release_channel",
+      "predicate": "equals",
+      "object": "tie-candidate",
+      "confidence": 0.5,
+      "source_episode": null,
+      "valid_from": "2026-08-31T00:00:00Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    },
+    {
+      "id": "ms2-g3",
+      "subject": "release_channel",
+      "predicate": "equals",
+      "object": "candidate",
+      "confidence": 0.500001,
+      "source_episode": null,
+      "valid_from": "2026-08-31T00:00:01Z",
+      "valid_to": null,
+      "source_trust": "ToolOutput",
+      "project": "project-a",
+      "agent_id": "bot-a"
+    }
+  ],
+  "decisions": [],
+  "episodes": [],
+  "queries": [
+    {
+      "label": "same-tier-control",
+      "text": "release channel candidate stable",
+      "project": "project-a",
+      "agent_id": "bot-a",
+      "relevant_ids": [
+        "ms2-g3"
+      ]
+    }
+  ]
+}

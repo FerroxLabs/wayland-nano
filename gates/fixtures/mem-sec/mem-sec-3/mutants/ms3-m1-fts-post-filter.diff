@@ -1,0 +1,8 @@
+diff --git a/crates/nano-memory/src/store.rs b/crates/nano-memory/src/store.rs
+--- a/crates/nano-memory/src/store.rs
++++ b/crates/nano-memory/src/store.rs
+@@ -691,1 +691,1 @@
+-                    params![match_query, q.project, agents, session_keys_json],
++                    params![match_query, "project-a", agents, session_keys_json],
+@@ -703,1 +703,0 @@
+-        self.assert_checkpoint_partitions(&fts_evidence, q, &ids, &session_keys)?;

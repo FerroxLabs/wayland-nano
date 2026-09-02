@@ -6,5 +6,6 @@ crates/nano-tui/tests/snapshots/** -text
 # Byte-pinned generated/vendored artifacts: never CRLF-convert (drift pins hash them)
 crates/nano-session/contracts/*.json text eol=lf
 contracts/activation/**/*.json text eol=lf
+gates/mem-sec/gate.cjs text eol=lf
 crates/nano-model/data/*.json text eol=lf
 crates/nano-model/tests/golden/** -text

@@ -1,0 +1,6 @@
+diff --git a/crates/nano-memory/src/types.rs b/crates/nano-memory/src/types.rs
+--- a/crates/nano-memory/src/types.rs
++++ b/crates/nano-memory/src/types.rs
+@@ -104,1 +104,1 @@
+-            Self::Own => vec![querying.into()],
++            Self::Own => vec!["bot-a".into(), querying.into()],

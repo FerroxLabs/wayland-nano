@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 pub type MemoryResult<T> = Result<T, MemoryError>;
 
@@ -24,6 +25,29 @@ pub enum MemoryError {
     Contention(String),
     #[error("unsupported memory policy: {0}")]
     UnsupportedPolicy(String),
+    #[error("unconfigured memory agent: {0}")]
+    UnconfiguredAgent(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfiguredAgents {
+    ids: HashSet<String>,
+}
+impl ConfiguredAgents {
+    /// MEMORY-CONTRACT §5: `main` is always the implicit configured
+    /// orchestrator; callers provide only additional configured agents.
+    pub fn try_from_ids(ids: impl IntoIterator<Item = String>) -> MemoryResult<Self> {
+        let mut configured = HashSet::from(["main".to_owned()]);
+        for id in ids {
+            validate_partition("configured-agent", &id)?;
+            configured.insert(id);
+        }
+        Ok(Self { ids: configured })
+    }
+
+    pub fn contains(&self, agent_id: &str) -> bool {
+        self.ids.contains(agent_id)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +287,21 @@ pub struct RetrieveHit {
     pub source_trust: SourceTrust,
     pub project: String,
     pub agent_id: String,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetrievalIdentity {
+    pub id: String,
+    pub project: String,
+    pub agent_id: String,
+    pub session_id: String,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetrievalEvidence {
+    pub fts_hits: usize,
+    pub knn_hits: usize,
+    pub fts_ids: Vec<RetrievalIdentity>,
+    pub knn_ids: Vec<RetrievalIdentity>,
+    pub assembled: Vec<RetrieveHit>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct FactState {

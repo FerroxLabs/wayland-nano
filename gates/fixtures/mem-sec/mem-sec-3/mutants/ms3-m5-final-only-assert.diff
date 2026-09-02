@@ -1,0 +1,13 @@
+diff --git a/crates/nano-memory/src/store.rs b/crates/nano-memory/src/store.rs
+--- a/crates/nano-memory/src/store.rs
++++ b/crates/nano-memory/src/store.rs
+@@ -688,1 +688,1 @@
+-            let mut s=self.db.prepare("SELECT id FROM memory_fts WHERE memory_fts MATCH ?1 AND project=?2 AND agent_id IN(SELECT value FROM json_each(?3)) AND session_id IN(SELECT value FROM json_each(?4)) ORDER BY bm25(memory_fts) LIMIT 100")?;
++            let mut s=self.db.prepare("SELECT id FROM memory_fts WHERE memory_fts MATCH ?1 AND project<>?2 AND agent_id IN(SELECT value FROM json_each(?3)) AND session_id IN(SELECT value FROM json_each(?4)) ORDER BY bm25(memory_fts) LIMIT 100")?;
+@@ -703,1 +703,0 @@
+-        self.assert_checkpoint_partitions(&fts_evidence, q, &ids, &session_keys)?;
+@@ -708,1 +707,1 @@
+-                let mut s=self.db.prepare("SELECT record_id,distance FROM memory_vec WHERE embedding MATCH ?1 AND k=100 AND project=?2 AND agent_id=?3 AND session_id=?4 ORDER BY distance")?;
++                let mut s=self.db.prepare("SELECT record_id,distance FROM memory_vec WHERE embedding MATCH ?1 AND k=100 AND project<>?2 AND agent_id=?3 AND session_id=?4 ORDER BY distance")?;
+@@ -720,1 +719,0 @@
+-        self.assert_checkpoint_partitions(&knn_evidence, q, &ids, &session_keys)?;

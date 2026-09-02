@@ -1,6 +1,10 @@
 use nano_memory::*;
 use serde::Deserialize;
 
+fn configured() -> ConfiguredAgents {
+    ConfiguredAgents::try_from_ids(["bot-a".to_owned(), "bot-b".to_owned()]).unwrap()
+}
+
 #[derive(Deserialize)]
 struct Fixture {
     version: String,
@@ -51,6 +55,8 @@ fn memory_retrieval_recall_v1_bar() {
         &temp.path().join("memory.db"),
         &temp.path().join("session.jsonl"),
         MemoryPolicy::default(),
+        "main",
+        configured(),
     )
     .unwrap();
     ingest(&mut store, &fixture);
@@ -93,6 +99,8 @@ fn explicit_agent_scope_never_widens_project() {
         &temp.path().join("memory.db"),
         &temp.path().join("session.jsonl"),
         MemoryPolicy::default(),
+        "main",
+        configured(),
     )
     .unwrap();
     ingest(&mut store, &fixture);

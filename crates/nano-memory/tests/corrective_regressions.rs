@@ -1,6 +1,10 @@
 use nano_memory::*;
 use nano_session::{JournalWriter, Op, OpEnvelope};
 
+fn configured() -> ConfiguredAgents {
+    ConfiguredAgents::try_from_ids(["agent-a".to_owned(), "agent-b".to_owned()]).unwrap()
+}
+
 fn fact(id: &str, object: &str) -> FactWrite {
     FactWrite {
         id: id.into(),
@@ -70,6 +74,7 @@ fn recovery_rejects_invalid_partition_attribution() {
         &temp.path().join("memory.db"),
         &[journal],
         MemoryPolicy::default(),
+        configured(),
     )
     .unwrap_err();
     assert!(matches!(
@@ -78,6 +83,27 @@ fn recovery_rejects_invalid_partition_attribution() {
             field: "agent_id",
             ..
         }
+    ));
+}
+
+#[test]
+fn recovery_rejects_an_unconfigured_agent() {
+    let temp = tempfile::tempdir().unwrap();
+    let journal = temp.path().join("unconfigured.jsonl");
+    let mut writer = JournalWriter::open(&journal).unwrap();
+    append_fact(&mut writer, "foreign", "agent-z", None);
+    drop(writer);
+
+    let error = rebuild_from_journals(
+        &temp.path().join("memory.db"),
+        &[journal],
+        MemoryPolicy::default(),
+        configured(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        MemoryError::UnconfiguredAgent(ref id) if id == "agent-z"
     ));
 }
 
@@ -121,11 +147,13 @@ fn recovery_does_not_apply_receipt_from_a_different_agent() {
     drop(writer);
 
     let db = temp.path().join("memory.db");
-    rebuild_from_journals(&db, &[journal], MemoryPolicy::default()).unwrap();
+    rebuild_from_journals(&db, &[journal], MemoryPolicy::default(), configured()).unwrap();
     let store = MemoryStore::open_at(
         &db,
         &temp.path().join("inspect.jsonl"),
         MemoryPolicy::default(),
+        "main",
+        configured(),
     )
     .unwrap();
     assert!(store.current_facts().unwrap().is_empty());
@@ -136,7 +164,14 @@ fn rebuild_contention_preserves_original_database() {
     let temp = tempfile::tempdir().unwrap();
     let db = temp.path().join("memory.db");
     let target_journal = temp.path().join("target.jsonl");
-    let mut target = MemoryStore::open_at(&db, &target_journal, MemoryPolicy::default()).unwrap();
+    let mut target = MemoryStore::open_at(
+        &db,
+        &target_journal,
+        MemoryPolicy::default(),
+        "main",
+        configured(),
+    )
+    .unwrap();
     target.write_fact(fact("original", "keep-me")).unwrap();
     let before = std::fs::read(&db).unwrap();
 
@@ -144,7 +179,8 @@ fn rebuild_contention_preserves_original_database() {
     let mut writer = JournalWriter::open(&source).unwrap();
     append_fact(&mut writer, "replacement", "agent-a", None);
     drop(writer);
-    let error = rebuild_from_journals(&db, &[source], MemoryPolicy::default()).unwrap_err();
+    let error =
+        rebuild_from_journals(&db, &[source], MemoryPolicy::default(), configured()).unwrap_err();
     assert!(matches!(error, MemoryError::Contention(_)));
     assert_eq!(std::fs::read(&db).unwrap(), before);
     assert_eq!(target.current_facts().unwrap()[0].id, "original");
@@ -155,16 +191,27 @@ fn rebuild_atomically_replaces_target_and_cleans_siblings() {
     let temp = tempfile::tempdir().unwrap();
     let db = temp.path().join("memory.db");
     {
-        let mut old =
-            MemoryStore::open_at(&db, &temp.path().join("old.jsonl"), MemoryPolicy::default())
-                .unwrap();
+        let mut old = MemoryStore::open_at(
+            &db,
+            &temp.path().join("old.jsonl"),
+            MemoryPolicy::default(),
+            "main",
+            configured(),
+        )
+        .unwrap();
         old.write_fact(fact("old", "obsolete")).unwrap();
     }
     let source_db = temp.path().join("source.db");
     let source_journal = temp.path().join("source.jsonl");
     {
-        let mut source =
-            MemoryStore::open_at(&source_db, &source_journal, MemoryPolicy::default()).unwrap();
+        let mut source = MemoryStore::open_at(
+            &source_db,
+            &source_journal,
+            MemoryPolicy::default(),
+            "main",
+            configured(),
+        )
+        .unwrap();
         source.write_fact(fact("new", "replacement")).unwrap();
     }
 
@@ -172,12 +219,15 @@ fn rebuild_atomically_replaces_target_and_cleans_siblings() {
         &db,
         std::slice::from_ref(&source_journal),
         MemoryPolicy::default(),
+        configured(),
     )
     .unwrap();
     let rebuilt = MemoryStore::open_at(
         &db,
         &temp.path().join("inspect.jsonl"),
         MemoryPolicy::default(),
+        "main",
+        configured(),
     )
     .unwrap();
     assert_eq!(rebuilt.current_facts().unwrap()[0].id, "new");
@@ -203,9 +253,14 @@ fn session_only_policy_isolates_narrow_reads() {
             session_id: Some(session.into()),
             ..MemoryPolicy::default()
         };
-        let mut store =
-            MemoryStore::open_at(&db, &temp.path().join(format!("{session}.jsonl")), policy)
-                .unwrap();
+        let mut store = MemoryStore::open_at(
+            &db,
+            &temp.path().join(format!("{session}.jsonl")),
+            policy,
+            "main",
+            configured(),
+        )
+        .unwrap();
         store.write_fact(fact(id, content)).unwrap();
     }
 
@@ -215,7 +270,14 @@ fn session_only_policy_isolates_narrow_reads() {
         session_id: Some("session-a".into()),
         ..MemoryPolicy::default()
     };
-    let store = MemoryStore::open_at(&db, &temp.path().join("read.jsonl"), policy).unwrap();
+    let store = MemoryStore::open_at(
+        &db,
+        &temp.path().join("read.jsonl"),
+        policy,
+        "main",
+        configured(),
+    )
+    .unwrap();
     assert_eq!(query(&store, "continuity"), vec!["fact-a"]);
 }
 
@@ -230,8 +292,14 @@ fn project_writes_remain_visible_after_the_originating_session() {
         ..MemoryPolicy::default()
     };
     {
-        let mut store =
-            MemoryStore::open_at(&db, &temp.path().join("write.jsonl"), write_policy).unwrap();
+        let mut store = MemoryStore::open_at(
+            &db,
+            &temp.path().join("write.jsonl"),
+            write_policy,
+            "main",
+            configured(),
+        )
+        .unwrap();
         store
             .write_fact(fact("project-fact", "persistent project marker"))
             .unwrap();
@@ -241,7 +309,14 @@ fn project_writes_remain_visible_after_the_originating_session() {
         session_id: Some("session-b".into()),
         ..MemoryPolicy::default()
     };
-    let store = MemoryStore::open_at(&db, &temp.path().join("read.jsonl"), read_policy).unwrap();
+    let store = MemoryStore::open_at(
+        &db,
+        &temp.path().join("read.jsonl"),
+        read_policy,
+        "main",
+        configured(),
+    )
+    .unwrap();
     assert_eq!(query(&store, "persistent marker"), vec!["project-fact"]);
 }
 
@@ -259,7 +334,8 @@ fn retention_policy_rebuild_is_query_equivalent() {
     };
     let expected;
     {
-        let mut store = MemoryStore::open_at(&db, &journal, policy.clone()).unwrap();
+        let mut store =
+            MemoryStore::open_at(&db, &journal, policy.clone(), "main", configured()).unwrap();
         store.write_fact(fact("low", "discarded marker")).unwrap();
         store.write_fact(fact("high", "retained marker")).unwrap();
         expected = store.current_facts().unwrap();
@@ -270,10 +346,17 @@ fn retention_policy_rebuild_is_query_equivalent() {
         &rebuilt_db,
         std::slice::from_ref(&journal),
         MemoryPolicy::default(),
+        configured(),
     )
     .unwrap();
-    let rebuilt =
-        MemoryStore::open_at(&rebuilt_db, &temp.path().join("inspect.jsonl"), policy).unwrap();
+    let rebuilt = MemoryStore::open_at(
+        &rebuilt_db,
+        &temp.path().join("inspect.jsonl"),
+        policy,
+        "main",
+        configured(),
+    )
+    .unwrap();
     assert_eq!(rebuilt.current_facts().unwrap(), expected);
     assert_eq!(query(&rebuilt, "marker"), vec![expected[0].id.clone()]);
 }
@@ -285,6 +368,8 @@ fn local_temp_paths_are_accepted_and_network_forms_are_refused() {
         &temp.path().join("local.db"),
         &temp.path().join("local.jsonl"),
         MemoryPolicy::default(),
+        "main",
+        configured(),
     )
     .unwrap();
 
@@ -297,6 +382,8 @@ fn local_temp_paths_are_accepted_and_network_forms_are_refused() {
             &path,
             &temp.path().join("network.jsonl"),
             MemoryPolicy::default(),
+            "main",
+            configured(),
         ) {
             Err(error) => error,
             Ok(_) => panic!("network path unexpectedly accepted: {}", path.display()),

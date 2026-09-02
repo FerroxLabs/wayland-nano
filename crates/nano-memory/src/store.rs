@@ -12,14 +12,38 @@ pub struct MemoryStore {
     journal: JournalWriter,
     embedder: HashedEmbedder,
     policy: MemoryPolicy,
+    configured_agents: Option<ConfiguredAgents>,
     next_op: u64,
     _writer_lock: FileLock,
 }
 
 impl MemoryStore {
-    pub fn open(nano_home: &Path, journal_path: &Path, policy: MemoryPolicy) -> MemoryResult<Self> {
+    pub fn open(
+        nano_home: &Path,
+        journal_path: &Path,
+        policy: MemoryPolicy,
+        active_agent: &str,
+        configured_agents: ConfiguredAgents,
+    ) -> MemoryResult<Self> {
+        Self::open_inner(
+            nano_home,
+            journal_path,
+            policy,
+            Some(active_agent),
+            Some(configured_agents),
+        )
+    }
+
+    fn open_inner(
+        nano_home: &Path,
+        journal_path: &Path,
+        policy: MemoryPolicy,
+        active_agent: Option<&str>,
+        configured_agents: Option<ConfiguredAgents>,
+    ) -> MemoryResult<Self> {
         reject_network_path(nano_home)?;
         validate_policy(&policy)?;
+        validate_active_agent(active_agent, configured_agents.as_ref())?;
         crate::register_sqlite_vec();
         let path = memory_db_path(nano_home);
         if let Some(parent) = path.parent() {
@@ -35,6 +59,7 @@ impl MemoryStore {
             journal: JournalWriter::open(journal_path)?,
             embedder: HashedEmbedder,
             policy,
+            configured_agents,
             next_op,
             _writer_lock: writer_lock,
         };
@@ -46,9 +71,28 @@ impl MemoryStore {
         db_path: &Path,
         journal_path: &Path,
         policy: MemoryPolicy,
+        active_agent: &str,
+        configured_agents: ConfiguredAgents,
+    ) -> MemoryResult<Self> {
+        Self::open_at_inner(
+            db_path,
+            journal_path,
+            policy,
+            Some(active_agent),
+            Some(configured_agents),
+        )
+    }
+
+    fn open_at_inner(
+        db_path: &Path,
+        journal_path: &Path,
+        policy: MemoryPolicy,
+        active_agent: Option<&str>,
+        configured_agents: Option<ConfiguredAgents>,
     ) -> MemoryResult<Self> {
         reject_network_path(db_path)?;
         validate_policy(&policy)?;
+        validate_active_agent(active_agent, configured_agents.as_ref())?;
         crate::register_sqlite_vec();
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -63,6 +107,7 @@ impl MemoryStore {
             journal: JournalWriter::open(journal_path)?,
             embedder: HashedEmbedder,
             policy,
+            configured_agents,
             next_op,
             _writer_lock: writer_lock,
         };
@@ -106,6 +151,7 @@ impl MemoryStore {
     ) -> MemoryResult<ContradictionResolution> {
         self.check_write()?;
         validate_partition(&fact.project, &fact.agent_id)?;
+        self.check_configured_agent(&fact.agent_id)?;
         self.ensure_id_available(&fact.id)?;
         if !mediated && fact.source_trust == SourceTrust::ModelInference {
             return Err(MemoryError::MediationRequired);
@@ -142,6 +188,7 @@ impl MemoryStore {
         }
         self.check_write()?;
         validate_partition(&value.project, &value.agent_id)?;
+        self.check_configured_agent(&value.agent_id)?;
         self.ensure_id_available(&value.id)?;
         let system_time = self.append(Op::MemoryWriteDecision {
             decision_id: value.id.clone(),
@@ -166,6 +213,7 @@ impl MemoryStore {
         value.source_trust = SourceTrust::ModelInference;
         self.check_write()?;
         validate_partition(&value.project, &value.agent_id)?;
+        self.check_configured_agent(&value.agent_id)?;
         self.ensure_id_available(&value.id)?;
         let system_time = self.append(Op::MemoryWriteDecision {
             decision_id: value.id.clone(),
@@ -191,6 +239,7 @@ impl MemoryStore {
         }
         self.check_write()?;
         validate_partition(&value.project, &value.agent_id)?;
+        self.check_configured_agent(&value.agent_id)?;
         self.ensure_id_available(&value.id)?;
         let system_time = self.append(Op::MemoryWriteEpisode {
             episode_id: value.id.clone(),
@@ -210,6 +259,7 @@ impl MemoryStore {
         value.source_trust = SourceTrust::ModelInference;
         self.check_write()?;
         validate_partition(&value.project, &value.agent_id)?;
+        self.check_configured_agent(&value.agent_id)?;
         self.ensure_id_available(&value.id)?;
         let system_time = self.append(Op::MemoryWriteEpisode {
             episode_id: value.id.clone(),
@@ -233,6 +283,7 @@ impl MemoryStore {
         }
         self.check_write()?;
         validate_partition(&value.project, &value.agent_id)?;
+        self.check_configured_agent(&value.agent_id)?;
         self.ensure_id_available(&value.id)?;
         let system_time = self.append(Op::MemoryWriteProcedure {
             procedure_id: value.id.clone(),
@@ -255,6 +306,7 @@ impl MemoryStore {
         value.source_trust = SourceTrust::ModelInference;
         self.check_write()?;
         validate_partition(&value.project, &value.agent_id)?;
+        self.check_configured_agent(&value.agent_id)?;
         self.ensure_id_available(&value.id)?;
         let system_time = self.append(Op::MemoryWriteProcedure {
             procedure_id: value.id.clone(),
@@ -290,6 +342,17 @@ impl MemoryStore {
     fn check_write(&self) -> MemoryResult<()> {
         if !self.policy.enabled || self.policy.write == WriteScope::Off {
             Err(MemoryError::Disabled)
+        } else {
+            Ok(())
+        }
+    }
+    fn check_configured_agent(&self, agent_id: &str) -> MemoryResult<()> {
+        if self
+            .configured_agents
+            .as_ref()
+            .is_some_and(|configured| !configured.contains(agent_id))
+        {
+            Err(MemoryError::UnconfiguredAgent(agent_id.to_owned()))
         } else {
             Ok(())
         }
@@ -565,6 +628,17 @@ impl MemoryStore {
     }
 
     pub fn retrieve(&self, q: &RetrieveQuery) -> MemoryResult<Vec<RetrieveHit>> {
+        Ok(self.retrieve_with_evidence(q)?.assembled)
+    }
+
+    /// Apply authoritative memory journal records to this already-open store
+    /// without appending them again. Used by crash recovery and independent
+    /// replay verification; the configured-agent boundary remains active.
+    pub fn replay_journals(&mut self, journals: &[PathBuf]) -> MemoryResult<()> {
+        replay_journals_into_store(self, journals)
+    }
+
+    pub fn retrieve_with_evidence(&self, q: &RetrieveQuery) -> MemoryResult<RetrievalEvidence> {
         if !self.policy.enabled {
             return Err(MemoryError::Disabled);
         }
@@ -582,7 +656,13 @@ impl MemoryStore {
         }
         let ids = q.agent_scope.ids(&q.agent_id);
         if ids.is_empty() {
-            return Ok(vec![]);
+            return Ok(RetrievalEvidence {
+                fts_hits: 0,
+                knn_hits: 0,
+                fts_ids: Vec::new(),
+                knn_ids: Vec::new(),
+                assembled: Vec::new(),
+            });
         }
         let agents = serde_json::to_string(&ids)
             .map_err(|e| MemoryError::JournalIntegrity(e.to_string()))?;
@@ -603,6 +683,7 @@ impl MemoryStore {
             .collect::<Vec<_>>()
             .join(" OR ");
         let mut scores: HashMap<String, f64> = HashMap::new();
+        let mut fts_ids = Vec::new();
         if !match_query.is_empty() {
             let mut s=self.db.prepare("SELECT id FROM memory_fts WHERE memory_fts MATCH ?1 AND project=?2 AND agent_id IN(SELECT value FROM json_each(?3)) AND session_id IN(SELECT value FROM json_each(?4)) ORDER BY bm25(memory_fts) LIMIT 100")?;
             for (rank, id) in s
@@ -614,9 +695,12 @@ impl MemoryStore {
                 .into_iter()
                 .enumerate()
             {
+                fts_ids.push(id.clone());
                 *scores.entry(id).or_default() += 1.0 / (60.0 + rank as f64 + 1.0);
             }
         }
+        let fts_evidence = self.checkpoint_identities(&fts_ids)?;
+        self.assert_checkpoint_partitions(&fts_evidence, q, &ids, &session_keys)?;
         let vector = vector_json(&self.embedder.embed(&q.text));
         let mut knn = Vec::new();
         for agent in &ids {
@@ -631,6 +715,9 @@ impl MemoryStore {
             }
         }
         knn.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        let knn_ids = knn.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+        let knn_evidence = self.checkpoint_identities(&knn_ids)?;
+        self.assert_checkpoint_partitions(&knn_evidence, q, &ids, &session_keys)?;
         for (rank, (id, _)) in knn.into_iter().enumerate() {
             *scores.entry(id).or_default() += 1.0 / (60.0 + rank as f64 + 1.0);
         }
@@ -673,7 +760,52 @@ impl MemoryStore {
             true
         });
         hits.truncate(q.limit);
-        Ok(hits)
+        Ok(RetrievalEvidence {
+            fts_hits: fts_ids.len(),
+            knn_hits: knn_ids.len(),
+            fts_ids: fts_evidence,
+            knn_ids: knn_evidence,
+            assembled: hits,
+        })
+    }
+    fn checkpoint_identities(&self, record_ids: &[String]) -> MemoryResult<Vec<RetrievalIdentity>> {
+        record_ids
+            .iter()
+            .map(|id| {
+                let Some((hit, session_id)) = self.load_hit(id)? else {
+                    return Err(MemoryError::JournalIntegrity(
+                        "retrieval checkpoint references a missing row".into(),
+                    ));
+                };
+                Ok(RetrievalIdentity {
+                    id: hit.id,
+                    project: hit.project,
+                    agent_id: hit.agent_id,
+                    session_id,
+                })
+            })
+            .collect()
+    }
+    fn assert_checkpoint_partitions(
+        &self,
+        identities: &[RetrievalIdentity],
+        query: &RetrieveQuery,
+        agent_ids: &[String],
+        session_keys: &[String],
+    ) -> MemoryResult<()> {
+        for identity in identities {
+            if identity.project != query.project || !agent_ids.contains(&identity.agent_id) {
+                return Err(MemoryError::JournalIntegrity(
+                    "retrieval checkpoint partition assertion failed".into(),
+                ));
+            }
+            if !session_keys.contains(&identity.session_id) {
+                return Err(MemoryError::JournalIntegrity(
+                    "retrieval checkpoint session assertion failed".into(),
+                ));
+            }
+        }
+        Ok(())
     }
     fn load_hit(&self, id: &str) -> MemoryResult<Option<(RetrieveHit, String)>> {
         self.db.query_row("SELECT id,kind,text,confidence,source_episode,valid_from,valid_to,source_trust,project,agent_id,session_id FROM (SELECT id,'fact' kind,subject||' '||predicate||' '||object text,confidence,source_episode,valid_from,valid_to,source_trust,project,agent_id,session_id FROM facts UNION ALL SELECT id,'decision',summary||' '||why||' '||how_to_apply,1.0,source_episode,valid_from,valid_to,source_trust,project,agent_id,session_id FROM decisions UNION ALL SELECT id,'episode',content,1.0,NULL,valid_from,valid_to,source_trust,project,agent_id,session_id FROM episodes UNION ALL SELECT id,'procedure',title||' '||steps,1.0,NULL,valid_from,valid_to,source_trust,project,agent_id,session_id FROM procedures) WHERE id=?1",[id],|r|Ok((RetrieveHit{id:r.get(0)?,kind:r.get(1)?,text:r.get(2)?,score:0.0,confidence:r.get(3)?,source_episode:r.get(4)?,valid_from:r.get(5)?,valid_to:r.get(6)?,source_trust:SourceTrust::parse(&r.get::<_,String>(7)?).map_err(|_|rusqlite::Error::InvalidQuery)?,project:r.get(8)?,agent_id:r.get(9)?}, r.get(10)?))).optional().map_err(Into::into)
@@ -740,6 +872,7 @@ pub fn rebuild_from_journals(
     db_path: &Path,
     journals: &[PathBuf],
     policy: MemoryPolicy,
+    configured_agents: ConfiguredAgents,
 ) -> MemoryResult<()> {
     reject_network_path(db_path)?;
     validate_policy(&policy)?;
@@ -760,7 +893,7 @@ pub fn rebuild_from_journals(
             "stale rebuild sibling exists".into(),
         ));
     }
-    let result = rebuild_into_sibling(&temp_db, &temp_journal, journals, policy);
+    let result = rebuild_into_sibling(&temp_db, &temp_journal, journals, policy, configured_agents);
     if let Err(error) = result {
         let _ = std::fs::remove_file(&temp_db);
         let _ = std::fs::remove_file(&temp_journal);
@@ -798,8 +931,16 @@ fn rebuild_into_sibling(
     temp_journal: &Path,
     journals: &[PathBuf],
     policy: MemoryPolicy,
+    configured_agents: ConfiguredAgents,
 ) -> MemoryResult<()> {
-    let mut store = MemoryStore::open_at(temp_db, temp_journal, policy)?;
+    let mut store =
+        MemoryStore::open_at_inner(temp_db, temp_journal, policy, None, Some(configured_agents))?;
+    replay_journals_into_store(&mut store, journals)?;
+    drop(store);
+    Ok(())
+}
+
+fn replay_journals_into_store(store: &mut MemoryStore, journals: &[PathBuf]) -> MemoryResult<()> {
     for path in journals {
         let report = read_journal(path)?;
         let receipts: HashSet<(String, String)> = report
@@ -853,6 +994,7 @@ fn rebuild_into_sibling(
                     resolver_outcome,
                 } => {
                     validate_recovery_partition(&project, &agent_id, session_id.as_deref())?;
+                    store.check_configured_agent(&agent_id)?;
                     if source_trust == "ModelInference"
                         && !receipts.contains(&(fact_id.clone(), agent_id.clone()))
                     {
@@ -897,6 +1039,7 @@ fn rebuild_into_sibling(
                     session_id,
                 } => {
                     validate_recovery_partition(&project, &agent_id, session_id.as_deref())?;
+                    store.check_configured_agent(&agent_id)?;
                     if source_trust == "ModelInference"
                         && !receipts.contains(&(decision_id.clone(), agent_id.clone()))
                     {
@@ -933,6 +1076,7 @@ fn rebuild_into_sibling(
                     session_id,
                 } => {
                     validate_recovery_partition(&project, &agent_id, session_id.as_deref())?;
+                    store.check_configured_agent(&agent_id)?;
                     if source_trust == "ModelInference"
                         && !receipts.contains(&(episode_id.clone(), agent_id.clone()))
                     {
@@ -967,6 +1111,7 @@ fn rebuild_into_sibling(
                     session_id,
                 } => {
                     validate_recovery_partition(&project, &agent_id, session_id.as_deref())?;
+                    store.check_configured_agent(&agent_id)?;
                     if source_trust == "ModelInference"
                         && !receipts.contains(&(procedure_id.clone(), agent_id.clone()))
                     {
@@ -992,7 +1137,6 @@ fn rebuild_into_sibling(
             }
         }
     }
-    drop(store);
     Ok(())
 }
 
@@ -1035,6 +1179,26 @@ fn validate_policy(policy: &MemoryPolicy) -> MemoryResult<()> {
         }
     }
     Ok(())
+}
+
+fn validate_active_agent(
+    active_agent: Option<&str>,
+    configured_agents: Option<&ConfiguredAgents>,
+) -> MemoryResult<()> {
+    match (active_agent, configured_agents) {
+        (None, None | Some(_)) => Ok(()),
+        (Some(agent_id), Some(configured)) => {
+            validate_partition("active-agent", agent_id)?;
+            if configured.contains(agent_id) {
+                Ok(())
+            } else {
+                Err(MemoryError::UnconfiguredAgent(agent_id.to_owned()))
+            }
+        }
+        (Some(_), None) => Err(MemoryError::UnsupportedPolicy(
+            "active_agent and configured_agents must be supplied together".into(),
+        )),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

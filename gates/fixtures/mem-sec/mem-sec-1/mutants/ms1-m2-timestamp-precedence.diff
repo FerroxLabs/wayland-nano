@@ -1,0 +1,6 @@
+diff --git a/crates/nano-memory/src/resolver.rs b/crates/nano-memory/src/resolver.rs
+--- a/crates/nano-memory/src/resolver.rs
++++ b/crates/nano-memory/src/resolver.rs
+@@ -22,1 +22,1 @@
+-    match new.source_trust.rank().cmp(&existing.source_trust.rank()) {
++    match existing.source_trust.rank().cmp(&new.source_trust.rank()) {
