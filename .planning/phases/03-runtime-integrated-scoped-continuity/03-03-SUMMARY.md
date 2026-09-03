@@ -70,7 +70,7 @@ coverage:
     human_judgment: false
 duration: 2h 15m
 completed: 2026-09-03
-status: complete
+status: incomplete
 ---
 
 # Phase 3 Plan 03: Runtime Memory Seam Summary
@@ -136,7 +136,7 @@ status: complete
 
 **Total deviations:** 1 auto-fixed Rule 1 correctness issue. No scope expansion.
 
-### Corrective audit closure
+### Corrective audit progress
 
 - `AdmittedMemoryIdentity` is constructed only from `AdmittedToken` in `activation.rs`; the seam receives the opaque read-only value.
 - All four model proposal DTOs have project and agent overwritten from that identity before `commit_proposal`.
@@ -148,6 +148,7 @@ status: complete
 
 - The first full gate found the external Desktop checkout's generated error-table mirrors stale. A read-only hash/diff check proved this plan changed no error-kind source or canonical artifact. An isolated generator probe passed Nano and shared targets, and the final full gate passed with `NANO_ERROR_TABLE_DESKTOP_DIR` directed to an empty in-worktree probe directory; no Desktop file was modified.
 - The original review relied on a new source-string quarantine assertion. It was replaced with a behavior test that executes every new and legacy memory name through a disabled seam and requires typed `UnknownTool` results.
+- Remaining evidence gap: the common startup helper is behavior-tested and compiled through every entrypoint, but each ACP new/load, exec fresh/resume, and protocol-host path still needs an end-to-end harness row proving its own journal order and zero-effect append failure.
 
 ## User Setup Required
 
@@ -158,8 +159,8 @@ None.
 - 03-04 can implement migration and prove old-DB versus dedicated-journal rebuild equivalence under `03-03-DECISION.md`.
 - 03-05 can measure continuity using the shared seam after this branch is reviewed and merged.
 
-## Self-Check: PASSED
+## Self-Check: INCOMPLETE
 
 - Decision record and all created source/test files exist.
 - Commits through corrective head `c0e57b8` are present.
-- Required focused tests and the final local gate passed.
+- Focused tests and the final local gate passed; per-entrypoint end-to-end startup rows remain required.
