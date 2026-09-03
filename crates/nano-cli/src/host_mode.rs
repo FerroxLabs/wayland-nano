@@ -10,7 +10,7 @@ use nano_model::flux_completions::FluxCompletionsClient;
 use nano_model::types::Usage;
 pub use nano_protocol::host::HostExit;
 use nano_protocol::host::{HostConfig, run_host_loop};
-use nano_protocol::messages::Event;
+use nano_protocol::messages::{ErrorBody, Event};
 use nano_tools::fs::FsTools;
 use nano_tools::shell::ShellTool;
 use std::sync::{Arc, Mutex};
@@ -449,10 +449,31 @@ pub async fn run(
             // instructions ride while the posture is active, and the todo
             // list renders while non-empty.
             let mut context = Vec::new();
-            if let Some(seam) = turn_memory_seam.as_ref()
-                && let Ok(Some(block)) = seam.recall_block(&content)
-            {
-                context.push(nano_model::types::Message::system(block));
+            if let Some(seam) = turn_memory_seam.as_ref() {
+                match seam.recall_block(&content) {
+                    Ok(Some(block)) => {
+                        context.push(nano_model::types::Message::system(block));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let code = serde_json::to_value(error.kind)
+                            .ok()
+                            .and_then(|value| value.as_str().map(str::to_owned))
+                            .unwrap_or_else(|| "activation_continuity_not_enabled".into());
+                        return (
+                            vec![Event::Error {
+                                error: ErrorBody {
+                                    code,
+                                    message: format!("memory recall failed: {error}"),
+                                    retryable: false,
+                                },
+                                msg_id,
+                            }],
+                            Option::<Usage>::None,
+                            "error".into(),
+                        );
+                    }
+                }
             }
             if let Some(message) = nano_agent::skills::prepare_agents_md_context(workspace) {
                 context.push(message);

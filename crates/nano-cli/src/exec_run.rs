@@ -689,10 +689,23 @@ where
                 let mut context = nano_session::read_journal(&journal_path)
                     .map(|report| crate::acp_mode::messages_from_envelopes(&report.envelopes))
                     .unwrap_or_default();
-                if let Some(seam) = memory_seam_now.as_ref()
-                    && let Ok(Some(block)) = seam.recall_block(&prompt)
-                {
-                    context.insert(0, nano_model::types::Message::system(block));
+                if let Some(seam) = memory_seam_now.as_ref() {
+                    match seam.recall_block(&prompt) {
+                        Ok(Some(block)) => {
+                            context.insert(0, nano_model::types::Message::system(block));
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            events_now
+                                .lock()
+                                .unwrap_or_else(|poison| poison.into_inner())
+                                .error(&format!("memory recall failed: {error}"));
+                            return GoalTurnOutcome {
+                                stop: nano_agent::goal::GoalTurnStop::Failed,
+                                usage: nano_model::types::Usage::default(),
+                            };
+                        }
+                    }
                 }
                 let turn_id = format!("{}-turn-{}", session_id, counter);
                 let view = BootstrappedSession {
