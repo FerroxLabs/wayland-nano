@@ -54,7 +54,7 @@ impl MemoryStore {
         let next_op = next_op_id(journal_path)?;
         let db = Connection::open(path)?;
         schema::migrate(&db)?;
-        let mut store = Self {
+        let store = Self {
             db,
             journal: JournalWriter::open(journal_path)?,
             embedder: HashedEmbedder,
@@ -63,7 +63,6 @@ impl MemoryStore {
             next_op,
             _writer_lock: writer_lock,
         };
-        store.append_resolved_policy()?;
         Ok(store)
     }
 
@@ -102,7 +101,7 @@ impl MemoryStore {
         let next_op = next_op_id(journal_path)?;
         let db = Connection::open(db_path)?;
         schema::migrate(&db)?;
-        let mut store = Self {
+        let store = Self {
             db,
             journal: JournalWriter::open(journal_path)?,
             embedder: HashedEmbedder,
@@ -111,7 +110,6 @@ impl MemoryStore {
             next_op,
             _writer_lock: writer_lock,
         };
-        store.append_resolved_policy()?;
         Ok(store)
     }
 
@@ -396,20 +394,6 @@ impl MemoryStore {
             WriteScope::SessionOnly => self.policy.session_id.as_deref().unwrap_or(""),
             WriteScope::SessionAndProject | WriteScope::Off => "",
         }
-    }
-    fn append_resolved_policy(&mut self) -> MemoryResult<()> {
-        self.append(Op::MemoryPolicyResolved {
-            enabled: self.policy.enabled,
-            write: format!("{:?}", self.policy.write),
-            read_scope: format!("{:?}", self.policy.read_scope),
-            episode_cap: self.policy.retention.episodes,
-            fact_cap: self.policy.retention.facts,
-            byte_cap: self.policy.retention.bytes,
-            deletion: format!("{:?}", self.policy.deletion),
-            min_tier: self.policy.min_tier.as_str().into(),
-            session_id: self.policy.session_id.clone(),
-        })?;
-        Ok(())
     }
     fn fact_resolution(&self, new: &FactWrite) -> MemoryResult<ContradictionResolution> {
         let old=self.db.query_row("SELECT object,confidence,source_trust FROM facts WHERE project=?1 AND agent_id=?2 AND session_id=?3 AND subject=?4 AND predicate=?5 AND valid_to IS NULL ORDER BY system_time DESC LIMIT 1",params![new.project,new.agent_id,self.write_session_key(),new.subject,new.predicate],|r|Ok((r.get::<_,String>(0)?,r.get::<_,f64>(1)?,r.get::<_,String>(2)?))).optional()?;
@@ -965,6 +949,7 @@ fn replay_journals_into_store(store: &mut MemoryStore, journals: &[PathBuf]) -> 
                     deletion,
                     min_tier,
                     session_id,
+                    ..
                 } => {
                     store.policy = policy_from_journal(
                         enabled,

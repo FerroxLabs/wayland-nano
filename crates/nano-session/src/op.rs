@@ -1778,6 +1778,12 @@ pub enum Op {
         byte_cap: u64,
         deletion: String,
         min_tier: String,
+        /// Project and agent attribution are optional only for backward
+        /// readability. New runtime records always populate both fields.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
     },
@@ -2266,6 +2272,8 @@ mod op_vocabulary_tests {
                 byte_cap: 256 * 1024 * 1024,
                 deletion: "Never".into(),
                 min_tier: "ModelInference".into(),
+                project: Some("project".into()),
+                agent_id: Some("main".into()),
                 session_id: None,
             },
             Op::Unknown,

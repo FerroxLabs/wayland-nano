@@ -19,11 +19,17 @@ fn attributed_policy_record_round_trips_and_legacy_shape_stays_readable() {
         project: Some(ref project), agent_id: Some(ref agent), session_id: Some(ref session), ..
     } if project == "project-a" && agent == "main" && session == "session-real"));
 
-    let legacy = r#"{"id":"legacy","system_time":"now","op":{"type":"memory_policy_resolved","enabled":true,"write":"SessionAndProject","read_scope":"SessionAndProject","episode_cap":1,"fact_cap":1,"byte_cap":1,"deletion":"Never","min_tier":"ModelInference"}}"#;
+    let legacy = r#"{"v":1,"id":"legacy","ts":"now","op":{"type":"memory_policy_resolved","enabled":true,"write":"SessionAndProject","read_scope":"SessionAndProject","episode_cap":1,"fact_cap":1,"byte_cap":1,"deletion":"Never","min_tier":"ModelInference"}}"#;
     let decoded: OpEnvelope = serde_json::from_str(legacy).unwrap();
-    assert!(matches!(decoded.op, Op::MemoryPolicyResolved {
-        project: None, agent_id: None, session_id: None, ..
-    }));
+    assert!(matches!(
+        decoded.op,
+        Op::MemoryPolicyResolved {
+            project: None,
+            agent_id: None,
+            session_id: None,
+            ..
+        }
+    ));
 }
 
 #[test]
