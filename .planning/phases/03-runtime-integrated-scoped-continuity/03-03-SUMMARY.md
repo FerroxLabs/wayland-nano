@@ -26,6 +26,7 @@ key-files:
     - crates/nano-cli/src/activation.rs
     - crates/nano-cli/src/host_mode.rs
     - crates/nano-cli/src/exec_run.rs
+    - crates/nano-cli/src/lib.rs
     - crates/nano-session/src/op.rs
     - crates/nano-memory/src/store.rs
     - crates/nano-memory/tests/corrective_regressions.rs
@@ -38,7 +39,7 @@ patterns-established:
   - "Model memory writes route only through commit_proposal; legacy memory tool names remain UnknownTool."
   - "Existing user-turn and successful tool-output events commit deterministic Episode rows through MemorySeam::host_write at their origin tiers."
 requirements-completed: [REQ-MEM-02]
-verified-head: 097537bfbe7d34619ac4af3a4804558ac7fce126
+verified-head: 7d8cfbb2c704fd4614271386e3e7238a85d93919
 coverage:
   - id: D1
     description: One scoped memory seam serves ACP new/load, protocol-host, and exec fresh/resume.
@@ -116,6 +117,7 @@ status: complete
 15. **Attempt 3 GREEN: Bind seams to runtime events** — `6be8951`
 16. **Cross-research disposition: Clarify host-write authority** — `c61fa7d`
 17. **ACP fallback closure: Cover real runtime none/fresh** — `097537b`
+18. **Replay authority regression: Keep policy audits neutral** — `7d8cfbb`
 
 ## Decisions Made
 
@@ -130,7 +132,7 @@ status: complete
 - `memory_seam::tests`: 5/5 passed, covering four-kind identity rebinding, host-tier preservation/model-direct refusal, cross-partition recall, exact policy ordering, both fallbacks, and append failure before store effects.
 - `activation_quarantine`: 6/6 passed (previous five rows unchanged).
 - `activation_admission`: 3/3 passed.
-- `corrective_regressions`: 9/9 passed.
+- `corrective_regressions`: 10/10 passed at `7d8cfbb`, including a contradictory attributed `MemoryPolicyResolved` audit beside authoritative writes; caller-supplied retention, write/read scope, query results, project, and agent identity remain authoritative after rebuild.
 - `durability`: 3/3 passed, including the kill-mid-write child process.
 - `nano-session`: 121 unit + 1 legacy replay + 13 adversarial journal tests passed.
 - `cargo clippy -p nano-cli --all-targets -- -D warnings`: passed at `097537b`.
@@ -176,5 +178,5 @@ None.
 ## Self-Check: COMPLETE
 
 - Decision record and all created source/test files exist.
-- Commits through verified implementation/test head `097537b` are present.
+- Commits through verified implementation/test head `7d8cfbb` are present.
 - Focused seam 20/20, quarantine 6/6, admission 3/3, component 5/5, and nano-cli all-target clippy pass. The four physical bootstrap sites are deletion-sensitive for all five logical entrypoints. Plan 03-03 is ready for downstream full-gate review; this corrective attempt did not push.
