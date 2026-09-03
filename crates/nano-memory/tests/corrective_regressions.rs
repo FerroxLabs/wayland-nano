@@ -362,6 +362,114 @@ fn retention_policy_rebuild_is_query_equivalent() {
 }
 
 #[test]
+fn contradictory_policy_audit_cannot_override_explicit_rebuild_authority() {
+    let temp = tempfile::tempdir().unwrap();
+    let journal = temp.path().join("authoritative-memory.jsonl");
+    let mut writer = JournalWriter::open(&journal).unwrap();
+    writer
+        .append(&OpEnvelope::new(
+            "contradictory-policy-audit",
+            "0",
+            Op::MemoryPolicyResolved {
+                enabled: false,
+                write: "SessionOnly".into(),
+                read_scope: "Session".into(),
+                episode_cap: 99,
+                fact_cap: 99,
+                byte_cap: 99_999_999,
+                deletion: "Never".into(),
+                min_tier: "User".into(),
+                project: Some("audit-project".into()),
+                agent_id: Some("agent-b".into()),
+                session_id: Some("audit-session".into()),
+            },
+        ))
+        .unwrap();
+    for (id, object, timestamp) in [
+        ("discarded", "discarded policy marker", "1"),
+        ("retained", "retained policy marker", "2"),
+    ] {
+        writer
+            .append(&OpEnvelope::new(
+                format!("write-{id}"),
+                timestamp,
+                Op::MemoryWriteFact {
+                    fact_id: id.into(),
+                    subject: "policy-audit".into(),
+                    predicate: "marker".into(),
+                    object: object.into(),
+                    confidence_micros: 1_000_000,
+                    source_episode: None,
+                    valid_from: timestamp.into(),
+                    valid_to: None,
+                    source_trust: "User".into(),
+                    project: "project-a".into(),
+                    agent_id: "agent-a".into(),
+                    session_id: Some("write-session".into()),
+                    resolver_outcome: "coexist".into(),
+                },
+            ))
+            .unwrap();
+    }
+    drop(writer);
+
+    let explicit_policy = MemoryPolicy {
+        enabled: true,
+        write: WriteScope::SessionAndProject,
+        read_scope: ReadScope::SessionAndProject,
+        retention: RetentionCaps {
+            facts: 1,
+            ..RetentionCaps::default()
+        },
+        min_tier: SourceTrust::ModelInference,
+        session_id: None,
+        ..MemoryPolicy::default()
+    };
+    let rebuilt_db = temp.path().join("rebuilt.db");
+    rebuild_from_journals(
+        &rebuilt_db,
+        std::slice::from_ref(&journal),
+        explicit_policy.clone(),
+        configured(),
+    )
+    .unwrap();
+    let rebuilt = MemoryStore::open_at(
+        &rebuilt_db,
+        &temp.path().join("inspect.jsonl"),
+        explicit_policy,
+        "agent-a",
+        configured(),
+    )
+    .unwrap();
+
+    let facts = rebuilt.current_facts().unwrap();
+    assert_eq!(
+        facts.len(),
+        1,
+        "audit fact_cap must not override caller cap"
+    );
+    assert_eq!(facts[0].id, "retained");
+    assert_eq!(facts[0].project, "project-a");
+    assert_eq!(facts[0].agent_id, "agent-a");
+    assert_eq!(query(&rebuilt, "policy marker"), vec!["retained"]);
+    let foreign = rebuilt
+        .retrieve(&RetrieveQuery {
+            text: "policy marker".into(),
+            project: "project-a".into(),
+            agent_id: "agent-b".into(),
+            agent_scope: AgentScope::Own,
+            limit: 10,
+            token_budget: 1_000,
+            min_tier: SourceTrust::ModelInference,
+        })
+        .unwrap();
+    assert!(
+        foreign.is_empty(),
+        "audit attribution must not widen agent scope"
+    );
+}
+
+#[test]
 fn local_temp_paths_are_accepted_and_network_forms_are_refused() {
     let temp = tempfile::tempdir().unwrap();
     MemoryStore::open_at(
