@@ -149,6 +149,74 @@ async fn scoped_executor_mediates_proposals_and_denies_legacy_names() {
     );
 }
 
+#[tokio::test]
+async fn every_model_proposal_is_bound_to_the_admitted_partition() {
+    let cases = [
+        (
+            "fact",
+            serde_json::json!({
+                "id":"fact-bound","subject":"operator","predicate":"prefers","object":"tea",
+                "confidence":0.9,"source_episode":null,"valid_from":"2026-09-03T00:00:00Z",
+                "valid_to":null,"source_trust":"User","project":"foreign-project","agent_id":"bot-foreign"
+            }),
+        ),
+        (
+            "decision",
+            serde_json::json!({
+                "id":"decision-bound","summary":"use tea","why":"test","how_to_apply":"brew",
+                "tags":[],"source_episode":null,"valid_from":"2026-09-03T00:00:00Z",
+                "valid_to":null,"source_trust":"User","project":"foreign-project","agent_id":"bot-foreign"
+            }),
+        ),
+        (
+            "episode",
+            serde_json::json!({
+                "id":"episode-bound","content":"tea episode","source":"model","source_product":"foreign",
+                "valid_from":"2026-09-03T00:00:00Z","valid_to":null,"source_trust":"User",
+                "project":"foreign-project","agent_id":"bot-foreign"
+            }),
+        ),
+        (
+            "procedure",
+            serde_json::json!({
+                "id":"procedure-bound","title":"tea procedure","steps":"brew tea","created_by":"model",
+                "valid_from":"2026-09-03T00:00:00Z","valid_to":null,"source_trust":"User",
+                "project":"foreign-project","agent_id":"bot-foreign"
+            }),
+        ),
+    ];
+    let temp = tempfile::tempdir().unwrap();
+    let seam = nano_cli::memory_seam::MemorySeam::open(
+        temp.path(),
+        "session-a",
+        "project-a",
+        "main",
+        &MemoryPolicy::default(),
+        &configured(),
+    )
+    .unwrap();
+    let executor = nano_cli::memory_seam::MemorySeamExecutor::new(&seam, &NoInner);
+    for (kind, value) in cases {
+        let outcome = executor
+            .execute(&ToolCall {
+                id: format!("call-{kind}"),
+                name: "memory_propose".into(),
+                arguments: serde_json::json!({"kind":kind,"value":value}),
+            })
+            .await;
+        assert!(outcome.ok, "{kind}: {}", outcome.output);
+    }
+    for needle in ["tea", "use tea", "tea episode", "tea procedure"] {
+        let block = seam.recall_block(needle).unwrap().unwrap_or_default();
+        assert!(
+            block.contains(needle),
+            "missing admitted row {needle}: {block}"
+        );
+        assert!(!block.contains("foreign-project"));
+        assert!(!block.contains("bot-foreign"));
+    }
+}
+
 #[test]
 fn seam_open_refuses_an_unconfigured_agent() {
     let temp = tempfile::tempdir().unwrap();
