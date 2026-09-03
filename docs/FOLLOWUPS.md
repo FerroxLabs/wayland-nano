@@ -1404,4 +1404,4 @@ The applied four-file authority package passed goal-backward, compile/API, and s
 
 No WP-5/WP-6, DeepSeek harness, profiles, memory, MCP-server, external-agent, or other expansion scope is granted by this reconciliation.
 
-- P3/03-03: pin the host-ingest row-mapping contract (which user turns/tool outputs become Episode, Fact, Decision, or Procedure rows, including ids and validity timestamps) before wiring automatic direct writes; the crate-private tier-preserving host boundary exists, but inventing extraction semantics is forbidden by D3-08.
+- P3/03-03 follow-up: specify and assign ownership for an explicit user-invoked memory verb before adding that currently absent host event locus. The owner-approved verb must stamp `User`, bind the admitted project/agent partition, route only through `MemorySeam::host_write`, and remain unavailable to model and MCP callers; the landed deterministic user-turn and successful tool-output Episode ingestion is not deferred by this follow-up.
