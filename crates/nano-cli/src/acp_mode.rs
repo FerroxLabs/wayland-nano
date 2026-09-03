@@ -2326,8 +2326,9 @@ where
                                     config.attachment_home,
                                     &session_id,
                                     token,
+                                    crate::activation::AdmittedMemoryIdentity::bind(token),
                                     &config.memory.policy,
-                                    &coordinator,
+                                    coordinator.clone(),
                                 ) {
                                     Ok(seam) => seam,
                                     Err(error) => {
@@ -2771,8 +2772,9 @@ where
                                     config.attachment_home,
                                     session_id,
                                     token,
+                                    crate::activation::AdmittedMemoryIdentity::bind(token),
                                     &config.memory.policy,
-                                    &coordinator,
+                                    coordinator.clone(),
                                 ) {
                                     Ok(seam) => seam,
                                     Err(error) => {

@@ -20,21 +20,24 @@ impl ToolExecutor for NoInner {
     }
 }
 
-#[test]
-fn authenticated_entrypoints_use_one_seam_and_keep_legacy_tools_denied() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let acp = std::fs::read_to_string(root.join("src/acp_mode.rs")).unwrap();
-    let host = std::fs::read_to_string(root.join("src/host_mode.rs")).unwrap();
-    let exec = std::fs::read_to_string(root.join("src/exec_run.rs")).unwrap();
-    let seam = std::fs::read_to_string(root.join("src/memory_seam.rs")).unwrap();
-
-    assert!(acp.contains("start_for_activation"));
-    assert!(host.contains("start_for_activation"));
-    assert!(exec.contains("start_for_activation"));
-    for legacy in ["memory_list", "memory_read", "memory_save", "memory_delete"] {
-        assert!(seam.contains(legacy));
+#[tokio::test]
+async fn disabled_or_unauthenticated_seam_exposes_no_memory_tool() {
+    let executor = nano_cli::memory_seam::MemorySeamExecutor::from_optional(None, &NoInner);
+    for name in [
+        "memory_recall",
+        "memory_propose",
+        "memory_list",
+        "memory_read",
+        "memory_save",
+        "memory_delete",
+    ] {
+        let outcome = executor.execute(&call(name, serde_json::json!({}))).await;
+        assert!(!outcome.ok, "{name}");
+        assert_eq!(
+            outcome.error_kind,
+            Some(nano_session::NanoErrorKind::UnknownTool)
+        );
     }
-    assert!(seam.contains("NanoErrorKind::UnknownTool"));
 }
 
 fn call(name: &str, arguments: serde_json::Value) -> ToolCall {

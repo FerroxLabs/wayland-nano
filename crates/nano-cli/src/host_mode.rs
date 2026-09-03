@@ -195,8 +195,9 @@ pub async fn run(
         nano_home,
         "protocol-host",
         &activation_token,
+        nano_cli::activation::AdmittedMemoryIdentity::bind(&activation_token),
         &resolved_memory,
-        &coordinator,
+        coordinator.clone(),
     ) {
         Ok(seam) => seam,
         Err(error) => return Ok(HostExit::Fatal(error.message)),

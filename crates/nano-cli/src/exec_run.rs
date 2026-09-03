@@ -190,8 +190,9 @@ where
                 nano_home,
                 &session.session_id,
                 token,
+                crate::activation::AdmittedMemoryIdentity::bind(token),
                 &resolved,
-                &journal,
+                journal.clone(),
             ) {
                 Ok(seam) => seam,
                 Err(error) => {

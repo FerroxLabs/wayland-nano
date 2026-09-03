@@ -17,6 +17,39 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone)]
 pub struct SharedAdmission(Arc<Mutex<AdmissionGate>>);
 
+/// Opaque memory identity bound once from an admitted activation token.
+/// Downstream seams can read but cannot construct or mutate these bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedMemoryIdentity {
+    project_id: String,
+    agent_id: String,
+}
+
+impl AdmittedMemoryIdentity {
+    pub fn bind(token: &AdmittedToken) -> Self {
+        Self {
+            project_id: token.project_id().to_owned(),
+            agent_id: token.principal_id().to_owned(),
+        }
+    }
+
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_only(project_id: &str, agent_id: &str) -> Self {
+        Self {
+            project_id: project_id.into(),
+            agent_id: agent_id.into(),
+        }
+    }
+}
+
 impl SharedAdmission {
     pub fn open_production(nano_home: &std::path::Path) -> Result<Self, String> {
         let reference = load_key_reference(
