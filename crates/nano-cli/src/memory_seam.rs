@@ -52,6 +52,26 @@ pub fn start_for_activation(
     resolved: &crate::memory_policy::ResolvedMemoryPolicy,
     coordinator: Arc<JournalCoordinator>,
 ) -> Result<Option<std::sync::Arc<MemorySeam>>, SeamStartError> {
+    start_with_admitted_continuity(
+        nano_home,
+        session_id,
+        identity,
+        token.continuity().strategy(),
+        token.continuity().fallback(),
+        resolved,
+        coordinator,
+    )
+}
+
+fn start_with_admitted_continuity(
+    nano_home: &Path,
+    session_id: &str,
+    identity: crate::activation::AdmittedMemoryIdentity,
+    strategy: nano_activation::admission::AdmittedStrategy,
+    fallback: nano_activation::admission::AdmittedFallback,
+    resolved: &crate::memory_policy::ResolvedMemoryPolicy,
+    coordinator: Arc<JournalCoordinator>,
+) -> Result<Option<Arc<MemorySeam>>, SeamStartError> {
     let appended = append_policy_audit(
         &coordinator,
         resolved.policy(),
@@ -70,7 +90,7 @@ pub fn start_for_activation(
         });
     }
 
-    if token.continuity().strategy() != nano_activation::admission::AdmittedStrategy::MemoryRecall {
+    if strategy != nano_activation::admission::AdmittedStrategy::MemoryRecall {
         return Ok(None);
     }
 
@@ -80,14 +100,11 @@ pub fn start_for_activation(
         identity.clone(),
         resolved.policy(),
         resolved.configured_agents(),
-        token.continuity().fallback(),
+        fallback,
         coordinator.clone(),
     ) {
         Ok(seam) => Ok(Some(std::sync::Arc::new(seam))),
-        Err(_error)
-            if token.continuity().fallback()
-                == nano_activation::admission::AdmittedFallback::Fresh =>
-        {
+        Err(_error) if fallback == nano_activation::admission::AdmittedFallback::Fresh => {
             record_degradation(
                 &coordinator,
                 session_id,
@@ -550,6 +567,14 @@ mod tests {
         (temp, seam)
     }
 
+    fn resolved_policy(home: &Path) -> crate::memory_policy::ResolvedMemoryPolicy {
+        std::fs::write(
+            home.join("memory-policy.toml"),
+            "enabled = true\nwrite = \"SessionOnly\"\nread_scope = \"Session\"\nembedding_backend = \"HashedLocal\"\ndeletion = \"Never\"\nmin_tier = \"User\"\nsession_id = \"session-a\"\n\n[retention]\nepisodes = 100\nfacts = 200\nbytes = 4096\n",
+        ).unwrap();
+        crate::memory_policy::resolve(home).unwrap()
+    }
+
     #[tokio::test]
     async fn every_model_proposal_overwrites_foreign_partition_before_mediation() {
         let (_temp, seam) = seam();
@@ -701,5 +726,108 @@ mod tests {
         assert!(block.contains("needle own"));
         assert!(!block.contains("project leak"));
         assert!(!block.contains("agent leak"));
+    }
+
+    #[test]
+    fn bootstrap_orders_policy_after_begin_and_enforces_fallback_before_effects() {
+        let home = tempfile::tempdir().unwrap();
+        let resolved = resolved_policy(home.path());
+        let journal = home.path().join("session.jsonl");
+        let coordinator = Arc::new(JournalCoordinator::open(&journal).unwrap());
+        coordinator
+            .append(&OpEnvelope::new(
+                "session-a-begin-1",
+                "now",
+                Op::SessionBegin {
+                    session_id: "session-a".into(),
+                    cwd: "workspace".into(),
+                },
+            ))
+            .unwrap();
+        let identity = crate::activation::AdmittedMemoryIdentity::test_only("project-a", "main");
+        let seam = start_with_admitted_continuity(
+            home.path(),
+            "session-a",
+            identity,
+            nano_activation::admission::AdmittedStrategy::MemoryRecall,
+            nano_activation::admission::AdmittedFallback::None,
+            &resolved,
+            coordinator,
+        )
+        .unwrap();
+        assert!(seam.is_some());
+        let rows = nano_session::read_journal(&journal).unwrap().envelopes;
+        assert!(matches!(rows[0].op, Op::SessionBegin { .. }));
+        assert!(matches!(rows[1].op, Op::MemoryPolicyResolved {
+            project: Some(ref project), agent_id: Some(ref agent), session_id: Some(ref session), ..
+        } if project == "project-a" && agent == "main" && session == "session-a"));
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(row.op, Op::MemoryPolicyResolved { .. }))
+                .count(),
+            1
+        );
+
+        let none_home = tempfile::tempdir().unwrap();
+        let none_resolved = resolved_policy(none_home.path());
+        let none_coordinator =
+            Arc::new(JournalCoordinator::open(none_home.path().join("session.jsonl")).unwrap());
+        let foreign = crate::activation::AdmittedMemoryIdentity::test_only("project-a", "bot-z");
+        let refusal = start_with_admitted_continuity(
+            none_home.path(),
+            "session-none",
+            foreign,
+            nano_activation::admission::AdmittedStrategy::MemoryRecall,
+            nano_activation::admission::AdmittedFallback::None,
+            &none_resolved,
+            none_coordinator,
+        )
+        .unwrap_err();
+        assert_eq!(refusal.kind, NanoErrorKind::ActivationContinuityNotEnabled);
+
+        let fresh_home = tempfile::tempdir().unwrap();
+        let fresh_resolved = resolved_policy(fresh_home.path());
+        let fresh_journal = fresh_home.path().join("session.jsonl");
+        let fresh_coordinator = Arc::new(JournalCoordinator::open(&fresh_journal).unwrap());
+        let foreign = crate::activation::AdmittedMemoryIdentity::test_only("project-a", "bot-z");
+        let degraded = start_with_admitted_continuity(
+            fresh_home.path(),
+            "session-fresh",
+            foreign,
+            nano_activation::admission::AdmittedStrategy::MemoryRecall,
+            nano_activation::admission::AdmittedFallback::Fresh,
+            &fresh_resolved,
+            fresh_coordinator,
+        )
+        .unwrap();
+        assert!(degraded.is_none());
+        let rows = nano_session::read_journal(&fresh_journal)
+            .unwrap()
+            .envelopes;
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(row.op, Op::MemoryWriteReceipt { .. }))
+                .count(),
+            1
+        );
+
+        let failed_home = tempfile::tempdir().unwrap();
+        let failed_resolved = resolved_policy(failed_home.path());
+        let failed_path = failed_home.path().join("session.jsonl");
+        let failed_coordinator = Arc::new(JournalCoordinator::open(&failed_path).unwrap());
+        std::fs::remove_file(&failed_path).unwrap();
+        let identity = crate::activation::AdmittedMemoryIdentity::test_only("project-a", "main");
+        let failure = start_with_admitted_continuity(
+            failed_home.path(),
+            "session-fail",
+            identity,
+            nano_activation::admission::AdmittedStrategy::MemoryRecall,
+            nano_activation::admission::AdmittedFallback::Fresh,
+            &failed_resolved,
+            failed_coordinator,
+        )
+        .unwrap_err();
+        assert_eq!(failure.kind, NanoErrorKind::JournalUnavailable);
+        assert!(!failed_home.path().join("memory/memory.db").exists());
     }
 }
