@@ -36,7 +36,9 @@ key-decisions:
 patterns-established:
   - "Authenticated memory identity is passed byte-for-byte from admitted project_id/principal_id."
   - "Model memory writes route only through commit_proposal; legacy memory tool names remain UnknownTool."
+  - "Existing user-turn and successful tool-output events commit deterministic Episode rows through MemorySeam::host_write at their origin tiers."
 requirements-completed: [REQ-MEM-02]
+verified-head: 097537bfbe7d34619ac4af3a4804558ac7fce126
 coverage:
   - id: D1
     description: One scoped memory seam serves ACP new/load, protocol-host, and exec fresh/resume.
@@ -70,7 +72,7 @@ coverage:
     human_judgment: false
 duration: 2h 15m
 completed: 2026-09-03
-status: incomplete
+status: complete
 ---
 
 # Phase 3 Plan 03: Runtime Memory Seam Summary
@@ -83,7 +85,7 @@ status: incomplete
 - **Started:** 2026-09-03T04:19:00Z
 - **Completed:** 2026-09-03T05:39:35Z
 - **Tasks:** 3
-- **Files modified:** 12
+- **Files modified:** 16
 
 ## Accomplishments
 
@@ -92,6 +94,8 @@ status: incomplete
 - Extended `MemoryPolicyResolved` additively with optional project/agent attribution while new records require project, agent, and actual runtime session id.
 - Preserved default-off quarantine and grew `activation_quarantine` from five to six rows; no existing row was removed.
 - Bound proposal partitions to an opaque admission-derived identity for all four write kinds, centralized typed fallback/degradation handling, and added cross-project/cross-agent recall oracles.
+- Replaced shared-helper labels with deletion-sensitive real-runner evidence for ACP new/load, exec fresh/resume, and protocol-host, including policy-append failure before model/tool/memory effects.
+- Wired deterministic user-turn and successful tool-output Episode ingestion through the private host-write boundary at `User` and `ToolOutput` tiers; the absent explicit user verb remains a future owner-specified/owned locus under the preserved exhaustive §6.7 authority rule.
 
 ## Task Commits
 
@@ -107,6 +111,11 @@ status: incomplete
 10. **Entrypoint RED: Require behavioral bootstrap evidence** — `ba3d64e`
 11. **Entrypoint bootstrap attempt rejected by audit** — `f454055`
 12. **Runtime error correction: Propagate host/exec recall failures** — `e9efb87`
+13. **Rejected evidence removal: Remove non-discriminating matrix** — `14d6d81`
+14. **Attempt 3 RED: Exercise real production runners** — `30113ed`
+15. **Attempt 3 GREEN: Bind seams to runtime events** — `6be8951`
+16. **Cross-research disposition: Clarify host-write authority** — `c61fa7d`
+17. **ACP fallback closure: Cover real runtime none/fresh** — `097537b`
 
 ## Decisions Made
 
@@ -116,14 +125,16 @@ status: incomplete
 
 ## Verification
 
-- `activation_memory_seam`: 3/3 passed. The rejected five-label common-helper matrix was removed because labels did not execute the distinct production entrypoints.
+- `activation_memory_seam`: 20/20 passed at `097537b`. The suite invokes real `serve_admitted`, exec orchestration, and the protocol-host production core/`run_host_loop`; ACP new/load, exec fresh/resume, and protocol-host each prove ordered attributed policy audit, real store/tool behavior, legacy `UnknownTool`, and append-failure-before-effect. ACP, exec, and protocol-host runtime fallback rows prove `none` refusal and exactly-once `fresh` degradation; ACP additionally proves degradation-receipt append failure is loud.
+- Deletion sensitivity: 5/5 logical entrypoints caught across four physical bootstrap call sites (ACP new 1/1, ACP load 1/1, shared exec fresh/resume 2/2, protocol-host 1/1); every mutation was restored before the verified head.
 - `memory_seam::tests`: 5/5 passed, covering four-kind identity rebinding, host-tier preservation/model-direct refusal, cross-partition recall, exact policy ordering, both fallbacks, and append failure before store effects.
 - `activation_quarantine`: 6/6 passed (previous five rows unchanged).
 - `activation_admission`: 3/3 passed.
 - `corrective_regressions`: 9/9 passed.
 - `durability`: 3/3 passed, including the kill-mid-write child process.
 - `nano-session`: 121 unit + 1 legacy replay + 13 adversarial journal tests passed.
-- Final `just gate-all`: passed fmt, workspace clippy `-D warnings`, all workspace and doc tests, Nano/shared error-table checks, and generated-contract checks.
+- `cargo clippy -p nano-cli --all-targets -- -D warnings`: passed at `097537b`.
+- No full gate was rerun during corrective attempt 3, per the focused-verification instruction. The earlier pre-attempt full-gate result is historical and does not replace final closure verification.
 
 ## Deviations from Plan
 
@@ -143,15 +154,15 @@ status: incomplete
 
 - `AdmittedMemoryIdentity` is constructed only from `AdmittedToken` in `activation.rs`; the seam receives the opaque read-only value.
 - All four model proposal DTOs have project and agent overwritten from that identity before `commit_proposal`.
-- One shared startup path is called by ACP new/load, protocol-host, and exec fresh/resume; its behavioral oracle proves `SessionBegin` precedes exactly one attributed policy record, store validation is real, fallback `None` refuses, fallback `Fresh` emits one receipt, and append failure creates no memory DB.
+- One shared startup path is called by ACP new/load, protocol-host, and exec fresh/resume; real outer-runner oracles prove `SessionBegin` precedes exactly one attributed policy record, store validation is real, fallback `None` refuses, fallback `Fresh` emits one receipt, and append failure creates no memory effect.
 - Runtime recall failures use the same admitted fallback state stored on the seam; disabled surfaces return `UnknownTool` before argument parsing.
-- The crate-private direct host-write boundary preserves User/ToolOutput tiers and refuses ModelInference. Automatic user-turn/tool-output-to-row mapping is not invented: the plan names origins but does not define row kind, id, validity, or field mapping, while D3-08 forbids extraction. This exact missing contract is recorded in `docs/FOLLOWUPS.md`.
+- The crate-private direct host-write boundary preserves User/ToolOutput tiers and refuses ModelInference. Existing user-turn and successful tool-output events map deterministically to Episode rows using their existing event ids/content, the DTO's `host`/`wayland-nano` provenance defaults, current validity time, and admitted partition; no LLM extraction exists. No explicit host memory verb currently exists or is owned here. `docs/FOLLOWUPS.md` now scopes that future verb's specification/ownership without weakening §6.7.
 
 ## Issues Encountered
 
 - The first full gate found the external Desktop checkout's generated error-table mirrors stale. A read-only hash/diff check proved this plan changed no error-kind source or canonical artifact. An isolated generator probe passed Nano and shared targets, and the final full gate passed with `NANO_ERROR_TABLE_DESKTOP_DIR` directed to an empty in-worktree probe directory; no Desktop file was modified.
 - The original review relied on a new source-string quarantine assertion. It was replaced with a behavior test that executes every new and legacy memory name through a disabled seam and requires typed `UnknownTool` results.
-- Protocol-host and exec no longer swallow runtime recall errors: host emits a typed nonretryable error before the model call, while exec stops the goal turn as failed and emits its error. Per-entrypoint production-runner evidence is still required.
+- Protocol-host and exec no longer swallow runtime recall errors: host emits a typed nonretryable error before the model call, while exec stops the goal turn as failed and emits its error. Real-runner fallback rows now cover both paths, and ACP has equivalent `none`/`fresh` plus receipt-append-failure coverage.
 
 ## User Setup Required
 
@@ -162,8 +173,8 @@ None.
 - 03-04 can implement migration and prove old-DB versus dedicated-journal rebuild equivalence under `03-03-DECISION.md`.
 - 03-05 can measure continuity using the shared seam after this branch is reviewed and merged.
 
-## Self-Check: INCOMPLETE
+## Self-Check: COMPLETE
 
 - Decision record and all created source/test files exist.
-- Commits through corrective head `c0e57b8` are present.
-- Focused component, quarantine, and admission suites pass. Distinct production-runner rows for ACP new/load, exec fresh/resume, and protocol-host remain missing, so this plan is not ready for full-gate review or push.
+- Commits through verified implementation/test head `097537b` are present.
+- Focused seam 20/20, quarantine 6/6, admission 3/3, component 5/5, and nano-cli all-target clippy pass. The four physical bootstrap sites are deletion-sensitive for all five logical entrypoints. Plan 03-03 is ready for downstream full-gate review; this corrective attempt did not push.
