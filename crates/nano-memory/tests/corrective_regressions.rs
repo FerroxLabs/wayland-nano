@@ -345,7 +345,7 @@ fn retention_policy_rebuild_is_query_equivalent() {
     rebuild_from_journals(
         &rebuilt_db,
         std::slice::from_ref(&journal),
-        MemoryPolicy::default(),
+        policy.clone(),
         configured(),
     )
     .unwrap();

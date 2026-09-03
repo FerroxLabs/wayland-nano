@@ -939,30 +939,9 @@ fn replay_journals_into_store(store: &mut MemoryStore, journals: &[PathBuf]) -> 
             .collect();
         for envelope in report.envelopes {
             match envelope.op {
-                Op::MemoryPolicyResolved {
-                    enabled,
-                    write,
-                    read_scope,
-                    episode_cap,
-                    fact_cap,
-                    byte_cap,
-                    deletion,
-                    min_tier,
-                    session_id,
-                    ..
-                } => {
-                    store.policy = policy_from_journal(
-                        enabled,
-                        &write,
-                        &read_scope,
-                        episode_cap,
-                        fact_cap,
-                        byte_cap,
-                        &deletion,
-                        &min_tier,
-                        session_id,
-                    )?;
-                }
+                // Session policy records are audit-only. The explicitly
+                // supplied resolved policy is the sole rebuild authority.
+                Op::MemoryPolicyResolved { .. } => {}
                 Op::MemoryWriteFact {
                     fact_id,
                     subject,
@@ -1184,61 +1163,6 @@ fn validate_active_agent(
             "active_agent and configured_agents must be supplied together".into(),
         )),
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn policy_from_journal(
-    enabled: bool,
-    write: &str,
-    read_scope: &str,
-    episodes: u64,
-    facts: u64,
-    bytes: u64,
-    deletion: &str,
-    min_tier: &str,
-    session_id: Option<String>,
-) -> MemoryResult<MemoryPolicy> {
-    let write = match write {
-        "Off" => WriteScope::Off,
-        "SessionOnly" => WriteScope::SessionOnly,
-        "SessionAndProject" => WriteScope::SessionAndProject,
-        other => {
-            return Err(MemoryError::InvalidValue {
-                field: "write_scope",
-                value: other.into(),
-            });
-        }
-    };
-    let deletion = match deletion {
-        "Never" => DeletionRule::Never,
-        "HardDelete" => {
-            return Err(MemoryError::UnsupportedPolicy(
-                "journal requests unsupported HardDelete".into(),
-            ));
-        }
-        other => {
-            return Err(MemoryError::InvalidValue {
-                field: "deletion",
-                value: other.into(),
-            });
-        }
-    };
-    let policy = MemoryPolicy {
-        enabled,
-        write,
-        read_scope: ReadScope::parse(read_scope)?,
-        retention: RetentionCaps {
-            episodes,
-            facts,
-            bytes,
-        },
-        embedding_backend: EmbedderChoice::HashedLocal,
-        deletion,
-        min_tier: SourceTrust::parse(min_tier)?,
-        session_id,
-    };
-    validate_policy(&policy)?;
-    Ok(policy)
 }
 
 #[cfg(windows)]
