@@ -63,6 +63,54 @@ pub fn start_for_activation(
     )
 }
 
+/// The shared runtime bootstrap boundary used by every authenticated
+/// entrypoint. It proves that the entrypoint's durable `SessionBegin` is the
+/// immediately preceding record before policy authority is journaled.
+/// `before_policy` is the narrow dependency-injection seam used to exercise
+/// an append failure in-process; production callers pass an infallible no-op.
+pub fn start_entrypoint_after_begin<F, R>(
+    nano_home: &Path,
+    session_id: &str,
+    token: &nano_activation::admission::AdmittedToken,
+    resolved: &crate::memory_policy::ResolvedMemoryPolicy,
+    coordinator: Arc<JournalCoordinator>,
+    before_policy: F,
+    on_ready: R,
+) -> Result<Option<Arc<MemorySeam>>, SeamStartError>
+where
+    F: FnOnce() -> std::io::Result<()>,
+    R: FnOnce(&Option<Arc<MemorySeam>>),
+{
+    let rows = nano_session::read_journal(coordinator.path()).map_err(|error| SeamStartError {
+        kind: NanoErrorKind::JournalUnavailable,
+        message: format!("cannot verify session begin: {error}"),
+    })?;
+    let has_matching_begin = matches!(
+        rows.envelopes.last().map(|row| &row.op),
+        Some(Op::SessionBegin { session_id: durable, .. }) if durable == session_id
+    );
+    if !has_matching_begin {
+        return Err(SeamStartError {
+            kind: NanoErrorKind::JournalUnavailable,
+            message: "memory policy must immediately follow the runtime SessionBegin".into(),
+        });
+    }
+    before_policy().map_err(|error| SeamStartError {
+        kind: NanoErrorKind::JournalUnavailable,
+        message: format!("memory policy bootstrap interrupted: {error}"),
+    })?;
+    let seam = start_for_activation(
+        nano_home,
+        session_id,
+        token,
+        crate::activation::AdmittedMemoryIdentity::bind(token),
+        resolved,
+        coordinator,
+    )?;
+    on_ready(&seam);
+    Ok(seam)
+}
+
 fn start_with_admitted_continuity(
     nano_home: &Path,
     session_id: &str,

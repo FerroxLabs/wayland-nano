@@ -2322,13 +2322,14 @@ where
                                 continue;
                             }
                             let memory_seam = match admitted.as_deref() {
-                                Some(token) => match crate::memory_seam::start_for_activation(
+                                Some(token) => match crate::memory_seam::start_entrypoint_after_begin(
                                     config.attachment_home,
                                     &session_id,
                                     token,
-                                    crate::activation::AdmittedMemoryIdentity::bind(token),
                                     &config.memory.policy,
                                     coordinator.clone(),
+                                    || Ok(()),
+                                    |_| {},
                                 ) {
                                     Ok(seam) => seam,
                                     Err(error) => {
@@ -2768,13 +2769,14 @@ where
                                 }
                             }
                             let memory_seam = match admitted.as_deref() {
-                                Some(token) => match crate::memory_seam::start_for_activation(
+                                Some(token) => match crate::memory_seam::start_entrypoint_after_begin(
                                     config.attachment_home,
                                     session_id,
                                     token,
-                                    crate::activation::AdmittedMemoryIdentity::bind(token),
                                     &config.memory.policy,
                                     coordinator.clone(),
+                                    || Ok(()),
+                                    |_| {},
                                 ) {
                                     Ok(seam) => seam,
                                     Err(error) => {

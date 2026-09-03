@@ -186,13 +186,14 @@ where
                     return 2;
                 }
             };
-            match crate::memory_seam::start_for_activation(
+            match crate::memory_seam::start_entrypoint_after_begin(
                 nano_home,
                 &session.session_id,
                 token,
-                crate::activation::AdmittedMemoryIdentity::bind(token),
                 &resolved,
                 journal.clone(),
+                || Ok(()),
+                |_| {},
             ) {
                 Ok(seam) => seam,
                 Err(error) => {

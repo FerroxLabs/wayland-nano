@@ -70,7 +70,7 @@ coverage:
     human_judgment: false
 duration: 2h 15m
 completed: 2026-09-03
-status: incomplete
+status: complete
 ---
 
 # Phase 3 Plan 03: Runtime Memory Seam Summary
@@ -104,6 +104,8 @@ status: incomplete
 7. **Corrective GREEN: Bind scoped memory authority** — `8bbc162`
 8. **Corrective evidence: Prove startup ordering and fallback** — `7fc5630`
 9. **Scope disposition: Pin host-ingest mapping follow-up** — `c0e57b8`
+10. **Entrypoint RED: Require behavioral bootstrap evidence** — `ba3d64e`
+11. **Entrypoint GREEN: Route every runtime through the ordered bootstrap** — this commit
 
 ## Decisions Made
 
@@ -113,7 +115,7 @@ status: incomplete
 
 ## Verification
 
-- `activation_memory_seam`: 3/3 passed.
+- `activation_memory_seam`: 5/5 passed. Its entrypoint matrix uses signed admitted tokens and the same production bootstrap invoked by ACP new/load, exec fresh/resume, and protocol-host; each row proves real store recall, exact attribution/order, the recall/propose tool surface, and an injected between-begin/policy append failure with zero ready/effect calls and no DB.
 - `memory_seam::tests`: 5/5 passed, covering four-kind identity rebinding, host-tier preservation/model-direct refusal, cross-partition recall, exact policy ordering, both fallbacks, and append failure before store effects.
 - `activation_quarantine`: 6/6 passed (previous five rows unchanged).
 - `activation_admission`: 3/3 passed.
@@ -148,7 +150,7 @@ status: incomplete
 
 - The first full gate found the external Desktop checkout's generated error-table mirrors stale. A read-only hash/diff check proved this plan changed no error-kind source or canonical artifact. An isolated generator probe passed Nano and shared targets, and the final full gate passed with `NANO_ERROR_TABLE_DESKTOP_DIR` directed to an empty in-worktree probe directory; no Desktop file was modified.
 - The original review relied on a new source-string quarantine assertion. It was replaced with a behavior test that executes every new and legacy memory name through a disabled seam and requires typed `UnknownTool` results.
-- Remaining evidence gap: the common startup helper is behavior-tested and compiled through every entrypoint, but each ACP new/load, exec fresh/resume, and protocol-host path still needs an end-to-end harness row proving its own journal order and zero-effect append failure.
+- The entrypoint-specific matrix replaces the remaining source-presence claim: all five runtime starts call one production bootstrap that refuses unless the matching `SessionBegin` is the immediately preceding durable record, then opens the real scoped store before signaling readiness. The injected failure occurs between those appends and proves readiness/effects remain at zero.
 
 ## User Setup Required
 
@@ -159,8 +161,8 @@ None.
 - 03-04 can implement migration and prove old-DB versus dedicated-journal rebuild equivalence under `03-03-DECISION.md`.
 - 03-05 can measure continuity using the shared seam after this branch is reviewed and merged.
 
-## Self-Check: INCOMPLETE
+## Self-Check: COMPLETE
 
 - Decision record and all created source/test files exist.
 - Commits through corrective head `c0e57b8` are present.
-- Focused tests and the final local gate passed; per-entrypoint end-to-end startup rows remain required.
+- Focused entrypoint, quarantine, and admission suites pass; the root executor owns the final full-gate and independent review before push.

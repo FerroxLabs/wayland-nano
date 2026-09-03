@@ -191,13 +191,14 @@ pub async fn run(
         })?;
     let resolved_memory = nano_cli::memory_policy::resolve(nano_home)
         .map_err(|error| std::io::Error::other(error.to_string()))?;
-    let memory_seam = match nano_cli::memory_seam::start_for_activation(
+    let memory_seam = match nano_cli::memory_seam::start_entrypoint_after_begin(
         nano_home,
         "protocol-host",
         &activation_token,
-        nano_cli::activation::AdmittedMemoryIdentity::bind(&activation_token),
         &resolved_memory,
         coordinator.clone(),
+        || Ok(()),
+        |_| {},
     ) {
         Ok(seam) => seam,
         Err(error) => return Ok(HostExit::Fatal(error.message)),
