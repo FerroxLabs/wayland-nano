@@ -113,9 +113,6 @@ where
     T: nano_agent::turn::ToolExecutor,
     FB: FnOnce() -> std::io::Result<()>,
 {
-    // RED harness state: the production bootstrap does not consume this
-    // injection until the corresponding GREEN change lands.
-    let _ = before_memory_policy;
     // 1. Resolve + bootstrap the session (the ONE honest bootstrap path).
     let (seed, resumed) = match crate::exec_mode::resolve_seed(sessions_dir, &params.resume) {
         Ok(seed) => seed,
@@ -248,7 +245,7 @@ where
                 token,
                 &resolved,
                 journal.clone(),
-                || Ok(()),
+                before_memory_policy,
                 |_| {},
             ) {
                 Ok(seam) => seam,
@@ -275,13 +272,20 @@ where
     let journal_sequence = Arc::new(AtomicU64::new(1));
     let mut context = crate::acp_mode::messages_from_envelopes(&session.envelopes);
     if let Some(seam) = memory_seam.as_ref() {
-        match seam.recall_block(&params.prompt) {
+        match seam.context_block(&params.prompt) {
             Ok(Some(block)) => context.insert(0, nano_model::types::Message::system(block)),
             Ok(None) => {}
             Err(error) => {
                 eprintln!("wayland-nano: memory recall failed: {error}");
                 return 2;
             }
+        }
+        if let Err(error) = seam.ingest_user_turn(
+            &format!("{}-turn-{}", session.session_id, session.turn_counter + 1),
+            &params.prompt,
+        ) {
+            eprintln!("wayland-nano: {}", error.message);
+            return 2;
         }
     }
 
@@ -746,7 +750,7 @@ where
                     .map(|report| crate::acp_mode::messages_from_envelopes(&report.envelopes))
                     .unwrap_or_default();
                 if let Some(seam) = memory_seam_now.as_ref() {
-                    match seam.recall_block(&prompt) {
+                    match seam.context_block(&prompt) {
                         Ok(Some(block)) => {
                             context.insert(0, nano_model::types::Message::system(block));
                         }
@@ -761,6 +765,19 @@ where
                                 usage: nano_model::types::Usage::default(),
                             };
                         }
+                    }
+                    if seam
+                        .ingest_user_turn(&format!("{}-turn-{counter}", session_id), &prompt)
+                        .is_err()
+                    {
+                        events_now
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner())
+                            .error("memory host ingest failed");
+                        return GoalTurnOutcome {
+                            stop: nano_agent::goal::GoalTurnStop::Failed,
+                            usage: nano_model::types::Usage::default(),
+                        };
                     }
                 }
                 let turn_id = format!("{}-turn-{}", session_id, counter);

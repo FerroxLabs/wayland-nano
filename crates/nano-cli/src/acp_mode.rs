@@ -2328,7 +2328,15 @@ where
                                     token,
                                     &config.memory.policy,
                                     coordinator.clone(),
-                                    || Ok(()),
+                                    || {
+                                        if config.journal_append_failer.is_some_and(|fail| fail()) {
+                                            Err(std::io::Error::other(
+                                                "injected memory policy append failure",
+                                            ))
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
                                     |_| {},
                                 ) {
                                     Ok(seam) => seam,
@@ -2775,7 +2783,15 @@ where
                                     token,
                                     &config.memory.policy,
                                     coordinator.clone(),
-                                    || Ok(()),
+                                    || {
+                                        if config.journal_append_failer.is_some_and(|fail| fail()) {
+                                            Err(std::io::Error::other(
+                                                "injected memory policy append failure",
+                                            ))
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
                                     |_| {},
                                 ) {
                                     Ok(seam) => seam,
@@ -3687,13 +3703,13 @@ where
                             // fail open (no block). The ACP seam has no
                             // skills block, so skills_chars is 0 here.
                             if let Some(seam) = active.memory_seam.as_ref() {
-                                match seam.recall_block(&turn_input.projection()) {
+                                match seam.context_block(&turn_input.projection()) {
                                     Ok(Some(block)) => prior_context.insert(0, Message::system(block)),
                                     Ok(None) => {}
                                     Err(error) => {
                                         write_out(&out, &JsonRpcResponse::err_typed(
                                             id,
-                                            NanoErrorKind::ActivationContinuityNotEnabled,
+                                            error.kind,
                                             format!("memory recall failed: {error}"),
                                             NanoErrorExtras::default(),
                                         ))?;
@@ -3731,6 +3747,23 @@ where
                                     continue;
                                 }
                             };
+                            if let Some(seam) = active.memory_seam.as_ref()
+                                && let Err(error) = seam.ingest_user_turn(
+                                    &turn_id,
+                                    &turn_input.projection(),
+                                )
+                            {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        error.kind,
+                                        error.message,
+                                        NanoErrorExtras::default(),
+                                    ),
+                                )?;
+                                continue;
+                            }
                             // P3 §3.3: the session's coordinator (opened
                             // fail-closed at session/new|load) is the turn's
                             // append authority — no per-turn writer.
@@ -7044,9 +7077,10 @@ impl<W: Write> AcpApproval<W> {
 /// (`fs_write`/`fs_edit`) or executes (`shell`) must ask — and so must every
 /// `mcp__*` call: MCP tools are mutating-unknown, so they never match the
 /// read-only prefixes and always go through the permission gate. C5:
-/// `memory_list`/`memory_read` are read-only; `memory_save`/`memory_delete`
-/// mutate the user-managed store and always ask (under read_only they are
-/// categorically denied, like every other mutation). C6: task polls
+/// `memory_recall` and legacy `memory_list`/`memory_read` are read-only;
+/// `memory_propose`, `memory_save`, and `memory_delete` mutate a store and
+/// always ask (under read_only they are categorically denied, like every
+/// other mutation). C6: task polls
 /// (`task_status`/`task_result`/`task_list`) are read-only; task_spawn,
 /// task_cancel, and task_apply change live state and always ask. P4 §5.5:
 /// `repo_map` is a read-only lexical query (policy-filtered; denied-read
@@ -7059,6 +7093,7 @@ pub fn is_read_only_tool(name: &str) -> bool {
         || name.starts_with("search")
         || name.starts_with("glob")
         || name.starts_with("repo_map")
+        || name == "memory_recall"
         || name.starts_with("memory_list")
         || name.starts_with("memory_read")
         || name.starts_with("task_status")

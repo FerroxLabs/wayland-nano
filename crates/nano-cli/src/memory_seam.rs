@@ -26,6 +26,8 @@ pub struct MemorySeam {
     store: Mutex<MemoryStore>,
     identity: crate::activation::AdmittedMemoryIdentity,
     min_tier: nano_memory::SourceTrust,
+    automatic_recall: bool,
+    writes_enabled: bool,
     fallback: nano_activation::admission::AdmittedFallback,
     coordinator: Arc<JournalCoordinator>,
     session_id: String,
@@ -138,7 +140,9 @@ fn start_with_admitted_continuity(
         });
     }
 
-    if strategy != nano_activation::admission::AdmittedStrategy::MemoryRecall {
+    if strategy != nano_activation::admission::AdmittedStrategy::MemoryRecall
+        && !resolved.policy().enabled
+    {
         return Ok(None);
     }
 
@@ -148,6 +152,7 @@ fn start_with_admitted_continuity(
         identity.clone(),
         resolved.policy(),
         resolved.configured_agents(),
+        strategy == nano_activation::admission::AdmittedStrategy::MemoryRecall,
         fallback,
         coordinator.clone(),
     ) {
@@ -183,12 +188,17 @@ impl std::fmt::Debug for MemorySeam {
 }
 
 impl MemorySeam {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the seam bootstrap carries independently typed policy, identity, continuity, and journal authorities"
+    )]
     pub fn open(
         nano_home: &Path,
         session_id: &str,
         identity: crate::activation::AdmittedMemoryIdentity,
         policy: &MemoryPolicy,
         configured_agents: &ConfiguredAgents,
+        automatic_recall: bool,
         fallback: nano_activation::admission::AdmittedFallback,
         coordinator: Arc<JournalCoordinator>,
     ) -> Result<Self, nano_memory::MemoryError> {
@@ -209,6 +219,8 @@ impl MemorySeam {
             store: Mutex::new(store),
             identity,
             min_tier: policy.min_tier,
+            automatic_recall,
+            writes_enabled: policy.enabled && policy.write != nano_memory::WriteScope::Off,
             fallback,
             coordinator,
             session_id: session_id.into(),
@@ -250,6 +262,18 @@ impl MemorySeam {
         }
         block.push_str("</memory>");
         Ok(Some(block))
+    }
+
+    /// Automatic continuity injection is restricted to the admitted
+    /// `memory_recall` strategy. Fresh and journal-resume sessions retain
+    /// the explicit recall/propose tool surface without silently changing
+    /// their selected continuity mode.
+    pub fn context_block(&self, query: &str) -> Result<Option<String>, SeamStartError> {
+        if self.automatic_recall {
+            self.recall_block(query)
+        } else {
+            Ok(None)
+        }
     }
 
     fn unavailable(
@@ -327,13 +351,60 @@ impl MemorySeam {
         self.identity.agent_id().clone_into(agent_id);
     }
 
+    pub fn ingest_user_turn(&self, event_id: &str, content: &str) -> Result<(), SeamStartError> {
+        self.ingest_episode(
+            format!("{}-user-{event_id}", self.session_id),
+            content,
+            nano_memory::SourceTrust::User,
+        )
+    }
+
+    fn ingest_tool_output(&self, call: &ToolCall, content: &str) -> Result<(), SeamStartError> {
+        self.ingest_episode(
+            format!("{}-tool-{}", self.session_id, call.id),
+            content,
+            nano_memory::SourceTrust::ToolOutput,
+        )
+    }
+
+    fn ingest_episode(
+        &self,
+        id: String,
+        content: &str,
+        source_trust: nano_memory::SourceTrust,
+    ) -> Result<(), SeamStartError> {
+        if !self.writes_enabled {
+            return Ok(());
+        }
+        let content =
+            nano_session::redaction::redact_secrets(content).map_err(|_| SeamStartError {
+                kind: NanoErrorKind::ActivationContinuityNotEnabled,
+                message: "memory host-ingest screening failed".into(),
+            })?;
+        nano_session::scan_for_secrets(&content).map_err(|_| SeamStartError {
+            kind: NanoErrorKind::ActivationContinuityNotEnabled,
+            message: "memory host-ingest screening failed".into(),
+        })?;
+        self.host_write(HostMemoryWrite::Episode(EpisodeWrite {
+            id,
+            content,
+            source: "host".into(),
+            source_product: "wayland-nano".into(),
+            valid_from: chrono::Utc::now().to_rfc3339(),
+            valid_to: None,
+            source_trust,
+            project: self.identity.project_id().into(),
+            agent_id: self.identity.agent_id().into(),
+        }))
+        .map_err(|error| SeamStartError {
+            kind: NanoErrorKind::ActivationContinuityNotEnabled,
+            message: format!("memory host ingest failed: {error}"),
+        })
+    }
+
     /// Host-only ingestion boundary. Callers must classify origin before
     /// constructing the row; model-tier rows are refused by the store's
     /// direct-write gate and can land only through `commit_proposal`.
-    #[allow(
-        dead_code,
-        reason = "the host ingestion loci require a separately pinned row-mapping contract"
-    )]
     pub(crate) fn host_write(
         &self,
         mut write: HostMemoryWrite,
@@ -367,7 +438,7 @@ impl MemorySeam {
 #[derive(Debug, Clone)]
 #[allow(
     dead_code,
-    reason = "the host ingestion loci require a separately pinned row-mapping contract"
+    reason = "facts, decisions, and procedures await explicit host verbs; automatic loci ingest episodes only"
 )]
 pub(crate) enum HostMemoryWrite {
     Fact(FactWrite),
@@ -502,7 +573,16 @@ impl ToolExecutor for MemorySeamExecutor<'_> {
                 "legacy memory tool is unavailable",
                 NanoErrorKind::UnknownTool,
             ),
-            _ => self.inner.execute(call).await,
+            _ => {
+                let outcome = self.inner.execute(call).await;
+                if outcome.ok
+                    && let Some(seam) = self.seam
+                    && let Err(error) = seam.ingest_tool_output(call, &outcome.output)
+                {
+                    return Self::error(error.message, error.kind);
+                }
+                outcome
+            }
         }
     }
 
@@ -522,7 +602,14 @@ impl ToolExecutor for MemorySeamExecutor<'_> {
         ) {
             self.execute(call).await
         } else {
-            self.inner.execute_cancellable(call, cancel).await
+            let outcome = self.inner.execute_cancellable(call, cancel).await;
+            if outcome.ok
+                && let Some(seam) = self.seam
+                && let Err(error) = seam.ingest_tool_output(call, &outcome.output)
+            {
+                return Self::error(error.message, error.kind);
+            }
+            outcome
         }
     }
 
@@ -608,6 +695,7 @@ mod tests {
             identity,
             &MemoryPolicy::default(),
             &configured,
+            true,
             nano_activation::admission::AdmittedFallback::None,
             coordinator,
         )
@@ -766,6 +854,7 @@ mod tests {
             identity,
             &MemoryPolicy::default(),
             &configured,
+            true,
             nano_activation::admission::AdmittedFallback::None,
             coordinator,
         )

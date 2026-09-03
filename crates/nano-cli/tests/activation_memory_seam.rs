@@ -712,6 +712,7 @@ where
         workspace,
         gate,
         token,
+        false,
         model,
         tools,
         false,
@@ -839,12 +840,32 @@ fn assert_start_segment(journal: &Path, session_id: &str, expected_begin_ordinal
 
 fn assert_host_ingest(home: &Path) {
     let rows = read_journal(&home.join("memory.jsonl")).unwrap().envelopes;
-    assert!(rows.iter().any(|row| matches!(&row.op, Op::MemoryWriteEpisode {
-        source_trust, project, agent_id, content, ..
-    } if source_trust == "User" && project == PROJECT && agent_id == PRINCIPAL && content.contains("probe"))));
-    assert!(rows.iter().any(|row| matches!(&row.op, Op::MemoryWriteEpisode {
-        source_trust, project, agent_id, content, ..
-    } if source_trust == "ToolOutput" && project == PROJECT && agent_id == PRINCIPAL && content.contains("tool output from fs_read"))));
+    assert!(
+        rows.iter()
+            .any(|row| matches!(&row.op, Op::MemoryWriteEpisode {
+        source_trust, project, agent_id, content, source, source_product, valid_from, valid_to, ..
+    } if source_trust == "User"
+        && project == PROJECT
+        && agent_id == PRINCIPAL
+        && content.contains("probe")
+        && source == "host"
+        && source_product == "wayland-nano"
+        && !valid_from.is_empty()
+        && valid_to.is_none()))
+    );
+    assert!(
+        rows.iter()
+            .any(|row| matches!(&row.op, Op::MemoryWriteEpisode {
+        source_trust, project, agent_id, content, source, source_product, valid_from, valid_to, ..
+    } if source_trust == "ToolOutput"
+        && project == PROJECT
+        && agent_id == PRINCIPAL
+        && content.contains("tool output from fs_read")
+        && source == "host"
+        && source_product == "wayland-nano"
+        && !valid_from.is_empty()
+        && valid_to.is_none()))
+    );
     assert_eq!(
         std::fs::read(home.join("memory/legacy.md")).unwrap(),
         b"legacy-state\n"
@@ -1128,7 +1149,6 @@ fn acp_load_policy_append_failure_stops_before_model_tool_or_memory_effect() {
     let home = temp.path();
     let workspace = home.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    write_enabled_policy(home);
     let activation = ActivationFixture::new(home);
     let first = AcpHarness::spawn(
         home,
@@ -1153,6 +1173,7 @@ fn acp_load_policy_append_failure_stops_before_model_tool_or_memory_effect() {
     let created = first.signed_request(25, first_frame);
     let session_id = created["result"]["sessionId"].as_str().unwrap().to_owned();
     first.shutdown();
+    write_enabled_policy(home);
 
     let model = CaptureModel::scripted(vec![text_response("must not run")]);
     let tools = CaptureTools::default();
@@ -1459,7 +1480,6 @@ async fn exec_resume_policy_append_failure_stops_before_model_tool_or_memory_eff
     let home = temp.path();
     let workspace = home.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    write_enabled_policy(home);
     let activation = ActivationFixture::new(home);
     let first_frame = activation.frame(
         45,
@@ -1485,6 +1505,7 @@ async fn exec_resume_policy_append_failure_stops_before_model_tool_or_memory_eff
     .await;
     assert_eq!(first_exit, 0);
     let session_id = first_events[0]["session_id"].as_str().unwrap().to_owned();
+    write_enabled_policy(home);
     let resume_frame = activation.frame(
         46,
         "session/load",

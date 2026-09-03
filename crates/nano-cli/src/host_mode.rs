@@ -64,6 +64,16 @@ pub async fn run(
                 )));
             }
         };
+    if activation_gate
+        .bind_session(&activation_token, "protocol-host")
+        .is_err()
+        || activation_gate.recheck_session("protocol-host").is_err()
+        || activation_gate
+            .mark_dispatch_eligible(&activation_token)
+            .is_err()
+    {
+        return Ok(HostExit::Fatal("activation session binding failed".into()));
+    }
     let Some(api_key) = nano_cli::flux_key::flux_api_key() else {
         eprintln!(
             "wayland-nano: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for protocol-host mode"
@@ -153,6 +163,7 @@ pub async fn run(
         workspace,
         activation_gate,
         activation_token,
+        true,
         driver,
         executor,
         search.is_some(),
@@ -173,6 +184,7 @@ pub async fn run_admitted_with<R, W, D, T, FB>(
     workspace: &std::path::Path,
     activation_gate: nano_cli::activation::SharedAdmission,
     activation_token: nano_activation::admission::AdmittedToken,
+    activation_is_bound: bool,
     driver: D,
     executor: T,
     web_search_backed: bool,
@@ -188,16 +200,14 @@ where
     T: nano_agent::turn::ToolExecutor,
     FB: FnOnce() -> std::io::Result<()>,
 {
-    // RED harness state: the production bootstrap does not consume this
-    // injection until the corresponding GREEN change lands.
-    let _ = before_memory_policy;
-    if activation_gate
-        .bind_session(&activation_token, "protocol-host")
-        .is_err()
-        || activation_gate.recheck_session("protocol-host").is_err()
-        || activation_gate
-            .mark_dispatch_eligible(&activation_token)
+    if !activation_is_bound
+        && (activation_gate
+            .bind_session(&activation_token, "protocol-host")
             .is_err()
+            || activation_gate.recheck_session("protocol-host").is_err()
+            || activation_gate
+                .mark_dispatch_eligible(&activation_token)
+                .is_err())
     {
         return Ok(HostExit::Fatal("activation session binding failed".into()));
     }
@@ -246,7 +256,7 @@ where
         &activation_token,
         &resolved_memory,
         coordinator.clone(),
-        || Ok(()),
+        before_memory_policy,
         |_| {},
     ) {
         Ok(seam) => seam,
@@ -495,7 +505,7 @@ where
             // list renders while non-empty.
             let mut context = Vec::new();
             if let Some(seam) = turn_memory_seam.as_ref() {
-                match seam.recall_block(&content) {
+                match seam.context_block(&content) {
                     Ok(Some(block)) => {
                         context.push(nano_model::types::Message::system(block));
                     }
@@ -518,6 +528,24 @@ where
                             "error".into(),
                         );
                     }
+                }
+                if let Err(error) = seam.ingest_user_turn(&msg_id, &content) {
+                    let code = serde_json::to_value(error.kind)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                        .unwrap_or_else(|| "continuity_not_enabled".into());
+                    return (
+                        vec![Event::Error {
+                            error: ErrorBody {
+                                code,
+                                message: error.message,
+                                retryable: false,
+                            },
+                            msg_id,
+                        }],
+                        Option::<Usage>::None,
+                        "error".into(),
+                    );
                 }
             }
             if let Some(message) = nano_agent::skills::prepare_agents_md_context(workspace) {
