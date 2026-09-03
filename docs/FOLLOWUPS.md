@@ -1403,3 +1403,5 @@ The freeze preserves the landed WP-1 `run_gate(inv, artifact_path, inventory)` s
 The applied four-file authority package passed goal-backward, compile/API, and security review; the final security register closed T01–T10 plus parser/materializer injection, path escape, and rollback threats. Current execution uses F-only project/build/temp roots; the product contract does not hardcode a host drive. Two accidental agent edits to rollback-only D mirrors were precisely reverse-patched; the D `GOALS.md` pre-edit SHA was restored exactly, and the D WP12 agent markers were removed by recorded reverse patches. Neither D file is authority or promotion input.
 
 No WP-5/WP-6, DeepSeek harness, profiles, memory, MCP-server, external-agent, or other expansion scope is granted by this reconciliation.
+
+- P3/03-03: pin the host-ingest row-mapping contract (which user turns/tool outputs become Episode, Fact, Decision, or Procedure rows, including ids and validity timestamps) before wiring automatic direct writes; the crate-private tier-preserving host boundary exists, but inventing extraction semantics is forbidden by D3-08.
