@@ -60,6 +60,62 @@ where
     D: nano_agent::turn::ModelDriver,
     T: nano_agent::turn::ToolExecutor,
 {
+    run_exec_with_bootstrap_hook(
+        sessions_dir,
+        nano_home,
+        workspace,
+        params,
+        activation,
+        model_name,
+        make_driver,
+        make_ladder_driver,
+        make_tools,
+        web_search_backed,
+        sandbox_available,
+        mcp_specs,
+        routing,
+        out,
+        || Ok(()),
+    )
+    .await
+}
+
+/// Dependency-injected form of [`run_exec_with`] used by the entrypoint
+/// contract tests. The production wrapper supplies an infallible hook.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_exec_with_bootstrap_hook<W, FD, FD2, FT, D, T, FB>(
+    sessions_dir: &Path,
+    nano_home: &Path,
+    workspace: &Path,
+    params: &ExecParams,
+    activation: Option<(
+        crate::activation::SharedAdmission,
+        nano_activation::admission::AdmittedToken,
+    )>,
+    model_name: &str,
+    make_driver: FD,
+    make_ladder_driver: FD2,
+    make_tools: FT,
+    web_search_backed: bool,
+    sandbox_available: bool,
+    mcp_specs: &[nano_agent::mcp::McpServerSpec],
+    routing: &crate::exec_mode::ExecRouting,
+    out: W,
+    before_memory_policy: FB,
+) -> i32
+where
+    W: Write + Send,
+    FD: Fn() -> D,
+    FD2: Fn() -> D,
+    FT: Fn(&Path, PermissionMode) -> (T, nano_core::permissions::FileSystemSandboxPolicy),
+    D: nano_agent::turn::ModelDriver,
+    T: nano_agent::turn::ToolExecutor,
+    FB: FnOnce() -> std::io::Result<()>,
+{
+    // RED harness state: the production bootstrap does not consume this
+    // injection until the corresponding GREEN change lands.
+    let _ = before_memory_policy;
     // 1. Resolve + bootstrap the session (the ONE honest bootstrap path).
     let (seed, resumed) = match crate::exec_mode::resolve_seed(sessions_dir, &params.resume) {
         Ok(seed) => seed,

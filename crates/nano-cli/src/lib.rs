@@ -2,6 +2,8 @@
 //! integration tests can drive it in-process with scripted model/tool
 //! doubles. The binaries (`wayland-nano`, `wayland-nano-acp-profile`) stay thin.
 
+extern crate self as nano_cli;
+
 pub mod acp_mode;
 pub mod activation;
 pub mod auth_cmds;
@@ -11,6 +13,7 @@ pub mod exec_mode;
 pub mod exec_run;
 pub mod fetch_specs;
 pub mod flux_key;
+pub mod host_mode;
 pub mod mcp_specs;
 pub mod memory_policy;
 pub mod memory_seam;

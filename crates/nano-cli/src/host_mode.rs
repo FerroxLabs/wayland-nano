@@ -64,16 +64,6 @@ pub async fn run(
                 )));
             }
         };
-    if activation_gate
-        .bind_session(&activation_token, "protocol-host")
-        .is_err()
-        || activation_gate.recheck_session("protocol-host").is_err()
-        || activation_gate
-            .mark_dispatch_eligible(&activation_token)
-            .is_err()
-    {
-        return Ok(HostExit::Fatal("activation session binding failed".into()));
-    }
     let Some(api_key) = nano_cli::flux_key::flux_api_key() else {
         eprintln!(
             "wayland-nano: FLUX_API_KEY (or FLUX_API_KEY_FILE) is required for protocol-host mode"
@@ -153,6 +143,65 @@ pub async fn run(
         FluxCompletionsClient::new(EgressClient::new(driver_policy)),
         api_key,
     );
+
+    let stdin = std::io::stdin();
+    let mut reader = stdin.lock();
+    let stdout = std::io::stdout();
+    let mut writer = stdout.lock();
+    run_admitted_with(
+        nano_home,
+        workspace,
+        activation_gate,
+        activation_token,
+        driver,
+        executor,
+        search.is_some(),
+        mcp_specs,
+        &mut reader,
+        &mut writer,
+        || Ok(()),
+    )
+    .await
+}
+
+/// The protocol-host production core with transport/model/tool dependencies
+/// injected for offline entrypoint evidence.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_admitted_with<R, W, D, T, FB>(
+    nano_home: &std::path::Path,
+    workspace: &std::path::Path,
+    activation_gate: nano_cli::activation::SharedAdmission,
+    activation_token: nano_activation::admission::AdmittedToken,
+    driver: D,
+    executor: T,
+    web_search_backed: bool,
+    mcp_specs: Vec<nano_agent::mcp::McpServerSpec>,
+    reader: &mut R,
+    writer: &mut W,
+    before_memory_policy: FB,
+) -> std::io::Result<HostExit>
+where
+    R: std::io::BufRead,
+    W: std::io::Write,
+    D: nano_agent::turn::ModelDriver,
+    T: nano_agent::turn::ToolExecutor,
+    FB: FnOnce() -> std::io::Result<()>,
+{
+    // RED harness state: the production bootstrap does not consume this
+    // injection until the corresponding GREEN change lands.
+    let _ = before_memory_policy;
+    if activation_gate
+        .bind_session(&activation_token, "protocol-host")
+        .is_err()
+        || activation_gate.recheck_session("protocol-host").is_err()
+        || activation_gate
+            .mark_dispatch_eligible(&activation_token)
+            .is_err()
+    {
+        return Ok(HostExit::Fatal("activation session binding failed".into()));
+    }
+    let capabilities = activation_token.policy().capabilities();
 
     // C10: the session-owned tools need a session cell set even here (the
     // protocol host has no ACP session — one fixed id journals todo/plan
@@ -349,7 +398,7 @@ pub async fn run(
     }
     let skill_context = nano_agent::skills::prepare_skill_context(&skill_roots);
 
-    let mut tool_definitions = v1_tool_definitions(search.is_some(), false);
+    let mut tool_definitions = v1_tool_definitions(web_search_backed, false);
     tool_definitions.retain(|definition| {
         let needed = match definition.name.as_str() {
             "fs_read" | "fs_list" | "search" | "repo_map" | "view_image" => {
@@ -433,12 +482,8 @@ pub async fn run(
     let todo_cell = todos;
 
     let config = HostConfig::default();
-    let stdin = std::io::stdin();
-    let mut reader = stdin.lock();
-    let stdout = std::io::stdout();
-    let mut writer = stdout.lock();
 
-    run_host_loop(&mut reader, &mut writer, &config, |msg_id, content| {
+    run_host_loop(reader, writer, &config, |msg_id, content| {
         let engine = &engine;
         let skill_context = std::sync::Arc::clone(&skill_context);
         let plan_cell = plan_cell.clone();
