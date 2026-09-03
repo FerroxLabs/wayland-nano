@@ -23,6 +23,7 @@ key-files:
     - crates/nano-cli/tests/activation_memory_seam.rs
   modified:
     - crates/nano-cli/src/acp_mode.rs
+    - crates/nano-cli/src/activation.rs
     - crates/nano-cli/src/host_mode.rs
     - crates/nano-cli/src/exec_run.rs
     - crates/nano-session/src/op.rs
@@ -61,13 +62,13 @@ coverage:
     requirement: REQ-MEM-02
     verification:
       - kind: integration
-        ref: crates/nano-cli/tests/activation_memory_seam.rs#scoped_executor_mediates_proposals_and_denies_legacy_names
+        ref: crates/nano-cli/src/memory_seam.rs#tests::every_model_proposal_overwrites_foreign_partition_before_mediation
         status: pass
       - kind: integration
-        ref: crates/nano-cli/tests/activation_memory_seam.rs#seam_open_refuses_an_unconfigured_agent
+        ref: crates/nano-cli/src/memory_seam.rs#tests::bootstrap_orders_policy_after_begin_and_enforces_fallback_before_effects
         status: pass
     human_judgment: false
-duration: 1h 20m
+duration: 2h 15m
 completed: 2026-09-03
 status: complete
 ---
@@ -78,7 +79,7 @@ status: complete
 
 ## Performance
 
-- **Duration:** 1h 20m
+- **Duration:** 2h 15m
 - **Started:** 2026-09-03T04:19:00Z
 - **Completed:** 2026-09-03T05:39:35Z
 - **Tasks:** 3
@@ -90,6 +91,7 @@ status: complete
 - Added fresh per-prompt scoped retrieval, `memory_recall`, and mediation-only `memory_propose` across ACP new/load, protocol-host, and exec fresh/resume.
 - Extended `MemoryPolicyResolved` additively with optional project/agent attribution while new records require project, agent, and actual runtime session id.
 - Preserved default-off quarantine and grew `activation_quarantine` from five to six rows; no existing row was removed.
+- Bound proposal partitions to an opaque admission-derived identity for all four write kinds, centralized typed fallback/degradation handling, and added cross-project/cross-agent recall oracles.
 
 ## Task Commits
 
@@ -98,6 +100,10 @@ status: complete
 3. **Task 2 GREEN: Wire authenticated ACP seam** — `a30a4a7`
 4. **Task 3: Wire protocol-host and exec** — `d5431c4`
 5. **Task 3 corrective: Keep rebuild authority explicit** — `ed8f938`
+6. **Corrective RED: Expose proposal partition escape** — `f1f4413`
+7. **Corrective GREEN: Bind scoped memory authority** — `8bbc162`
+8. **Corrective evidence: Prove startup ordering and fallback** — `7fc5630`
+9. **Scope disposition: Pin host-ingest mapping follow-up** — `c0e57b8`
 
 ## Decisions Made
 
@@ -107,7 +113,8 @@ status: complete
 
 ## Verification
 
-- `activation_memory_seam`: 5/5 passed.
+- `activation_memory_seam`: 3/3 passed.
+- `memory_seam::tests`: 5/5 passed, covering four-kind identity rebinding, host-tier preservation/model-direct refusal, cross-partition recall, exact policy ordering, both fallbacks, and append failure before store effects.
 - `activation_quarantine`: 6/6 passed (previous five rows unchanged).
 - `activation_admission`: 3/3 passed.
 - `corrective_regressions`: 9/9 passed.
@@ -129,9 +136,18 @@ status: complete
 
 **Total deviations:** 1 auto-fixed Rule 1 correctness issue. No scope expansion.
 
+### Corrective audit closure
+
+- `AdmittedMemoryIdentity` is constructed only from `AdmittedToken` in `activation.rs`; the seam receives the opaque read-only value.
+- All four model proposal DTOs have project and agent overwritten from that identity before `commit_proposal`.
+- One shared startup path is called by ACP new/load, protocol-host, and exec fresh/resume; its behavioral oracle proves `SessionBegin` precedes exactly one attributed policy record, store validation is real, fallback `None` refuses, fallback `Fresh` emits one receipt, and append failure creates no memory DB.
+- Runtime recall failures use the same admitted fallback state stored on the seam; disabled surfaces return `UnknownTool` before argument parsing.
+- The crate-private direct host-write boundary preserves User/ToolOutput tiers and refuses ModelInference. Automatic user-turn/tool-output-to-row mapping is not invented: the plan names origins but does not define row kind, id, validity, or field mapping, while D3-08 forbids extraction. This exact missing contract is recorded in `docs/FOLLOWUPS.md`.
+
 ## Issues Encountered
 
 - The first full gate found the external Desktop checkout's generated error-table mirrors stale. A read-only hash/diff check proved this plan changed no error-kind source or canonical artifact. An isolated generator probe passed Nano and shared targets, and the final full gate passed with `NANO_ERROR_TABLE_DESKTOP_DIR` directed to an empty in-worktree probe directory; no Desktop file was modified.
+- The original review relied on a new source-string quarantine assertion. It was replaced with a behavior test that executes every new and legacy memory name through a disabled seam and requires typed `UnknownTool` results.
 
 ## User Setup Required
 
@@ -145,5 +161,5 @@ None.
 ## Self-Check: PASSED
 
 - Decision record and all created source/test files exist.
-- Commits `60c1188`, `a1e2b52`, `a30a4a7`, `d5431c4`, and `ed8f938` are present.
+- Commits through corrective head `c0e57b8` are present.
 - Required focused tests and the final local gate passed.
