@@ -177,6 +177,31 @@ where
             return 2;
         }
     };
+    let memory_seam = match activation_token.as_ref() {
+        Some(token) => {
+            let resolved = match crate::memory_policy::resolve(nano_home) {
+                Ok(policy) => policy,
+                Err(error) => {
+                    eprintln!("wayland-nano: {error}");
+                    return 2;
+                }
+            };
+            match crate::memory_seam::start_for_activation(
+                nano_home,
+                &session.session_id,
+                token,
+                &resolved,
+                &journal,
+            ) {
+                Ok(seam) => seam,
+                Err(error) => {
+                    eprintln!("wayland-nano: {}", error.message);
+                    return 2;
+                }
+            }
+        }
+        None => None,
+    };
     // S7: open the workspace checkpoint store at this journal-open site and
     // run the kill-mid-restore recovery sweep over the bootstrapped tail
     // BEFORE the first turn — a resumed session's dangling RestoreBegin
@@ -190,7 +215,17 @@ where
         &session.envelopes,
     );
     let journal_sequence = Arc::new(AtomicU64::new(1));
-    let context = crate::acp_mode::messages_from_envelopes(&session.envelopes);
+    let mut context = crate::acp_mode::messages_from_envelopes(&session.envelopes);
+    if let Some(seam) = memory_seam.as_ref() {
+        match seam.recall_block(&params.prompt) {
+            Ok(Some(block)) => context.insert(0, nano_model::types::Message::system(block)),
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("wayland-nano: memory recall failed: {error}");
+                return 2;
+            }
+        }
+    }
 
     // P5 §4.1: reconcile a kill-interrupted routed turn — journal the §3.5
     // estimate receipts for in-flight attempts (a consumed attempt is never
@@ -428,7 +463,12 @@ where
         session.session_id.clone(),
         &with_mcp,
     );
+    let with_memory =
+        crate::memory_seam::MemorySeamExecutor::from_optional(memory_seam.as_deref(), &with_mcp);
     let mut extra_definitions = Vec::new();
+    if memory_seam.is_some() {
+        extra_definitions.extend(crate::memory_seam::tool_definitions());
+    }
     // S7: the checkpoint definitions advertise exactly when the store
     // opened — the executor wrap above is the servicing half of the same
     // condition.
@@ -533,7 +573,7 @@ where
         };
         let outcome = run_plain_turn(
             &driver,
-            &with_mcp,
+            &with_memory,
             &gate,
             model_name,
             &session,
@@ -607,7 +647,7 @@ where
 
     let control = GoalControl::new(&goal_id);
     let executor = GoalToolExecutor::new(
-        &with_mcp,
+        &with_memory,
         Some(control.clone()),
         journal.clone(),
         session.session_id.clone(),
@@ -639,13 +679,19 @@ where
             let journal_path = session.journal_path.clone();
             let gate_ref = &gate;
             let executor_ref = &executor;
+            let memory_seam_now = memory_seam.clone();
             async move {
                 // One honest code path: the turn's context is rebuilt from
                 // the journal, exactly like session/load and acp's
                 // between-turn rebuild.
-                let context = nano_session::read_journal(&journal_path)
+                let mut context = nano_session::read_journal(&journal_path)
                     .map(|report| crate::acp_mode::messages_from_envelopes(&report.envelopes))
                     .unwrap_or_default();
+                if let Some(seam) = memory_seam_now.as_ref()
+                    && let Ok(Some(block)) = seam.recall_block(&prompt)
+                {
+                    context.insert(0, nano_model::types::Message::system(block));
+                }
                 let turn_id = format!("{}-turn-{}", session_id, counter);
                 let view = BootstrappedSession {
                     session_id,

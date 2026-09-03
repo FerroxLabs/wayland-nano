@@ -171,6 +171,36 @@ pub async fn run(
     let coordinator = nano_session::JournalCoordinator::open(&journal)
         .map(std::sync::Arc::new)
         .map_err(std::io::Error::other)?;
+    let begin_id = format!(
+        "protocol-host-begin-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    coordinator
+        .append(&nano_session::OpEnvelope::new(
+            begin_id,
+            chrono::Utc::now().to_rfc3339(),
+            nano_session::Op::SessionBegin {
+                session_id: "protocol-host".into(),
+                cwd: workspace.display().to_string(),
+            },
+        ))
+        .and_then(|appended| {
+            appended.then_some(()).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::AlreadyExists, "duplicate session begin")
+            })
+        })?;
+    let resolved_memory = nano_cli::memory_policy::resolve(nano_home)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    let memory_seam = match nano_cli::memory_seam::start_for_activation(
+        nano_home,
+        "protocol-host",
+        &activation_token,
+        &resolved_memory,
+        &coordinator,
+    ) {
+        Ok(seam) => seam,
+        Err(error) => return Ok(HostExit::Fatal(error.message)),
+    };
     // S7: open the workspace checkpoint store at this journal-open site and
     // run the kill-mid-restore recovery sweep over the persisted tail (this
     // host's journal is a fixed name, so a kill-mid-restore from a previous
@@ -291,7 +321,15 @@ pub async fn run(
     // Phase 2: protocol-host is persistent and authenticated, but legacy
     // filesystem/T2 memory remains quarantined until its later migration.
     // Keep a forced-call backstop without opening the store.
-    let executor = nano_agent::memory::MemoryToolExecutor::quarantined(executor);
+    let quarantined_memory;
+    let scoped_memory;
+    let executor: &dyn nano_agent::turn::ToolExecutor = if let Some(seam) = memory_seam.as_deref() {
+        scoped_memory = nano_cli::memory_seam::MemorySeamExecutor::new(seam, executor);
+        &scoped_memory
+    } else {
+        quarantined_memory = nano_agent::memory::MemoryToolExecutor::quarantined(executor);
+        &quarantined_memory
+    };
 
     // Skills: default roots are <nano_home>/skills and <workspace>/.nano/skills;
     // installed skills plugins join the same discovery roots. Same fail-closed
@@ -323,6 +361,9 @@ pub async fn run(
         needed.is_none_or(|capability| capabilities.contains(&capability))
     });
     tool_definitions.extend(mcp_definitions);
+    if memory_seam.is_some() {
+        tool_definitions.extend(nano_cli::memory_seam::tool_definitions());
+    }
     {
         let registry = mcp_registry.lock().unwrap_or_else(|p| p.into_inner());
         let listing = registry
@@ -400,11 +441,17 @@ pub async fn run(
         let skill_context = std::sync::Arc::clone(&skill_context);
         let plan_cell = plan_cell.clone();
         let todo_cell = todo_cell.clone();
+        let turn_memory_seam = memory_seam.clone();
         async move {
             // C10: the AGENTS.md block is re-read every turn, the plan
             // instructions ride while the posture is active, and the todo
             // list renders while non-empty.
             let mut context = Vec::new();
+            if let Some(seam) = turn_memory_seam.as_ref()
+                && let Ok(Some(block)) = seam.recall_block(&content)
+            {
+                context.push(nano_model::types::Message::system(block));
+            }
             if let Some(message) = nano_agent::skills::prepare_agents_md_context(workspace) {
                 context.push(message);
             }

@@ -218,21 +218,32 @@ pub fn append_policy_audit(
     agent_id: &str,
     session_id: &str,
 ) -> std::io::Result<bool> {
+    let now = chrono::Utc::now();
     coordinator.append(&OpEnvelope::new(
-        format!("{session_id}-memory-policy-1"),
-        chrono::Utc::now().to_rfc3339(),
+        format!(
+            "{session_id}-memory-policy-{}",
+            now.timestamp_nanos_opt().unwrap_or_default()
+        ),
+        now.to_rfc3339(),
         policy_audit_op(policy, project, agent_id, session_id),
     ))
 }
 
 #[derive(Debug)]
 pub struct MemorySeamExecutor<'a> {
-    seam: &'a MemorySeam,
+    seam: Option<&'a MemorySeam>,
     inner: &'a dyn ToolExecutor,
 }
 
 impl<'a> MemorySeamExecutor<'a> {
     pub fn new(seam: &'a MemorySeam, inner: &'a dyn ToolExecutor) -> Self {
+        Self {
+            seam: Some(seam),
+            inner,
+        }
+    }
+
+    pub fn from_optional(seam: Option<&'a MemorySeam>, inner: &'a dyn ToolExecutor) -> Self {
         Self { seam, inner }
     }
 
@@ -255,21 +266,31 @@ impl ToolExecutor for MemorySeamExecutor<'_> {
                 .get("query")
                 .and_then(serde_json::Value::as_str)
             {
-                Some(query) => match self.seam.recall_block(query) {
-                    Ok(block) => ToolOutcome {
-                        ok: true,
-                        output: block.unwrap_or_default(),
-                        progress: ProgressSignals {
-                            new_information: true,
-                            ..Default::default()
+                Some(query) => match self.seam {
+                    None => Self::error(
+                        "memory continuity is unavailable",
+                        NanoErrorKind::UnknownTool,
+                    ),
+                    Some(seam) => match seam.recall_block(query) {
+                        Ok(block) => ToolOutcome {
+                            ok: true,
+                            output: block.unwrap_or_default(),
+                            progress: ProgressSignals {
+                                new_information: true,
+                                ..Default::default()
+                            },
+                            error_kind: None,
                         },
-                        error_kind: None,
+                        Err(error) => Self::error(error.to_string(), NanoErrorKind::InvalidParams),
                     },
-                    Err(error) => Self::error(error.to_string(), NanoErrorKind::InvalidParams),
                 },
                 None => Self::error("missing query", NanoErrorKind::InvalidParams),
             },
-            "memory_propose" => match self.seam.propose(&call.arguments) {
+            "memory_propose" if self.seam.is_none() => Self::error(
+                "memory continuity is unavailable",
+                NanoErrorKind::UnknownTool,
+            ),
+            "memory_propose" => match self.seam.expect("guarded above").propose(&call.arguments) {
                 Ok(receipt) => ToolOutcome {
                     ok: true,
                     output: receipt,
