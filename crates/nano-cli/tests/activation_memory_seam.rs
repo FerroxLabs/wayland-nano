@@ -1217,6 +1217,172 @@ fn acp_load_policy_append_failure_stops_before_model_tool_or_memory_effect() {
     assert_eq!(last_begin, rows.len() - 1);
 }
 
+#[test]
+fn acp_runtime_none_refuses_before_model_or_memory_write() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let workspace = home.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let activation = ActivationFixture::new(home);
+    let model = CaptureModel::scripted(vec![text_response("must not run")]);
+    let tools = CaptureTools::default();
+    let harness = AcpHarness::spawn(
+        home,
+        &workspace,
+        activation.gate.clone(),
+        model.clone(),
+        tools.clone(),
+        false,
+    );
+    let created = harness.signed_request(
+        27,
+        activation.frame(
+            27,
+            "session/new",
+            "acp-runtime-none",
+            "memory_recall",
+            "none",
+            None,
+            None,
+            &workspace,
+        ),
+    );
+    let session_id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let response = harness.request(
+        28,
+        "session/prompt",
+        serde_json::json!({
+            "sessionId": session_id,
+            "prompt": [{"type":"text","text":"runtime none"}]
+        }),
+    );
+    assert_eq!(
+        response["error"]["data"]["nanoError"]["kind"],
+        serde_json::json!(NanoErrorKind::ActivationContinuityNotEnabled)
+    );
+    harness.shutdown();
+    assert_eq!(model.calls.load(Ordering::SeqCst), 0);
+    assert!(tools.calls.lock().unwrap().is_empty());
+    let session_rows = read_journal(&home.join("sessions").join(format!("{session_id}.jsonl")))
+        .unwrap()
+        .envelopes;
+    assert_eq!(
+        session_rows
+            .iter()
+            .filter(|row| matches!(row.op, Op::MemoryWriteReceipt { .. }))
+            .count(),
+        0
+    );
+    let memory_rows = read_journal(&home.join("memory.jsonl")).unwrap().envelopes;
+    assert!(memory_rows.is_empty());
+}
+
+#[test]
+fn acp_runtime_fresh_journals_once_and_calls_model() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let workspace = home.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let activation = ActivationFixture::new(home);
+    let model = CaptureModel::scripted(vec![text_response("continued fresh")]);
+    let tools = CaptureTools::default();
+    let harness = AcpHarness::spawn(
+        home,
+        &workspace,
+        activation.gate.clone(),
+        model.clone(),
+        tools.clone(),
+        false,
+    );
+    let created = harness.signed_request(
+        29,
+        activation.frame(
+            29,
+            "session/new",
+            "acp-runtime-fresh",
+            "memory_recall",
+            "fresh",
+            None,
+            None,
+            &workspace,
+        ),
+    );
+    let session_id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let response = harness.request(
+        30,
+        "session/prompt",
+        serde_json::json!({
+            "sessionId": session_id,
+            "prompt": [{"type":"text","text":"runtime fresh"}]
+        }),
+    );
+    assert!(response.get("result").is_some(), "{response}");
+    harness.shutdown();
+    assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+    assert!(tools.calls.lock().unwrap().is_empty());
+    let rows = read_journal(&home.join("sessions").join(format!("{session_id}.jsonl")))
+        .unwrap()
+        .envelopes;
+    assert_eq!(
+        rows.iter()
+            .filter(|row| matches!(row.op, Op::MemoryWriteReceipt { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn acp_runtime_fallback_append_failure_is_loud_before_model() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let workspace = home.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let activation = ActivationFixture::new(home);
+    let model = CaptureModel::scripted(vec![text_response("must not run")]);
+    let tools = CaptureTools::default();
+    let harness = AcpHarness::spawn(
+        home,
+        &workspace,
+        activation.gate.clone(),
+        model.clone(),
+        tools.clone(),
+        false,
+    );
+    let created = harness.signed_request(
+        31,
+        activation.frame(
+            31,
+            "session/new",
+            "acp-runtime-fallback-append-fail",
+            "memory_recall",
+            "fresh",
+            None,
+            None,
+            &workspace,
+        ),
+    );
+    let session_id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let journal = home.join("sessions").join(format!("{session_id}.jsonl"));
+    std::fs::remove_file(&journal).unwrap();
+    let response = harness.request(
+        32,
+        "session/prompt",
+        serde_json::json!({
+            "sessionId": session_id,
+            "prompt": [{"type":"text","text":"fallback append failure"}]
+        }),
+    );
+    assert_eq!(
+        response["error"]["data"]["nanoError"]["kind"],
+        serde_json::json!(NanoErrorKind::JournalUnavailable)
+    );
+    harness.shutdown();
+    assert_eq!(model.calls.load(Ordering::SeqCst), 0);
+    assert!(tools.calls.lock().unwrap().is_empty());
+    let memory_rows = read_journal(&home.join("memory.jsonl")).unwrap().envelopes;
+    assert!(memory_rows.is_empty());
+}
+
 #[tokio::test]
 async fn exec_fresh_runs_real_memory_surface_and_host_ingest() {
     let temp = tempfile::tempdir().unwrap();
