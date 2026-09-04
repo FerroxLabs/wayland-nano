@@ -1,5 +1,6 @@
 use nano_memory::*;
-use nano_session::{JournalWriter, Op, OpEnvelope};
+use nano_session::{JournalWriter, Op, OpEnvelope, read_journal};
+use serde::Deserialize;
 
 fn configured() -> ConfiguredAgents {
     ConfiguredAgents::try_from_ids(["agent-a".to_owned(), "agent-b".to_owned()]).unwrap()
@@ -498,4 +499,139 @@ fn local_temp_paths_are_accepted_and_network_forms_are_refused() {
         };
         assert!(matches!(error, MemoryError::NetworkFilesystem));
     }
+}
+
+#[derive(Deserialize)]
+struct RecallFixture {
+    facts: Vec<FactWrite>,
+    decisions: Vec<DecisionWrite>,
+    queries: Vec<RecallQuery>,
+}
+
+#[derive(Deserialize)]
+struct RecallQuery {
+    text: String,
+    project: String,
+    agent_id: String,
+}
+
+fn recall_fixture() -> RecallFixture {
+    serde_json::from_str(include_str!(
+        "../../../gates/fixtures/memory-retrieval-recall-v1/fixture.json"
+    ))
+    .unwrap()
+}
+
+fn fixture_query_ids(store: &MemoryStore, fixture: &RecallFixture) -> Vec<Vec<String>> {
+    fixture
+        .queries
+        .iter()
+        .map(|query| {
+            store
+                .retrieve(&RetrieveQuery {
+                    text: query.text.clone(),
+                    project: query.project.clone(),
+                    agent_id: query.agent_id.clone(),
+                    agent_scope: AgentScope::Own,
+                    limit: 10,
+                    token_budget: 4_096,
+                    min_tier: SourceTrust::ModelInference,
+                })
+                .unwrap()
+                .into_iter()
+                .map(|hit| hit.id)
+                .collect()
+        })
+        .collect()
+}
+
+fn fixture_receipts(path: &std::path::Path) -> Vec<(String, String, String)> {
+    read_journal(path)
+        .unwrap()
+        .envelopes
+        .into_iter()
+        .filter_map(|entry| match entry.op {
+            Op::MemoryWriteReceipt {
+                write_id,
+                agent_id,
+                message,
+            } => Some((write_id, agent_id, message)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn dedicated_journal_rebuild_matches_live_fixture_queries_and_attribution() {
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = recall_fixture();
+    let live_db = temp.path().join("live.db");
+    let journal = temp.path().join("memory.jsonl");
+    let configured_agents =
+        ConfiguredAgents::try_from_ids(["bot-a".to_owned(), "bot-b".to_owned()]).unwrap();
+    let (expected_queries, expected_facts, expected_receipts);
+    {
+        let mut live = MemoryStore::open_at(
+            &live_db,
+            &journal,
+            MemoryPolicy::default(),
+            "main",
+            configured_agents.clone(),
+        )
+        .unwrap();
+        for decision in &fixture.decisions {
+            if decision.source_trust == SourceTrust::ModelInference {
+                live.commit_proposal(MemoryProposal {
+                    kind: ProposalKind::Decision(decision.clone()),
+                })
+                .unwrap();
+            } else {
+                live.write_decision(decision.clone()).unwrap();
+            }
+        }
+        for fact in &fixture.facts {
+            if fact.source_trust == SourceTrust::ModelInference {
+                live.commit_proposal(MemoryProposal {
+                    kind: ProposalKind::Fact(fact.clone()),
+                })
+                .unwrap();
+            } else {
+                live.write_fact(fact.clone()).unwrap();
+            }
+        }
+        expected_queries = fixture_query_ids(&live, &fixture);
+        expected_facts = live.current_facts().unwrap();
+        expected_receipts = fixture_receipts(&journal);
+    }
+    assert!(!expected_receipts.is_empty(), "fixture mediation receipts");
+
+    let rebuilt_db = temp.path().join("rebuilt.db");
+    rebuild_from_journals(
+        &rebuilt_db,
+        std::slice::from_ref(&journal),
+        MemoryPolicy::default(),
+        configured_agents.clone(),
+    )
+    .unwrap();
+    let rebuilt = MemoryStore::open_at(
+        &rebuilt_db,
+        &temp.path().join("inspect.jsonl"),
+        MemoryPolicy::default(),
+        "main",
+        configured_agents,
+    )
+    .unwrap();
+
+    let rebuilt_facts = rebuilt.current_facts().unwrap();
+    assert_eq!(rebuilt_facts, expected_facts);
+    for (rebuilt, expected) in rebuilt_facts.iter().zip(&expected_facts) {
+        assert_eq!(rebuilt.id, expected.id);
+        assert_eq!(rebuilt.valid_from, expected.valid_from);
+        assert_eq!(rebuilt.valid_to, expected.valid_to);
+        assert_eq!(rebuilt.source_trust, expected.source_trust);
+        assert_eq!(rebuilt.project, expected.project);
+        assert_eq!(rebuilt.agent_id, expected.agent_id);
+    }
+    assert_eq!(fixture_query_ids(&rebuilt, &fixture), expected_queries);
+    assert_eq!(fixture_receipts(&journal), expected_receipts);
 }
