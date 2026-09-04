@@ -20,6 +20,26 @@ impl ToolExecutor for NoInner {
     }
 }
 
+#[tokio::test]
+async fn disabled_or_unauthenticated_seam_exposes_no_memory_tool() {
+    let executor = nano_cli::memory_seam::MemorySeamExecutor::from_optional(None, &NoInner);
+    for name in [
+        "memory_recall",
+        "memory_propose",
+        "memory_list",
+        "memory_read",
+        "memory_save",
+        "memory_delete",
+    ] {
+        let outcome = executor.execute(&call(name, serde_json::json!({}))).await;
+        assert!(!outcome.ok, "{name}");
+        assert_eq!(
+            outcome.error_kind,
+            Some(nano_session::NanoErrorKind::UnknownTool)
+        );
+    }
+}
+
 fn call(name: &str, arguments: serde_json::Value) -> ToolCall {
     ToolCall {
         id: "forced".into(),

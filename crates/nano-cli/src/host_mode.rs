@@ -10,7 +10,7 @@ use nano_model::flux_completions::FluxCompletionsClient;
 use nano_model::types::Usage;
 pub use nano_protocol::host::HostExit;
 use nano_protocol::host::{HostConfig, run_host_loop};
-use nano_protocol::messages::Event;
+use nano_protocol::messages::{ErrorBody, Event};
 use nano_tools::fs::FsTools;
 use nano_tools::shell::ShellTool;
 use std::sync::{Arc, Mutex};
@@ -154,6 +154,65 @@ pub async fn run(
         api_key,
     );
 
+    let stdin = std::io::stdin();
+    let mut reader = stdin.lock();
+    let stdout = std::io::stdout();
+    let mut writer = stdout.lock();
+    run_admitted_with(
+        nano_home,
+        workspace,
+        activation_gate,
+        activation_token,
+        true,
+        driver,
+        executor,
+        search.is_some(),
+        mcp_specs,
+        &mut reader,
+        &mut writer,
+        || Ok(()),
+    )
+    .await
+}
+
+/// The protocol-host production core with transport/model/tool dependencies
+/// injected for offline entrypoint evidence.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_admitted_with<R, W, D, T, FB>(
+    nano_home: &std::path::Path,
+    workspace: &std::path::Path,
+    activation_gate: nano_cli::activation::SharedAdmission,
+    activation_token: nano_activation::admission::AdmittedToken,
+    activation_is_bound: bool,
+    driver: D,
+    executor: T,
+    web_search_backed: bool,
+    mcp_specs: Vec<nano_agent::mcp::McpServerSpec>,
+    reader: &mut R,
+    writer: &mut W,
+    before_memory_policy: FB,
+) -> std::io::Result<HostExit>
+where
+    R: std::io::BufRead,
+    W: std::io::Write,
+    D: nano_agent::turn::ModelDriver,
+    T: nano_agent::turn::ToolExecutor,
+    FB: FnOnce() -> std::io::Result<()>,
+{
+    if !activation_is_bound
+        && (activation_gate
+            .bind_session(&activation_token, "protocol-host")
+            .is_err()
+            || activation_gate.recheck_session("protocol-host").is_err()
+            || activation_gate
+                .mark_dispatch_eligible(&activation_token)
+                .is_err())
+    {
+        return Ok(HostExit::Fatal("activation session binding failed".into()));
+    }
+    let capabilities = activation_token.policy().capabilities();
+
     // C10: the session-owned tools need a session cell set even here (the
     // protocol host has no ACP session — one fixed id journals todo/plan
     // ops under nano_home/sessions, journal-first exactly like acp-host).
@@ -171,6 +230,38 @@ pub async fn run(
     let coordinator = nano_session::JournalCoordinator::open(&journal)
         .map(std::sync::Arc::new)
         .map_err(std::io::Error::other)?;
+    let begin_id = format!(
+        "protocol-host-begin-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    coordinator
+        .append(&nano_session::OpEnvelope::new(
+            begin_id,
+            chrono::Utc::now().to_rfc3339(),
+            nano_session::Op::SessionBegin {
+                session_id: "protocol-host".into(),
+                cwd: workspace.display().to_string(),
+            },
+        ))
+        .and_then(|appended| {
+            appended.then_some(()).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::AlreadyExists, "duplicate session begin")
+            })
+        })?;
+    let resolved_memory = nano_cli::memory_policy::resolve(nano_home)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    let memory_seam = match nano_cli::memory_seam::start_entrypoint_after_begin(
+        nano_home,
+        "protocol-host",
+        &activation_token,
+        &resolved_memory,
+        coordinator.clone(),
+        before_memory_policy,
+        |_| {},
+    ) {
+        Ok(seam) => seam,
+        Err(error) => return Ok(HostExit::Fatal(error.message)),
+    };
     // S7: open the workspace checkpoint store at this journal-open site and
     // run the kill-mid-restore recovery sweep over the persisted tail (this
     // host's journal is a fixed name, so a kill-mid-restore from a previous
@@ -291,7 +382,15 @@ pub async fn run(
     // Phase 2: protocol-host is persistent and authenticated, but legacy
     // filesystem/T2 memory remains quarantined until its later migration.
     // Keep a forced-call backstop without opening the store.
-    let executor = nano_agent::memory::MemoryToolExecutor::quarantined(executor);
+    let quarantined_memory;
+    let scoped_memory;
+    let executor: &dyn nano_agent::turn::ToolExecutor = if let Some(seam) = memory_seam.as_deref() {
+        scoped_memory = nano_cli::memory_seam::MemorySeamExecutor::new(seam, executor);
+        &scoped_memory
+    } else {
+        quarantined_memory = nano_agent::memory::MemoryToolExecutor::quarantined(executor);
+        &quarantined_memory
+    };
 
     // Skills: default roots are <nano_home>/skills and <workspace>/.nano/skills;
     // installed skills plugins join the same discovery roots. Same fail-closed
@@ -309,7 +408,7 @@ pub async fn run(
     }
     let skill_context = nano_agent::skills::prepare_skill_context(&skill_roots);
 
-    let mut tool_definitions = v1_tool_definitions(search.is_some(), false);
+    let mut tool_definitions = v1_tool_definitions(web_search_backed, false);
     tool_definitions.retain(|definition| {
         let needed = match definition.name.as_str() {
             "fs_read" | "fs_list" | "search" | "repo_map" | "view_image" => {
@@ -323,6 +422,9 @@ pub async fn run(
         needed.is_none_or(|capability| capabilities.contains(&capability))
     });
     tool_definitions.extend(mcp_definitions);
+    if memory_seam.is_some() {
+        tool_definitions.extend(nano_cli::memory_seam::tool_definitions());
+    }
     {
         let registry = mcp_registry.lock().unwrap_or_else(|p| p.into_inner());
         let listing = registry
@@ -390,21 +492,62 @@ pub async fn run(
     let todo_cell = todos;
 
     let config = HostConfig::default();
-    let stdin = std::io::stdin();
-    let mut reader = stdin.lock();
-    let stdout = std::io::stdout();
-    let mut writer = stdout.lock();
 
-    run_host_loop(&mut reader, &mut writer, &config, |msg_id, content| {
+    run_host_loop(reader, writer, &config, |msg_id, content| {
         let engine = &engine;
         let skill_context = std::sync::Arc::clone(&skill_context);
         let plan_cell = plan_cell.clone();
         let todo_cell = todo_cell.clone();
+        let turn_memory_seam = memory_seam.clone();
         async move {
             // C10: the AGENTS.md block is re-read every turn, the plan
             // instructions ride while the posture is active, and the todo
             // list renders while non-empty.
             let mut context = Vec::new();
+            if let Some(seam) = turn_memory_seam.as_ref() {
+                match seam.context_block(&content) {
+                    Ok(Some(block)) => {
+                        context.push(nano_model::types::Message::system(block));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let code = serde_json::to_value(error.kind)
+                            .ok()
+                            .and_then(|value| value.as_str().map(str::to_owned))
+                            .unwrap_or_else(|| "activation_continuity_not_enabled".into());
+                        return (
+                            vec![Event::Error {
+                                error: ErrorBody {
+                                    code,
+                                    message: format!("memory recall failed: {error}"),
+                                    retryable: false,
+                                },
+                                msg_id,
+                            }],
+                            Option::<Usage>::None,
+                            "error".into(),
+                        );
+                    }
+                }
+                if let Err(error) = seam.ingest_user_turn(&msg_id, &content) {
+                    let code = serde_json::to_value(error.kind)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                        .unwrap_or_else(|| "continuity_not_enabled".into());
+                    return (
+                        vec![Event::Error {
+                            error: ErrorBody {
+                                code,
+                                message: error.message,
+                                retryable: false,
+                            },
+                            msg_id,
+                        }],
+                        Option::<Usage>::None,
+                        "error".into(),
+                    );
+                }
+            }
             if let Some(message) = nano_agent::skills::prepare_agents_md_context(workspace) {
                 context.push(message);
             }

@@ -60,6 +60,59 @@ where
     D: nano_agent::turn::ModelDriver,
     T: nano_agent::turn::ToolExecutor,
 {
+    run_exec_with_bootstrap_hook(
+        sessions_dir,
+        nano_home,
+        workspace,
+        params,
+        activation,
+        model_name,
+        make_driver,
+        make_ladder_driver,
+        make_tools,
+        web_search_backed,
+        sandbox_available,
+        mcp_specs,
+        routing,
+        out,
+        || Ok(()),
+    )
+    .await
+}
+
+/// Dependency-injected form of [`run_exec_with`] used by the entrypoint
+/// contract tests. The production wrapper supplies an infallible hook.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_exec_with_bootstrap_hook<W, FD, FD2, FT, D, T, FB>(
+    sessions_dir: &Path,
+    nano_home: &Path,
+    workspace: &Path,
+    params: &ExecParams,
+    activation: Option<(
+        crate::activation::SharedAdmission,
+        nano_activation::admission::AdmittedToken,
+    )>,
+    model_name: &str,
+    make_driver: FD,
+    make_ladder_driver: FD2,
+    make_tools: FT,
+    web_search_backed: bool,
+    sandbox_available: bool,
+    mcp_specs: &[nano_agent::mcp::McpServerSpec],
+    routing: &crate::exec_mode::ExecRouting,
+    out: W,
+    before_memory_policy: FB,
+) -> i32
+where
+    W: Write + Send,
+    FD: Fn() -> D,
+    FD2: Fn() -> D,
+    FT: Fn(&Path, PermissionMode) -> (T, nano_core::permissions::FileSystemSandboxPolicy),
+    D: nano_agent::turn::ModelDriver,
+    T: nano_agent::turn::ToolExecutor,
+    FB: FnOnce() -> std::io::Result<()>,
+{
     // 1. Resolve + bootstrap the session (the ONE honest bootstrap path).
     let (seed, resumed) = match crate::exec_mode::resolve_seed(sessions_dir, &params.resume) {
         Ok(seed) => seed,
@@ -177,6 +230,33 @@ where
             return 2;
         }
     };
+    let memory_seam = match activation_token.as_ref() {
+        Some(token) => {
+            let resolved = match crate::memory_policy::resolve(nano_home) {
+                Ok(policy) => policy,
+                Err(error) => {
+                    eprintln!("wayland-nano: {error}");
+                    return 2;
+                }
+            };
+            match crate::memory_seam::start_entrypoint_after_begin(
+                nano_home,
+                &session.session_id,
+                token,
+                &resolved,
+                journal.clone(),
+                before_memory_policy,
+                |_| {},
+            ) {
+                Ok(seam) => seam,
+                Err(error) => {
+                    eprintln!("wayland-nano: {}", error.message);
+                    return 2;
+                }
+            }
+        }
+        None => None,
+    };
     // S7: open the workspace checkpoint store at this journal-open site and
     // run the kill-mid-restore recovery sweep over the bootstrapped tail
     // BEFORE the first turn — a resumed session's dangling RestoreBegin
@@ -190,7 +270,24 @@ where
         &session.envelopes,
     );
     let journal_sequence = Arc::new(AtomicU64::new(1));
-    let context = crate::acp_mode::messages_from_envelopes(&session.envelopes);
+    let mut context = crate::acp_mode::messages_from_envelopes(&session.envelopes);
+    if let Some(seam) = memory_seam.as_ref() {
+        match seam.context_block(&params.prompt) {
+            Ok(Some(block)) => context.insert(0, nano_model::types::Message::system(block)),
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("wayland-nano: memory recall failed: {error}");
+                return 2;
+            }
+        }
+        if let Err(error) = seam.ingest_user_turn(
+            &format!("{}-turn-{}", session.session_id, session.turn_counter + 1),
+            &params.prompt,
+        ) {
+            eprintln!("wayland-nano: {}", error.message);
+            return 2;
+        }
+    }
 
     // P5 §4.1: reconcile a kill-interrupted routed turn — journal the §3.5
     // estimate receipts for in-flight attempts (a consumed attempt is never
@@ -428,7 +525,12 @@ where
         session.session_id.clone(),
         &with_mcp,
     );
+    let with_memory =
+        crate::memory_seam::MemorySeamExecutor::from_optional(memory_seam.as_deref(), &with_mcp);
     let mut extra_definitions = Vec::new();
+    if memory_seam.is_some() {
+        extra_definitions.extend(crate::memory_seam::tool_definitions());
+    }
     // S7: the checkpoint definitions advertise exactly when the store
     // opened — the executor wrap above is the servicing half of the same
     // condition.
@@ -533,7 +635,7 @@ where
         };
         let outcome = run_plain_turn(
             &driver,
-            &with_mcp,
+            &with_memory,
             &gate,
             model_name,
             &session,
@@ -607,7 +709,7 @@ where
 
     let control = GoalControl::new(&goal_id);
     let executor = GoalToolExecutor::new(
-        &with_mcp,
+        &with_memory,
         Some(control.clone()),
         journal.clone(),
         session.session_id.clone(),
@@ -639,13 +741,45 @@ where
             let journal_path = session.journal_path.clone();
             let gate_ref = &gate;
             let executor_ref = &executor;
+            let memory_seam_now = memory_seam.clone();
             async move {
                 // One honest code path: the turn's context is rebuilt from
                 // the journal, exactly like session/load and acp's
                 // between-turn rebuild.
-                let context = nano_session::read_journal(&journal_path)
+                let mut context = nano_session::read_journal(&journal_path)
                     .map(|report| crate::acp_mode::messages_from_envelopes(&report.envelopes))
                     .unwrap_or_default();
+                if let Some(seam) = memory_seam_now.as_ref() {
+                    match seam.context_block(&prompt) {
+                        Ok(Some(block)) => {
+                            context.insert(0, nano_model::types::Message::system(block));
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            events_now
+                                .lock()
+                                .unwrap_or_else(|poison| poison.into_inner())
+                                .error(&format!("memory recall failed: {error}"));
+                            return GoalTurnOutcome {
+                                stop: nano_agent::goal::GoalTurnStop::Failed,
+                                usage: nano_model::types::Usage::default(),
+                            };
+                        }
+                    }
+                    if seam
+                        .ingest_user_turn(&format!("{}-turn-{counter}", session_id), &prompt)
+                        .is_err()
+                    {
+                        events_now
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner())
+                            .error("memory host ingest failed");
+                        return GoalTurnOutcome {
+                            stop: nano_agent::goal::GoalTurnStop::Failed,
+                            usage: nano_model::types::Usage::default(),
+                        };
+                    }
+                }
                 let turn_id = format!("{}-turn-{}", session_id, counter);
                 let view = BootstrappedSession {
                     session_id,

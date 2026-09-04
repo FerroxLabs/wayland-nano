@@ -366,6 +366,9 @@ struct Session {
     /// Private trusted activation state. Transport parameters/session ids can
     /// never construct this token.
     activation: Option<nano_activation::admission::AdmittedToken>,
+    /// The sole authenticated scoped-memory seam. `None` means this
+    /// activation did not admit memory recall or took its signed fresh fallback.
+    memory_seam: Option<Arc<crate::memory_seam::MemorySeam>>,
     id: String,
     workspace: std::path::PathBuf,
     cancel: Arc<std::sync::atomic::AtomicBool>,
@@ -2318,6 +2321,40 @@ where
                                 )?;
                                 continue;
                             }
+                            let memory_seam = match admitted.as_deref() {
+                                Some(token) => match crate::memory_seam::start_entrypoint_after_begin(
+                                    config.attachment_home,
+                                    &session_id,
+                                    token,
+                                    &config.memory.policy,
+                                    coordinator.clone(),
+                                    || {
+                                        if config.journal_append_failer.is_some_and(|fail| fail()) {
+                                            Err(std::io::Error::other(
+                                                "injected memory policy append failure",
+                                            ))
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
+                                    |_| {},
+                                ) {
+                                    Ok(seam) => seam,
+                                    Err(error) => {
+                                        write_out(
+                                            &out,
+                                            &JsonRpcResponse::err_typed(
+                                                id,
+                                                error.kind,
+                                                error.message,
+                                                NanoErrorExtras::default(),
+                                            ),
+                                        )?;
+                                        continue;
+                                    }
+                                },
+                                None => None,
+                            };
                             // S4 (F-46): SessionStart (startup) — notify,
                             // journaled BEFORE the fold offset is taken
                             // below so the offset sits past these
@@ -2502,6 +2539,7 @@ where
                             );
                             session = Some(Session {
                                 activation: admitted.as_deref().cloned(),
+                                memory_seam,
                                 id: session_id.clone(),
                                 workspace: cwd,
                                 cancel,
@@ -2720,7 +2758,7 @@ where
                                     }
                                 };
                             {
-                                let _ = coordinator.append(&OpEnvelope::new(
+                                let appended = coordinator.append(&OpEnvelope::new(
                                     format!("{session_id}-begin-{}", begin_count + 1),
                                     "now",
                                     Op::SessionBegin {
@@ -2728,7 +2766,47 @@ where
                                         cwd: cwd.display().to_string(),
                                     },
                                 ));
+                                if let Err(err) = appended {
+                                    write_out(&out, &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::JournalUnavailable,
+                                        format!("cannot append resume marker: {err}"),
+                                        NanoErrorExtras::default(),
+                                    ))?;
+                                    continue;
+                                }
                             }
+                            let memory_seam = match admitted.as_deref() {
+                                Some(token) => match crate::memory_seam::start_entrypoint_after_begin(
+                                    config.attachment_home,
+                                    session_id,
+                                    token,
+                                    &config.memory.policy,
+                                    coordinator.clone(),
+                                    || {
+                                        if config.journal_append_failer.is_some_and(|fail| fail()) {
+                                            Err(std::io::Error::other(
+                                                "injected memory policy append failure",
+                                            ))
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
+                                    |_| {},
+                                ) {
+                                    Ok(seam) => seam,
+                                    Err(error) => {
+                                        write_out(&out, &JsonRpcResponse::err_typed(
+                                            id,
+                                            error.kind,
+                                            error.message,
+                                            NanoErrorExtras::default(),
+                                        ))?;
+                                        continue;
+                                    }
+                                },
+                                None => None,
+                            };
                             // S4 (F-46): SessionStart (resume) — notify,
                             // journaled BEFORE the fold offset is taken
                             // below so the offset sits past these
@@ -3016,6 +3094,7 @@ where
                             );
                             session = Some(Session {
                                 activation: admitted.as_deref().cloned(),
+                                memory_seam,
                                 id: session_id.to_string(),
                                 workspace: cwd,
                                 cancel,
@@ -3623,7 +3702,21 @@ where
                             // turn N is visible from turn N+1. Read errors
                             // fail open (no block). The ACP seam has no
                             // skills block, so skills_chars is 0 here.
-                            if active.activation.is_none() && let Some(memory_block) =
+                            if let Some(seam) = active.memory_seam.as_ref() {
+                                match seam.context_block(&turn_input.projection()) {
+                                    Ok(Some(block)) => prior_context.insert(0, Message::system(block)),
+                                    Ok(None) => {}
+                                    Err(error) => {
+                                        write_out(&out, &JsonRpcResponse::err_typed(
+                                            id,
+                                            error.kind,
+                                            format!("memory recall failed: {error}"),
+                                            NanoErrorExtras::default(),
+                                        ))?;
+                                        continue;
+                                    }
+                                }
+                            } else if active.activation.is_none() && let Some(memory_block) =
                                 nano_agent::memory::prepare_memory_context(
                                     &nano_agent::memory::MemoryStore::from_dir(
                                         config.memory.dir.clone(),
@@ -3654,6 +3747,23 @@ where
                                     continue;
                                 }
                             };
+                            if let Some(seam) = active.memory_seam.as_ref()
+                                && let Err(error) = seam.ingest_user_turn(
+                                    &turn_id,
+                                    &turn_input.projection(),
+                                )
+                            {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        error.kind,
+                                        error.message,
+                                        NanoErrorExtras::default(),
+                                    ),
+                                )?;
+                                continue;
+                            }
                             // P3 §3.3: the session's coordinator (opened
                             // fail-closed at session/new|load) is the turn's
                             // append authority — no per-turn writer.
@@ -4263,6 +4373,7 @@ where
                             // executor routes task_* calls through it.
                             let turn_tasks = active.tasks.clone();
                             let activation_token = active.activation.clone();
+                            let turn_memory_seam = active.memory_seam.clone();
                             // P1 §3.2/§4.2: the session meter, rebound per
                             // turn to the resolved binding's pricing
                             // provider (an absent row prices unpriced —
@@ -4510,17 +4621,25 @@ where
                                 // caps). Read tools always; write tools only
                                 // behind the operator opt-in — the listing the
                                 // model sees reflects exactly that.
-                                let memory_executor = if activation_token.is_some() {
-                                    nano_agent::memory::MemoryToolExecutor::quarantined(&mcp_executor)
+                                let legacy_memory_executor;
+                                let scoped_memory_executor;
+                                let memory_executor: &dyn nano_agent::turn::ToolExecutor = if let Some(seam) = turn_memory_seam.as_deref() {
+                                    tool_definitions.extend(crate::memory_seam::tool_definitions());
+                                    scoped_memory_executor = crate::memory_seam::MemorySeamExecutor::new(seam, &mcp_executor);
+                                    &scoped_memory_executor
+                                } else if activation_token.is_some() {
+                                    legacy_memory_executor = nano_agent::memory::MemoryToolExecutor::quarantined(&mcp_executor);
+                                    &legacy_memory_executor
                                 } else {
                                     tool_definitions.extend(
                                         nano_agent::memory::memory_tool_definitions(memory_write),
                                     );
-                                    nano_agent::memory::MemoryToolExecutor::new(
+                                    legacy_memory_executor = nano_agent::memory::MemoryToolExecutor::new(
                                         nano_agent::memory::MemoryStore::from_dir(memory_dir),
                                         memory_write,
                                         &mcp_executor,
-                                    )
+                                    );
+                                    &legacy_memory_executor
                                 };
                                 // S9 §3 (Q3 RULED, strictest-wins): the eight
                                 // CUA tools register ONLY when the session
@@ -4584,7 +4703,7 @@ where
                                 // route questions through the gate's ONE ask
                                 // channel.
                                 let executor = crate::session_tools::SessionTools::new(
-                                    &memory_executor,
+                                    memory_executor,
                                     &gate,
                                     todos_cell,
                                     plan_cell,
@@ -6958,9 +7077,10 @@ impl<W: Write> AcpApproval<W> {
 /// (`fs_write`/`fs_edit`) or executes (`shell`) must ask — and so must every
 /// `mcp__*` call: MCP tools are mutating-unknown, so they never match the
 /// read-only prefixes and always go through the permission gate. C5:
-/// `memory_list`/`memory_read` are read-only; `memory_save`/`memory_delete`
-/// mutate the user-managed store and always ask (under read_only they are
-/// categorically denied, like every other mutation). C6: task polls
+/// `memory_recall` and legacy `memory_list`/`memory_read` are read-only;
+/// `memory_propose`, `memory_save`, and `memory_delete` mutate a store and
+/// always ask (under read_only they are categorically denied, like every
+/// other mutation). C6: task polls
 /// (`task_status`/`task_result`/`task_list`) are read-only; task_spawn,
 /// task_cancel, and task_apply change live state and always ask. P4 §5.5:
 /// `repo_map` is a read-only lexical query (policy-filtered; denied-read
@@ -6973,6 +7093,7 @@ pub fn is_read_only_tool(name: &str) -> bool {
         || name.starts_with("search")
         || name.starts_with("glob")
         || name.starts_with("repo_map")
+        || name == "memory_recall"
         || name.starts_with("memory_list")
         || name.starts_with("memory_read")
         || name.starts_with("task_status")

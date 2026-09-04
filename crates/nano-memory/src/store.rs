@@ -54,7 +54,7 @@ impl MemoryStore {
         let next_op = next_op_id(journal_path)?;
         let db = Connection::open(path)?;
         schema::migrate(&db)?;
-        let mut store = Self {
+        let store = Self {
             db,
             journal: JournalWriter::open(journal_path)?,
             embedder: HashedEmbedder,
@@ -63,7 +63,6 @@ impl MemoryStore {
             next_op,
             _writer_lock: writer_lock,
         };
-        store.append_resolved_policy()?;
         Ok(store)
     }
 
@@ -102,7 +101,7 @@ impl MemoryStore {
         let next_op = next_op_id(journal_path)?;
         let db = Connection::open(db_path)?;
         schema::migrate(&db)?;
-        let mut store = Self {
+        let store = Self {
             db,
             journal: JournalWriter::open(journal_path)?,
             embedder: HashedEmbedder,
@@ -111,7 +110,6 @@ impl MemoryStore {
             next_op,
             _writer_lock: writer_lock,
         };
-        store.append_resolved_policy()?;
         Ok(store)
     }
 
@@ -396,20 +394,6 @@ impl MemoryStore {
             WriteScope::SessionOnly => self.policy.session_id.as_deref().unwrap_or(""),
             WriteScope::SessionAndProject | WriteScope::Off => "",
         }
-    }
-    fn append_resolved_policy(&mut self) -> MemoryResult<()> {
-        self.append(Op::MemoryPolicyResolved {
-            enabled: self.policy.enabled,
-            write: format!("{:?}", self.policy.write),
-            read_scope: format!("{:?}", self.policy.read_scope),
-            episode_cap: self.policy.retention.episodes,
-            fact_cap: self.policy.retention.facts,
-            byte_cap: self.policy.retention.bytes,
-            deletion: format!("{:?}", self.policy.deletion),
-            min_tier: self.policy.min_tier.as_str().into(),
-            session_id: self.policy.session_id.clone(),
-        })?;
-        Ok(())
     }
     fn fact_resolution(&self, new: &FactWrite) -> MemoryResult<ContradictionResolution> {
         let old=self.db.query_row("SELECT object,confidence,source_trust FROM facts WHERE project=?1 AND agent_id=?2 AND session_id=?3 AND subject=?4 AND predicate=?5 AND valid_to IS NULL ORDER BY system_time DESC LIMIT 1",params![new.project,new.agent_id,self.write_session_key(),new.subject,new.predicate],|r|Ok((r.get::<_,String>(0)?,r.get::<_,f64>(1)?,r.get::<_,String>(2)?))).optional()?;
@@ -955,29 +939,9 @@ fn replay_journals_into_store(store: &mut MemoryStore, journals: &[PathBuf]) -> 
             .collect();
         for envelope in report.envelopes {
             match envelope.op {
-                Op::MemoryPolicyResolved {
-                    enabled,
-                    write,
-                    read_scope,
-                    episode_cap,
-                    fact_cap,
-                    byte_cap,
-                    deletion,
-                    min_tier,
-                    session_id,
-                } => {
-                    store.policy = policy_from_journal(
-                        enabled,
-                        &write,
-                        &read_scope,
-                        episode_cap,
-                        fact_cap,
-                        byte_cap,
-                        &deletion,
-                        &min_tier,
-                        session_id,
-                    )?;
-                }
+                // Session policy records are audit-only. The explicitly
+                // supplied resolved policy is the sole rebuild authority.
+                Op::MemoryPolicyResolved { .. } => {}
                 Op::MemoryWriteFact {
                     fact_id,
                     subject,
@@ -1199,61 +1163,6 @@ fn validate_active_agent(
             "active_agent and configured_agents must be supplied together".into(),
         )),
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn policy_from_journal(
-    enabled: bool,
-    write: &str,
-    read_scope: &str,
-    episodes: u64,
-    facts: u64,
-    bytes: u64,
-    deletion: &str,
-    min_tier: &str,
-    session_id: Option<String>,
-) -> MemoryResult<MemoryPolicy> {
-    let write = match write {
-        "Off" => WriteScope::Off,
-        "SessionOnly" => WriteScope::SessionOnly,
-        "SessionAndProject" => WriteScope::SessionAndProject,
-        other => {
-            return Err(MemoryError::InvalidValue {
-                field: "write_scope",
-                value: other.into(),
-            });
-        }
-    };
-    let deletion = match deletion {
-        "Never" => DeletionRule::Never,
-        "HardDelete" => {
-            return Err(MemoryError::UnsupportedPolicy(
-                "journal requests unsupported HardDelete".into(),
-            ));
-        }
-        other => {
-            return Err(MemoryError::InvalidValue {
-                field: "deletion",
-                value: other.into(),
-            });
-        }
-    };
-    let policy = MemoryPolicy {
-        enabled,
-        write,
-        read_scope: ReadScope::parse(read_scope)?,
-        retention: RetentionCaps {
-            episodes,
-            facts,
-            bytes,
-        },
-        embedding_backend: EmbedderChoice::HashedLocal,
-        deletion,
-        min_tier: SourceTrust::parse(min_tier)?,
-        session_id,
-    };
-    validate_policy(&policy)?;
-    Ok(policy)
 }
 
 #[cfg(windows)]
