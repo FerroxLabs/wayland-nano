@@ -641,11 +641,7 @@ fn migration_refuses_a_preexisting_fact_id_with_different_payload() {
     assert_eq!(output.status.code(), Some(3), "{output:?}");
     let refusal = failure(&output);
     assert_eq!(refusal.error_kind, WireFailureKind::JournalInvalid);
-    assert!(
-        refusal
-            .message
-            .contains("authoritative envelope id collision")
-    );
+    assert!(refusal.message.contains("existing migration write"));
     let report = read_journal(&journal_path).unwrap();
     assert!(!report.envelopes.iter().any(|entry| matches!(
         &entry.op,

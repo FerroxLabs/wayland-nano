@@ -4,17 +4,13 @@
 //! entry and its mediation receipt are synced before `memory.db` is rebuilt.
 
 use nano_memory::{
-    ConfiguredAgents, FactWrite, MemoryPolicy, MemoryProposal, MemoryStore, ProposalKind,
-    rebuild_from_journals,
+    FactWrite, LegacyMigrationCompletion, LegacyMigrationError, LegacyMigrationWrite, MemoryError,
+    migrate_legacy_facts_with_fault_injection,
 };
-use nano_session::{JournalWriter, Op, OpEnvelope, read_journal};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-
-const COMPLETION_ID: &str = "legacy-migration-complete";
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -259,46 +255,15 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
     validate_agent_id(&params.agent_id)?;
 
     let journal_path = nano_home.join("memory.jsonl");
-    let existing =
-        read_journal(&journal_path).map_err(|error| MigrationError::Journal(error.to_string()))?;
-    if let Some(entry) = existing
-        .envelopes
-        .iter()
-        .find(|entry| entry.id == COMPLETION_ID)
-    {
-        if matches_completion(entry, params) {
-            return Err(MigrationError::AlreadyCompleted);
-        }
-        return Err(MigrationError::CompletionCollision);
-    }
-    if existing.envelopes.iter().any(|entry| {
-        matches!(&entry.op, Op::MemoryWriteReceipt { write_id, .. } if write_id == COMPLETION_ID)
-    }) {
-        return Err(MigrationError::CompletionCollision);
-    }
-    let journaled_fact_ids = existing
-        .envelopes
-        .iter()
-        .filter_map(|entry| match &entry.op {
-            Op::MemoryWriteFact { fact_id, .. } => Some(fact_id.clone()),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
-
     let mut receipts = Vec::new();
     let mut accepted = Vec::new();
     for path in legacy_entries(&nano_home.join("memory"))? {
         match prepare_entry(&path, params) {
             Ok(entry) => {
-                let skipped = journaled_fact_ids.contains(&entry.fact.id);
                 receipts.push(EntryReceipt {
                     name: entry.name.clone(),
                     content_sha256: Some(entry.content_sha256.clone()),
-                    status: if skipped {
-                        EntryStatus::Skipped
-                    } else {
-                        EntryStatus::Ingested
-                    },
+                    status: EntryStatus::Ingested,
                     error_kind: None,
                     message: None,
                 });
@@ -318,227 +283,72 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
             receipts,
         ));
     }
-    for entry in &accepted {
-        let expected_write_id = format!("legacy-migration-write-{}", entry.fact.id);
-        if let Some(envelope) = existing
-            .envelopes
-            .iter()
-            .find(|envelope| envelope.id == expected_write_id)
-            && !matches_existing_write(envelope, entry, params)
-        {
-            return Err(MigrationError::Journal(format!(
-                "authoritative envelope id collision for {}",
-                entry.fact.id
-            )));
-        }
-        let matching = existing
-            .envelopes
-            .iter()
-            .filter(|envelope| {
-                matches!(&envelope.op, Op::MemoryWriteFact { fact_id, .. } if fact_id == &entry.fact.id)
-            })
-            .collect::<Vec<_>>();
-        if matching.len() > 1
-            || matching
-                .first()
-                .is_some_and(|envelope| !matches_existing_write(envelope, entry, params))
-        {
-            return Err(MigrationError::Journal(format!(
-                "conflicting authoritative write for {}",
-                entry.fact.id
-            )));
-        }
-        let matching_receipts = existing
-            .envelopes
-            .iter()
-            .filter(|envelope| {
-                matches!(&envelope.op, Op::MemoryWriteReceipt { write_id, agent_id, .. }
-                    if write_id == &entry.fact.id && agent_id == &entry.fact.agent_id)
-            })
-            .collect::<Vec<_>>();
-        if matching_receipts.len() > 1
-            || matching_receipts
-                .first()
-                .is_some_and(|envelope| !matches_existing_receipt(envelope, entry))
-            || existing.envelopes.iter().any(|envelope| {
-                envelope.id == entry.receipt_envelope.id
-                    && !matches_existing_receipt(envelope, entry)
-            })
-        {
-            return Err(MigrationError::Journal(format!(
-                "conflicting migration receipt for {}",
-                entry.fact.id
-            )));
-        }
-    }
-
-    let unreceipted = accepted
+    let writes = accepted
         .iter()
-        .filter_map(|entry| {
-            let write_index = existing.envelopes.iter().position(|envelope| {
-                matches!(&envelope.op, Op::MemoryWriteFact { fact_id, .. } if fact_id == &entry.fact.id)
-            })?;
-            let has_receipt = existing
-                .envelopes
-                .iter()
-                .any(|envelope| matches_existing_receipt(envelope, entry));
-            (!has_receipt).then_some((entry, write_index))
+        .map(|entry| LegacyMigrationWrite {
+            fact: entry.fact.clone(),
+            session_id: params.session_id.clone(),
+            receipt_message: entry_receipt_message(&entry.content_sha256),
         })
         .collect::<Vec<_>>();
-    if unreceipted.len() > 1 {
-        return Err(MigrationError::Journal(
-            "multiple unreceipted migration writes are not a valid crash prefix".into(),
-        ));
-    }
-    for (entry, write_index) in &unreceipted {
-        let expected = resolve_at_journal_position(
-            nano_home,
-            &existing.envelopes[..*write_index],
-            entry,
-            params,
-            &policy,
-            resolved.configured_agents(),
-        )?;
-        let actual = &existing.envelopes[*write_index];
-        if expected.id != actual.id || expected.op != actual.op {
-            return Err(MigrationError::Journal(format!(
-                "resolver outcome mismatch for unreceipted migration write {}",
-                entry.fact.id
-            )));
-        }
-    }
-    if let Some((entry, _)) = unreceipted.first() {
-        let appended = JournalWriter::open(&journal_path)
-            .and_then(|mut writer| writer.append(&entry.receipt_envelope))
-            .map_err(|error| MigrationError::Journal(error.to_string()))?;
-        if !appended {
-            return Err(MigrationError::Journal(format!(
-                "missing receipt for {} could not be repaired",
-                entry.fact.id
-            )));
-        }
-    }
-
-    let shadow = ShadowPaths::new(nano_home);
-    rebuild_from_journals(
-        &shadow.db,
-        std::slice::from_ref(&journal_path),
-        policy.clone(),
-        resolved.configured_agents().clone(),
-    )
-    .map_err(|error| MigrationError::Rebuild(error.to_string()))?;
-    let mut shadow_store = MemoryStore::open_at(
-        &shadow.db,
-        &shadow.journal,
-        policy.clone(),
+    let completion = (refused == 0).then(|| LegacyMigrationCompletion {
+        agent_id: params.agent_id.clone(),
+        message: completion_message(params),
+    });
+    let result = migrate_legacy_facts_with_fault_injection(
+        nano_home,
+        &journal_path,
+        policy,
         &params.agent_id,
         resolved.configured_agents().clone(),
+        &writes,
+        completion.as_ref(),
+        migration_fault,
     )
-    .map_err(|error| MigrationError::Rebuild(error.to_string()))?;
-    let mut authority_writer = JournalWriter::open(&journal_path)
-        .map_err(|error| MigrationError::Journal(error.to_string()))?;
-    for entry in &accepted {
-        if journaled_fact_ids.contains(&entry.fact.id) {
-            continue;
-        }
-        shadow_store
-            .commit_proposal(MemoryProposal {
-                kind: ProposalKind::Fact(entry.fact.clone()),
-            })
-            .map_err(|error| MigrationError::Rebuild(error.to_string()))?;
-        let mut authoritative = read_journal(&shadow.journal)
-            .map_err(|error| MigrationError::Journal(error.to_string()))?
-            .envelopes
-            .into_iter()
-            .rev()
-            .find(|envelope| {
-                matches!(&envelope.op, Op::MemoryWriteFact { fact_id, .. } if fact_id == &entry.fact.id)
-            })
-            .ok_or_else(|| {
-                MigrationError::Journal(format!(
-                    "resolver emitted no write for {}",
-                    entry.fact.id
-                ))
-            })?;
-        authoritative.id = format!("legacy-migration-write-{}", entry.fact.id);
-        if let Op::MemoryWriteFact { session_id, .. } = &mut authoritative.op {
-            *session_id = Some(params.session_id.clone());
-        }
-        let appended = authority_writer
-            .append(&authoritative)
-            .map_err(|error| MigrationError::Journal(error.to_string()))?;
-        if !appended {
-            return Err(MigrationError::Journal(format!(
-                "authoritative envelope id collision for {}",
-                entry.fact.id
-            )));
-        }
-        authority_writer
-            .append(&entry.receipt_envelope)
-            .map_err(|error| MigrationError::Journal(error.to_string()))?;
+    .map_err(map_migration_error)?;
+    for (entry, prepared) in receipts.iter_mut().zip(&accepted) {
+        entry.status = if result.skipped_ids.contains(&prepared.fact.id) {
+            EntryStatus::Skipped
+        } else {
+            EntryStatus::Ingested
+        };
     }
-    drop(authority_writer);
-    drop(shadow_store);
-    drop(shadow);
+    Ok(build_receipt(
+        if refused == 0 {
+            MigrationOutcome::Complete
+        } else {
+            MigrationOutcome::Incomplete
+        },
+        journal_path,
+        receipts,
+    ))
+}
 
+fn migration_fault() -> nano_memory::MemoryResult<()> {
     if let Some(marker) = std::env::var_os("NANO_TEST_MEMORY_MIGRATE_KILL_MARKER") {
-        std::fs::write(marker, b"journal-synced")
-            .map_err(|error| MigrationError::Journal(error.to_string()))?;
+        std::fs::write(marker, b"journal-synced")?;
         loop {
             std::thread::park();
         }
     }
-
     if std::env::var_os("NANO_TEST_MEMORY_MIGRATE_STOP_AFTER_JOURNAL").is_some() {
-        return Err(MigrationError::Rebuild(
-            "test fault after journal sync and before database rebuild".into(),
-        ));
+        return Err(MemoryError::Journal(std::io::Error::other(
+            "test fault after journal sync and before database rebuild",
+        )));
     }
+    Ok(())
+}
 
-    rebuild_from_journals(
-        &nano_home.join("memory/memory.db"),
-        std::slice::from_ref(&journal_path),
-        policy,
-        resolved.configured_agents().clone(),
-    )
-    .map_err(|error| MigrationError::Rebuild(error.to_string()))?;
-
-    if refused > 0 {
-        return Ok(build_receipt(
-            MigrationOutcome::Incomplete,
-            journal_path,
-            receipts,
-        ));
-    }
-
-    let completion = OpEnvelope::new(
-        COMPLETION_ID,
-        chrono::Utc::now().to_rfc3339(),
-        Op::MemoryWriteReceipt {
-            write_id: COMPLETION_ID.into(),
-            agent_id: params.agent_id.clone(),
-            message: completion_message(params),
-        },
-    );
-    let appended = JournalWriter::open(&journal_path)
-        .and_then(|mut writer| writer.append(&completion))
-        .map_err(|error| MigrationError::Journal(error.to_string()))?;
-    if !appended {
-        let exact = read_journal(&journal_path)
-            .map_err(|error| MigrationError::Journal(error.to_string()))?
-            .envelopes
-            .into_iter()
-            .any(|existing| existing == completion);
-        if !exact {
-            return Err(MigrationError::CompletionCollision);
+fn map_migration_error(error: LegacyMigrationError) -> MigrationError {
+    match error {
+        LegacyMigrationError::AlreadyCompleted => MigrationError::AlreadyCompleted,
+        LegacyMigrationError::CompletionCollision => MigrationError::CompletionCollision,
+        LegacyMigrationError::InvalidJournal(message) => MigrationError::Journal(message),
+        LegacyMigrationError::Memory(MemoryError::Contention(message)) => {
+            MigrationError::Rebuild(format!("memory writer contention: {message}"))
         }
+        LegacyMigrationError::Memory(error) => MigrationError::Rebuild(error.to_string()),
     }
-
-    Ok(build_receipt(
-        MigrationOutcome::Complete,
-        journal_path,
-        receipts,
-    ))
 }
 
 fn build_receipt(
@@ -570,19 +380,6 @@ fn completion_message(params: &Params) -> String {
     format!(
         "legacy migration complete for project {} and agent {}",
         params.project, params.agent_id
-    )
-}
-
-fn matches_completion(envelope: &OpEnvelope, params: &Params) -> bool {
-    matches!(
-        &envelope.op,
-        Op::MemoryWriteReceipt {
-            write_id,
-            agent_id,
-            message,
-        } if write_id == COMPLETION_ID
-            && agent_id == &params.agent_id
-            && message == &completion_message(params)
     )
 }
 
@@ -659,160 +456,6 @@ struct PreparedEntry {
     name: String,
     content_sha256: String,
     fact: FactWrite,
-    receipt_envelope: OpEnvelope,
-}
-
-fn matches_existing_write(envelope: &OpEnvelope, entry: &PreparedEntry, params: &Params) -> bool {
-    let expected_id = format!("legacy-migration-write-{}", entry.fact.id);
-    match &envelope.op {
-        Op::MemoryWriteFact {
-            fact_id,
-            subject,
-            predicate,
-            object,
-            confidence_micros,
-            source_episode,
-            valid_from,
-            valid_to,
-            source_trust,
-            project,
-            agent_id,
-            session_id,
-            resolver_outcome,
-        } => {
-            envelope.id == expected_id
-                && fact_id == &entry.fact.id
-                && subject == &entry.fact.subject
-                && predicate == &entry.fact.predicate
-                && object == &entry.fact.object
-                && *confidence_micros == 1_000_000
-                && source_episode.is_none()
-                && valid_from == &entry.fact.valid_from
-                && valid_to.is_none()
-                && source_trust == "ModelInference"
-                && project == &entry.fact.project
-                && agent_id == &entry.fact.agent_id
-                && session_id.as_deref() == Some(params.session_id.as_str())
-                && matches!(
-                    resolver_outcome.as_str(),
-                    "coexist" | "supersede" | "keepexisting" | "keep_existing"
-                )
-        }
-        _ => false,
-    }
-}
-
-fn matches_existing_receipt(envelope: &OpEnvelope, entry: &PreparedEntry) -> bool {
-    match (&envelope.op, &entry.receipt_envelope.op) {
-        (
-            Op::MemoryWriteReceipt {
-                write_id,
-                agent_id,
-                message,
-            },
-            Op::MemoryWriteReceipt {
-                write_id: expected_write,
-                agent_id: expected_agent,
-                message: expected_message,
-            },
-        ) => {
-            write_id == expected_write && agent_id == expected_agent && message == expected_message
-        }
-        _ => false,
-    }
-}
-
-fn resolve_at_journal_position(
-    nano_home: &Path,
-    prefix: &[OpEnvelope],
-    entry: &PreparedEntry,
-    params: &Params,
-    policy: &MemoryPolicy,
-    configured_agents: &ConfiguredAgents,
-) -> Result<OpEnvelope, MigrationError> {
-    let shadow = ShadowPaths::new(nano_home);
-    let mut prefix_writer = JournalWriter::open(&shadow.prefix)
-        .map_err(|error| MigrationError::Journal(error.to_string()))?;
-    for envelope in prefix {
-        prefix_writer
-            .append(envelope)
-            .map_err(|error| MigrationError::Journal(error.to_string()))?;
-    }
-    drop(prefix_writer);
-    rebuild_from_journals(
-        &shadow.db,
-        std::slice::from_ref(&shadow.prefix),
-        policy.clone(),
-        configured_agents.clone(),
-    )
-    .map_err(|error| MigrationError::Rebuild(error.to_string()))?;
-    let mut store = MemoryStore::open_at(
-        &shadow.db,
-        &shadow.journal,
-        policy.clone(),
-        &params.agent_id,
-        configured_agents.clone(),
-    )
-    .map_err(|error| MigrationError::Rebuild(error.to_string()))?;
-    store
-        .commit_proposal(MemoryProposal {
-            kind: ProposalKind::Fact(entry.fact.clone()),
-        })
-        .map_err(|error| MigrationError::Rebuild(error.to_string()))?;
-    let mut expected = read_journal(&shadow.journal)
-        .map_err(|error| MigrationError::Journal(error.to_string()))?
-        .envelopes
-        .into_iter()
-        .find(|envelope| {
-            matches!(&envelope.op, Op::MemoryWriteFact { fact_id, .. } if fact_id == &entry.fact.id)
-        })
-        .ok_or_else(|| {
-            MigrationError::Journal(format!(
-                "resolver emitted no write for {}",
-                entry.fact.id
-            ))
-        })?;
-    expected.id = format!("legacy-migration-write-{}", entry.fact.id);
-    if let Op::MemoryWriteFact { session_id, .. } = &mut expected.op {
-        *session_id = Some(params.session_id.clone());
-    }
-    Ok(expected)
-}
-
-struct ShadowPaths {
-    db: PathBuf,
-    journal: PathBuf,
-    prefix: PathBuf,
-}
-
-impl ShadowPaths {
-    fn new(nano_home: &Path) -> Self {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let stem = format!(".migration-shadow-{}-{nonce}", std::process::id());
-        Self {
-            db: nano_home.join("memory").join(format!("{stem}.db")),
-            journal: nano_home.join("memory").join(format!("{stem}.jsonl")),
-            prefix: nano_home
-                .join("memory")
-                .join(format!("{stem}.prefix.jsonl")),
-        }
-    }
-}
-
-impl Drop for ShadowPaths {
-    fn drop(&mut self) {
-        for path in [
-            self.db.clone(),
-            self.db.with_extension("memory.lock"),
-            self.journal.clone(),
-            self.prefix.clone(),
-        ] {
-            let _ = std::fs::remove_file(path);
-        }
-    }
 }
 
 fn prepare_entry(path: &Path, params: &Params) -> Result<PreparedEntry, EntryReceipt> {
@@ -878,8 +521,6 @@ fn prepare_entry(path: &Path, params: &Params) -> Result<PreparedEntry, EntryRec
     identity.update([0]);
     identity.update(&bytes);
     let fact_id = format!("legacy-{:x}", identity.finalize());
-    let now = chrono::Utc::now().to_rfc3339();
-    let receipt_id = format!("legacy-migration-receipt-{fact_id}");
     let fact = FactWrite {
         id: fact_id.clone(),
         subject: "legacy-memory-entry".into(),
@@ -899,20 +540,13 @@ fn prepare_entry(path: &Path, params: &Params) -> Result<PreparedEntry, EntryRec
     };
     Ok(PreparedEntry {
         name,
-        content_sha256: content_sha256.clone(),
+        content_sha256,
         fact,
-        receipt_envelope: OpEnvelope::new(
-            receipt_id,
-            now,
-            Op::MemoryWriteReceipt {
-                write_id: fact_id,
-                agent_id: params.agent_id.clone(),
-                message: format!(
-                    "migrated legacy entry {content_sha256} (sha256:{content_sha256})"
-                ),
-            },
-        ),
     })
+}
+
+fn entry_receipt_message(content_sha256: &str) -> String {
+    format!("migrated legacy entry {content_sha256} (sha256:{content_sha256})")
 }
 
 fn timestamp_from_name(name: &str) -> Result<String, String> {
