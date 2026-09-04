@@ -129,6 +129,54 @@ impl SharedAdmission {
         Ok(fingerprint)
     }
 
+    /// Bind a fork child from a currently valid parent binding. Every durable
+    /// authority field comes from the parent record; the live token is used
+    /// only to prove that the caller still has the same identity, artifact,
+    /// and epochs. No child field is caller-selected beyond the session id
+    /// minted by the fork implementation.
+    pub fn bind_forked_session(
+        &self,
+        token: &AdmittedToken,
+        parent_session_id: &str,
+        child_session_id: &str,
+    ) -> Result<String, String> {
+        let mut gate = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let parent = gate
+            .session_binding_at(parent_session_id, &now_utc())
+            .map_err(|error| error.reason().to_string())?;
+        let (artifact, epochs) = runtime_authority(token).map_err(str::to_owned)?;
+        if token.issuer_id() != parent.issuer_id
+            || token.product_subject_id() != parent.product_subject_id
+            || token.principal_id() != parent.principal_id
+            || token.project_id() != parent.project_id
+            || token
+                .session_id()
+                .is_some_and(|session_id| session_id != parent_session_id)
+            || artifact != parent.artifact
+            || epochs
+                != [
+                    parent.admin_epoch,
+                    parent.issuer_epoch,
+                    parent.issuer_epoch,
+                    parent.issuer_epoch,
+                ]
+        {
+            return Err("resume_drift".into());
+        }
+        let child = gate
+            .bind_session(&parent.activation_id, child_session_id, &parent.fingerprint)
+            .map_err(|error| error.reason().to_string())?;
+        let mut expected = parent.clone();
+        expected.session_id = child_session_id.to_owned();
+        if child != expected {
+            return Err("resume_drift".into());
+        }
+        Ok(child.fingerprint)
+    }
+
     pub fn recheck_session(&self, session_id: &str) -> Result<(), ActivationError> {
         self.0
             .lock()
