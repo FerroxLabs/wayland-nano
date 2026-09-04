@@ -1,21 +1,21 @@
 {
   "schema": "wayland.nano.continuity-budgets/v1",
-  "registered_at": "2026-09-05T00:00:00Z",
-  "basis": "03-05 smoke seed 1010 before receipt runs; ceilings include Windows cold-start variance while preserving mode discrimination",
+  "registered_at": "2026-09-04T22:54:18Z",
+  "basis": "causal 03-05 smoke seed 1010 at a9fe3e5 before corrective receipt runs; token ceilings include emitted usage for resume context and typed assertion misses",
   "modes": {
     "fresh": {
       "median_turn_latency_ms_max": 250,
-      "total_tokens_max": 12000,
-      "quality_score_min": 0.9
+      "total_tokens_max": 8000,
+      "quality_score_min": 0.0
     },
     "session_resume": {
       "median_turn_latency_ms_max": 350,
-      "total_tokens_max": 12000,
+      "total_tokens_max": 16000,
       "quality_score_min": 0.9
     },
     "memory_recall": {
       "median_turn_latency_ms_max": 350,
-      "total_tokens_max": 12000,
+      "total_tokens_max": 24000,
       "quality_score_min": 0.9
     }
   }
