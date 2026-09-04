@@ -62,8 +62,20 @@ test('marked real-binary smoke evidence', async (t) => {
       assert.ok(rows.every((row) => /^[0-9a-f]{64}$/.test(row.journal_sha256)));
       const recall = rows.filter((row) => row.probe_kind === 'recall');
       for (const label of new Set(recall.map((row) => row.label))) {
-        assert.equal(new Set(recall.filter((row) => row.label === label).map((row) => row.task_script_sha256)).size, 1, `${label} task script differs across modes`);
+        assert.equal(new Set(recall.filter((row) => row.label === label).map((row) => row.task_script_sha256)).size, 3, `${label} must have one causal script per mode`);
       }
+      const fresh = recall.filter((row) => row.mode === 'fresh');
+      assert.ok(fresh.every((row) => row.persistent === false && row.memory_tool_calls === 0));
+      assert.ok(fresh.every((row) => row.quality_pass === false && row.request_assertion === 'absent'));
+      const resumed = recall.filter((row) => row.mode === 'session_resume');
+      assert.ok(resumed.every((row) => row.loaded_session_id === row.fork_child_session_id));
+      assert.ok(resumed.every((row) => row.memory_tool_calls === 0 && row.request_assertion === 'present' && row.quality_pass));
+      const recalled = recall.filter((row) => row.mode === 'memory_recall');
+      assert.ok(recalled.every((row) => row.activation_admitted === true && row.memory_seeded === true));
+      assert.ok(recalled.every((row) => row.memory_tool_calls === 0 && row.request_assertion === 'present' && row.quality_pass));
+      assert.ok(recall.every((row) => row.answer_source === 'model_request_assertion'));
+      assert.ok(recall.every((row) => row.tokens.source === 'acp_budget_notice'));
+      assert.ok(recall.every((row) => row.tokens.total_tokens === row.tokens.session_tokens_after - row.tokens.session_tokens_before));
     });
     await t.test('records session-resume drift as a typed correct refusal', () => {
       const drift = rows.find((row) => row.mode === 'session_resume' && row.probe_kind === 'drift_refusal');

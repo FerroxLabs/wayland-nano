@@ -199,6 +199,26 @@ mod soak_fake {
             }),
         })
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::Directive;
+
+        #[test]
+        fn request_assertion_directive_round_trips() {
+            let raw = r#"{"kind":"assert_request","needle":"fixture answer","present":true,"text":"matched","usage":{"input_tokens":17,"output_tokens":3},"latency_ms":2}"#;
+            let parsed: Directive = serde_json::from_str(raw).expect("parse assertion directive");
+            assert!(matches!(
+                parsed,
+                Directive::AssertRequest {
+                    needle,
+                    present: true,
+                    text,
+                    ..
+                } if needle == "fixture answer" && text == "matched"
+            ));
+        }
+    }
 }
 
 #[cfg(not(feature = "soak-fake-model"))]
