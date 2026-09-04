@@ -4,6 +4,7 @@ use nano_memory::{
 };
 use nano_session::{JournalWriter, Op, OpEnvelope, read_journal};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -373,5 +374,52 @@ fn migration_refuses_unconfigured_agent_before_writing_state() {
     assert_eq!(output.status.code(), Some(3), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("unconfigured memory agent"));
     assert!(!home.path().join("memory.jsonl").exists());
+    assert!(!home.path().join("memory/memory.db").exists());
+}
+
+#[test]
+fn migration_refuses_a_preexisting_fact_id_with_different_payload() {
+    let home = tempfile::tempdir().unwrap();
+    let name = "2026-01-02T03-04-05-collision.md";
+    let contents = b"expected legacy bytes";
+    seed(home.path(), name, std::str::from_utf8(contents).unwrap());
+    let mut identity = Sha256::new();
+    identity.update(name.as_bytes());
+    identity.update([0]);
+    identity.update(contents);
+    let fact_id = format!("legacy-{:x}", identity.finalize());
+    let journal_path = home.path().join("memory.jsonl");
+    let mut writer = JournalWriter::open(&journal_path).unwrap();
+    writer
+        .append(&OpEnvelope::new(
+            format!("legacy-migration-write-{fact_id}"),
+            "2026-01-02T03:04:05Z",
+            Op::MemoryWriteFact {
+                fact_id: fact_id.clone(),
+                subject: "legacy-memory-entry".into(),
+                predicate: name.trim_end_matches(".md").into(),
+                object: "substituted journal payload".into(),
+                confidence_micros: 1_000_000,
+                source_episode: None,
+                valid_from: "2026-01-02T03:04:05Z".into(),
+                valid_to: None,
+                source_trust: "ModelInference".into(),
+                project: "project-a".into(),
+                agent_id: "main".into(),
+                session_id: Some("migration-session".into()),
+                resolver_outcome: "coexist".into(),
+            },
+        ))
+        .unwrap();
+    drop(writer);
+
+    let output = migrate(home.path(), None);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("conflicting authoritative write"));
+    let report = read_journal(&journal_path).unwrap();
+    assert!(!report.envelopes.iter().any(|entry| matches!(
+        &entry.op,
+        Op::MemoryWriteReceipt { write_id, .. } if write_id == &fact_id
+    )));
     assert!(!home.path().join("memory/memory.db").exists());
 }
