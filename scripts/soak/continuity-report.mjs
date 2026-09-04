@@ -16,6 +16,7 @@ const harnessPath = join(here, 'continuity.mjs');
 const fixturePath = join(repo, 'gates', 'fixtures', 'memory-retrieval-recall-v1', 'fixture.json');
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const textSha256 = (bytes) => sha256(String(bytes).replaceAll('\r\n', '\n'));
 const posix = (path) => path.replaceAll('\\', '/');
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -49,7 +50,7 @@ const budgetBytes = await readFile(budgetPath);
 const budgets = JSON.parse(budgetBytes);
 const budgetHash = sha256(canonical(budgets));
 const harnessHash = sha256((await readFile(harnessPath, 'utf8')).replaceAll('\r\n', '\n'));
-const fixtureHash = sha256(await readFile(fixturePath));
+const fixtureHash = textSha256(await readFile(fixturePath));
 if (budgets.schema !== 'wayland.nano.continuity-budgets/v1') throw new Error('unsupported continuity budget schema');
 for (const mode of requiredModes) {
   if (!budgets.modes?.[mode]) throw new Error(`budget missing mode: ${mode}`);
@@ -72,7 +73,7 @@ for (const manifestPath of await findManifests(evidenceRoot)) {
   }
   const ndjsonPath = resolve(dirname(manifestPath), '..', manifest.ndjson.path);
   const ndjsonBytes = await readFile(ndjsonPath);
-  if (sha256(ndjsonBytes) !== manifest.ndjson.sha256) {
+  if (textSha256(ndjsonBytes) !== manifest.ndjson.sha256) {
     throw new Error(`NDJSON hash mismatch: ${posix(relative(repo, ndjsonPath))}`);
   }
   const rows = String(ndjsonBytes).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
@@ -82,7 +83,7 @@ for (const manifestPath of await findManifests(evidenceRoot)) {
       throw new Error(`row binding mismatch: ${manifestPath}`);
     }
   }
-  candidates.push({ manifestPath, manifest, manifestSha256: sha256(manifestBytes), rows });
+  candidates.push({ manifestPath, manifest, manifestSha256: textSha256(manifestBytes), rows });
 }
 if (candidates.length === 0) throw new Error('no hash-valid continuity evidence found');
 
