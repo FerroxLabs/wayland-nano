@@ -727,6 +727,184 @@ fn unreceipted_forged_supersede_is_refused_without_appending_authority() {
 }
 
 #[test]
+fn fully_receipted_forged_supersede_is_refused_without_mutation() {
+    let home = tempfile::tempdir().unwrap();
+    write_policy(home.path(), true, "SessionAndProject");
+    let name = "2026-01-02T03-04-05-receipted-forgery.md";
+    let contents = b"untrusted receipted replacement";
+    seed(home.path(), name, std::str::from_utf8(contents).unwrap());
+    let journal_path = home.path().join("memory.jsonl");
+    {
+        let mut store = MemoryStore::open(
+            home.path(),
+            &journal_path,
+            MemoryPolicy::default(),
+            "main",
+            configured(),
+        )
+        .unwrap();
+        store
+            .write_fact(FactWrite {
+                id: "receipted-user-anchor".into(),
+                subject: "legacy-memory-entry".into(),
+                predicate: name.trim_end_matches(".md").into(),
+                object: "trusted truth".into(),
+                confidence: 0.1,
+                source_episode: None,
+                valid_from: "2025-01-01T00:00:00Z".into(),
+                valid_to: None,
+                source_trust: SourceTrust::User,
+                project: "project-a".into(),
+                agent_id: "main".into(),
+            })
+            .unwrap();
+    }
+    let fact_id = fact_id_for(name, contents);
+    let hash = format!("{:x}", Sha256::digest(contents));
+    let mut writer = JournalWriter::open(&journal_path).unwrap();
+    writer
+        .append(&OpEnvelope::new(
+            format!("legacy-migration-write-{fact_id}"),
+            "2026-01-02T03:04:05Z",
+            Op::MemoryWriteFact {
+                fact_id: fact_id.clone(),
+                subject: "legacy-memory-entry".into(),
+                predicate: name.trim_end_matches(".md").into(),
+                object: std::str::from_utf8(contents).unwrap().into(),
+                confidence_micros: 1_000_000,
+                source_episode: None,
+                valid_from: "2026-01-02T03:04:05Z".into(),
+                valid_to: None,
+                source_trust: "ModelInference".into(),
+                project: "project-a".into(),
+                agent_id: "main".into(),
+                session_id: Some("migration-session".into()),
+                resolver_outcome: "supersede".into(),
+            },
+        ))
+        .unwrap();
+    writer
+        .append(&OpEnvelope::new(
+            format!("legacy-migration-receipt-{fact_id}"),
+            "2026-01-02T03:04:05Z",
+            Op::MemoryWriteReceipt {
+                write_id: fact_id.clone(),
+                agent_id: "main".into(),
+                message: format!("migrated legacy entry {hash} (sha256:{hash})"),
+            },
+        ))
+        .unwrap();
+    drop(writer);
+    let before = std::fs::read(&journal_path).unwrap();
+
+    let output = migrate_with_session(home.path(), "migration-session", None);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert_eq!(failure(&output).error_kind, WireFailureKind::JournalInvalid);
+    assert_eq!(std::fs::read(&journal_path).unwrap(), before);
+}
+
+#[test]
+fn matching_receipt_with_foreign_envelope_id_is_refused() {
+    let home = tempfile::tempdir().unwrap();
+    write_policy(home.path(), true, "SessionAndProject");
+    let name = "2026-01-02T03-04-05-foreign-receipt.md";
+    let contents = b"foreign receipt identity";
+    seed(home.path(), name, std::str::from_utf8(contents).unwrap());
+    let interrupted = migrate(
+        home.path(),
+        Some(("NANO_TEST_MEMORY_MIGRATE_STOP_AFTER_JOURNAL", "1")),
+    );
+    assert_eq!(interrupted.status.code(), Some(3), "{interrupted:?}");
+    let journal_path = home.path().join("memory.jsonl");
+    let report = read_journal(&journal_path).unwrap();
+    let write = report
+        .envelopes
+        .iter()
+        .find(|row| matches!(row.op, Op::MemoryWriteFact { .. }))
+        .unwrap()
+        .clone();
+    let receipt = report
+        .envelopes
+        .iter()
+        .find(|row| matches!(&row.op, Op::MemoryWriteReceipt { message, .. } if message.contains("sha256:")))
+        .unwrap()
+        .clone();
+    let foreign = OpEnvelope::new("foreign-receipt-envelope", receipt.ts, receipt.op);
+    std::fs::write(&journal_path, {
+        let mut bytes = serde_json::to_vec(&write).unwrap();
+        bytes.push(b'\n');
+        bytes
+    })
+    .unwrap();
+    let mut writer = JournalWriter::open(&journal_path).unwrap();
+    writer.append(&foreign).unwrap();
+    drop(writer);
+    let before = std::fs::read(&journal_path).unwrap();
+
+    let output = migrate_with_session(home.path(), "migration-session", None);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert_eq!(failure(&output).error_kind, WireFailureKind::JournalInvalid);
+    assert_eq!(std::fs::read(&journal_path).unwrap(), before);
+}
+
+#[test]
+fn reserved_receipt_envelope_with_forged_content_is_refused() {
+    let home = tempfile::tempdir().unwrap();
+    write_policy(home.path(), true, "SessionAndProject");
+    let name = "2026-01-02T03-04-05-forged-receipt.md";
+    let contents = b"forged receipt identity";
+    seed(home.path(), name, std::str::from_utf8(contents).unwrap());
+    let fact_id = fact_id_for(name, contents);
+    let journal_path = home.path().join("memory.jsonl");
+    let forged = OpEnvelope::new(
+        format!("legacy-migration-receipt-{fact_id}"),
+        "2026-01-02T03:04:05Z",
+        Op::MemoryWriteReceipt {
+            write_id: fact_id,
+            agent_id: "main".into(),
+            message: "forged migration receipt".into(),
+        },
+    );
+    JournalWriter::open(&journal_path)
+        .unwrap()
+        .append(&forged)
+        .unwrap();
+    let before = std::fs::read(&journal_path).unwrap();
+
+    let output = migrate_with_session(home.path(), "migration-session", None);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert_eq!(failure(&output).error_kind, WireFailureKind::JournalInvalid);
+    assert_eq!(std::fs::read(&journal_path).unwrap(), before);
+}
+
+#[test]
+fn live_memory_writer_contention_refuses_before_journal_mutation() {
+    let home = tempfile::tempdir().unwrap();
+    write_policy(home.path(), true, "SessionAndProject");
+    seed(
+        home.path(),
+        "2026-01-02T03-04-05-contention.md",
+        "contention marker",
+    );
+    let journal_path = home.path().join("memory.jsonl");
+    let live = MemoryStore::open(
+        home.path(),
+        &journal_path,
+        MemoryPolicy::default(),
+        "main",
+        configured(),
+    )
+    .unwrap();
+    let before = std::fs::read(&journal_path).unwrap_or_default();
+
+    let output = migrate_with_session(home.path(), "migration-session", None);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert_eq!(failure(&output).error_kind, WireFailureKind::RebuildFailed);
+    assert_eq!(std::fs::read(&journal_path).unwrap_or_default(), before);
+    drop(live);
+}
+
+#[test]
 fn authoritative_envelope_id_collision_is_refused_before_receipt() {
     let home = tempfile::tempdir().unwrap();
     write_policy(home.path(), true, "SessionAndProject");
