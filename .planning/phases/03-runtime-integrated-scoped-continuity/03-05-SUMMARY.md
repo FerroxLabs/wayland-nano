@@ -2,18 +2,19 @@
 phase: 03-runtime-integrated-scoped-continuity
 plan: 05
 subsystem: continuity-measurement
-tags: [acp, memory, session-resume, ndjson, soak-fake-model]
+tags: [acp, memory-recall, session-fork, ndjson, soak-fake-model]
 requires:
   - phase: 03-03
     provides: one admitted nano-memory runtime seam across persistent entrypoints
 provides:
-  - seeded real-binary comparison of fresh, session_resume, and memory_recall
-  - canonical pre-registered continuity budgets and tamper-refusing report generator
-  - two-seed receipt report with typed resume-drift evidence and default recommendations
+  - causal real-binary comparison of fresh, session_resume, and memory_recall
+  - activated fork-child binding with inherited authority and rollback
+  - preregistered budgets plus committed sealed NDJSON receipt evidence
+  - byte-reproducible report with measured defaults recommendation
 affects: [03-06, 03-07, Desktop-continuity-defaults]
 tech-stack:
   added: []
-  patterns: [canonical-json budget seals, LF-normalized harness seals, seeded ACP fake-model measurement]
+  patterns: [model-request assertions behind soak feature, activated fork-child binding, canonical evidence seals]
 key-files:
   created:
     - scripts/soak/continuity.mjs
@@ -21,18 +22,24 @@ key-files:
     - scripts/soak/continuity-report.mjs
     - scripts/soak/test-continuity.mjs
     - docs/evidence/phase3/continuity-modes-report.md
-  modified: []
+  modified:
+    - crates/nano-agent/src/wiring.rs
+    - crates/nano-cli/src/activation.rs
+    - crates/nano-cli/src/acp_mode.rs
+    - crates/nano-cli/src/session_cmds.rs
+    - crates/nano-cli/tests/activation_memory_seam.rs
+    - crates/nano-cli/tests/c11_session_cmds.rs
 key-decisions:
-  - "Recommend session_resume for interactive ACP when a valid bound session exists; use fresh otherwise."
-  - "Recommend fresh for one-shot exec; keep memory_recall opt-in because it did not beat session_resume on measured quality per token."
-  - "Treat the fake-model result as continuity-plumbing evidence, not semantic reasoning quality, because ACP intentionally exposes tool-result digests only."
+  - "Recommend session_resume for interactive ACP when a valid bound session exists; use memory_recall only when continuity is requested and fresh for stateless work."
+  - "Measure quality from the actual model request: fresh proves absence, fork-child resume proves replayed presence, and memory_recall proves automatic retrieved presence."
+  - "Bind activated fork children from the live validated parent authority and remove the child journal if binding cannot commit."
 patterns-established:
-  - "Evidence rows bind seed, binary, budget, harness, task script, journal, and NDJSON digests."
-  - "Budget hashes use canonical JSON and harness hashes normalize CRLF to LF for checkout-independent verification."
+  - "Receipt rows bind seed, binary, budget, harness, task script, journal, fixture, manifest, and NDJSON digests."
+  - "Committed text evidence verifies with CRLF-to-LF normalization for checkout-independent hashes."
 requirements-completed: [REQ-CONT-01]
 coverage:
   - id: D1
-    description: "Real release binary exercises fresh, session_resume, and memory_recall over ACP with a frozen seeded task battery."
+    description: "Real release binary causally distinguishes fresh, fork-child resume, and automatic memory recall over ACP."
     requirement: REQ-CONT-01
     verification:
       - kind: e2e
@@ -40,127 +47,197 @@ coverage:
         status: pass
     human_judgment: false
   - id: D2
-    description: "Budget and harness seals make post-run tuning or evidence substitution fail closed."
+    description: "Activated fork children inherit exact authority and roll back on binding failure."
     requirement: REQ-CONT-01
     verification:
       - kind: integration
-        ref: "scripts/soak/test-continuity.mjs#report refuses evidence bound to a different budget hash"
+        ref: "crates/nano-cli/tests/activation_memory_seam.rs#activated_fork_binds_and_loads_the_returned_child_fail_closed"
         status: pass
       - kind: integration
-        ref: "node scripts/soak/continuity-report.mjs --evidence-dir scripts/soak/evidence/continuity-receipt-final --require-modes fresh,session_resume,memory_recall"
+        ref: "crates/nano-cli/tests/c11_session_cmds.rs#failed_child_binding_removes_the_fork_journal"
         status: pass
     human_judgment: false
   - id: D3
-    description: "The report recommends defaults per surface from measured latency, tokens, quality, and drift behavior."
+    description: "Two committed seeded receipts pass preregistered latency, emitted-token, quality, and drift budgets."
+    requirement: REQ-CONT-01
+    verification:
+      - kind: integration
+        ref: "scripts/soak/evidence/continuity-receipt-causal-final"
+        status: pass
+      - kind: integration
+        ref: "fresh-clone continuity-report.mjs regeneration at df0c1f1"
+        status: pass
+    human_judgment: false
+  - id: D4
+    description: "The report recommends continuity defaults per surface from causal measured evidence."
     requirement: REQ-CONT-01
     verification:
       - kind: other
         ref: "docs/evidence/phase3/continuity-modes-report.md"
         status: pass
     human_judgment: true
-    rationale: "Desktop owns the product default and must judge whether to adopt this measurement recommendation."
-duration: 52min
+    rationale: "Desktop owns the product default and must judge whether to adopt the recommendation."
+duration: 1h27m
 completed: 2026-09-04
 status: complete
 ---
 
 # Phase 3 Plan 05: Continuity-mode Measurement Summary
 
-**A real release binary measured all three continuity strategies over seeded ACP runs, with frozen budgets, typed drift refusals, and hash-bound report generation.**
+**Causal real-binary evidence now distinguishes no continuity, activated fork-child replay, and automatic scoped recall, with preregistered budgets and committed NDJSON receipts.**
 
 ## Performance
 
-- **Duration:** 52 min
+- **Duration:** 1h 27m
 - **Started:** 2026-09-04T21:39:00Z
-- **Completed:** 2026-09-04T22:31:00Z
-- **Tasks:** 3
-- **Files modified:** 5
+- **Completed:** 2026-09-04T23:06:27Z
+- **Tasks:** 3 plus one audit correction
+- **Files modified:** 16, including four committed receipt artifacts
 
 ## Accomplishments
 
-- Drove the real `wayland-nano.exe` built with `nano-agent/soak-fake-model` through fresh, session-resume, and memory-recall ACP carriers while seeding all 50 facts and 10 decisions through mediated memory proposals.
-- Pre-registered per-mode latency, token, and quality budgets before receipt runs and bound every accepted row to canonical budget, normalized harness, binary, task-script, journal, fixture, and NDJSON digests.
-- Published two-seed results: every mode scored 1.000 quality at 8,000 tokens; median turn latency was 46.685 ms fresh, 47.087 ms session_resume, and 47.780 ms memory_recall; all budgets passed.
-- Proved 8/8 drifted resume attempts returned typed `resume_drift` refusals with zero silent fallbacks.
+- Fresh creates a new admitted session with memory disabled, makes zero memory tool calls, and proves every fixture answer is absent from the actual model request: quality 0.000 by design.
+- Session resume forks an activated parent, binds inherited authority before success, loads the returned `child_session_id`, and proves replayed answers are present: quality 1.000 with 8/8 typed drift refusals.
+- Memory recall seeds all 50 facts and 10 decisions through four mediated partition turns, makes zero explicit memory tool calls during measurement, and proves automatic retrieval placed the expected answer into the actual request: quality 0.950.
+- Token totals come exclusively from emitted `_wayland/session/budget` notices. Median totals were 5,104.5 fresh, 10,204 session resume, and 11,297 memory recall; median turn latencies were 29.909 ms, 23.352 ms, and 31.263 ms respectively.
+- All preregistered budgets passed. The report recommends session resume for a valid bound interactive session, memory recall only when continuity is requested, and fresh for stateless work.
 
 ## Task Commits
 
-1. **Task 1 RED: Define continuity harness behavior** — `9383522`
-2. **Task 1 GREEN: Measure continuity modes through ACP** — `78d5f5e`
-3. **Task 2: Freeze continuity budgets and reports** — `e2983d5`
-4. **Task 3: Publish continuity mode measurement** — `33b5243`
+Initial implementation:
+
+1. `9383522` — define continuity harness behavior
+2. `78d5f5e` — implement real-binary ACP harness
+3. `e2983d5` — freeze initial budgets and reporter
+4. `33b5243` — publish initial measurement
+5. `5d55406` — initial summary
+
+Audit correction:
+
+1. `b725f28` — authorize causal soak assertion
+2. `a14294d` — add causal RED tests
+3. `1e7e49b` — authorize fork-child binding correction
+4. `0606981` — add soak-only actual-request assertion
+5. `f3be675` — add fork-child RED tests
+6. `ce9f7a2` — bind activated fork children
+7. `bcfba39` — format rollback assertion
+8. `a9fe3e5` — make the three modes causally distinct
+9. `0cead83` — preregister causal budgets before receipt runs
+10. `d689583` — reduce fixture seeding to one turn per partition
+11. `fecc162` — commit causal manifests, NDJSON, and report
+12. `df0c1f1` — normalize evidence hashes for fresh Windows checkouts
 
 ## Files Created/Modified
 
-- `scripts/soak/continuity.mjs` — provisions artifact-bound test authority, seeds the frozen fixture, drives real ACP processes, measures turns, and emits NDJSON/manifests.
-- `scripts/soak/continuity-budgets.json` — canonical pre-run ceilings for latency, tokens, and quality.
-- `scripts/soak/continuity-report.mjs` — validates seals and renders medians, verdicts, manifests, drift counts, and recommendations.
-- `scripts/soak/test-continuity.mjs` — real-binary preflight/mode/drift tests plus the budget-tuning negative.
-- `docs/evidence/phase3/continuity-modes-report.md` — published two-seed evidence and Desktop recommendation input.
+- `crates/nano-agent/src/wiring.rs` — soak-only directive emits success only when the actual `ModelRequest` contains or excludes the specified needle; mismatch is typed.
+- `crates/nano-cli/src/activation.rs` — derives a fork child binding from the validated parent and current live token.
+- `crates/nano-cli/src/acp_mode.rs` — passes the active token/gate into the existing fork handler and returns typed failure on binding refusal.
+- `crates/nano-cli/src/session_cmds.rs` — binds after journal creation, returns the inherited fingerprint, and removes the child on binding failure.
+- `crates/nano-cli/tests/activation_memory_seam.rs` — proves exact child resume and fingerprint/project/principal drift refusals.
+- `crates/nano-cli/tests/c11_session_cmds.rs` — proves binding failure leaves no child journal.
+- `scripts/soak/continuity.mjs` — runs the causal three-mode battery and writes sealed evidence.
+- `scripts/soak/continuity-budgets.json` — records causal budgets at `2026-09-04T22:54:18Z`, before final receipts.
+- `scripts/soak/continuity-report.mjs` — validates every seal and renders measured medians and recommendations.
+- `scripts/soak/test-continuity.mjs` — tests preflight, causal mode invariants, emitted usage, child resume, drift refusal, and anti-tuning behavior.
+- `docs/evidence/phase3/continuity-modes-report.md` — final causal report.
+- `scripts/soak/evidence/continuity-receipt-causal-final/**/{continuity-manifest.json,continuity.ndjson}` — two committed receipt packs.
 
-## Receipt Manifests
+## Final Receipt Manifests
 
-Both runs used binary SHA-256 `376644e63782422e9bf3f4143095efe6880e070c97a70537982e0827445905e9`, compiled source `9383522be3ef80e039aad885b95be9922a18d5f2`, budget SHA-256 `01c267c0d14cbcce7a97c2db9ca6d33bd149685fd4d18495b903d56f7a8b2fbe`, and harness SHA-256 `1a9b877064ae235358a2817f554dd8a969222173840c6c732f0a1ab1068f8a46`.
+Shared bindings:
 
-- Seed 1010: `scripts/soak/evidence/continuity-receipt-final/run-20260904T222034263Z-receipt-1010-40432/continuity-manifest.json`; 64 rows in its sibling `continuity.ndjson`.
-- Seed 2020: `scripts/soak/evidence/continuity-receipt-final/run-20260904T222034100Z-receipt-2020-41204/continuity-manifest.json`; 64 rows in its sibling `continuity.ndjson`.
+- Binary source: `bcfba39b9c0d9ee3ece4069c74bea34d1df4d968`
+- Binary SHA-256: `148c138bacf121913f60551f2127f186ada28a5f2a7216e981e8da7340678b7d`
+- Budget SHA-256: `a394961e053bce02b59f5d0a08adad854b1307817e4f7f931e99900e5332ba6d`
+- Harness SHA-256: `df19ce9000ba0dcc8aad94113722123aa6201ff4518e2f5449d2147677ccb0f9`
+- Fixture SHA-256: `ad286c8ebd835667488089410b9b7bd84ecade71758b20ce678d97c3f9dda214`
 
-The evidence directory is the existing ignored soak artifact store. The committed report records each path and digest; the harness deterministically reproduces the pack from the frozen fixture.
+Seed 1010:
+
+- Manifest: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T225707234Z-receipt-1010-36100/continuity-manifest.json`
+- Manifest SHA-256: `ab28e4c94bc5492dc7a17c93e52d782fe85e4e1034ad1997552d86f2bec78352`
+- NDJSON: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T225707234Z-receipt-1010-36100/continuity.ndjson`
+- NDJSON SHA-256: `9e4fde7de5c7a0cf8ed30c4b50ace173467e3dcdcd63c0e19764aa677bdbee7e`
+
+Seed 2020:
+
+- Manifest: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T225706996Z-receipt-2020-40936/continuity-manifest.json`
+- Manifest SHA-256: `e8a0ec9d367fe9cb41e29758cf8fd6fdf4b97533d0bf56c8df3e2fe637e8da50`
+- NDJSON: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T225706996Z-receipt-2020-40936/continuity.ndjson`
+- NDJSON SHA-256: `03a990e4519a64d12d0daad9252c1303f7e15b2ffc2c32224596a71beb98a062`
+
+No final report or summary references the superseded noncausal receipts.
 
 ## Decisions Made
 
-- Interactive ACP should resume a valid bound session and otherwise start fresh; the 8/8 drift refusal result keeps this fail closed.
-- One-shot exec should start fresh. Memory recall remains opt-in because its measured quality per token equaled session resume rather than exceeding it.
-- The quality score combines correct partitioned seed evidence, a nonempty real recall-tool result digest, and the deterministic fixture-derived answer. Digest-only ACP intentionally prevents the client from claiming it inspected raw retrieval content; mem-sec and retrieval-recall tests retain that responsibility.
+- The soak fake model gained one feature-gated request assertion because the old driver ignored `ModelRequest`, making causal continuity measurement impossible from scripts alone.
+- Activated forks inherit every binding field from the validated parent. A caller cannot provide child authority, and any binding failure removes the created child before fork success is returned.
+- Fresh quality is zero for a recall battery by design; it is not awarded points for a scripted answer. Resume and recall score only when the expected fixture answer is present in the actual model request.
+- The report remains a recommendation input. Desktop retains default-setting authority.
 
 ## Deviations from Plan
 
 ### Auto-fixed Issues
 
-**1. [Rule 3 - Blocking] Kept test evidence off the external F: temp volume**
-- **Found during:** Task 1 real-binary test execution
-- **Issue:** Three runs timed out at different ACP request boundaries when `mkdtemp(os.tmpdir())` placed journals on the external USB F: volume; an outer timeout also left a child holding the directory.
-- **Fix:** After mandatory Kimi K3 and Claude Fable cross-research converged on the volume variable, test homes moved under the existing ignored D: soak-evidence root and PID-scoped process-tree cleanup was added.
-- **Files modified:** `scripts/soak/continuity.mjs`, `scripts/soak/test-continuity.mjs`
-- **Verification:** Real-binary Node suite passed 5/5 in 31.4 seconds.
-- **Committed in:** `78d5f5e` and `33b5243`
+**1. [Rule 2 - Missing Critical] Added causal model-request observation**
+- **Found during:** independent audit of the initial receipt pack
+- **Issue:** All three modes called the same explicit recall tool and the scripted expected answer made quality self-fulfilling.
+- **Fix:** Added the feature-gated `assert_request` directive and mode-specific causal oracles; production provider behavior is unchanged without `soak-fake-model`.
+- **Verification:** Rust directive round-trip/request tests plus real-binary Node suite 5/5.
+- **Commits:** `b725f28`, `a14294d`, `0606981`, `a9fe3e5`
 
-**2. [Rule 2 - Missing Critical] Bound report inputs to stable source digests**
-- **Found during:** Task 3 evidence review
-- **Issue:** Initial exploratory manifests bound the budget bytes but not the harness, which was insufficient to exclude post-run harness edits and was line-ending-sensitive.
-- **Fix:** Canonicalized budget JSON, normalized harness line endings before hashing, bound both hashes into every row/manifest, and made the reporter reject mismatches and cross-mode task-script divergence.
-- **Files modified:** `scripts/soak/continuity.mjs`, `scripts/soak/continuity-report.mjs`, `scripts/soak/test-continuity.mjs`
-- **Verification:** Final receipt manifests share the recorded budget/harness seals; report generation and mutation-negative test pass.
-- **Committed in:** `33b5243`
+**2. [Rule 2 - Missing Critical] Bound and resumed the returned activated fork child**
+- **Found during:** causal session-resume design
+- **Issue:** Fork created a journal but no activation binding, so only the parent could resume.
+- **Fix:** Derive child binding from the live validated parent/token, append it before returning success, return the inherited fingerprint, and remove the child journal on binding failure.
+- **Verification:** Activated child load succeeds; fingerprint, project, and principal drift refuse; injected binding failure leaves one parent journal only.
+- **Commits:** `1e7e49b`, `f3be675`, `ce9f7a2`, `bcfba39`
 
-**3. [Rule 1 - Bug] Cleared settled ACP request timers**
-- **Found during:** Task 3 receipt execution
-- **Issue:** Promise-race timeout timers survived successful requests, keeping Node alive for 30 seconds after evidence was complete.
-- **Fix:** Each request now clears its timer on resolution or rejection.
-- **Files modified:** `scripts/soak/continuity.mjs`
-- **Verification:** Parallel receipt seeds completed in about 31 seconds each rather than waiting after manifest publication.
-- **Committed in:** `33b5243`
+**3. [Rule 1 - Bug] Removed seeding contamination from the recall battery**
+- **Found during:** first causal receipt report
+- **Issue:** The previous timeout workaround used one prompt per row, adding 60 high-trust host episodes and lowering automatic recall to 0.850.
+- **Fix:** Seed each `(project, agent_id)` partition in one mediated turn, adding only four setup episodes while preserving all 60 curated rows.
+- **Verification:** Final memory-recall quality is 0.950; fixture/label diff remains empty.
+- **Commit:** `d689583`
 
-**Total deviations:** 3 auto-fixed (1 blocking environment issue, 1 missing evidence control, 1 timer bug). **Impact on plan:** All changes strengthen reproducibility or remove measured wall-clock waste; no product/runtime surface changed.
+**4. [Rule 2 - Missing Critical] Committed and checkout-normalized receipt evidence**
+- **Found during:** evidence review
+- **Issue:** Ignored local manifests could not be independently audited, and CRLF checkout conversion could change raw text hashes.
+- **Fix:** Committed only the two final manifests and two NDJSON files; report verification normalizes text line endings and records every digest.
+- **Verification:** Fresh clone at `df0c1f1` regenerated the committed report byte-identically.
+- **Commits:** `fecc162`, `df0c1f1`
+
+**5. [Rule 3 - Blocking] Kept test evidence off the external F: temp volume**
+- **Found during:** initial Task 1 real-binary tests
+- **Issue:** F: USB latency crossed the 30-second request bound and outer timeouts left child handles.
+- **Fix:** Kimi K3 and Claude Fable converged on D:-local ignored test homes plus PID-scoped process cleanup; settled request timers are cleared.
+- **Verification:** Corrective real-binary suite completes in approximately 18 seconds.
+- **Commits:** `78d5f5e`, `33b5243`
+
+**Total deviations:** 5 auto-fixed. All are required for causal validity, fail-closed fork authority, reviewable evidence, or bounded execution.
 
 ## Issues Encountered
 
-- The fake-model seam cannot inspect its request, and ACP deliberately exposes tool outputs as digests. The report therefore describes its quality score as continuity-plumbing evidence and makes no semantic reasoning claim.
-- Kimi K3 session `session_85f9a8c9-7abd-4a93-a4ca-ebee94bf132d` and Claude Fable independently ranked D:-local evidence plus scoped process cleanup above increasing the 30-second request timeout. The timeout remains unchanged.
-- Repository hooks modified `AGENTS.md` and created `CLAUDE.md` in this worktree. They were never staged or altered by this lane.
+- The first receipt pack was rejected by audit because explicit recall and fixed answers made modes observationally identical. It is superseded and carries no final reference.
+- Fork binding reached native attempt 3 after a return-type patch hit the neighboring existing method; an isolated signature check identified and corrected that exact variable. Focused tests then passed.
+- The final automatic-recall score is 0.950 rather than 1.000. The missed row remains honest evidence; labels and budgets were not tuned.
+- Repository hooks modified `AGENTS.md` and created `CLAUDE.md`; neither was staged or altered by this lane.
 
 ## Verification
 
-- `node --test scripts/soak/test-continuity.mjs`: 5/5 pass.
-- Two `--mode receipt` runs for seeds 1010 and 2020: 64 rows each, exit 0.
-- `continuity-report.mjs --require-modes fresh,session_resume,memory_recall`: pass over both receipt manifests.
-- Budget-hash mismatch test: typed refusal before report rendering.
-- `just gate-all` with `CARGO_TARGET_DIR=F:/CargoTarget/wayland-nano-p3`: fmt, clippy `-D warnings`, workspace tests, doc tests, and generated-contract checks pass.
-- `git diff 628901ab -- gates/fixtures/memory-retrieval-recall-v1`: empty; fixture rows and labels unchanged.
+- `node --test scripts/soak/test-continuity.mjs`: 5/5 pass against final binary.
+- `cargo test -p nano-agent --features soak-fake-model request_assertion_directive_round_trips --lib`: pass.
+- `cargo test -p nano-cli --test c11_session_cmds --test activation_memory_seam`: 3/3 and 21/21 pass.
+- `cargo clippy -p nano-agent -p nano-cli --all-targets --features nano-agent/soak-fake-model -- -D warnings`: pass.
+- Final receipt runs: seeds 1010 and 2020, 64 rows each, exit 0.
+- Final report generation with all three required modes: pass; all budgets PASS.
+- Fresh clone report regeneration at `df0c1f1`: byte-identical.
+- `just gate-all` with `CARGO_TARGET_DIR=F:/CargoTarget/wayland-nano-p3`: fmt, workspace clippy `-D warnings`, all workspace/doc tests, and generated-contract checks pass.
+- `git diff 628901ab -- gates/fixtures/memory-retrieval-recall-v1`: empty.
 
 ## Known Stubs
 
-None. `FLUX_API_KEY=wayland-nano-continuity-placeholder` is the existing fake-model seam credential pattern and never reaches a network provider.
+None. The request assertion exists only behind `soak-fake-model`; its mismatch is typed and no production provider path sees it.
 
 ## User Setup Required
 
@@ -168,12 +245,12 @@ None.
 
 ## Next Phase Readiness
 
-- Plan 03-06 can consume the committed report and repeat the deterministic receipt/report commands in closure evidence.
-- Desktop must decide whether and where to adopt the recommendation. This plan found no evidence authorizing a Desktop configuration change and did not touch Desktop paths.
+- Plan 03-06 can consume committed, recomputable receipt evidence and the activated fork-child behavior.
+- Desktop can evaluate the report recommendation without any Phase 3 Desktop code change.
 
 ## Self-Check: PASSED
 
-All five deliverable files and this summary exist; all four task commits resolve; the two receipt manifests contain 64 rows each; the report contains both seeds, the 8/8 drift result, and its recommendation; the frozen fixture diff is empty.
+Both committed manifests contain 64 rows and postdate the committed budget registration. Each seed proves fresh 0/20, fork-child resume 20/20, automatic recall 19/20, drift refusal 4/4, zero explicit memory calls, and positive ACP-emitted token deltas. All files and commits resolve, the fixture diff is empty, and no superseded receipt path remains in the final report or summary.
 
 ---
 *Phase: 03-runtime-integrated-scoped-continuity*
