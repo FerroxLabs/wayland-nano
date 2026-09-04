@@ -3,11 +3,9 @@
 //! The dedicated memory journal remains authoritative: every accepted legacy
 //! entry and its mediation receipt are synced before `memory.db` is rebuilt.
 
-use nano_memory::{
-    FactWrite, MemoryPolicy, MemoryProposal, MemoryStore, ProposalKind, rebuild_from_journals,
-};
+use nano_memory::{FactWrite, MemoryProposal, MemoryStore, ProposalKind, rebuild_from_journals};
 use nano_session::{JournalWriter, Op, OpEnvelope, read_journal};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::io::Write;
@@ -15,8 +13,11 @@ use std::path::{Path, PathBuf};
 
 const COMPLETION_ID: &str = "legacy-migration-complete";
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MigrationReceipt {
+    v: u8,
+    outcome: MigrationOutcome,
     ingested: usize,
     skipped: usize,
     refused: usize,
@@ -24,13 +25,62 @@ struct MigrationReceipt {
     entries: Vec<EntryReceipt>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MigrationOutcome {
+    Complete,
+    Incomplete,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EntryReceipt {
     name: String,
     content_sha256: Option<String>,
-    status: &'static str,
+    status: EntryStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    error_kind: Option<EntryErrorKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum EntryStatus {
+    Ingested,
+    Skipped,
+    Refused,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum EntryErrorKind {
+    InvalidTimestamp,
+    NotPlainFile,
+    ReadFailed,
+    InvalidUtf8,
+    SecretScreening,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MigrationErrorKind {
+    Usage,
+    AlreadyCompleted,
+    PolicyInvalid,
+    PolicyDisabled,
+    InvalidSessionId,
+    JournalInvalid,
+    RebuildFailed,
+    CompletionCollision,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MigrationFailure {
+    v: u8,
+    error_kind: MigrationErrorKind,
+    message: String,
 }
 
 #[derive(Debug)]
@@ -38,8 +88,11 @@ enum MigrationError {
     Usage,
     AlreadyCompleted,
     Policy(String),
+    PolicyDisabled,
+    InvalidSessionId,
     Journal(String),
     Rebuild(String),
+    CompletionCollision,
 }
 
 impl std::fmt::Display for MigrationError {
@@ -51,8 +104,31 @@ impl std::fmt::Display for MigrationError {
             ),
             Self::AlreadyCompleted => write!(f, "legacy memory migration already completed"),
             Self::Policy(message) => write!(f, "memory migration policy refusal: {message}"),
+            Self::PolicyDisabled => write!(f, "resolved memory policy disables migration writes"),
+            Self::InvalidSessionId => write!(f, "invalid migration session_id"),
             Self::Journal(message) => write!(f, "memory migration journal error: {message}"),
             Self::Rebuild(message) => write!(f, "memory migration rebuild error: {message}"),
+            Self::CompletionCollision => {
+                write!(
+                    f,
+                    "migration completion envelope collides with different content"
+                )
+            }
+        }
+    }
+}
+
+impl MigrationError {
+    const fn kind(&self) -> MigrationErrorKind {
+        match self {
+            Self::Usage => MigrationErrorKind::Usage,
+            Self::AlreadyCompleted => MigrationErrorKind::AlreadyCompleted,
+            Self::Policy(_) => MigrationErrorKind::PolicyInvalid,
+            Self::PolicyDisabled => MigrationErrorKind::PolicyDisabled,
+            Self::InvalidSessionId => MigrationErrorKind::InvalidSessionId,
+            Self::Journal(_) => MigrationErrorKind::JournalInvalid,
+            Self::Rebuild(_) => MigrationErrorKind::RebuildFailed,
+            Self::CompletionCollision => MigrationErrorKind::CompletionCollision,
         }
     }
 }
@@ -72,18 +148,27 @@ pub(crate) fn run(
     let result = parse(args).and_then(|params| migrate(nano_home, &params));
     match result {
         Ok(receipt) => {
+            let exit = if receipt.outcome == MigrationOutcome::Complete {
+                0
+            } else {
+                3
+            };
             if let Err(error) = serde_json::to_writer(&mut *out, &receipt) {
-                let _ = writeln!(err, "wayland-nano: memory migration output error: {error}");
+                let _ = write_failure(
+                    err,
+                    MigrationErrorKind::JournalInvalid,
+                    format!("memory migration output error: {error}"),
+                );
                 return 3;
             }
             if let Err(error) = writeln!(out) {
                 let _ = writeln!(err, "wayland-nano: memory migration output error: {error}");
                 return 3;
             }
-            0
+            exit
         }
         Err(error) => {
-            let _ = writeln!(err, "wayland-nano: {error}");
+            let _ = write_failure(err, error.kind(), error.to_string());
             if matches!(error, MigrationError::Usage) {
                 2
             } else {
@@ -91,6 +176,23 @@ pub(crate) fn run(
             }
         }
     }
+}
+
+fn write_failure(
+    err: &mut dyn Write,
+    error_kind: MigrationErrorKind,
+    message: String,
+) -> std::io::Result<()> {
+    serde_json::to_writer(
+        &mut *err,
+        &MigrationFailure {
+            v: 1,
+            error_kind,
+            message,
+        },
+    )
+    .map_err(std::io::Error::other)?;
+    writeln!(err)
 }
 
 fn parse(args: &[String]) -> Result<Params, MigrationError> {
@@ -119,15 +221,32 @@ fn parse(args: &[String]) -> Result<Params, MigrationError> {
         agent_id: agent_id.ok_or(MigrationError::Usage)?,
         session_id: session_id.ok_or(MigrationError::Usage)?,
     };
-    if params.project.is_empty() || params.session_id.is_empty() {
+    if params.project.is_empty() {
         return Err(MigrationError::Usage);
     }
+    validate_session_id(&params.session_id)?;
     Ok(params)
+}
+
+fn validate_session_id(session_id: &str) -> Result<(), MigrationError> {
+    let valid = !session_id.is_empty()
+        && session_id.len() <= 128
+        && session_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    valid.then_some(()).ok_or(MigrationError::InvalidSessionId)
 }
 
 fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, MigrationError> {
     let resolved = nano_cli::memory_policy::resolve(nano_home)
         .map_err(|error| MigrationError::Policy(error.to_string()))?;
+    let mut policy = resolved.policy().clone();
+    if !policy.enabled || policy.write == nano_memory::WriteScope::Off {
+        return Err(MigrationError::PolicyDisabled);
+    }
+    if policy.write == nano_memory::WriteScope::SessionOnly {
+        policy.session_id = Some(params.session_id.clone());
+    }
     if !resolved.configured_agents().contains(&params.agent_id) {
         return Err(MigrationError::Policy(format!(
             "unconfigured memory agent: {}",
@@ -139,10 +258,20 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
     let journal_path = nano_home.join("memory.jsonl");
     let existing =
         read_journal(&journal_path).map_err(|error| MigrationError::Journal(error.to_string()))?;
+    if let Some(entry) = existing
+        .envelopes
+        .iter()
+        .find(|entry| entry.id == COMPLETION_ID)
+    {
+        if matches_completion(entry, params) {
+            return Err(MigrationError::AlreadyCompleted);
+        }
+        return Err(MigrationError::CompletionCollision);
+    }
     if existing.envelopes.iter().any(|entry| {
         matches!(&entry.op, Op::MemoryWriteReceipt { write_id, .. } if write_id == COMPLETION_ID)
     }) {
-        return Err(MigrationError::AlreadyCompleted);
+        return Err(MigrationError::CompletionCollision);
     }
     let journaled_fact_ids = existing
         .envelopes
@@ -162,13 +291,29 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
                 receipts.push(EntryReceipt {
                     name: entry.name.clone(),
                     content_sha256: Some(entry.content_sha256.clone()),
-                    status: if skipped { "skipped" } else { "ingested" },
-                    error: None,
+                    status: if skipped {
+                        EntryStatus::Skipped
+                    } else {
+                        EntryStatus::Ingested
+                    },
+                    error_kind: None,
+                    message: None,
                 });
                 accepted.push(entry);
             }
             Err(receipt) => receipts.push(receipt),
         }
+    }
+    let refused = receipts
+        .iter()
+        .filter(|entry| entry.status == EntryStatus::Refused)
+        .count();
+    if accepted.is_empty() && refused > 0 {
+        return Ok(build_receipt(
+            MigrationOutcome::Incomplete,
+            journal_path,
+            receipts,
+        ));
     }
     for entry in &accepted {
         let matching = existing
@@ -205,14 +350,14 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
     rebuild_from_journals(
         &shadow.db,
         std::slice::from_ref(&journal_path),
-        MemoryPolicy::default(),
+        policy.clone(),
         resolved.configured_agents().clone(),
     )
     .map_err(|error| MigrationError::Rebuild(error.to_string()))?;
     let mut shadow_store = MemoryStore::open_at(
         &shadow.db,
         &shadow.journal,
-        MemoryPolicy::default(),
+        policy.clone(),
         &params.agent_id,
         resolved.configured_agents().clone(),
     )
@@ -269,10 +414,18 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
     rebuild_from_journals(
         &nano_home.join("memory/memory.db"),
         std::slice::from_ref(&journal_path),
-        MemoryPolicy::default(),
+        policy,
         resolved.configured_agents().clone(),
     )
     .map_err(|error| MigrationError::Rebuild(error.to_string()))?;
+
+    if refused > 0 {
+        return Ok(build_receipt(
+            MigrationOutcome::Incomplete,
+            journal_path,
+            receipts,
+        ));
+    }
 
     let completion = OpEnvelope::new(
         COMPLETION_ID,
@@ -280,33 +433,73 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
         Op::MemoryWriteReceipt {
             write_id: COMPLETION_ID.into(),
             agent_id: params.agent_id.clone(),
-            message: format!(
-                "legacy migration complete for project {}: {} entries examined",
-                params.project,
-                receipts.len()
-            ),
+            message: completion_message(params),
         },
     );
-    JournalWriter::open(&journal_path)
+    let appended = JournalWriter::open(&journal_path)
         .and_then(|mut writer| writer.append(&completion))
         .map_err(|error| MigrationError::Journal(error.to_string()))?;
+    if !appended {
+        let exact = read_journal(&journal_path)
+            .map_err(|error| MigrationError::Journal(error.to_string()))?
+            .envelopes
+            .into_iter()
+            .any(|existing| existing == completion);
+        if !exact {
+            return Err(MigrationError::CompletionCollision);
+        }
+    }
 
-    Ok(MigrationReceipt {
-        ingested: receipts
+    Ok(build_receipt(
+        MigrationOutcome::Complete,
+        journal_path,
+        receipts,
+    ))
+}
+
+fn build_receipt(
+    outcome: MigrationOutcome,
+    journal_path: PathBuf,
+    entries: Vec<EntryReceipt>,
+) -> MigrationReceipt {
+    MigrationReceipt {
+        v: 1,
+        outcome,
+        ingested: entries
             .iter()
-            .filter(|entry| entry.status == "ingested")
+            .filter(|entry| entry.status == EntryStatus::Ingested)
             .count(),
-        skipped: receipts
+        skipped: entries
             .iter()
-            .filter(|entry| entry.status == "skipped")
+            .filter(|entry| entry.status == EntryStatus::Skipped)
             .count(),
-        refused: receipts
+        refused: entries
             .iter()
-            .filter(|entry| entry.status == "refused")
+            .filter(|entry| entry.status == EntryStatus::Refused)
             .count(),
         journal_paths: vec![journal_path],
-        entries: receipts,
-    })
+        entries,
+    }
+}
+
+fn completion_message(params: &Params) -> String {
+    format!(
+        "legacy migration complete for project {} and agent {}",
+        params.project, params.agent_id
+    )
+}
+
+fn matches_completion(envelope: &OpEnvelope, params: &Params) -> bool {
+    matches!(
+        &envelope.op,
+        Op::MemoryWriteReceipt {
+            write_id,
+            agent_id,
+            message,
+        } if write_id == COMPLETION_ID
+            && agent_id == &params.agent_id
+            && message == &completion_message(params)
+    )
 }
 
 fn validate_agent_id(agent_id: &str) -> Result<(), MigrationError> {
@@ -328,18 +521,18 @@ fn validate_agent_id(agent_id: &str) -> Result<(), MigrationError> {
 }
 
 fn legacy_entries(root: &Path) -> Result<Vec<PathBuf>, MigrationError> {
-    let entries = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
+    match std::fs::read_dir(root) {
+        Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(MigrationError::Policy(error.to_string())),
-    };
-    let mut paths = entries
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| MigrationError::Policy(error.to_string()))?;
-    paths.retain(|path| path.extension().is_some_and(|extension| extension == "md"));
-    paths.sort();
-    Ok(paths)
+    }
+    Ok(
+        nano_agent::memory::MemoryStore::from_dir(root.to_path_buf())
+            .list()
+            .into_iter()
+            .map(|name| root.join(name))
+            .collect(),
+    )
 }
 
 struct PreparedEntry {
@@ -446,36 +639,58 @@ fn prepare_entry(path: &Path, params: &Params) -> Result<PreparedEntry, EntryRec
         .and_then(|name| name.to_str())
         .unwrap_or("<non-utf8>")
         .to_owned();
-    let refusal = |hash, message| EntryReceipt {
+    let refusal = |hash, error_kind, message| EntryReceipt {
         name: name.clone(),
         content_sha256: hash,
-        status: "refused",
-        error: Some(message),
+        status: EntryStatus::Refused,
+        error_kind: Some(error_kind),
+        message: Some(message),
     };
-    let metadata = path
-        .symlink_metadata()
-        .map_err(|error| refusal(None, format!("metadata: {error}")))?;
+    let metadata = path.symlink_metadata().map_err(|error| {
+        refusal(
+            None,
+            EntryErrorKind::ReadFailed,
+            format!("metadata: {error}"),
+        )
+    })?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(refusal(None, "entry is not a plain file".into()));
+        return Err(refusal(
+            None,
+            EntryErrorKind::NotPlainFile,
+            "entry is not a plain file".into(),
+        ));
     }
-    let bytes = std::fs::read(path).map_err(|error| refusal(None, format!("read: {error}")))?;
+    let bytes = std::fs::read(path)
+        .map_err(|error| refusal(None, EntryErrorKind::ReadFailed, format!("read: {error}")))?;
     let content_sha256 = format!("{:x}", Sha256::digest(&bytes));
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|error| refusal(Some(content_sha256.clone()), format!("utf-8: {error}")))?;
+    let text = std::str::from_utf8(&bytes).map_err(|error| {
+        refusal(
+            Some(content_sha256.clone()),
+            EntryErrorKind::InvalidUtf8,
+            format!("utf-8: {error}"),
+        )
+    })?;
     let content = nano_session::redaction::redact_secrets(text).map_err(|error| {
         refusal(
             Some(content_sha256.clone()),
+            EntryErrorKind::SecretScreening,
             format!("secret screening: {error}"),
         )
     })?;
     nano_session::scan_for_secrets(&content).map_err(|error| {
         refusal(
             Some(content_sha256.clone()),
+            EntryErrorKind::SecretScreening,
             format!("secret screening: {error}"),
         )
     })?;
-    let valid_from = timestamp_from_name(&name)
-        .map_err(|message| refusal(Some(content_sha256.clone()), message))?;
+    let valid_from = timestamp_from_name(&name).map_err(|message| {
+        refusal(
+            Some(content_sha256.clone()),
+            EntryErrorKind::InvalidTimestamp,
+            message,
+        )
+    })?;
     let mut identity = Sha256::new();
     identity.update(name.as_bytes());
     identity.update([0]);
@@ -528,4 +743,50 @@ fn timestamp_from_name(name: &str) -> Result<String, String> {
     Ok(timestamp
         .and_utc()
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strict_receipt_and_failure_wire_types_round_trip() {
+        let receipt = MigrationReceipt {
+            v: 1,
+            outcome: MigrationOutcome::Incomplete,
+            ingested: 1,
+            skipped: 2,
+            refused: 1,
+            journal_paths: vec![PathBuf::from("memory.jsonl")],
+            entries: vec![EntryReceipt {
+                name: "2026-01-02T03-04-05-entry.md".into(),
+                content_sha256: Some("a".repeat(64)),
+                status: EntryStatus::Refused,
+                error_kind: Some(EntryErrorKind::InvalidTimestamp),
+                message: Some("invalid timestamp".into()),
+            }],
+        };
+        let bytes = serde_json::to_vec(&receipt).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<MigrationReceipt>(&bytes).unwrap(),
+            receipt
+        );
+        let mut value = serde_json::to_value(&receipt).unwrap();
+        value["unknown"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<MigrationReceipt>(value).is_err());
+
+        let failure = MigrationFailure {
+            v: 1,
+            error_kind: MigrationErrorKind::PolicyDisabled,
+            message: "disabled".into(),
+        };
+        let bytes = serde_json::to_vec(&failure).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<MigrationFailure>(&bytes).unwrap(),
+            failure
+        );
+        let mut value = serde_json::to_value(&failure).unwrap();
+        value["unknown"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<MigrationFailure>(value).is_err());
+    }
 }
