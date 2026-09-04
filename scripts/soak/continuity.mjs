@@ -451,15 +451,13 @@ async function seedCorpus(home, workspace, keys, fixture, runDir) {
     const [project, agent] = partition.split('\0');
     const script = join(runDir, `seed-${project}-${agent}.jsonl`);
     const random = seededRandom(`seed:${project}:${agent}`);
-    await writeScript(script, values.flatMap(({ kind, value }) => [
-      toolDirective('memory_propose', { kind, value }, random),
-      textDirective(`seeded ${value.id}`, random),
-    ]));
+    await writeScript(script, [
+      ...values.map(({ kind, value }) => toolDirective('memory_propose', { kind, value }, random)),
+      textDirective(`seeded ${project}/${agent}`, random),
+    ]);
     const { acp, sessionId } = await openActivatedSession(home, workspace, keys, script, project, agent);
-    for (const { value } of values) {
-      const seeded = await acp.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: `Seed frozen fixture row ${value.id} for ${project}/${agent}.` }] });
-      if (!seeded.result) throw new Error(`fixture seed refused ${project}/${agent}/${value.id}: ${JSON.stringify(seeded)} ${acp.stderr}`);
-    }
+    const seeded = await acp.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: `Seed the frozen fixture partition ${project}/${agent}.` }] });
+    if (!seeded.result) throw new Error(`fixture seed refused ${project}/${agent}: ${JSON.stringify(seeded)} ${acp.stderr}`);
     const completed = acp.frames.filter((frame) => frame?.params?.update?.sessionUpdate === 'tool_call_update' && frame.params.update.status === 'completed');
     if (completed.length < values.length) throw new Error(`fixture seed incomplete ${project}/${agent}: ${completed.length}/${values.length}`);
     await acp.close();
