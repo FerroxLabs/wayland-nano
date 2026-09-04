@@ -198,6 +198,46 @@ fn interruption_after_journal_append_leaves_rebuildable_authority_only() {
 }
 
 #[test]
+fn retry_repairs_a_write_interrupted_before_its_receipt() {
+    let home = tempfile::tempdir().unwrap();
+    seed(
+        home.path(),
+        "2026-01-02T03-04-05-torn-receipt.md",
+        "receipt recovery marker",
+    );
+    let interrupted = migrate(
+        home.path(),
+        Some(("NANO_TEST_MEMORY_MIGRATE_STOP_AFTER_JOURNAL", "1")),
+    );
+    assert_eq!(interrupted.status.code(), Some(3), "{interrupted:?}");
+
+    let journal_path = home.path().join("memory.jsonl");
+    let write = read_journal(&journal_path)
+        .unwrap()
+        .envelopes
+        .into_iter()
+        .find(|entry| matches!(entry.op, Op::MemoryWriteFact { .. }))
+        .unwrap();
+    let mut bytes = serde_json::to_vec(&write).unwrap();
+    bytes.push(b'\n');
+    std::fs::write(&journal_path, bytes).unwrap();
+
+    let recovered = migrate(home.path(), None);
+    assert_eq!(recovered.status.code(), Some(0), "{recovered:?}");
+    let report = read_journal(&journal_path).unwrap();
+    let fact_id = match &write.op {
+        Op::MemoryWriteFact { fact_id, .. } => fact_id,
+        _ => unreachable!(),
+    };
+    assert!(report.envelopes.iter().any(|entry| matches!(
+        &entry.op,
+        Op::MemoryWriteReceipt { write_id, agent_id, .. }
+            if write_id == fact_id && agent_id == "main"
+    )));
+    assert_eq!(inspect_facts(home.path()).len(), 1);
+}
+
+#[test]
 fn completed_migration_refuses_rerun_and_post_migration_edits_are_invisible() {
     let home = tempfile::tempdir().unwrap();
     let name = "2026-01-02T03-04-05-stable.md";
