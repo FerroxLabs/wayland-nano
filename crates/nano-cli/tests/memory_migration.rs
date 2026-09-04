@@ -1,4 +1,6 @@
-use nano_memory::{ConfiguredAgents, MemoryPolicy, MemoryStore, SourceTrust, rebuild_from_journals};
+use nano_memory::{
+    ConfiguredAgents, MemoryPolicy, MemoryStore, SourceTrust, rebuild_from_journals,
+};
 use nano_session::{Op, read_journal};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -62,8 +64,17 @@ fn explicit_migration_is_journal_first_model_inference_and_receipted() {
     assert_eq!(receipt["ingested"], 1);
     assert_eq!(receipt["skipped"], 0);
     assert_eq!(receipt["refused"], 0);
-    assert_eq!(receipt["entries"][0]["content_sha256"].as_str().unwrap().len(), 64);
-    assert_eq!(receipt["journal_paths"], serde_json::json!([home.path().join("memory.jsonl")]));
+    assert_eq!(
+        receipt["entries"][0]["content_sha256"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+    assert_eq!(
+        receipt["journal_paths"],
+        serde_json::json!([home.path().join("memory.jsonl")])
+    );
 
     let journal = read_journal(&home.path().join("memory.jsonl")).unwrap();
     let write = journal
@@ -113,7 +124,11 @@ fn explicit_migration_is_journal_first_model_inference_and_receipted() {
 #[test]
 fn invalid_legacy_metadata_is_a_per_entry_refusal() {
     let home = tempfile::tempdir().unwrap();
-    seed(home.path(), "not-a-timestamp.md", "must not acquire authority");
+    seed(
+        home.path(),
+        "not-a-timestamp.md",
+        "must not acquire authority",
+    );
 
     let output = migrate(home.path(), None);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -121,10 +136,12 @@ fn invalid_legacy_metadata_is_a_per_entry_refusal() {
     assert_eq!(receipt["ingested"], 0);
     assert_eq!(receipt["refused"], 1);
     assert_eq!(receipt["entries"][0]["status"], "refused");
-    assert!(receipt["entries"][0]["error"]
-        .as_str()
-        .unwrap()
-        .contains("timestamp"));
+    assert!(
+        receipt["entries"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("timestamp")
+    );
     assert!(inspect_facts(home.path()).is_empty());
 }
 
@@ -145,14 +162,18 @@ fn interruption_after_journal_append_leaves_rebuildable_authority_only() {
     assert!(!home.path().join("memory/memory.db").exists());
     let journal_path = home.path().join("memory.jsonl");
     let journal = read_journal(&journal_path).unwrap();
-    assert!(journal
-        .envelopes
-        .iter()
-        .any(|entry| matches!(entry.op, Op::MemoryWriteFact { .. })));
-    assert!(journal
-        .envelopes
-        .iter()
-        .any(|entry| matches!(entry.op, Op::MemoryWriteReceipt { .. })));
+    assert!(
+        journal
+            .envelopes
+            .iter()
+            .any(|entry| matches!(entry.op, Op::MemoryWriteFact { .. }))
+    );
+    assert!(
+        journal
+            .envelopes
+            .iter()
+            .any(|entry| matches!(entry.op, Op::MemoryWriteReceipt { .. }))
+    );
 
     let rebuilt = home.path().join("rebuilt.db");
     rebuild_from_journals(
