@@ -15,12 +15,12 @@ use nano_tools::web_search::{SearchArgs, WebSearchTool, render_search_output};
 mod soak_fake {
     use super::*;
     use nano_model::types::{ModelEvent, TransportPhase, Usage};
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
     use std::path::Path;
     use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
     #[serde(tag = "kind", rename_all = "snake_case")]
     enum Directive {
         Text {
@@ -43,9 +43,18 @@ mod soak_fake {
             #[serde(default)]
             latency_ms: Latency,
         },
+        AssertRequest {
+            needle: String,
+            present: bool,
+            text: String,
+            #[serde(default)]
+            usage: ScriptUsage,
+            #[serde(default)]
+            latency_ms: Latency,
+        },
     }
 
-    #[derive(Debug, Clone, Default, Deserialize)]
+    #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
     struct ScriptUsage {
         #[serde(default)]
         input_tokens: u64,
@@ -63,7 +72,7 @@ mod soak_fake {
         }
     }
 
-    #[derive(Debug, Clone, Default, Deserialize)]
+    #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
     #[serde(untagged)]
     enum Latency {
         Fixed(u64),
@@ -86,7 +95,7 @@ mod soak_fake {
         }
     }
 
-    #[derive(Debug, Clone, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
     enum ScriptError {
         Server { status: u16, message: String },
@@ -125,7 +134,31 @@ mod soak_fake {
         }))
     }
 
-    pub(super) async fn complete() -> Option<Result<ModelResponse, ModelError>> {
+    fn request_contains(request: &ModelRequest, needle: &str) -> bool {
+        request
+            .system
+            .as_deref()
+            .is_some_and(|text| text.contains(needle))
+            || request
+                .messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .any(|block| match block {
+                    nano_model::types::ContentBlock::Text { text }
+                    | nano_model::types::ContentBlock::ToolResult { content: text, .. } => {
+                        text.contains(needle)
+                    }
+                    nano_model::types::ContentBlock::ToolUse { input, .. } => {
+                        input.to_string().contains(needle)
+                    }
+                    nano_model::types::ContentBlock::Image { .. }
+                    | nano_model::types::ContentBlock::Document { .. } => false,
+                })
+    }
+
+    pub(super) async fn complete(
+        request: &ModelRequest,
+    ) -> Option<Result<ModelResponse, ModelError>> {
         let path = std::env::var_os("NANO_SOAK_MODEL_SCRIPT")?;
         let state = STATE.get_or_init(|| load(Path::new(&path)));
         let (directive, ordinal, call_id) = match state {
@@ -144,7 +177,8 @@ mod soak_fake {
         let latency = match &directive {
             Directive::Text { latency_ms, .. }
             | Directive::ToolCall { latency_ms, .. }
-            | Directive::Error { latency_ms, .. } => latency_ms.millis(ordinal),
+            | Directive::Error { latency_ms, .. }
+            | Directive::AssertRequest { latency_ms, .. } => latency_ms.millis(ordinal),
         };
         if latency > 0 {
             tokio::time::sleep(Duration::from_millis(latency)).await;
@@ -197,6 +231,31 @@ mod soak_fake {
                 },
                 ScriptError::MalformedStream { message } => ModelError::Protocol(message),
             }),
+            Directive::AssertRequest {
+                needle,
+                present,
+                text,
+                usage,
+                ..
+            } => {
+                if request_contains(request, &needle) != present {
+                    Err(ModelError::Protocol("soak request assertion failed".into()))
+                } else {
+                    let usage = Usage::from(usage);
+                    Ok(ModelResponse {
+                        events: vec![
+                            ModelEvent::TextDelta(text),
+                            ModelEvent::Usage(usage.clone()),
+                            ModelEvent::Done {
+                                stop_reason: "end_turn".into(),
+                            },
+                        ],
+                        usage,
+                        stop_reason: "end_turn".into(),
+                        model: Some("wayland-nano-soak-fake".into()),
+                    })
+                }
+            }
         })
     }
 
@@ -208,6 +267,10 @@ mod soak_fake {
         fn request_assertion_directive_round_trips() {
             let raw = r#"{"kind":"assert_request","needle":"fixture answer","present":true,"text":"matched","usage":{"input_tokens":17,"output_tokens":3},"latency_ms":2}"#;
             let parsed: Directive = serde_json::from_str(raw).expect("parse assertion directive");
+            let encoded = serde_json::to_vec(&parsed).expect("serialize assertion directive");
+            let reparsed: Directive =
+                serde_json::from_slice(&encoded).expect("reparse assertion directive");
+            assert_eq!(parsed, reparsed);
             assert!(matches!(
                 parsed,
                 Directive::AssertRequest {
@@ -217,6 +280,13 @@ mod soak_fake {
                     ..
                 } if needle == "fixture answer" && text == "matched"
             ));
+
+            let mut request = nano_model::types::ModelRequest::default();
+            request.messages.push(nano_model::types::Message::system(
+                "<memory>fixture answer</memory>",
+            ));
+            assert!(super::request_contains(&request, "fixture answer"));
+            assert!(!super::request_contains(&request, "irrelevant answer"));
         }
     }
 }
@@ -278,7 +348,7 @@ impl FluxDriver {
 impl ModelDriver for FluxDriver {
     async fn complete(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError> {
         #[cfg(feature = "soak-fake-model")]
-        if let Some(response) = soak_fake::complete().await {
+        if let Some(response) = soak_fake::complete(request).await {
             return response;
         }
         #[cfg(not(feature = "soak-fake-model"))]
@@ -297,6 +367,14 @@ impl ModelDriver for FluxDriver {
         request: &ModelRequest,
         hooks: &nano_model::types::CallHooks<'_>,
     ) -> Result<ModelResponse, ModelError> {
+        #[cfg(feature = "soak-fake-model")]
+        if let Some(response) = soak_fake::complete(request).await {
+            return response;
+        }
+        #[cfg(not(feature = "soak-fake-model"))]
+        if let Some(response) = reject_uncompiled_soak_seam() {
+            return response;
+        }
         match &self.client {
             FluxClient::Completions(client) => {
                 client
@@ -359,7 +437,7 @@ impl ProviderDriver {
 impl ModelDriver for ProviderDriver {
     async fn complete(&self, request: &ModelRequest) -> Result<ModelResponse, ModelError> {
         #[cfg(feature = "soak-fake-model")]
-        if let Some(response) = soak_fake::complete().await {
+        if let Some(response) = soak_fake::complete(request).await {
             return response;
         }
         #[cfg(not(feature = "soak-fake-model"))]
