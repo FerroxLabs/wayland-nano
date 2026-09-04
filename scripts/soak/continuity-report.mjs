@@ -13,6 +13,7 @@ const outputPath = resolve(args.get('--out') ?? join(repo, 'docs', 'evidence', '
 const requiredModes = (args.get('--require-modes') ?? 'fresh,session_resume,memory_recall').split(',').filter(Boolean);
 const budgetPath = join(here, 'continuity-budgets.json');
 const harnessPath = join(here, 'continuity.mjs');
+const fixturePath = join(repo, 'gates', 'fixtures', 'memory-retrieval-recall-v1', 'fixture.json');
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const posix = (path) => path.replaceAll('\\', '/');
@@ -48,6 +49,7 @@ const budgetBytes = await readFile(budgetPath);
 const budgets = JSON.parse(budgetBytes);
 const budgetHash = sha256(canonical(budgets));
 const harnessHash = sha256((await readFile(harnessPath, 'utf8')).replaceAll('\r\n', '\n'));
+const fixtureHash = sha256(await readFile(fixturePath));
 if (budgets.schema !== 'wayland.nano.continuity-budgets/v1') throw new Error('unsupported continuity budget schema');
 for (const mode of requiredModes) {
   if (!budgets.modes?.[mode]) throw new Error(`budget missing mode: ${mode}`);
@@ -65,6 +67,9 @@ for (const manifestPath of await findManifests(evidenceRoot)) {
   if (manifest.harness?.sha256 !== harnessHash) {
     throw new Error(`harness hash mismatch: ${posix(relative(repo, manifestPath))}`);
   }
+  if (manifest.fixture?.sha256 !== fixtureHash || manifest.fixture?.labels_modified !== false) {
+    throw new Error(`fixture hash mismatch: ${posix(relative(repo, manifestPath))}`);
+  }
   const ndjsonPath = resolve(dirname(manifestPath), '..', manifest.ndjson.path);
   const ndjsonBytes = await readFile(ndjsonPath);
   if (sha256(ndjsonBytes) !== manifest.ndjson.sha256) {
@@ -77,7 +82,7 @@ for (const manifestPath of await findManifests(evidenceRoot)) {
       throw new Error(`row binding mismatch: ${manifestPath}`);
     }
   }
-  candidates.push({ manifestPath, manifest, rows });
+  candidates.push({ manifestPath, manifest, manifestSha256: sha256(manifestBytes), rows });
 }
 if (candidates.length === 0) throw new Error('no hash-valid continuity evidence found');
 
@@ -93,10 +98,13 @@ const scriptHashes = new Map();
 for (const { rows } of selected) {
   for (const row of rows.filter((entry) => entry.probe_kind === 'recall')) {
     const key = `${row.seed}\0${row.label}`;
-    const prior = scriptHashes.get(key);
-    if (prior && prior !== row.task_script_sha256) throw new Error(`task script differs across modes: ${row.seed}/${row.label}`);
-    scriptHashes.set(key, row.task_script_sha256);
+    const hashes = scriptHashes.get(key) ?? new Set();
+    hashes.add(row.task_script_sha256);
+    scriptHashes.set(key, hashes);
   }
+}
+for (const [key, hashes] of scriptHashes) {
+  if (hashes.size !== requiredModes.length) throw new Error(`causal task scripts missing modes: ${key}`);
 }
 
 const modeResults = {};
@@ -138,7 +146,7 @@ const fmt = (value, digits = 2) => Number(value).toFixed(digits).replace(/\.00$/
 const lines = [
   '# Phase 3 continuity modes report',
   '',
-  `Evidence class: **${preferredKind}**; seeded repetitions: **${selected.length}**; frozen budget SHA-256: \`${budgetHash}\`; harness SHA-256: \`${harnessHash}\`.`,
+  `Evidence class: **${preferredKind}**; seeded repetitions: **${selected.length}**; budgets registered **${budgets.registered_at}** before receipt execution; frozen budget SHA-256: \`${budgetHash}\`; harness SHA-256: \`${harnessHash}\`.`,
   '',
   'This is a measurement report, not a merge gate. Desktop remains the authority that selects defaults.',
   '',
@@ -153,7 +161,7 @@ const lines = [
   '',
   `Typed resume-drift refusals: **${driftCorrect}/${driftRows.length}** (\`resume_drift\`, zero silent fallbacks).`,
   '',
-  'Quality is the fixed fixture battery result: the relevant labeled row was durably seeded in the admitted `(project, agent_id)` partition, the real ACP `memory_recall` tool completed with a nonempty digest, and the deterministic fake model emitted the fixture-derived answer. ACP intentionally exposes only the tool-result digest, so this harness measures continuity plumbing and cost; it does not claim semantic model reasoning quality. The independent mem-sec and recall fixtures own content-level retrieval correctness.',
+  'Quality is causal request evidence from the fixed fixture battery. Fresh creates a new admitted session with memory disabled and the soak model proves the fixture answer is absent. Session resume forks an activated parent, loads the returned child id, and emits success only when the actual model request contains the replayed answer. Memory recall exposes no explicit memory tool call: its model emits success only when automatic scoped retrieval placed the fixture answer in the actual request. Missing or irrelevant retrieval therefore becomes a typed model-protocol failure and a failed quality row. Token totals come only from emitted `_wayland/session/budget` notifications.',
   '',
   '## Budget verdicts',
   '',
@@ -164,19 +172,24 @@ const lines = [
   '',
   '## RECOMMENDATION',
   '',
-  `For interactive ACP, default to **session_resume when a valid bound session exists**, otherwise **fresh**. Session resume preserved its fork/load substrate and rejected ${driftCorrect}/${driftRows.length} drift probes without fallback; its measured quality was ${fmt(session.median_quality_score, 3)} at ${fmt(session.median_total_tokens)} tokens.`,
+  `For interactive ACP, default to **session_resume when a valid bound session exists**. It loaded the returned fork child, rejected ${driftCorrect}/${driftRows.length} drift probes without fallback, and measured ${fmt(session.median_quality_score, 3)} quality at ${fmt(session.median_total_tokens)} emitted tokens. With no resumable session, use **memory_recall only when project continuity is requested**; otherwise start fresh.`,
   '',
-  `For one-shot exec, default to **fresh**. It achieved the same measured quality with no resume dependency. Keep **memory_recall opt-in** until a semantic model evaluation can distinguish it: memory_recall ${memoryBeatsSession ? 'did' : 'did NOT'} beat session_resume on measured quality per token (${memoryQualityPerToken.toExponential(3)} vs ${sessionQualityPerToken.toExponential(3)}).`,
+  `For one-shot exec, default to **fresh for stateless work** and require an explicit continuity choice for memory-backed work. Fresh correctly exposed no remembered answer; memory_recall measured ${fmt(memory.median_quality_score, 3)} quality. Memory recall ${memoryBeatsSession ? 'did' : 'did NOT'} beat session_resume on measured quality per emitted token (${memoryQualityPerToken.toExponential(3)} vs ${sessionQualityPerToken.toExponential(3)}), so it remains an explicit continuity mode rather than a universal default.`,
   '',
   'These are recommendations from the measured fake-model chassis. Desktop selects and owns the actual defaults.',
   '',
   '## Run manifests',
   '',
-  '| seed | binary sha256 | budget sha256 | harness sha256 | manifest | NDJSON |',
-  '|---:|---|---|---|---|---|',
-  ...selected.map(({ manifestPath, manifest }) => {
+  '| seed | binary sha256 | budget sha256 | harness sha256 | fixture sha256 | manifest sha256 | NDJSON sha256 |',
+  '|---:|---|---|---|---|---|---|',
+  ...selected.map(({ manifestPath, manifest, manifestSha256 }) => {
     const ndjsonPath = resolve(dirname(manifestPath), '..', manifest.ndjson.path);
-    return `| ${manifest.seed} | \`${manifest.binary.sha256}\` | \`${manifest.budgets.sha256}\` | \`${manifest.harness.sha256}\` | \`${posix(relative(repo, manifestPath))}\` | \`${posix(relative(repo, ndjsonPath))}\` |`;
+    return `| ${manifest.seed} | \`${manifest.binary.sha256}\` | \`${manifest.budgets.sha256}\` | \`${manifest.harness.sha256}\` | \`${manifest.fixture.sha256}\` | \`${manifestSha256}\` | \`${manifest.ndjson.sha256}\` |`;
+  }),
+  '',
+  ...selected.flatMap(({ manifestPath, manifest }) => {
+    const ndjsonPath = resolve(dirname(manifestPath), '..', manifest.ndjson.path);
+    return [`- Seed ${manifest.seed} manifest: \`${posix(relative(repo, manifestPath))}\``, `- Seed ${manifest.seed} NDJSON: \`${posix(relative(repo, ndjsonPath))}\``];
   }),
   '',
   '## Desktop consumption',
