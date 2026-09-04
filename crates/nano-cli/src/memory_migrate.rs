@@ -3,7 +3,10 @@
 //! The dedicated memory journal remains authoritative: every accepted legacy
 //! entry and its mediation receipt are synced before `memory.db` is rebuilt.
 
-use nano_memory::{FactWrite, MemoryProposal, MemoryStore, ProposalKind, rebuild_from_journals};
+use nano_memory::{
+    ConfiguredAgents, FactWrite, MemoryPolicy, MemoryProposal, MemoryStore, ProposalKind,
+    rebuild_from_journals,
+};
 use nano_session::{JournalWriter, Op, OpEnvelope, read_journal};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -316,6 +319,18 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
         ));
     }
     for entry in &accepted {
+        let expected_write_id = format!("legacy-migration-write-{}", entry.fact.id);
+        if let Some(envelope) = existing
+            .envelopes
+            .iter()
+            .find(|envelope| envelope.id == expected_write_id)
+            && !matches_existing_write(envelope, entry, params)
+        {
+            return Err(MigrationError::Journal(format!(
+                "authoritative envelope id collision for {}",
+                entry.fact.id
+            )));
+        }
         let matching = existing
             .envelopes
             .iter()
@@ -333,14 +348,72 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
                 entry.fact.id
             )));
         }
-        if let Some(envelope) = existing
+        let matching_receipts = existing
             .envelopes
             .iter()
-            .find(|envelope| envelope.id == entry.receipt_envelope.id)
-            && !matches_existing_receipt(envelope, entry)
+            .filter(|envelope| {
+                matches!(&envelope.op, Op::MemoryWriteReceipt { write_id, agent_id, .. }
+                    if write_id == &entry.fact.id && agent_id == &entry.fact.agent_id)
+            })
+            .collect::<Vec<_>>();
+        if matching_receipts.len() > 1
+            || matching_receipts
+                .first()
+                .is_some_and(|envelope| !matches_existing_receipt(envelope, entry))
+            || existing.envelopes.iter().any(|envelope| {
+                envelope.id == entry.receipt_envelope.id
+                    && !matches_existing_receipt(envelope, entry)
+            })
         {
             return Err(MigrationError::Journal(format!(
                 "conflicting migration receipt for {}",
+                entry.fact.id
+            )));
+        }
+    }
+
+    let unreceipted = accepted
+        .iter()
+        .filter_map(|entry| {
+            let write_index = existing.envelopes.iter().position(|envelope| {
+                matches!(&envelope.op, Op::MemoryWriteFact { fact_id, .. } if fact_id == &entry.fact.id)
+            })?;
+            let has_receipt = existing
+                .envelopes
+                .iter()
+                .any(|envelope| matches_existing_receipt(envelope, entry));
+            (!has_receipt).then_some((entry, write_index))
+        })
+        .collect::<Vec<_>>();
+    if unreceipted.len() > 1 {
+        return Err(MigrationError::Journal(
+            "multiple unreceipted migration writes are not a valid crash prefix".into(),
+        ));
+    }
+    for (entry, write_index) in &unreceipted {
+        let expected = resolve_at_journal_position(
+            nano_home,
+            &existing.envelopes[..*write_index],
+            entry,
+            params,
+            &policy,
+            resolved.configured_agents(),
+        )?;
+        let actual = &existing.envelopes[*write_index];
+        if expected.id != actual.id || expected.op != actual.op {
+            return Err(MigrationError::Journal(format!(
+                "resolver outcome mismatch for unreceipted migration write {}",
+                entry.fact.id
+            )));
+        }
+    }
+    if let Some((entry, _)) = unreceipted.first() {
+        let appended = JournalWriter::open(&journal_path)
+            .and_then(|mut writer| writer.append(&entry.receipt_envelope))
+            .map_err(|error| MigrationError::Journal(error.to_string()))?;
+        if !appended {
+            return Err(MigrationError::Journal(format!(
+                "missing receipt for {} could not be repaired",
                 entry.fact.id
             )));
         }
@@ -366,9 +439,6 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
         .map_err(|error| MigrationError::Journal(error.to_string()))?;
     for entry in &accepted {
         if journaled_fact_ids.contains(&entry.fact.id) {
-            authority_writer
-                .append(&entry.receipt_envelope)
-                .map_err(|error| MigrationError::Journal(error.to_string()))?;
             continue;
         }
         shadow_store
@@ -394,9 +464,15 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
         if let Op::MemoryWriteFact { session_id, .. } = &mut authoritative.op {
             *session_id = Some(params.session_id.clone());
         }
-        authority_writer
+        let appended = authority_writer
             .append(&authoritative)
             .map_err(|error| MigrationError::Journal(error.to_string()))?;
+        if !appended {
+            return Err(MigrationError::Journal(format!(
+                "authoritative envelope id collision for {}",
+                entry.fact.id
+            )));
+        }
         authority_writer
             .append(&entry.receipt_envelope)
             .map_err(|error| MigrationError::Journal(error.to_string()))?;
@@ -404,6 +480,14 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
     drop(authority_writer);
     drop(shadow_store);
     drop(shadow);
+
+    if let Some(marker) = std::env::var_os("NANO_TEST_MEMORY_MIGRATE_KILL_MARKER") {
+        std::fs::write(marker, b"journal-synced")
+            .map_err(|error| MigrationError::Journal(error.to_string()))?;
+        loop {
+            std::thread::park();
+        }
+    }
 
     if std::env::var_os("NANO_TEST_MEMORY_MIGRATE_STOP_AFTER_JOURNAL").is_some() {
         return Err(MigrationError::Rebuild(
@@ -521,18 +605,54 @@ fn validate_agent_id(agent_id: &str) -> Result<(), MigrationError> {
 }
 
 fn legacy_entries(root: &Path) -> Result<Vec<PathBuf>, MigrationError> {
-    match std::fs::read_dir(root) {
-        Ok(_) => {}
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(MigrationError::Policy(error.to_string())),
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| MigrationError::Policy(error.to_string()))?;
+        let name = entry.file_name().into_string().map_err(|_| {
+            MigrationError::Policy("legacy directory entry name is not UTF-8".into())
+        })?;
+        if is_canonical_legacy_name(&name) {
+            paths.push(entry.path());
+        }
     }
-    Ok(
-        nano_agent::memory::MemoryStore::from_dir(root.to_path_buf())
-            .list()
-            .into_iter()
-            .map(|name| root.join(name))
-            .collect(),
-    )
+    paths.sort();
+    Ok(paths)
+}
+
+fn is_canonical_legacy_name(name: &str) -> bool {
+    let Some(body) = name.strip_suffix(".md") else {
+        return false;
+    };
+    let bytes = body.as_bytes();
+    if bytes.len() <= 20 {
+        return false;
+    }
+    for (index, byte) in bytes[..19].iter().enumerate() {
+        let valid = if matches!(index, 4 | 7 | 13 | 16) {
+            *byte == b'-'
+        } else if index == 10 {
+            *byte == b'T'
+        } else {
+            byte.is_ascii_digit()
+        };
+        if !valid {
+            return false;
+        }
+    }
+    let slug = &body[20..];
+    bytes[19] == b'-'
+        && !slug.is_empty()
+        && slug.len() <= 40
+        && !slug.starts_with('-')
+        && !slug.ends_with('-')
+        && slug
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 struct PreparedEntry {
@@ -602,9 +722,67 @@ fn matches_existing_receipt(envelope: &OpEnvelope, entry: &PreparedEntry) -> boo
     }
 }
 
+fn resolve_at_journal_position(
+    nano_home: &Path,
+    prefix: &[OpEnvelope],
+    entry: &PreparedEntry,
+    params: &Params,
+    policy: &MemoryPolicy,
+    configured_agents: &ConfiguredAgents,
+) -> Result<OpEnvelope, MigrationError> {
+    let shadow = ShadowPaths::new(nano_home);
+    let mut prefix_writer = JournalWriter::open(&shadow.prefix)
+        .map_err(|error| MigrationError::Journal(error.to_string()))?;
+    for envelope in prefix {
+        prefix_writer
+            .append(envelope)
+            .map_err(|error| MigrationError::Journal(error.to_string()))?;
+    }
+    drop(prefix_writer);
+    rebuild_from_journals(
+        &shadow.db,
+        std::slice::from_ref(&shadow.prefix),
+        policy.clone(),
+        configured_agents.clone(),
+    )
+    .map_err(|error| MigrationError::Rebuild(error.to_string()))?;
+    let mut store = MemoryStore::open_at(
+        &shadow.db,
+        &shadow.journal,
+        policy.clone(),
+        &params.agent_id,
+        configured_agents.clone(),
+    )
+    .map_err(|error| MigrationError::Rebuild(error.to_string()))?;
+    store
+        .commit_proposal(MemoryProposal {
+            kind: ProposalKind::Fact(entry.fact.clone()),
+        })
+        .map_err(|error| MigrationError::Rebuild(error.to_string()))?;
+    let mut expected = read_journal(&shadow.journal)
+        .map_err(|error| MigrationError::Journal(error.to_string()))?
+        .envelopes
+        .into_iter()
+        .find(|envelope| {
+            matches!(&envelope.op, Op::MemoryWriteFact { fact_id, .. } if fact_id == &entry.fact.id)
+        })
+        .ok_or_else(|| {
+            MigrationError::Journal(format!(
+                "resolver emitted no write for {}",
+                entry.fact.id
+            ))
+        })?;
+    expected.id = format!("legacy-migration-write-{}", entry.fact.id);
+    if let Op::MemoryWriteFact { session_id, .. } = &mut expected.op {
+        *session_id = Some(params.session_id.clone());
+    }
+    Ok(expected)
+}
+
 struct ShadowPaths {
     db: PathBuf,
     journal: PathBuf,
+    prefix: PathBuf,
 }
 
 impl ShadowPaths {
@@ -617,6 +795,9 @@ impl ShadowPaths {
         Self {
             db: nano_home.join("memory").join(format!("{stem}.db")),
             journal: nano_home.join("memory").join(format!("{stem}.jsonl")),
+            prefix: nano_home
+                .join("memory")
+                .join(format!("{stem}.prefix.jsonl")),
         }
     }
 }
@@ -627,6 +808,7 @@ impl Drop for ShadowPaths {
             self.db.clone(),
             self.db.with_extension("memory.lock"),
             self.journal.clone(),
+            self.prefix.clone(),
         ] {
             let _ = std::fs::remove_file(path);
         }
@@ -788,5 +970,26 @@ mod tests {
         let mut value = serde_json::to_value(&failure).unwrap();
         value["unknown"] = serde_json::json!(true);
         assert!(serde_json::from_value::<MigrationFailure>(value).is_err());
+    }
+
+    #[test]
+    fn strict_legacy_name_matrix_matches_the_canonical_store_grammar() {
+        for accepted in [
+            "2026-01-02T03-04-05-a.md",
+            "0000-00-00T00-00-00-lowercase-123.md",
+        ] {
+            assert!(is_canonical_legacy_name(accepted), "{accepted}");
+        }
+        for rejected in [
+            "not-a-legacy-name.md",
+            "2026-01-02T03:04:05-colons.md",
+            "2026-01-02T03-04-05-UPPER.md",
+            "2026-01-02T03-04-05--leading.md",
+            "2026-01-02T03-04-05-trailing-.md",
+            "2026-01-02T03-04-05-.md",
+            "2026-01-02T03-04-05-abcdefghijklmnopqrstuvwxyzabcdefghijklmno.md",
+        ] {
+            assert!(!is_canonical_legacy_name(rejected), "{rejected}");
+        }
     }
 }

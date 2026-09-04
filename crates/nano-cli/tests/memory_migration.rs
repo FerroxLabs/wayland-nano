@@ -641,7 +641,11 @@ fn migration_refuses_a_preexisting_fact_id_with_different_payload() {
     assert_eq!(output.status.code(), Some(3), "{output:?}");
     let refusal = failure(&output);
     assert_eq!(refusal.error_kind, WireFailureKind::JournalInvalid);
-    assert!(refusal.message.contains("conflicting authoritative write"));
+    assert!(
+        refusal
+            .message
+            .contains("authoritative envelope id collision")
+    );
     let report = read_journal(&journal_path).unwrap();
     assert!(!report.envelopes.iter().any(|entry| matches!(
         &entry.op,
@@ -855,9 +859,15 @@ fn sigkill_after_migration_journal_sync_rebuilds_like_control() {
     )
     .unwrap();
     assert_eq!(inspect_facts(killed.path()), expected);
+    let entry_receipts = |path: &Path| {
+        journal_receipts(path)
+            .into_iter()
+            .filter(|(_, _, message)| message.contains("sha256:"))
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        journal_receipts(&journal),
-        journal_receipts(&control.path().join("memory.jsonl"))
+        entry_receipts(&journal),
+        entry_receipts(&control.path().join("memory.jsonl"))
     );
 }
 
