@@ -62,10 +62,12 @@ The migration computes the deterministic contradiction outcome in an isolated st
 | Task 3 GREEN | `85a4a95` | Routed resolver decisions through mediation and retained explicit migration-session attribution. |
 | Crash-pair RED | `68889d9` | Reproduced interruption between an authoritative write and its receipt. |
 | Crash-pair GREEN | `f22eec6` | Made retry repair the missing receipt before rebuild. |
+| Collision RED | `459b3d1` | Proved a reused fact id cannot attach a migration receipt to substituted journal payload. |
+| Collision GREEN | `c72b6ef` | Bound interrupted-write recovery to an exact operation and receipt match. |
 
 ## Verification
 
-- `cargo test -p nano-cli --test memory_migration --test activation_quarantine -- --test-threads=1`: 15 passed.
+- `cargo test -p nano-cli --test memory_migration --test activation_quarantine -- --test-threads=1`: 16 passed.
 - `cargo test -p nano-memory --test corrective_regressions --test durability --test mem_sec_cards -- --test-threads=1`: 21 passed, including the child-process kill-mid-write test and all six mem-sec cards plus summary.
 - `cargo test -p nano-session --test activation_legacy_replay -- --test-threads=1`: 1 passed; the legacy replay target was unchanged.
 - The sealed recall fixture proof compares all 20 ordered query result lists and all currently-valid facts after rebuilding from the dedicated journal, explicitly including validity, trust tier, project, and `agent_id`.
@@ -91,10 +93,18 @@ The migration computes the deterministic contradiction outcome in an isolated st
 - **Files modified:** `crates/nano-cli/src/memory_migrate.rs`, `crates/nano-cli/tests/memory_migration.rs`
 - **Commits:** `68889d9`, `f22eec6`
 
+**3. [Rule 2 - Missing critical validation] Bound recovery to exact source bytes**
+
+- **Found during:** Final trust-boundary review
+- **Issue:** An existing journal row could reuse the deterministic fact id with different content and receive the migration receipt.
+- **Fix:** Require exactly one stable write envelope whose complete payload, partition, tier, validity, session id, and resolver outcome match; also reject receipt-id collisions with different fields.
+- **Files modified:** `crates/nano-cli/src/memory_migrate.rs`, `crates/nano-cli/tests/memory_migration.rs`
+- **Commits:** `459b3d1`, `c72b6ef`
+
 ## Known Stubs
 
 None.
 
 ## Self-Check: PASSED
 
-All created files and seven task commits exist. The implementation remains within the plan's five source/test paths plus this summary, and no tracked file was deleted.
+All created files and nine implementation/test commits exist. The implementation remains within the plan's five source/test paths plus this summary, and no tracked file was deleted.
