@@ -650,6 +650,217 @@ fn migration_refuses_a_preexisting_fact_id_with_different_payload() {
     assert!(!home.path().join("memory/memory.db").exists());
 }
 
+fn fact_id_for(name: &str, contents: &[u8]) -> String {
+    let mut identity = Sha256::new();
+    identity.update(name.as_bytes());
+    identity.update([0]);
+    identity.update(contents);
+    format!("legacy-{:x}", identity.finalize())
+}
+
+#[test]
+fn unreceipted_forged_supersede_is_refused_without_appending_authority() {
+    let home = tempfile::tempdir().unwrap();
+    write_policy(home.path(), true, "SessionAndProject");
+    let name = "2026-01-02T03-04-05-forged-outcome.md";
+    let contents = b"untrusted replacement";
+    seed(home.path(), name, std::str::from_utf8(contents).unwrap());
+    let journal_path = home.path().join("memory.jsonl");
+    {
+        let mut store = MemoryStore::open(
+            home.path(),
+            &journal_path,
+            MemoryPolicy::default(),
+            "main",
+            configured(),
+        )
+        .unwrap();
+        store
+            .write_fact(FactWrite {
+                id: "user-anchor".into(),
+                subject: "legacy-memory-entry".into(),
+                predicate: name.trim_end_matches(".md").into(),
+                object: "trusted truth".into(),
+                confidence: 0.1,
+                source_episode: None,
+                valid_from: "2025-01-01T00:00:00Z".into(),
+                valid_to: None,
+                source_trust: SourceTrust::User,
+                project: "project-a".into(),
+                agent_id: "main".into(),
+            })
+            .unwrap();
+    }
+    let fact_id = fact_id_for(name, contents);
+    JournalWriter::open(&journal_path)
+        .unwrap()
+        .append(&OpEnvelope::new(
+            format!("legacy-migration-write-{fact_id}"),
+            "2026-01-02T03:04:05Z",
+            Op::MemoryWriteFact {
+                fact_id: fact_id.clone(),
+                subject: "legacy-memory-entry".into(),
+                predicate: name.trim_end_matches(".md").into(),
+                object: std::str::from_utf8(contents).unwrap().into(),
+                confidence_micros: 1_000_000,
+                source_episode: None,
+                valid_from: "2026-01-02T03:04:05Z".into(),
+                valid_to: None,
+                source_trust: "ModelInference".into(),
+                project: "project-a".into(),
+                agent_id: "main".into(),
+                session_id: Some("migration-session".into()),
+                resolver_outcome: "supersede".into(),
+            },
+        ))
+        .unwrap();
+    let before = std::fs::read(&journal_path).unwrap();
+
+    let output = migrate_with_session(home.path(), "migration-session", None);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert_eq!(failure(&output).error_kind, WireFailureKind::JournalInvalid);
+    assert_eq!(std::fs::read(&journal_path).unwrap(), before);
+}
+
+#[test]
+fn authoritative_envelope_id_collision_is_refused_before_receipt() {
+    let home = tempfile::tempdir().unwrap();
+    write_policy(home.path(), true, "SessionAndProject");
+    let name = "2026-01-02T03-04-05-op-id.md";
+    let contents = b"expected migration";
+    seed(home.path(), name, std::str::from_utf8(contents).unwrap());
+    let fact_id = fact_id_for(name, contents);
+    let journal_path = home.path().join("memory.jsonl");
+    let collision = OpEnvelope::new(
+        format!("legacy-migration-write-{fact_id}"),
+        "2026-01-01T00:00:00Z",
+        Op::MemoryWriteReceipt {
+            write_id: "unrelated".into(),
+            agent_id: "main".into(),
+            message: "unrelated op using reserved id".into(),
+        },
+    );
+    JournalWriter::open(&journal_path)
+        .unwrap()
+        .append(&collision)
+        .unwrap();
+    let before = std::fs::read(&journal_path).unwrap();
+
+    let output = migrate_with_session(home.path(), "migration-session", None);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert_eq!(failure(&output).error_kind, WireFailureKind::JournalInvalid);
+    assert_eq!(std::fs::read(&journal_path).unwrap(), before);
+}
+
+#[test]
+fn mixed_partial_retry_has_exact_counts_and_no_duplicate_authority() {
+    let home = tempfile::tempdir().unwrap();
+    seed(
+        home.path(),
+        "2026-01-02T03-04-05-valid-first.md",
+        "first valid entry",
+    );
+    seed(
+        home.path(),
+        "2026-99-99T03-04-05-fix-me.md",
+        "second corrected entry",
+    );
+    let first = migrate(home.path(), None);
+    assert_eq!(first.status.code(), Some(3), "{first:?}");
+    let first_receipt = receipt(&first);
+    assert_eq!(first_receipt.ingested, 1);
+    assert_eq!(first_receipt.skipped, 0);
+    assert_eq!(first_receipt.refused, 1);
+
+    std::fs::rename(
+        home.path().join("memory/2026-99-99T03-04-05-fix-me.md"),
+        home.path().join("memory/2026-01-03T03-04-05-fixed.md"),
+    )
+    .unwrap();
+    let second = migrate(home.path(), None);
+    assert_eq!(second.status.code(), Some(0), "{second:?}");
+    let second_receipt = receipt(&second);
+    assert_eq!(second_receipt.ingested, 1);
+    assert_eq!(second_receipt.skipped, 1);
+    assert_eq!(second_receipt.refused, 0);
+
+    let rows = read_journal(&home.path().join("memory.jsonl"))
+        .unwrap()
+        .envelopes;
+    let writes = rows
+        .iter()
+        .filter(|row| matches!(row.op, Op::MemoryWriteFact { .. }))
+        .count();
+    let entry_receipts = rows
+        .iter()
+        .filter(|row| {
+            matches!(&row.op, Op::MemoryWriteReceipt { write_id, message, .. }
+                if write_id.starts_with("legacy-") && message.contains("sha256:"))
+        })
+        .count();
+    assert_eq!(writes, 2);
+    assert_eq!(entry_receipts, 2);
+}
+
+#[test]
+fn sigkill_after_migration_journal_sync_rebuilds_like_control() {
+    let control = tempfile::tempdir().unwrap();
+    let killed = tempfile::tempdir().unwrap();
+    let name = "2026-01-02T03-04-05-real-kill.md";
+    let contents = "real kill migration marker";
+    seed(control.path(), name, contents);
+    seed(killed.path(), name, contents);
+    let control_output = migrate(control.path(), None);
+    assert_eq!(control_output.status.code(), Some(0), "{control_output:?}");
+    let expected = inspect_facts(control.path());
+
+    write_policy(killed.path(), true, "SessionAndProject");
+    let marker = killed.path().join("migration-journal-synced.marker");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wayland-nano"))
+        .args([
+            "memory",
+            "migrate",
+            "--project",
+            "project-a",
+            "--agent-id",
+            "main",
+            "--session-id",
+            "migration-session",
+        ])
+        .env("NANO_HOME", killed.path())
+        .env("NANO_TEST_MEMORY_MIGRATE_KILL_MARKER", &marker)
+        .current_dir(killed.path())
+        .spawn()
+        .unwrap();
+    for _ in 0..1500 {
+        if marker.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        marker.exists(),
+        "child reached migration journal fault point"
+    );
+    child.kill().unwrap();
+    assert!(!child.wait().unwrap().success());
+    assert!(!killed.path().join("memory/memory.db").exists());
+
+    let journal = killed.path().join("memory.jsonl");
+    rebuild_from_journals(
+        &killed.path().join("memory/memory.db"),
+        std::slice::from_ref(&journal),
+        MemoryPolicy::default(),
+        configured(),
+    )
+    .unwrap();
+    assert_eq!(inspect_facts(killed.path()), expected);
+    assert_eq!(
+        journal_receipts(&journal),
+        journal_receipts(&control.path().join("memory.jsonl"))
+    );
+}
+
 #[derive(Deserialize)]
 struct RecallFixture {
     facts: Vec<FactWrite>,
