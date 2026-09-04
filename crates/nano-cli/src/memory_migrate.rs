@@ -190,37 +190,41 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
     let mut authority_writer = JournalWriter::open(&journal_path)
         .map_err(|error| MigrationError::Journal(error.to_string()))?;
     for entry in &accepted {
-        if !journaled_fact_ids.contains(&entry.fact.id) {
-            shadow_store
-                .commit_proposal(MemoryProposal {
-                    kind: ProposalKind::Fact(entry.fact.clone()),
-                })
-                .map_err(|error| MigrationError::Rebuild(error.to_string()))?;
-            let mut authoritative = read_journal(&shadow.journal)
-                .map_err(|error| MigrationError::Journal(error.to_string()))?
-                .envelopes
-                .into_iter()
-                .rev()
-                .find(|envelope| {
-                    matches!(&envelope.op, Op::MemoryWriteFact { fact_id, .. } if fact_id == &entry.fact.id)
-                })
-                .ok_or_else(|| {
-                    MigrationError::Journal(format!(
-                        "resolver emitted no write for {}",
-                        entry.fact.id
-                    ))
-                })?;
-            authoritative.id = format!("legacy-migration-write-{}", entry.fact.id);
-            if let Op::MemoryWriteFact { session_id, .. } = &mut authoritative.op {
-                *session_id = Some(params.session_id.clone());
-            }
-            authority_writer
-                .append(&authoritative)
-                .map_err(|error| MigrationError::Journal(error.to_string()))?;
+        if journaled_fact_ids.contains(&entry.fact.id) {
             authority_writer
                 .append(&entry.receipt_envelope)
                 .map_err(|error| MigrationError::Journal(error.to_string()))?;
+            continue;
         }
+        shadow_store
+            .commit_proposal(MemoryProposal {
+                kind: ProposalKind::Fact(entry.fact.clone()),
+            })
+            .map_err(|error| MigrationError::Rebuild(error.to_string()))?;
+        let mut authoritative = read_journal(&shadow.journal)
+            .map_err(|error| MigrationError::Journal(error.to_string()))?
+            .envelopes
+            .into_iter()
+            .rev()
+            .find(|envelope| {
+                matches!(&envelope.op, Op::MemoryWriteFact { fact_id, .. } if fact_id == &entry.fact.id)
+            })
+            .ok_or_else(|| {
+                MigrationError::Journal(format!(
+                    "resolver emitted no write for {}",
+                    entry.fact.id
+                ))
+            })?;
+        authoritative.id = format!("legacy-migration-write-{}", entry.fact.id);
+        if let Op::MemoryWriteFact { session_id, .. } = &mut authoritative.op {
+            *session_id = Some(params.session_id.clone());
+        }
+        authority_writer
+            .append(&authoritative)
+            .map_err(|error| MigrationError::Journal(error.to_string()))?;
+        authority_writer
+            .append(&entry.receipt_envelope)
+            .map_err(|error| MigrationError::Journal(error.to_string()))?;
     }
     drop(authority_writer);
     drop(shadow_store);
@@ -294,8 +298,10 @@ fn validate_agent_id(agent_id: &str) -> Result<(), MigrationError> {
 }
 
 fn legacy_entries(root: &Path) -> Result<Vec<PathBuf>, MigrationError> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Ok(Vec::new());
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(MigrationError::Policy(error.to_string())),
     };
     let mut paths = entries
         .map(|entry| entry.map(|entry| entry.path()))
