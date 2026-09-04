@@ -67,16 +67,19 @@ The migration computes the deterministic contradiction outcome in an isolated st
 | Collision GREEN | `c72b6ef` | Bound interrupted-write recovery to an exact operation and receipt match. |
 | Corrective RED | `6b482b8` | Added resolved-policy, session, completion, strict-wire, real migration/rebuild, valid legacy-op, filename, and partial-refusal rows. |
 | Corrective GREEN | `9a5e149` | Closed all eight authority and evidence gaps. |
+| Recovery RED | `9641225` | Isolated forged resolver outcome, reserved op-id collision, mixed partial retry, and real child-process kill behavior. |
+| Recovery GREEN | `c3cb4c6` | Recomputed recovery at the journal position, strictly scanned legacy entries, preflighted op ids, and added the SIGKILL fault point. |
 
 ## Verification
 
-- `cargo test -p nano-cli --test memory_migration --test activation_quarantine -- --test-threads=1`: 21 passed.
-- `cargo test -p nano-cli --bin wayland-nano memory_migrate::tests::strict_receipt_and_failure_wire_types_round_trip -- --exact`: strict receipt/failure round-trip and unknown-field rejection passed.
+- `cargo test -p nano-cli --test memory_migration --test activation_quarantine -- --test-threads=1`: 25 passed.
+- `cargo test -p nano-cli --bin wayland-nano memory_migrate::tests -- --test-threads=1`: strict receipt/failure round-trip, unknown-field rejection, and canonical legacy filename grammar passed.
 - `cargo test -p nano-memory --test corrective_regressions --test durability --test mem_sec_cards -- --test-threads=1`: 21 passed, including the child-process kill-mid-write test and all six mem-sec cards plus summary.
 - `cargo test -p nano-session --test activation_legacy_replay -- --test-threads=1`: 1 passed; the legacy replay target was unchanged.
 - The sealed recall fixture proof compares all 20 ordered query result lists and all currently-valid facts after rebuilding from the dedicated journal, explicitly including validity, trust tier, project, and `agent_id`.
 - The CLI-level equivalence proof seeds the sealed fixture, invokes the real migration command, captures the resulting live database and migration receipts, deletes `memory.db`, rebuilds from `memory.jsonl`, and repeats every comparison including the migrated ModelInference row.
 - Mediation receipts are present before rebuild and byte-for-field identical afterward because rebuild never rewrites the authoritative journal.
+- A migration-specific child process is killed after the authoritative write and receipt are synced but before `memory.db` exists; rebuilding its journal produces the same facts and per-entry receipts as a completed control migration.
 
 ## Deviations from Plan
 
@@ -114,6 +117,14 @@ The migration computes the deterministic contradiction outcome in an isolated st
 - **Files modified:** `crates/nano-cli/src/memory_migrate.rs`, `crates/nano-cli/tests/memory_migration.rs`
 - **Commits:** `6b482b8`, `9a5e149`
 
+**5. [Rule 1/2 - Corrective audit] Closed recovery-prefix and enumeration gaps**
+
+- **Found during:** Second independent corrective audit
+- **Issue:** An unreceipted write could carry a forged resolver outcome; an unrelated op could occupy the stable authoritative envelope id; filename enumeration delegated to a fail-open listing helper; mixed retry accounting and a physical kill were not directly proven.
+- **Fix:** Recompute the expected operation against the exact authoritative journal prefix and compare the operation byte-for-field; preflight every stable write id and require fresh append success; perform one strict `read_dir` pass using the canonical legacy grammar while propagating iterator/name errors; prove mixed retry has exact counts and no duplicate writes/receipts; and kill a child at the post-sync/pre-DB fault point before independent rebuild comparison.
+- **Files modified:** `crates/nano-cli/src/memory_migrate.rs`, `crates/nano-cli/tests/memory_migration.rs`
+- **Commits:** `9641225`, `c3cb4c6`
+
 ## Desktop Generator Isolation
 
 The final local gate sets `NANO_ERROR_TABLE_DESKTOP_DIR` to a nonexistent path inside this worktree. The generator therefore omits only its optional sibling-Desktop mirrors, which belong to another repository/branch, while continuing to require and compare the Nano and shared canonical error tables. This is the documented generator isolation seam, not a skipped required target.
@@ -124,4 +135,4 @@ None.
 
 ## Self-Check: PASSED
 
-All created files and eleven implementation/test commits exist. The implementation remains within the plan's five source/test paths plus this summary, and no tracked file was deleted.
+All created files and thirteen implementation/test commits exist. The implementation remains within the plan's five source/test paths plus this summary, and no tracked file was deleted.
