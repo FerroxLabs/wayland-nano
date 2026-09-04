@@ -170,6 +170,36 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
             Err(receipt) => receipts.push(receipt),
         }
     }
+    for entry in &accepted {
+        let matching = existing
+            .envelopes
+            .iter()
+            .filter(|envelope| {
+                matches!(&envelope.op, Op::MemoryWriteFact { fact_id, .. } if fact_id == &entry.fact.id)
+            })
+            .collect::<Vec<_>>();
+        if matching.len() > 1
+            || matching
+                .first()
+                .is_some_and(|envelope| !matches_existing_write(envelope, entry, params))
+        {
+            return Err(MigrationError::Journal(format!(
+                "conflicting authoritative write for {}",
+                entry.fact.id
+            )));
+        }
+        if let Some(envelope) = existing
+            .envelopes
+            .iter()
+            .find(|envelope| envelope.id == entry.receipt_envelope.id)
+            && !matches_existing_receipt(envelope, entry)
+        {
+            return Err(MigrationError::Journal(format!(
+                "conflicting migration receipt for {}",
+                entry.fact.id
+            )));
+        }
+    }
 
     let shadow = ShadowPaths::new(nano_home);
     rebuild_from_journals(
@@ -317,6 +347,66 @@ struct PreparedEntry {
     content_sha256: String,
     fact: FactWrite,
     receipt_envelope: OpEnvelope,
+}
+
+fn matches_existing_write(envelope: &OpEnvelope, entry: &PreparedEntry, params: &Params) -> bool {
+    let expected_id = format!("legacy-migration-write-{}", entry.fact.id);
+    match &envelope.op {
+        Op::MemoryWriteFact {
+            fact_id,
+            subject,
+            predicate,
+            object,
+            confidence_micros,
+            source_episode,
+            valid_from,
+            valid_to,
+            source_trust,
+            project,
+            agent_id,
+            session_id,
+            resolver_outcome,
+        } => {
+            envelope.id == expected_id
+                && fact_id == &entry.fact.id
+                && subject == &entry.fact.subject
+                && predicate == &entry.fact.predicate
+                && object == &entry.fact.object
+                && *confidence_micros == 1_000_000
+                && source_episode.is_none()
+                && valid_from == &entry.fact.valid_from
+                && valid_to.is_none()
+                && source_trust == "ModelInference"
+                && project == &entry.fact.project
+                && agent_id == &entry.fact.agent_id
+                && session_id.as_deref() == Some(params.session_id.as_str())
+                && matches!(
+                    resolver_outcome.as_str(),
+                    "coexist" | "supersede" | "keepexisting" | "keep_existing"
+                )
+        }
+        _ => false,
+    }
+}
+
+fn matches_existing_receipt(envelope: &OpEnvelope, entry: &PreparedEntry) -> bool {
+    match (&envelope.op, &entry.receipt_envelope.op) {
+        (
+            Op::MemoryWriteReceipt {
+                write_id,
+                agent_id,
+                message,
+            },
+            Op::MemoryWriteReceipt {
+                write_id: expected_write,
+                agent_id: expected_agent,
+                message: expected_message,
+            },
+        ) => {
+            write_id == expected_write && agent_id == expected_agent && message == expected_message
+        }
+        _ => false,
+    }
 }
 
 struct ShadowPaths {
