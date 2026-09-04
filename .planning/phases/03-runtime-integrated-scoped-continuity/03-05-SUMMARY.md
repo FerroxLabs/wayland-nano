@@ -8,6 +8,7 @@ requires:
     provides: one admitted nano-memory runtime seam across persistent entrypoints
 provides:
   - causal real-binary comparison of fresh, session_resume, and memory_recall
+  - one mode-independent task battery with separately hashed driver oracles
   - activated fork-child binding with inherited authority and rollback
   - preregistered budgets plus committed sealed NDJSON receipt evidence
   - byte-reproducible report with measured defaults recommendation
@@ -29,12 +30,14 @@ key-files:
     - crates/nano-cli/src/session_cmds.rs
     - crates/nano-cli/tests/activation_memory_seam.rs
     - crates/nano-cli/tests/c11_session_cmds.rs
+    - .planning/phases/03-runtime-integrated-scoped-continuity/03-VALIDATION.md
 key-decisions:
   - "Recommend session_resume for interactive ACP when a valid bound session exists; use memory_recall only when continuity is requested and fresh for stateless work."
   - "Measure quality from the actual model request: fresh proves absence, fork-child resume proves replayed presence, and memory_recall proves automatic retrieved presence."
   - "Bind activated fork children from the live validated parent authority and remove the child journal if binding cannot commit."
 patterns-established:
   - "Receipt rows bind seed, binary, budget, harness, task script, journal, fixture, manifest, and NDJSON digests."
+  - "One task-battery hash is shared by every mode; driver hashes differ while each query's fake usage and delay remain identical."
   - "Committed text evidence verifies with CRLF-to-LF normalization for checkout-independent hashes."
 requirements-completed: [REQ-CONT-01]
 coverage:
@@ -65,7 +68,7 @@ coverage:
         ref: "scripts/soak/evidence/continuity-receipt-causal-final"
         status: pass
       - kind: integration
-        ref: "fresh-clone continuity-report.mjs regeneration at df0c1f1"
+        ref: "fresh-clone continuity-report.mjs regeneration at 3e9c545"
         status: pass
     human_judgment: false
   - id: D4
@@ -77,7 +80,7 @@ coverage:
         status: pass
     human_judgment: true
     rationale: "Desktop owns the product default and must judge whether to adopt the recommendation."
-duration: 1h27m
+duration: 1h59m
 completed: 2026-09-04
 status: complete
 ---
@@ -88,18 +91,19 @@ status: complete
 
 ## Performance
 
-- **Duration:** 1h 27m
+- **Duration:** 1h 59m
 - **Started:** 2026-09-04T21:39:00Z
-- **Completed:** 2026-09-04T23:06:27Z
+- **Completed:** 2026-09-04T23:38:28Z
 - **Tasks:** 3 plus one audit correction
-- **Files modified:** 16, including four committed receipt artifacts
+- **Files modified:** 18, including four committed receipt artifacts and the validation ownership contract
 
 ## Accomplishments
 
 - Fresh creates a new admitted session with memory disabled, makes zero memory tool calls, and proves every fixture answer is absent from the actual model request: quality 0.000 by design.
 - Session resume forks an activated parent, binds inherited authority before success, loads the returned `child_session_id`, and proves replayed answers are present: quality 1.000 with 8/8 typed drift refusals.
 - Memory recall seeds all 50 facts and 10 decisions through four mediated partition turns, makes zero explicit memory tool calls during measurement, and proves automatic retrieval placed the expected answer into the actual request: quality 0.950.
-- Token totals come exclusively from emitted `_wayland/session/budget` notices. Median totals were 5,104.5 fresh, 10,204 session resume, and 11,297 memory recall; median turn latencies were 29.909 ms, 23.352 ms, and 31.263 ms respectively.
+- One mode-independent task battery is shared across all modes. Driver/oracle scripts are separately hashed, while the same seed/query has identical fake usage and delay in every mode.
+- Token totals come exclusively from emitted `_wayland/session/budget` notices. Median probe totals were 5,136 in every successful mode, while memory recall used 11,303 because its honest miss receives the conservative failure charge. Session-resume setup was reported separately at 5,152.5 tokens. Median turn latencies were 25.876 ms fresh, 21.814 ms session resume, and 31.434 ms memory recall.
 - All preregistered budgets passed. The report recommends session resume for a valid bound interactive session, memory recall only when continuity is requested, and fresh for stateless work.
 
 ## Task Commits
@@ -126,6 +130,14 @@ Audit correction:
 10. `d689583` — reduce fixture seeding to one turn per partition
 11. `fecc162` — commit causal manifests, NDJSON, and report
 12. `df0c1f1` — normalize evidence hashes for fresh Windows checkouts
+13. `01f4a98` — add controlled-comparison and active-target RED tests
+14. `be5e7cb` — restrict activated forks to the active session
+15. `98144bc` — separate task battery, driver oracle, and probe accounting
+16. `768427b` — preregister like-for-like probe budgets
+17. `36d9aa0` — amend validation ownership and disjointness
+18. `173d72b` — declare receipt and validation ownership in the plan
+19. `852e6ae` — bind the common task hash to all rows and remove old receipts
+20. `3e9c545` — commit controlled-comparison receipts and report
 
 ## Files Created/Modified
 
@@ -136,35 +148,37 @@ Audit correction:
 - `crates/nano-cli/tests/activation_memory_seam.rs` — proves exact child resume and fingerprint/project/principal drift refusals.
 - `crates/nano-cli/tests/c11_session_cmds.rs` — proves binding failure leaves no child journal.
 - `scripts/soak/continuity.mjs` — runs the causal three-mode battery and writes sealed evidence.
-- `scripts/soak/continuity-budgets.json` — records causal budgets at `2026-09-04T22:54:18Z`, before final receipts.
+- `scripts/soak/continuity-budgets.json` — records like-for-like probe budgets at `2026-09-04T23:23:48Z`, before final receipts; resume setup tokens are reported separately.
 - `scripts/soak/continuity-report.mjs` — validates every seal and renders measured medians and recommendations.
 - `scripts/soak/test-continuity.mjs` — tests preflight, causal mode invariants, emitted usage, child resume, drift refusal, and anti-tuning behavior.
 - `docs/evidence/phase3/continuity-modes-report.md` — final causal report.
 - `scripts/soak/evidence/continuity-receipt-causal-final/**/{continuity-manifest.json,continuity.ndjson}` — two committed receipt packs.
+- `.planning/phases/03-runtime-integrated-scoped-continuity/03-VALIDATION.md` — records approved Rust correction ownership and continued 03-04/03-05 disjointness.
 
 ## Final Receipt Manifests
 
 Shared bindings:
 
-- Binary source: `bcfba39b9c0d9ee3ece4069c74bea34d1df4d968`
-- Binary SHA-256: `148c138bacf121913f60551f2127f186ada28a5f2a7216e981e8da7340678b7d`
-- Budget SHA-256: `a394961e053bce02b59f5d0a08adad854b1307817e4f7f931e99900e5332ba6d`
-- Harness SHA-256: `df19ce9000ba0dcc8aad94113722123aa6201ff4518e2f5449d2147677ccb0f9`
+- Binary source: `36d9aa0d4f68543841b5f800b518d4673299d8da`
+- Binary SHA-256: `fba0a81b552da7904e1a713e3bf9cbe6da5f88bd0debcc0ba984ef5c8b685933`
+- Budget SHA-256: `00800d1a945985d296c3d1b60b33f221c2acd566146d456fbdb8292593aa11f3`
+- Harness SHA-256: `3417673546e6ddafb81d24354385320b59e0cb8bdd0dee228c17cd652e6666f9`
 - Fixture SHA-256: `ad286c8ebd835667488089410b9b7bd84ecade71758b20ce678d97c3f9dda214`
+- Task battery SHA-256: `abad3826d6c49c0e0cad6b694180abc4b3e523ddce4833b51c5caa04190ab7f0`
 
 Seed 1010:
 
-- Manifest: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T225707234Z-receipt-1010-36100/continuity-manifest.json`
-- Manifest SHA-256: `ab28e4c94bc5492dc7a17c93e52d782fe85e4e1034ad1997552d86f2bec78352`
-- NDJSON: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T225707234Z-receipt-1010-36100/continuity.ndjson`
-- NDJSON SHA-256: `9e4fde7de5c7a0cf8ed30c4b50ace173467e3dcdcd63c0e19764aa677bdbee7e`
+- Manifest: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T232852661Z-receipt-1010-41300/continuity-manifest.json`
+- Manifest SHA-256: `1fd7f201bc0d9972ee4296cb59f699b2dce1ca79d8466cb4e01ce13a0445eede`
+- NDJSON: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T232852661Z-receipt-1010-41300/continuity.ndjson`
+- NDJSON SHA-256: `975d1d82bd564950a9c50686955bef594255c1cf91544cf5bf15431cd7f87bdb`
 
 Seed 2020:
 
-- Manifest: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T225706996Z-receipt-2020-40936/continuity-manifest.json`
-- Manifest SHA-256: `e8a0ec9d367fe9cb41e29758cf8fd6fdf4b97533d0bf56c8df3e2fe637e8da50`
-- NDJSON: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T225706996Z-receipt-2020-40936/continuity.ndjson`
-- NDJSON SHA-256: `03a990e4519a64d12d0daad9252c1303f7e15b2ffc2c32224596a71beb98a062`
+- Manifest: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T232852444Z-receipt-2020-39548/continuity-manifest.json`
+- Manifest SHA-256: `46fe0c267c822656c50717b28d8f2c46632ed70082e90ec28d7def76b9639574`
+- NDJSON: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T232852444Z-receipt-2020-39548/continuity.ndjson`
+- NDJSON SHA-256: `1bcdb8fd9272a95c46d71a9d3be604b640bb55fabc103ee84ee48a67e5d94bf7`
 
 No final report or summary references the superseded noncausal receipts.
 
@@ -204,7 +218,7 @@ No final report or summary references the superseded noncausal receipts.
 - **Found during:** evidence review
 - **Issue:** Ignored local manifests could not be independently audited, and CRLF checkout conversion could change raw text hashes.
 - **Fix:** Committed only the two final manifests and two NDJSON files; report verification normalizes text line endings and records every digest.
-- **Verification:** Fresh clone at `df0c1f1` regenerated the committed report byte-identically.
+- **Verification:** Fresh clone at `3e9c545` regenerated the committed report byte-identically.
 - **Commits:** `fecc162`, `df0c1f1`
 
 **5. [Rule 3 - Blocking] Kept test evidence off the external F: temp volume**
@@ -214,12 +228,35 @@ No final report or summary references the superseded noncausal receipts.
 - **Verification:** Corrective real-binary suite completes in approximately 18 seconds.
 - **Commits:** `78d5f5e`, `33b5243`
 
-**Total deviations:** 5 auto-fixed. All are required for causal validity, fail-closed fork authority, reviewable evidence, or bounded execution.
+**6. [Rule 2 - Missing Critical] Restricted activated forks to the active session**
+- **Found during:** attempt-3 authority audit
+- **Issue:** A live session could name and fork a closed same-identity session because identity equality alone authorized the target.
+- **Fix:** Activated fork requests now require the target to equal the host's active session before any journal copy or child binding.
+- **Verification:** The two-session negative returns typed `session_fork_failed` and leaves the journal/binding inventory unchanged.
+- **Commits:** `01f4a98`, `be5e7cb`
+
+**7. [Rule 1 - Bug] Removed task-script and token-accounting confounds**
+- **Found during:** attempt-3 controlled-comparison audit
+- **Issue:** Mode-specific scripts changed fake usage/delay, and the first resumed probe included parent-history tokens.
+- **Fix:** Hash one task battery for all modes, hash driver/oracle scripts separately, generate identical per-query fake profiles, and subtract the inherited child meter baseline while reporting setup tokens independently.
+- **Verification:** Every seed/label has one task hash, three driver hashes, one fake profile, and positive like-for-like probe deltas.
+- **Commits:** `98144bc`, `768427b`, `852e6ae`, `3e9c545`
+
+**8. [Rule 2 - Missing Critical] Updated validation ownership**
+- **Found during:** attempt-3 governance audit
+- **Issue:** The lane table still described 03-05 as scripts/docs-only after approved Rust corrections.
+- **Fix:** Added the soak directive, fork-binding sources/tests, and committed receipt paths while preserving 03-04 disjointness and recording sequential overlap with merged 03-03.
+- **Verification:** Plan and validation ownership lists cover all 18 changed paths.
+- **Commits:** `36d9aa0`, `173d72b`
+
+**Total deviations:** 8 auto-fixed. All are required for causal validity, fail-closed fork authority, controlled comparison, reviewable evidence, or bounded execution.
 
 ## Issues Encountered
 
 - The first receipt pack was rejected by audit because explicit recall and fixed answers made modes observationally identical. It is superseded and carries no final reference.
+- Attempt-3 rejected three different task hashes and mode-dependent fake profiles. The final receipts use one task hash and identical usage/delay per seed/query; driver hashes alone differ.
 - Fork binding reached native attempt 3 after a return-type patch hit the neighboring existing method; an isolated signature check identified and corrected that exact variable. Focused tests then passed.
+- Reporter attempts correctly rejected the old budget manifests and drift rows missing the common task hash. Superseded tracked receipts were removed, the common write boundary was fixed, and only final manifests remain committed.
 - The final automatic-recall score is 0.950 rather than 1.000. The missed row remains honest evidence; labels and budgets were not tuned.
 - Repository hooks modified `AGENTS.md` and created `CLAUDE.md`; neither was staged or altered by this lane.
 
@@ -227,11 +264,11 @@ No final report or summary references the superseded noncausal receipts.
 
 - `node --test scripts/soak/test-continuity.mjs`: 5/5 pass against final binary.
 - `cargo test -p nano-agent --features soak-fake-model request_assertion_directive_round_trips --lib`: pass.
-- `cargo test -p nano-cli --test c11_session_cmds --test activation_memory_seam`: 3/3 and 21/21 pass.
+- `cargo test -p nano-cli --test c11_session_cmds --test activation_memory_seam`: 3/3 and 22/22 pass.
 - `cargo clippy -p nano-agent -p nano-cli --all-targets --features nano-agent/soak-fake-model -- -D warnings`: pass.
 - Final receipt runs: seeds 1010 and 2020, 64 rows each, exit 0.
 - Final report generation with all three required modes: pass; all budgets PASS.
-- Fresh clone report regeneration at `df0c1f1`: byte-identical.
+- Fresh clone report regeneration at `3e9c545`: byte-identical.
 - `just gate-all` with `CARGO_TARGET_DIR=F:/CargoTarget/wayland-nano-p3`: fmt, workspace clippy `-D warnings`, all workspace/doc tests, and generated-contract checks pass.
 - `git diff 628901ab -- gates/fixtures/memory-retrieval-recall-v1`: empty.
 
@@ -250,7 +287,7 @@ None.
 
 ## Self-Check: PASSED
 
-Both committed manifests contain 64 rows and postdate the committed budget registration. Each seed proves fresh 0/20, fork-child resume 20/20, automatic recall 19/20, drift refusal 4/4, zero explicit memory calls, and positive ACP-emitted token deltas. All files and commits resolve, the fixture diff is empty, and no superseded receipt path remains in the final report or summary.
+The branch changes exactly 18 declared files and tracks exactly two final manifests plus two NDJSON packs. Each seed has one task-battery hash, three driver hashes per label, one identical fake profile per label, fresh 0/20, fork-child resume 20/20, automatic recall 19/20, four setup-token baselines, equal fresh/resume probe usage, and 4/4 drift refusals. Both manifests postdate budget registration, the report recomputes without a byte diff, and the frozen fixture is unchanged.
 
 ---
 *Phase: 03-runtime-integrated-scoped-continuity*
