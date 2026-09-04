@@ -1,0 +1,100 @@
+---
+phase: 03-runtime-integrated-scoped-continuity
+plan: 04
+subsystem: memory-migration
+tags: [memory, migration, journal, durability, quarantine]
+status: complete
+requires:
+  - 03-01 mem-sec gate-card pack
+  - 03-03 dedicated memory-journal topology and runtime seam
+provides:
+  - explicit legacy Markdown migration command
+  - journal-first ModelInference ingestion with per-entry receipts
+  - live-DB versus journal-rebuild equivalence including agent_id
+  - post-migration legacy authority closure
+affects:
+  - 03-06 phase closure evidence
+tech-stack:
+  added: []
+  patterns:
+    - resolver-backed shadow evaluation before authoritative journal append
+    - stable content-addressed migration identities
+key-files:
+  created:
+    - crates/nano-cli/src/memory_migrate.rs
+    - crates/nano-cli/tests/memory_migration.rs
+  modified:
+    - crates/nano-cli/src/main.rs
+    - crates/nano-cli/tests/activation_quarantine.rs
+    - crates/nano-memory/tests/corrective_regressions.rs
+key-decisions:
+  - Migrate the quarantined Markdown store through an explicit operator command.
+  - Treat every legacy entry as ModelInference because its original source is ambiguous.
+  - Preserve the dedicated memory journal as the only mutation authority and refuse migration after its completion receipt.
+metrics:
+  tasks: 3
+  files: 6
+  completed: 2026-09-05
+---
+
+# Phase 3 Plan 04: Legacy Memory Migration Summary
+
+Explicit legacy Markdown migration now derives resolver outcomes through the existing mediation boundary, appends attributed operations and receipts to the dedicated memory journal, and rebuilds SQLite only from that journal.
+
+## Decision and Evidence
+
+The selected disposition is **migrate**. The legacy directory can contain useful operator history, and its pinned filename supplies deterministic validity time, so abandoning it was not justified. Migration is available only through:
+
+`wayland-nano memory migrate --project <project> --agent-id <id> --session-id <id>`
+
+No session-open path invokes migration. Each plain UTF-8 Markdown entry receives a stable identity from its filename and bytes, a SHA-256 receipt, the supplied project and configured agent, and `ModelInference` trust. Invalid timestamps, unreadable content, non-plain files, secret-screening failures, and unconfigured agents fail closed. A completion receipt permanently refuses reruns, leaving later filesystem edits invisible to runtime memory.
+
+The migration computes the deterministic contradiction outcome in an isolated store rebuilt from the current dedicated journal. It then writes the resulting `MemoryWriteFact` with the explicit migration session id and its receipt to the authoritative journal before rebuilding `memory.db`. This preserves the exact tier-aware resolver rule without granting the shadow database authority.
+
+## Task Commits
+
+| Task | Commit | Result |
+|---|---|---|
+| Task 1 RED | `6352dde` | Specified explicit migration, attribution, receipt, malformed metadata, crash recovery, and closure behavior. |
+| Task 1 GREEN | `e9fd8b2` | Added the CLI command and initial journal-first migration. |
+| Task 2 | `bc11d3b` | Proved sealed-corpus live/rebuild equivalence for facts, ordered queries, attribution, and receipts. |
+| Task 3 RED | `46e0d5d` | Exposed lower-tier authority regain and added legacy/unconfigured/explicit-invocation negatives. |
+| Task 3 GREEN | `85a4a95` | Routed resolver decisions through mediation and retained explicit migration-session attribution. |
+| Crash-pair RED | `68889d9` | Reproduced interruption between an authoritative write and its receipt. |
+| Crash-pair GREEN | `f22eec6` | Made retry repair the missing receipt before rebuild. |
+
+## Verification
+
+- `cargo test -p nano-cli --test memory_migration --test activation_quarantine -- --test-threads=1`: 15 passed.
+- `cargo test -p nano-memory --test corrective_regressions --test durability --test mem_sec_cards -- --test-threads=1`: 21 passed, including the child-process kill-mid-write test and all six mem-sec cards plus summary.
+- `cargo test -p nano-session --test activation_legacy_replay -- --test-threads=1`: 1 passed; the legacy replay target was unchanged.
+- The sealed recall fixture proof compares all 20 ordered query result lists and all currently-valid facts after rebuilding from the dedicated journal, explicitly including validity, trust tier, project, and `agent_id`.
+- Mediation receipts are present before rebuild and byte-for-field identical afterward because rebuild never rewrites the authoritative journal.
+
+## Deviations from Plan
+
+### Auto-fixed Issues
+
+**1. [Rule 1 - Bug] Prevented lower-tier migration rows from remaining current beside User truth**
+
+- **Found during:** Task 3 failing-first authority test
+- **Issue:** A fixed `coexist` outcome bypassed the tier-aware resolver during rebuild.
+- **Fix:** Use an isolated resolver-backed store to derive the authoritative operation before appending it to the dedicated journal.
+- **Files modified:** `crates/nano-cli/src/memory_migrate.rs`, `crates/nano-cli/tests/memory_migration.rs`
+- **Commits:** `46e0d5d`, `85a4a95`
+
+**2. [Rule 1 - Bug] Repaired a write interrupted before its receipt**
+
+- **Found during:** Final crash-window review
+- **Issue:** Retry recognized the existing write but did not add its missing receipt, so ModelInference recovery would ignore it.
+- **Fix:** Retry idempotently appends the stable per-entry receipt before rebuilding.
+- **Files modified:** `crates/nano-cli/src/memory_migrate.rs`, `crates/nano-cli/tests/memory_migration.rs`
+- **Commits:** `68889d9`, `f22eec6`
+
+## Known Stubs
+
+None.
+
+## Self-Check: PASSED
+
+All created files and seven task commits exist. The implementation remains within the plan's five source/test paths plus this summary, and no tracked file was deleted.
