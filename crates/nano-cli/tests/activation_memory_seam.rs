@@ -106,6 +106,34 @@ impl ActivationFixture {
         fingerprint: Option<&str>,
         cwd: &Path,
     ) -> Vec<u8> {
+        self.frame_with_identity(
+            id,
+            method,
+            activation_id,
+            strategy,
+            fallback,
+            session_id,
+            fingerprint,
+            cwd,
+            PROJECT,
+            PRINCIPAL,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn frame_with_identity(
+        &self,
+        id: u64,
+        method: &str,
+        activation_id: &str,
+        strategy: &str,
+        fallback: &str,
+        session_id: Option<&str>,
+        fingerprint: Option<&str>,
+        cwd: &Path,
+        project: &str,
+        principal: &str,
+    ) -> Vec<u8> {
         let now = chrono::Utc::now();
         let issued = now - chrono::Duration::seconds(5);
         let not_before = now - chrono::Duration::seconds(10);
@@ -136,9 +164,9 @@ impl ActivationFixture {
             "nonce": format!("nonce-{activation_id}"),
             "not_after": wire_time(not_after),
             "not_before": wire_time(not_before),
-            "principal_id": PRINCIPAL,
+            "principal_id": principal,
             "product_subject_id": "subject-a",
-            "project_id": PROJECT,
+            "project_id": project,
             "schema": "wayland.nano.activation/v1",
             "session_id": session_id
         });
@@ -1088,6 +1116,145 @@ fn acp_session_load_runs_real_memory_surface_after_resume_begin() {
         1,
     );
     assert_host_ingest(home);
+}
+
+#[test]
+fn activated_fork_binds_and_loads_the_returned_child_fail_closed() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let workspace = home.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    write_enabled_policy(home);
+    let activation = ActivationFixture::new(home);
+
+    let first = AcpHarness::spawn(
+        home,
+        &workspace,
+        activation.gate.clone(),
+        CaptureModel::scripted(vec![]),
+        CaptureTools::default(),
+        false,
+    );
+    let created = first.signed_request(
+        20,
+        activation.frame(
+            20,
+            "session/new",
+            "fork-parent",
+            "fresh",
+            "none",
+            None,
+            None,
+            &workspace,
+        ),
+    );
+    let parent_id = created["result"]["sessionId"].as_str().unwrap();
+    let expected_fingerprint = created["result"]["_meta"]["waylandNanoResumeFingerprint"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let fork = first.request(
+        21,
+        "_wayland/session/fork",
+        serde_json::json!({"sessionId": parent_id}),
+    );
+    let child_id = fork["result"]["child_session_id"]
+        .as_str()
+        .expect("activated fork child id")
+        .to_owned();
+    assert_eq!(
+        fork["result"]["resume_fingerprint"].as_str(),
+        Some(expected_fingerprint.as_str())
+    );
+    first.shutdown();
+
+    let resumed = AcpHarness::spawn(
+        home,
+        &workspace,
+        activation.gate.clone(),
+        CaptureModel::scripted(vec![]),
+        CaptureTools::default(),
+        false,
+    );
+    for (id, frame, expected_kind) in [
+        (
+            22,
+            activation.frame(
+                22,
+                "session/load",
+                "fork-bad-fingerprint",
+                "session_resume",
+                "none",
+                Some(&child_id),
+                Some(&"0".repeat(64)),
+                &workspace,
+            ),
+            "resume_drift",
+        ),
+        (
+            23,
+            activation.frame_with_identity(
+                23,
+                "session/load",
+                "fork-bad-project",
+                "session_resume",
+                "none",
+                Some(&child_id),
+                Some(&expected_fingerprint),
+                &workspace,
+                "project-b",
+                PRINCIPAL,
+            ),
+            "unauthorized_project",
+        ),
+        (
+            24,
+            activation.frame_with_identity(
+                24,
+                "session/load",
+                "fork-bad-principal",
+                "session_resume",
+                "none",
+                Some(&child_id),
+                Some(&expected_fingerprint),
+                &workspace,
+                PROJECT,
+                "bot-b",
+            ),
+            "principal_mismatch",
+        ),
+    ] {
+        let refused = resumed.signed_request(id, frame);
+        assert_eq!(
+            refused["error"]["data"]["nanoError"]["kind"].as_str(),
+            Some(expected_kind),
+            "{refused}"
+        );
+    }
+    let loaded = resumed.signed_request(
+        25,
+        activation.frame(
+            25,
+            "session/load",
+            "fork-child-resume",
+            "session_resume",
+            "none",
+            Some(&child_id),
+            Some(&expected_fingerprint),
+            &workspace,
+        ),
+    );
+    assert!(loaded.get("result").is_some(), "{loaded}");
+    resumed.shutdown();
+
+    let report = read_journal(&home.join("sessions").join(format!("{child_id}.jsonl"))).unwrap();
+    assert_eq!(
+        nano_session::SessionState::fold_strict(&report.envelopes)
+            .unwrap()
+            .session_id
+            .as_deref(),
+        Some(child_id.as_str())
+    );
 }
 
 #[test]
