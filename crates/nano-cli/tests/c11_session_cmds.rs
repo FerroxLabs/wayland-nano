@@ -101,7 +101,11 @@ fn failed_child_binding_removes_the_fork_journal() {
         .filter_map(Result::ok)
         .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("jsonl"))
         .collect::<Vec<_>>();
-    assert_eq!(journals.len(), 1, "failed binding must leave no child journal");
+    assert_eq!(
+        journals.len(),
+        1,
+        "failed binding must leave no child journal"
+    );
     assert_eq!(journals[0].file_name().to_string_lossy(), "s1.jsonl");
     let _ = std::fs::remove_dir_all(&dir);
 }
