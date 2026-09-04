@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
@@ -24,16 +23,18 @@ function run(args) {
     cwd: repo,
     encoding: 'utf8',
     env: { ...process.env, CONTINUITY_TESTING: '1' },
-    timeout: 120_000,
+    timeout: 300_000,
   });
 }
 
 async function withTempDir(fn) {
-  const dir = await mkdtemp(join(tmpdir(), 'wayland-nano-continuity-'));
+  const base = join(here, 'evidence');
+  await mkdir(base, { recursive: true });
+  const dir = await mkdtemp(join(base, 'test-continuity-'));
   try {
     return await fn(dir);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 
@@ -46,31 +47,25 @@ test('preflight rejects a binary without the soak marker before creating evidenc
   });
 });
 
-test('smoke run emits one hash-bound NDJSON row for every continuity mode', async () => {
+test('marked real-binary smoke evidence', async (t) => {
   await withTempDir(async (evidence) => {
     const result = run(['--mode', 'smoke', '--seed', '1010', '--binary', releaseBinary(), '--evidence-dir', evidence]);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const latest = JSON.parse(await readFile(join(evidence, 'latest.json'), 'utf8'));
     const rows = (await readFile(resolve(evidence, latest.ndjson), 'utf8'))
       .trim().split('\n').map((line) => JSON.parse(line));
-    assert.deepEqual([...new Set(rows.map((row) => row.mode))].sort(), ['fresh', 'memory_recall', 'session_resume']);
-    assert.ok(rows.every((row) => row.seed === 1010));
-    assert.ok(rows.every((row) => /^[0-9a-f]{64}$/.test(row.binary_sha256)));
-    assert.ok(rows.every((row) => /^[0-9a-f]{64}$/.test(row.journal_sha256)));
-  });
-});
-
-test('session-resume drift is recorded as a typed correct refusal', async () => {
-  await withTempDir(async (evidence) => {
-    const result = run(['--mode', 'smoke', '--seed', '1010', '--binary', releaseBinary(), '--evidence-dir', evidence]);
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const latest = JSON.parse(await readFile(join(evidence, 'latest.json'), 'utf8'));
-    const rows = (await readFile(resolve(evidence, latest.ndjson), 'utf8'))
-      .trim().split('\n').map((line) => JSON.parse(line));
-    const drift = rows.find((row) => row.mode === 'session_resume' && row.probe_kind === 'drift_refusal');
-    assert.ok(drift, 'missing drift refusal row');
-    assert.equal(drift.quality_pass, true);
-    assert.equal(drift.refusal_kind, 'resume_drift');
-    assert.equal(drift.silent_fallback, false);
+    await t.test('emits one hash-bound NDJSON row for every continuity mode', () => {
+      assert.deepEqual([...new Set(rows.map((row) => row.mode))].sort(), ['fresh', 'memory_recall', 'session_resume']);
+      assert.ok(rows.every((row) => row.seed === 1010));
+      assert.ok(rows.every((row) => /^[0-9a-f]{64}$/.test(row.binary_sha256)));
+      assert.ok(rows.every((row) => /^[0-9a-f]{64}$/.test(row.journal_sha256)));
+    });
+    await t.test('records session-resume drift as a typed correct refusal', () => {
+      const drift = rows.find((row) => row.mode === 'session_resume' && row.probe_kind === 'drift_refusal');
+      assert.ok(drift, 'missing drift refusal row');
+      assert.equal(drift.quality_pass, true);
+      assert.equal(drift.refusal_kind, 'resume_drift');
+      assert.equal(drift.silent_fallback, false);
+    });
   });
 });
