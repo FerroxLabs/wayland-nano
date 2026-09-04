@@ -60,6 +60,10 @@ test('marked real-binary smoke evidence', async (t) => {
       assert.ok(rows.every((row) => row.seed === 1010));
       assert.ok(rows.every((row) => /^[0-9a-f]{64}$/.test(row.binary_sha256)));
       assert.ok(rows.every((row) => /^[0-9a-f]{64}$/.test(row.journal_sha256)));
+      const recall = rows.filter((row) => row.probe_kind === 'recall');
+      for (const label of new Set(recall.map((row) => row.label))) {
+        assert.equal(new Set(recall.filter((row) => row.label === label).map((row) => row.task_script_sha256)).size, 1, `${label} task script differs across modes`);
+      }
     });
     await t.test('records session-resume drift as a typed correct refusal', () => {
       const drift = rows.find((row) => row.mode === 'session_resume' && row.probe_kind === 'drift_refusal');

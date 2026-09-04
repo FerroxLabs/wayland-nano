@@ -12,9 +12,17 @@ const evidenceRoot = resolve(args.get('--evidence-dir') ?? join(here, 'evidence'
 const outputPath = resolve(args.get('--out') ?? join(repo, 'docs', 'evidence', 'phase3', 'continuity-modes-report.md'));
 const requiredModes = (args.get('--require-modes') ?? 'fresh,session_resume,memory_recall').split(',').filter(Boolean);
 const budgetPath = join(here, 'continuity-budgets.json');
+const harnessPath = join(here, 'continuity.mjs');
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const posix = (path) => path.replaceAll('\\', '/');
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
 
 function median(values) {
   const sorted = values.filter(Number.isFinite).slice().sort((left, right) => left - right);
@@ -37,8 +45,9 @@ async function findManifests(root) {
 }
 
 const budgetBytes = await readFile(budgetPath);
-const budgetHash = sha256(budgetBytes);
 const budgets = JSON.parse(budgetBytes);
+const budgetHash = sha256(canonical(budgets));
+const harnessHash = sha256((await readFile(harnessPath, 'utf8')).replaceAll('\r\n', '\n'));
 if (budgets.schema !== 'wayland.nano.continuity-budgets/v1') throw new Error('unsupported continuity budget schema');
 for (const mode of requiredModes) {
   if (!budgets.modes?.[mode]) throw new Error(`budget missing mode: ${mode}`);
@@ -53,6 +62,9 @@ for (const manifestPath of await findManifests(evidenceRoot)) {
   if (manifest.budgets?.sha256 !== budgetHash) {
     throw new Error(`budget hash mismatch: ${posix(relative(repo, manifestPath))}`);
   }
+  if (manifest.harness?.sha256 !== harnessHash) {
+    throw new Error(`harness hash mismatch: ${posix(relative(repo, manifestPath))}`);
+  }
   const ndjsonPath = resolve(dirname(manifestPath), '..', manifest.ndjson.path);
   const ndjsonBytes = await readFile(ndjsonPath);
   if (sha256(ndjsonBytes) !== manifest.ndjson.sha256) {
@@ -61,7 +73,7 @@ for (const manifestPath of await findManifests(evidenceRoot)) {
   const rows = String(ndjsonBytes).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   if (rows.length !== manifest.ndjson.rows) throw new Error(`NDJSON row count mismatch: ${manifestPath}`);
   for (const row of rows) {
-    if (row.seed !== manifest.seed || row.binary_sha256 !== manifest.binary.sha256 || row.budget_sha256 !== budgetHash) {
+    if (row.seed !== manifest.seed || row.binary_sha256 !== manifest.binary.sha256 || row.budget_sha256 !== budgetHash || row.harness_sha256 !== harnessHash) {
       throw new Error(`row binding mismatch: ${manifestPath}`);
     }
   }
@@ -77,6 +89,15 @@ for (const candidate of candidates.filter(({ manifest }) => manifest.measurement
   if (!previous || previous.manifest.completed_at < candidate.manifest.completed_at) selectedBySeed.set(key, candidate);
 }
 const selected = [...selectedBySeed.values()].sort((left, right) => left.manifest.seed - right.manifest.seed);
+const scriptHashes = new Map();
+for (const { rows } of selected) {
+  for (const row of rows.filter((entry) => entry.probe_kind === 'recall')) {
+    const key = `${row.seed}\0${row.label}`;
+    const prior = scriptHashes.get(key);
+    if (prior && prior !== row.task_script_sha256) throw new Error(`task script differs across modes: ${row.seed}/${row.label}`);
+    scriptHashes.set(key, row.task_script_sha256);
+  }
+}
 
 const modeResults = {};
 for (const mode of requiredModes) {
@@ -117,7 +138,7 @@ const fmt = (value, digits = 2) => Number(value).toFixed(digits).replace(/\.00$/
 const lines = [
   '# Phase 3 continuity modes report',
   '',
-  `Evidence class: **${preferredKind}**; seeded repetitions: **${selected.length}**; frozen budget SHA-256: \`${budgetHash}\`.`,
+  `Evidence class: **${preferredKind}**; seeded repetitions: **${selected.length}**; frozen budget SHA-256: \`${budgetHash}\`; harness SHA-256: \`${harnessHash}\`.`,
   '',
   'This is a measurement report, not a merge gate. Desktop remains the authority that selects defaults.',
   '',
@@ -151,11 +172,11 @@ const lines = [
   '',
   '## Run manifests',
   '',
-  '| seed | binary sha256 | budget sha256 | manifest | NDJSON |',
-  '|---:|---|---|---|---|',
+  '| seed | binary sha256 | budget sha256 | harness sha256 | manifest | NDJSON |',
+  '|---:|---|---|---|---|---|',
   ...selected.map(({ manifestPath, manifest }) => {
     const ndjsonPath = resolve(dirname(manifestPath), '..', manifest.ndjson.path);
-    return `| ${manifest.seed} | \`${manifest.binary.sha256}\` | \`${manifest.budgets.sha256}\` | \`${posix(relative(repo, manifestPath))}\` | \`${posix(relative(repo, ndjsonPath))}\` |`;
+    return `| ${manifest.seed} | \`${manifest.binary.sha256}\` | \`${manifest.budgets.sha256}\` | \`${manifest.harness.sha256}\` | \`${posix(relative(repo, manifestPath))}\` | \`${posix(relative(repo, ndjsonPath))}\` |`;
   }),
   '',
   '## Desktop consumption',

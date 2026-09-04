@@ -11,11 +11,10 @@ import {
   mkdir,
   readFile,
   rm,
-  stat,
   writeFile,
 } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 
@@ -42,6 +41,10 @@ if (!['smoke', 'ci', 'receipt'].includes(runMode) || !Number.isSafeInteger(seed)
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+async function sourceHash(path) {
+  return sha256((await readFile(path, 'utf8')).replaceAll('\r\n', '\n'));
 }
 
 function canonical(value) {
@@ -325,12 +328,26 @@ class Acp {
   }
 
   requestFrame(id, frame) {
-    const response = new Promise((resolveResponse, reject) => this.pending.set(String(id), { resolve: resolveResponse, reject }));
+    let timer;
+    const response = new Promise((resolveResponse, reject) => this.pending.set(String(id), {
+      resolve: (value) => {
+        clearTimeout(timer);
+        resolveResponse(value);
+      },
+      reject: (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    }));
+    timer = setTimeout(() => {
+      const pending = this.pending.get(String(id));
+      if (pending) {
+        this.pending.delete(String(id));
+        pending.reject(new Error(`ACP timeout id=${id}: ${this.stderr}`));
+      }
+    }, 30_000);
     this.child.stdin.write(`${frame}\n`);
-    return Promise.race([
-      response,
-      new Promise((_, reject) => setTimeout(() => reject(new Error(`ACP timeout id=${id}: ${this.stderr}`)), 30_000)),
-    ]);
+    return response;
   }
 
   async close() {
@@ -363,15 +380,25 @@ function spawnHost(home, workspace, script) {
 }
 
 async function writeScript(path, directives) {
-  await writeFile(path, `${directives.map((directive) => JSON.stringify(directive)).join('\n')}\n`);
+  const text = `${directives.map((directive) => JSON.stringify(directive)).join('\n')}\n`;
+  await writeFile(path, text);
+  return sha256(text);
 }
 
-function toolDirective(name, input) {
-  return { kind: 'tool_call', name, arguments: input, usage: { input_tokens: 320, output_tokens: 24 }, latency_ms: 1 };
+function seededRandom(scope) {
+  let state = Number.parseInt(sha256(`${seed}:${scope}`).slice(0, 8), 16) >>> 0;
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 2 ** 32;
+  };
 }
 
-function textDirective(text = 'continuity probe complete') {
-  return { kind: 'text', text, usage: { input_tokens: 48, output_tokens: 8 }, latency_ms: 1 };
+function toolDirective(name, input, random = () => 0) {
+  return { kind: 'tool_call', name, arguments: input, usage: { input_tokens: 320, output_tokens: 24 }, latency_ms: 1 + Math.floor(random() * 3) };
+}
+
+function textDirective(text = 'continuity probe complete', random = () => 0) {
+  return { kind: 'text', text, usage: { input_tokens: 48, output_tokens: 8 }, latency_ms: 1 + Math.floor(random() * 3) };
 }
 
 async function openSession(home, workspace, keys, script, project, agent, strategy = 'fresh') {
@@ -401,9 +428,10 @@ async function seedCorpus(home, workspace, keys, fixture, runDir) {
   for (const [partition, values] of [...partitions].sort(([left], [right]) => left.localeCompare(right))) {
     const [project, agent] = partition.split('\0');
     const script = join(runDir, `seed-${project}-${agent}.jsonl`);
+    const random = seededRandom(`seed:${project}:${agent}`);
     await writeScript(script, values.flatMap(({ kind, value }) => [
-      toolDirective('memory_propose', { kind, value }),
-      textDirective(`seeded ${value.id}`),
+      toolDirective('memory_propose', { kind, value }, random),
+      textDirective(`seeded ${value.id}`, random),
     ]));
     const { acp, sessionId } = await openSession(home, workspace, keys, script, project, agent);
     for (const { value } of values) {
@@ -438,7 +466,7 @@ async function journalUsage(path) {
   };
 }
 
-async function runPrompt(acp, sessionId, query, mode, journalPath, seededIds) {
+async function runPrompt(acp, sessionId, query, mode, journalPath, seededIds, taskScriptSha256) {
   const before = acp.frames.length;
   const started = performance.now();
   const response = await acp.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: query.text }] });
@@ -475,6 +503,7 @@ async function runPrompt(acp, sessionId, query, mode, journalPath, seededIds) {
     retrieval_output_sha256: sha256(outputEvidence),
     quality_basis: 'partitioned_seed+nonempty_digest+fixture_answer',
     quality_pass: seededRelevant.length === query.relevant_ids.length && toolCompleted && answerMatch,
+    task_script_sha256: taskScriptSha256,
     latency_ms: Number(latencyMs.toFixed(3)),
     tokens: await journalUsage(journalPath),
     journal_sha256: sha256(journalBytes),
@@ -495,7 +524,8 @@ async function forkSession(home, sessionId) {
 
 async function createResumeParent(home, workspace, keys, runDir, project, agent) {
   const script = join(runDir, `resume-parent-${project}-${agent}.jsonl`);
-  await writeScript(script, [textDirective('resume parent established')]);
+  const random = seededRandom(`resume-parent:${project}:${agent}`);
+  await writeScript(script, [textDirective('resume parent established', random)]);
   const { acp, sessionId, fingerprint } = await openSession(home, workspace, keys, script, project, agent, 'fresh');
   const response = await acp.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Establish the deterministic parent transcript.' }] });
   if (!response.result || !fingerprint) throw new Error(`resume parent setup failed: ${JSON.stringify(response)}`);
@@ -514,9 +544,10 @@ async function measureMode(mode, home, workspace, keys, queries, runDir, binaryS
   for (const [partition, partitionQueries] of groupQueries(queries)) {
     const [project, agent] = partition.split('\0');
     const script = join(runDir, `${mode}-${project}-${agent}.jsonl`);
-    await writeScript(script, partitionQueries.flatMap((query) => [
-      toolDirective('memory_recall', { query: query.text }),
-      textDirective(`fixture answer ${query.label}: ${query.expected_answer}`),
+    const random = seededRandom(`measure:${project}:${agent}`);
+    const taskScriptSha256 = await writeScript(script, partitionQueries.flatMap((query) => [
+      toolDirective('memory_recall', { query: query.text }, random),
+      textDirective(`fixture answer ${query.label}: ${query.expected_answer}`, random),
     ]));
     let acp;
     let sessionId;
@@ -557,7 +588,7 @@ async function measureMode(mode, home, workspace, keys, queries, runDir, binaryS
     }
     const journalPath = join(home, 'sessions', `${sessionId}.jsonl`);
     for (const query of partitionQueries) {
-      const row = await runPrompt(acp, sessionId, query, mode, journalPath, seededIds);
+      const row = await runPrompt(acp, sessionId, query, mode, journalPath, seededIds, taskScriptSha256);
       row.binary_sha256 = binarySha;
       rows.push(row);
     }
@@ -586,7 +617,8 @@ const queries = runMode === 'smoke'
   ? ['q01-deployment-a-a', 'q02-database-b-a', 'q07-port-a-b', 'q08-logs-b-b'].map((label) => fixture.queries.find((query) => query.label === label))
   : fixture.queries;
 let budgetSha = null;
-try { budgetSha = sha256(await readFile(budgetsPath)); } catch {}
+try { budgetSha = sha256(canonical(JSON.parse(await readFile(budgetsPath, 'utf8')))); } catch {}
+const harnessSha = await sourceHash(fileURLToPath(import.meta.url));
 const ndjsonPath = join(runDir, 'continuity.ndjson');
 const allRows = [];
 for (const mode of modes) {
@@ -597,6 +629,7 @@ for (const mode of modes) {
   for (const row of rows) {
     row.binary_sha256 = artifact.executable_sha256;
     row.budget_sha256 = budgetSha;
+    row.harness_sha256 = harnessSha;
     await appendFile(ndjsonPath, `${canonical(row)}\n`);
     allRows.push(row);
   }
@@ -613,6 +646,7 @@ const manifest = {
   binary: { path: native(binary), sha256: artifact.executable_sha256, size: binaryBytes.length, feature: 'nano-agent/soak-fake-model' },
   fixture: { path: relative(repo, fixturePath).replaceAll('\\', '/'), sha256: sha256(fixtureBytes), labels_modified: false },
   budgets: { path: 'scripts/soak/continuity-budgets.json', sha256: budgetSha },
+  harness: { path: 'scripts/soak/continuity.mjs', sha256: harnessSha, hash_normalization: 'crlf-to-lf' },
   ndjson: { path: relative(evidenceRoot, ndjsonPath).replaceAll('\\', '/'), sha256: sha256(ndjsonBytes), rows: allRows.length },
   modes,
   completed_at: iso(),
