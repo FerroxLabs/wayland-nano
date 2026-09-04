@@ -1,7 +1,8 @@
 use nano_memory::{
-    ConfiguredAgents, MemoryPolicy, MemoryStore, SourceTrust, rebuild_from_journals,
+    ConfiguredAgents, FactWrite, MemoryError, MemoryPolicy, MemoryStore, SourceTrust,
+    rebuild_from_journals,
 };
-use nano_session::{Op, read_journal};
+use nano_session::{JournalWriter, Op, OpEnvelope, read_journal};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -217,4 +218,120 @@ fn completed_migration_refuses_rerun_and_post_migration_edits_are_invisible() {
     let after = inspect_facts(home.path());
     assert_eq!(after, before);
     assert_eq!(after.len(), 1);
+}
+
+#[test]
+fn migrated_model_inference_cannot_remain_current_beside_higher_tier_truth() {
+    let home = tempfile::tempdir().unwrap();
+    let name = "2026-01-02T03-04-05-protected.md";
+    seed(home.path(), name, "untrusted replacement");
+    {
+        let mut store = MemoryStore::open(
+            home.path(),
+            &home.path().join("memory.jsonl"),
+            MemoryPolicy::default(),
+            "main",
+            configured(),
+        )
+        .unwrap();
+        store
+            .write_fact(FactWrite {
+                id: "trusted-anchor".into(),
+                subject: "legacy-memory-entry".into(),
+                predicate: name.trim_end_matches(".md").into(),
+                object: "trusted original".into(),
+                confidence: 0.1,
+                source_episode: None,
+                valid_from: "2025-01-01T00:00:00Z".into(),
+                valid_to: None,
+                source_trust: SourceTrust::User,
+                project: "project-a".into(),
+                agent_id: "main".into(),
+            })
+            .unwrap();
+    }
+
+    let output = migrate(home.path(), None);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let current = inspect_facts(home.path());
+    assert_eq!(
+        current
+            .iter()
+            .map(|fact| fact.id.as_str())
+            .collect::<Vec<_>>(),
+        ["trusted-anchor"]
+    );
+}
+
+#[test]
+fn legacy_session_memory_spelling_is_rejected_as_rebuild_authority() {
+    let home = tempfile::tempdir().unwrap();
+    let legacy_journal = home.path().join("sessions/legacy.jsonl");
+    let mut writer = JournalWriter::open(&legacy_journal).unwrap();
+    writer
+        .append(&OpEnvelope::new(
+            "legacy-memory",
+            "2026-01-01T00:00:00Z",
+            Op::MemoryWriteFact {
+                fact_id: "legacy-authority".into(),
+                subject: "legacy".into(),
+                predicate: "authority".into(),
+                object: "must not surface".into(),
+                confidence_micros: 1_000_000,
+                source_episode: None,
+                valid_from: "2026-01-01T00:00:00Z".into(),
+                valid_to: None,
+                source_trust: "user".into(),
+                project: "project-a".into(),
+                agent_id: "main".into(),
+                session_id: Some("legacy-session".into()),
+                resolver_outcome: "accepted".into(),
+            },
+        ))
+        .unwrap();
+    drop(writer);
+
+    let error = rebuild_from_journals(
+        &home.path().join("legacy-rebuild.db"),
+        &[legacy_journal],
+        MemoryPolicy::default(),
+        configured(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        MemoryError::InvalidValue {
+            field: "source_trust",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn migration_refuses_unconfigured_agent_before_writing_state() {
+    let home = tempfile::tempdir().unwrap();
+    seed(
+        home.path(),
+        "2026-01-02T03-04-05-unconfigured.md",
+        "must not land",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_wayland-nano"))
+        .args([
+            "memory",
+            "migrate",
+            "--project",
+            "project-a",
+            "--agent-id",
+            "bot-z",
+            "--session-id",
+            "migration-session",
+        ])
+        .env("NANO_HOME", home.path())
+        .current_dir(home.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unconfigured memory agent"));
+    assert!(!home.path().join("memory.jsonl").exists());
+    assert!(!home.path().join("memory/memory.db").exists());
 }

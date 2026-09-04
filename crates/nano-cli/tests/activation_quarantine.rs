@@ -128,6 +128,28 @@ fn unauthenticated_process_paths_leave_seeded_legacy_state_unchanged() {
     }
 }
 
+#[test]
+fn legacy_store_changes_only_under_the_complete_explicit_migrate_verb() {
+    let home = tempfile::tempdir().unwrap();
+    seed_legacy_state(home.path());
+    let before = inventory(home.path());
+    for args in [
+        vec!["memory"],
+        vec!["memory", "migrate"],
+        vec!["memory", "read"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_wayland-nano"))
+            .args(args)
+            .env("NANO_HOME", home.path())
+            .env("NANO_MEMORY_WRITE", "true")
+            .current_dir(home.path())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert_eq!(inventory(home.path()), before);
+    }
+}
+
 #[tokio::test]
 async fn forced_memory_and_cron_calls_are_typed_denials_with_zero_state_change() {
     let home = tempfile::tempdir().unwrap();
