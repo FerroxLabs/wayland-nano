@@ -1,9 +1,9 @@
 use nano_memory::{
-    ConfiguredAgents, FactWrite, MemoryError, MemoryPolicy, MemoryStore, SourceTrust,
-    rebuild_from_journals,
+    AgentScope, ConfiguredAgents, DecisionWrite, FactWrite, MemoryPolicy, MemoryProposal,
+    MemoryStore, ProposalKind, RetrieveQuery, SourceTrust, rebuild_from_journals,
 };
-use nano_session::{JournalWriter, Op, OpEnvelope, read_journal};
-use serde_json::Value;
+use nano_session::{JournalWriter, Op, OpEnvelope, read_journal, replay::SessionState};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -15,6 +15,15 @@ fn seed(home: &Path, name: &str, contents: &str) {
 }
 
 fn migrate(home: &Path, extra_env: Option<(&str, &str)>) -> std::process::Output {
+    write_policy(home, true, "SessionAndProject");
+    migrate_with_session(home, "migration-session", extra_env)
+}
+
+fn migrate_with_session(
+    home: &Path,
+    session_id: &str,
+    extra_env: Option<(&str, &str)>,
+) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_wayland-nano"));
     command
         .args([
@@ -25,7 +34,7 @@ fn migrate(home: &Path, extra_env: Option<(&str, &str)>) -> std::process::Output
             "--agent-id",
             "main",
             "--session-id",
-            "migration-session",
+            session_id,
         ])
         .env("NANO_HOME", home)
         .current_dir(home);
@@ -33,6 +42,92 @@ fn migrate(home: &Path, extra_env: Option<(&str, &str)>) -> std::process::Output
         command.env(name, value);
     }
     command.output().unwrap()
+}
+
+fn write_policy(home: &Path, enabled: bool, write: &str) {
+    std::fs::write(
+        home.join("memory-policy.toml"),
+        format!(
+            "enabled = {enabled}\nwrite = \"{write}\"\nread_scope = \"SessionAndProject\"\nembedding_backend = \"HashedLocal\"\ndeletion = \"Never\"\nmin_tier = \"ModelInference\"\n\n[retention]\nepisodes = 10000\nfacts = 50000\nbytes = 268435456\n"
+        ),
+    )
+    .unwrap();
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireReceipt {
+    v: u8,
+    outcome: WireOutcome,
+    ingested: usize,
+    skipped: usize,
+    refused: usize,
+    journal_paths: Vec<PathBuf>,
+    entries: Vec<WireEntryReceipt>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum WireOutcome {
+    Complete,
+    Incomplete,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireEntryReceipt {
+    name: String,
+    content_sha256: Option<String>,
+    status: WireEntryStatus,
+    error_kind: Option<WireEntryErrorKind>,
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum WireEntryStatus {
+    Ingested,
+    Skipped,
+    Refused,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum WireEntryErrorKind {
+    InvalidTimestamp,
+    NotPlainFile,
+    ReadFailed,
+    InvalidUtf8,
+    SecretScreening,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireFailure {
+    v: u8,
+    error_kind: WireFailureKind,
+    message: String,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum WireFailureKind {
+    Usage,
+    AlreadyCompleted,
+    PolicyInvalid,
+    PolicyDisabled,
+    InvalidSessionId,
+    JournalInvalid,
+    RebuildFailed,
+    CompletionCollision,
+}
+
+fn receipt(output: &std::process::Output) -> WireReceipt {
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn failure(output: &std::process::Output) -> WireFailure {
+    serde_json::from_slice(&output.stderr).unwrap()
 }
 
 fn configured() -> ConfiguredAgents {
@@ -62,21 +157,20 @@ fn explicit_migration_is_journal_first_model_inference_and_receipted() {
 
     let output = migrate(home.path(), None);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(receipt["ingested"], 1);
-    assert_eq!(receipt["skipped"], 0);
-    assert_eq!(receipt["refused"], 0);
+    let receipt = receipt(&output);
+    assert_eq!(receipt.v, 1);
+    assert_eq!(receipt.outcome, WireOutcome::Complete);
+    assert_eq!(receipt.ingested, 1);
+    assert_eq!(receipt.skipped, 0);
+    assert_eq!(receipt.refused, 0);
     assert_eq!(
-        receipt["entries"][0]["content_sha256"]
-            .as_str()
-            .unwrap()
-            .len(),
+        receipt.entries[0].content_sha256.as_ref().unwrap().len(),
         64
     );
-    assert_eq!(
-        receipt["journal_paths"],
-        serde_json::json!([home.path().join("memory.jsonl")])
-    );
+    assert_eq!(receipt.entries[0].status, WireEntryStatus::Ingested);
+    assert!(receipt.entries[0].error_kind.is_none());
+    assert!(receipt.entries[0].message.is_none());
+    assert_eq!(receipt.journal_paths, [home.path().join("memory.jsonl")]);
 
     let journal = read_journal(&home.path().join("memory.jsonl")).unwrap();
     let write = journal
@@ -128,23 +222,138 @@ fn invalid_legacy_metadata_is_a_per_entry_refusal() {
     let home = tempfile::tempdir().unwrap();
     seed(
         home.path(),
-        "not-a-timestamp.md",
+        "2026-99-99T03-04-05-invalid-date.md",
         "must not acquire authority",
     );
 
     let output = migrate(home.path(), None);
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(receipt["ingested"], 0);
-    assert_eq!(receipt["refused"], 1);
-    assert_eq!(receipt["entries"][0]["status"], "refused");
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let receipt = receipt(&output);
+    assert_eq!(receipt.outcome, WireOutcome::Incomplete);
+    assert_eq!(receipt.ingested, 0);
+    assert_eq!(receipt.refused, 1);
+    assert_eq!(receipt.entries[0].status, WireEntryStatus::Refused);
+    assert_eq!(
+        receipt.entries[0].error_kind,
+        Some(WireEntryErrorKind::InvalidTimestamp)
+    );
     assert!(
-        receipt["entries"][0]["error"]
-            .as_str()
+        receipt.entries[0]
+            .message
+            .as_deref()
             .unwrap()
             .contains("timestamp")
     );
     assert!(inspect_facts(home.path()).is_empty());
+    let journal = read_journal(&home.path().join("memory.jsonl")).unwrap();
+    assert!(!journal.envelopes.iter().any(|entry| matches!(
+        &entry.op,
+        Op::MemoryWriteReceipt { write_id, .. } if write_id == "legacy-migration-complete"
+    )));
+
+    std::fs::rename(
+        home.path()
+            .join("memory/2026-99-99T03-04-05-invalid-date.md"),
+        home.path().join("memory/2026-01-02T03-04-05-corrected.md"),
+    )
+    .unwrap();
+    let corrected = migrate(home.path(), None);
+    assert_eq!(corrected.status.code(), Some(0), "{corrected:?}");
+    assert_eq!(inspect_facts(home.path()).len(), 1);
+}
+
+#[test]
+fn filenames_outside_the_legacy_store_grammar_are_never_enumerated() {
+    let home = tempfile::tempdir().unwrap();
+    seed(home.path(), "not-a-legacy-name.md", "must stay powerless");
+    seed(
+        home.path(),
+        "2026-01-02T03-04-05-valid.md",
+        "accepted legacy entry",
+    );
+    let output = migrate(home.path(), None);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let receipt = receipt(&output);
+    assert_eq!(receipt.entries.len(), 1);
+    assert_eq!(receipt.entries[0].name, "2026-01-02T03-04-05-valid.md");
+    assert_eq!(inspect_facts(home.path()).len(), 1);
+}
+
+#[test]
+fn resolved_policy_must_enable_writes_before_any_migration_append() {
+    for (enabled, write) in [(false, "SessionAndProject"), (true, "Off")] {
+        let home = tempfile::tempdir().unwrap();
+        seed(
+            home.path(),
+            "2026-01-02T03-04-05-disabled.md",
+            "must not land",
+        );
+        write_policy(home.path(), enabled, write);
+        let output = migrate_with_session(home.path(), "migration-session", None);
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
+        let refusal = failure(&output);
+        assert_eq!(refusal.error_kind, WireFailureKind::PolicyDisabled);
+        assert!(!home.path().join("memory.jsonl").exists());
+        assert!(!home.path().join("memory/memory.db").exists());
+    }
+}
+
+#[test]
+fn invalid_session_id_is_typed_before_append_and_corrected_retry_succeeds() {
+    for invalid in ["bad/session".to_owned(), "x".repeat(129)] {
+        let home = tempfile::tempdir().unwrap();
+        seed(
+            home.path(),
+            "2026-01-02T03-04-05-session.md",
+            "session validation marker",
+        );
+        write_policy(home.path(), true, "SessionAndProject");
+        let output = migrate_with_session(home.path(), &invalid, None);
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
+        assert_eq!(
+            failure(&output).error_kind,
+            WireFailureKind::InvalidSessionId
+        );
+        assert!(!home.path().join("memory.jsonl").exists());
+        assert!(!home.path().join("memory/memory.db").exists());
+
+        let corrected = migrate_with_session(home.path(), "corrected-session", None);
+        assert_eq!(corrected.status.code(), Some(0), "{corrected:?}");
+    }
+}
+
+#[test]
+fn colliding_completion_envelope_cannot_claim_migration_closure() {
+    let home = tempfile::tempdir().unwrap();
+    seed(
+        home.path(),
+        "2026-01-02T03-04-05-completion.md",
+        "completion collision marker",
+    );
+    write_policy(home.path(), true, "SessionAndProject");
+    let journal_path = home.path().join("memory.jsonl");
+    let collision = OpEnvelope::new(
+        "legacy-migration-complete",
+        "2026-01-01T00:00:00Z",
+        Op::MemoryWriteReceipt {
+            write_id: "different-write".into(),
+            agent_id: "main".into(),
+            message: "not a completion".into(),
+        },
+    );
+    JournalWriter::open(&journal_path)
+        .unwrap()
+        .append(&collision)
+        .unwrap();
+
+    let output = migrate_with_session(home.path(), "migration-session", None);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert_eq!(
+        failure(&output).error_kind,
+        WireFailureKind::CompletionCollision
+    );
+    let report = read_journal(&journal_path).unwrap();
+    assert_eq!(report.envelopes, [collision]);
 }
 
 #[test]
@@ -254,7 +463,10 @@ fn completed_migration_refuses_rerun_and_post_migration_edits_are_invisible() {
     );
     let rerun = migrate(home.path(), None);
     assert_eq!(rerun.status.code(), Some(3), "{rerun:?}");
-    assert!(String::from_utf8_lossy(&rerun.stderr).contains("already completed"));
+    let refusal = failure(&rerun);
+    assert_eq!(refusal.v, 1);
+    assert_eq!(refusal.error_kind, WireFailureKind::AlreadyCompleted);
+    assert!(refusal.message.contains("already completed"));
 
     let after = inspect_facts(home.path());
     assert_eq!(after, before);
@@ -305,7 +517,7 @@ fn migrated_model_inference_cannot_remain_current_beside_higher_tier_truth() {
 }
 
 #[test]
-fn legacy_session_memory_spelling_is_rejected_as_rebuild_authority() {
+fn valid_legacy_session_memory_op_is_readable_but_not_dedicated_authority() {
     let home = tempfile::tempdir().unwrap();
     let legacy_journal = home.path().join("sessions/legacy.jsonl");
     let mut writer = JournalWriter::open(&legacy_journal).unwrap();
@@ -322,30 +534,39 @@ fn legacy_session_memory_spelling_is_rejected_as_rebuild_authority() {
                 source_episode: None,
                 valid_from: "2026-01-01T00:00:00Z".into(),
                 valid_to: None,
-                source_trust: "user".into(),
+                source_trust: "User".into(),
                 project: "project-a".into(),
                 agent_id: "main".into(),
                 session_id: Some("legacy-session".into()),
-                resolver_outcome: "accepted".into(),
+                resolver_outcome: "coexist".into(),
             },
         ))
         .unwrap();
     drop(writer);
 
-    let error = rebuild_from_journals(
-        &home.path().join("legacy-rebuild.db"),
-        &[legacy_journal],
+    let parsed = read_journal(&legacy_journal).unwrap();
+    assert_eq!(parsed.envelopes.len(), 1);
+    let mut folded = SessionState::new();
+    folded.apply(&parsed.envelopes[0]);
+
+    let dedicated = home.path().join("memory.jsonl");
+    let rebuilt = home.path().join("dedicated-rebuild.db");
+    rebuild_from_journals(
+        &rebuilt,
+        &[dedicated],
         MemoryPolicy::default(),
         configured(),
     )
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        MemoryError::InvalidValue {
-            field: "source_trust",
-            ..
-        }
-    ));
+    .unwrap();
+    let store = MemoryStore::open_at(
+        &rebuilt,
+        &home.path().join("inspect-legacy.jsonl"),
+        MemoryPolicy::default(),
+        "main",
+        configured(),
+    )
+    .unwrap();
+    assert!(store.current_facts().unwrap().is_empty());
 }
 
 #[test]
@@ -356,6 +577,7 @@ fn migration_refuses_unconfigured_agent_before_writing_state() {
         "2026-01-02T03-04-05-unconfigured.md",
         "must not land",
     );
+    write_policy(home.path(), true, "SessionAndProject");
     let output = Command::new(env!("CARGO_BIN_EXE_wayland-nano"))
         .args([
             "memory",
@@ -372,7 +594,9 @@ fn migration_refuses_unconfigured_agent_before_writing_state() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(3), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("unconfigured memory agent"));
+    let refusal = failure(&output);
+    assert_eq!(refusal.error_kind, WireFailureKind::PolicyInvalid);
+    assert!(refusal.message.contains("unconfigured memory agent"));
     assert!(!home.path().join("memory.jsonl").exists());
     assert!(!home.path().join("memory/memory.db").exists());
 }
@@ -415,11 +639,192 @@ fn migration_refuses_a_preexisting_fact_id_with_different_payload() {
 
     let output = migrate(home.path(), None);
     assert_eq!(output.status.code(), Some(3), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("conflicting authoritative write"));
+    let refusal = failure(&output);
+    assert_eq!(refusal.error_kind, WireFailureKind::JournalInvalid);
+    assert!(refusal.message.contains("conflicting authoritative write"));
     let report = read_journal(&journal_path).unwrap();
     assert!(!report.envelopes.iter().any(|entry| matches!(
         &entry.op,
         Op::MemoryWriteReceipt { write_id, .. } if write_id == &fact_id
     )));
     assert!(!home.path().join("memory/memory.db").exists());
+}
+
+#[derive(Deserialize)]
+struct RecallFixture {
+    facts: Vec<FactWrite>,
+    decisions: Vec<DecisionWrite>,
+    queries: Vec<RecallQuery>,
+}
+
+#[derive(Deserialize)]
+struct RecallQuery {
+    text: String,
+    project: String,
+    agent_id: String,
+}
+
+fn load_recall_fixture() -> RecallFixture {
+    serde_json::from_str(include_str!(
+        "../../../gates/fixtures/memory-retrieval-recall-v1/fixture.json"
+    ))
+    .unwrap()
+}
+
+fn fixture_query_ids(store: &MemoryStore, fixture: &RecallFixture) -> Vec<Vec<String>> {
+    fixture
+        .queries
+        .iter()
+        .map(|query| {
+            store
+                .retrieve(&RetrieveQuery {
+                    text: query.text.clone(),
+                    project: query.project.clone(),
+                    agent_id: query.agent_id.clone(),
+                    agent_scope: AgentScope::Own,
+                    limit: 10,
+                    token_budget: 4_096,
+                    min_tier: SourceTrust::ModelInference,
+                })
+                .unwrap()
+                .into_iter()
+                .map(|hit| hit.id)
+                .collect()
+        })
+        .collect()
+}
+
+fn journal_receipts(path: &Path) -> Vec<(String, String, String)> {
+    read_journal(path)
+        .unwrap()
+        .envelopes
+        .into_iter()
+        .filter_map(|entry| match entry.op {
+            Op::MemoryWriteReceipt {
+                write_id,
+                agent_id,
+                message,
+            } => Some((write_id, agent_id, message)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn actual_migration_output_is_query_equivalent_after_db_drop_and_rebuild() {
+    let home = tempfile::tempdir().unwrap();
+    write_policy(home.path(), true, "SessionAndProject");
+    let fixture = load_recall_fixture();
+    let configured_agents =
+        ConfiguredAgents::try_from_ids(["bot-a".to_owned(), "bot-b".to_owned()]).unwrap();
+    std::fs::create_dir_all(home.path().join("agents")).unwrap();
+    for agent in ["bot-a", "bot-b"] {
+        std::fs::write(
+            home.path()
+                .join("agents")
+                .join(format!("{agent}.agent.toml")),
+            format!("id = \"{agent}\"\n"),
+        )
+        .unwrap();
+    }
+    let journal = home.path().join("memory.jsonl");
+    {
+        let mut store = MemoryStore::open(
+            home.path(),
+            &journal,
+            MemoryPolicy::default(),
+            "main",
+            configured_agents.clone(),
+        )
+        .unwrap();
+        for decision in &fixture.decisions {
+            if decision.source_trust == SourceTrust::ModelInference {
+                store
+                    .commit_proposal(MemoryProposal {
+                        kind: ProposalKind::Decision(decision.clone()),
+                    })
+                    .unwrap();
+            } else {
+                store.write_decision(decision.clone()).unwrap();
+            }
+        }
+        for fact in &fixture.facts {
+            if fact.source_trust == SourceTrust::ModelInference {
+                store
+                    .commit_proposal(MemoryProposal {
+                        kind: ProposalKind::Fact(fact.clone()),
+                    })
+                    .unwrap();
+            } else {
+                store.write_fact(fact.clone()).unwrap();
+            }
+        }
+    }
+    seed(
+        home.path(),
+        "2026-01-02T03-04-05-migrated-roundtrip.md",
+        "migrated attribution sentinel",
+    );
+    let migrated = migrate_with_session(home.path(), "migration-session", None);
+    assert_eq!(migrated.status.code(), Some(0), "{migrated:?}");
+    assert_eq!(receipt(&migrated).outcome, WireOutcome::Complete);
+
+    let (expected_queries, expected_facts, expected_receipts);
+    {
+        let store = MemoryStore::open(
+            home.path(),
+            &home.path().join("live-inspect.jsonl"),
+            MemoryPolicy::default(),
+            "main",
+            configured_agents.clone(),
+        )
+        .unwrap();
+        expected_queries = fixture_query_ids(&store, &fixture);
+        expected_facts = store.current_facts().unwrap();
+        expected_receipts = journal_receipts(&journal);
+    }
+    let migrated_fact = expected_facts
+        .iter()
+        .find(|fact| fact.id.starts_with("legacy-"))
+        .expect("actual migrated fact");
+    assert_eq!(migrated_fact.source_trust, SourceTrust::ModelInference);
+    assert_eq!(migrated_fact.project, "project-a");
+    assert_eq!(migrated_fact.agent_id, "main");
+    assert!(
+        expected_receipts
+            .iter()
+            .any(|(write_id, agent_id, message)| {
+                write_id == &migrated_fact.id && agent_id == "main" && message.contains("sha256:")
+            })
+    );
+
+    let db = home.path().join("memory/memory.db");
+    std::fs::remove_file(&db).unwrap();
+    rebuild_from_journals(
+        &db,
+        std::slice::from_ref(&journal),
+        MemoryPolicy::default(),
+        configured_agents.clone(),
+    )
+    .unwrap();
+    let rebuilt = MemoryStore::open(
+        home.path(),
+        &home.path().join("rebuilt-inspect.jsonl"),
+        MemoryPolicy::default(),
+        "main",
+        configured_agents,
+    )
+    .unwrap();
+    let rebuilt_facts = rebuilt.current_facts().unwrap();
+    assert_eq!(rebuilt_facts, expected_facts);
+    for (actual, expected) in rebuilt_facts.iter().zip(&expected_facts) {
+        assert_eq!(actual.id, expected.id);
+        assert_eq!(actual.valid_from, expected.valid_from);
+        assert_eq!(actual.valid_to, expected.valid_to);
+        assert_eq!(actual.source_trust, expected.source_trust);
+        assert_eq!(actual.project, expected.project);
+        assert_eq!(actual.agent_id, expected.agent_id);
+    }
+    assert_eq!(fixture_query_ids(&rebuilt, &fixture), expected_queries);
+    assert_eq!(journal_receipts(&journal), expected_receipts);
 }
