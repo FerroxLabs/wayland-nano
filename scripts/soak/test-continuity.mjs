@@ -61,8 +61,11 @@ test('marked real-binary smoke evidence', async (t) => {
       assert.ok(rows.every((row) => /^[0-9a-f]{64}$/.test(row.binary_sha256)));
       assert.ok(rows.every((row) => /^[0-9a-f]{64}$/.test(row.journal_sha256)));
       const recall = rows.filter((row) => row.probe_kind === 'recall');
+      assert.equal(new Set(recall.map((row) => row.task_battery_sha256)).size, 1, 'all modes must share one task battery');
       for (const label of new Set(recall.map((row) => row.label))) {
-        assert.equal(new Set(recall.filter((row) => row.label === label).map((row) => row.task_script_sha256)).size, 3, `${label} must have one causal script per mode`);
+        const probeRows = recall.filter((row) => row.label === label);
+        assert.equal(new Set(probeRows.map((row) => row.driver_script_sha256)).size, 3, `${label} must have one driver/oracle script per mode`);
+        assert.equal(new Set(probeRows.map((row) => JSON.stringify(row.driver_profile))).size, 1, `${label} fake usage/delay differs by mode`);
       }
       const fresh = recall.filter((row) => row.mode === 'fresh');
       assert.ok(fresh.every((row) => row.persistent === false && row.memory_tool_calls === 0));
@@ -77,8 +80,10 @@ test('marked real-binary smoke evidence', async (t) => {
       assert.ok(recalled.some((row) => row.quality_pass), 'automatic recall produced no relevant request context');
       assert.ok(recall.every((row) => row.answer_source === 'model_request_assertion'));
       assert.ok(recall.every((row) => row.tokens.source === 'acp_budget_notice'));
-      assert.ok(recall.every((row) => row.tokens.total_tokens === row.tokens.session_tokens_after - row.tokens.session_tokens_before));
-      assert.ok(recall.every((row) => row.tokens.total_tokens > 0));
+      assert.ok(recall.every((row) => row.tokens.probe_tokens === row.tokens.session_tokens_after - row.tokens.session_tokens_before));
+      assert.ok(recall.every((row) => row.tokens.probe_tokens > 0));
+      assert.equal(resumed.filter((row) => row.tokens.setup_tokens > 0).length, 4, 'one resume baseline per partition');
+      assert.ok(resumed.every((row) => row.tokens.session_tokens_before > 0));
     });
     await t.test('records session-resume drift as a typed correct refusal', () => {
       const drift = rows.find((row) => row.mode === 'session_resume' && row.probe_kind === 'drift_refusal');

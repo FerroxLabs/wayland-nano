@@ -1258,6 +1258,96 @@ fn activated_fork_binds_and_loads_the_returned_child_fail_closed() {
 }
 
 #[test]
+fn activated_session_cannot_fork_a_closed_same_identity_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let workspace = home.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    write_enabled_policy(home);
+    let activation = ActivationFixture::new(home);
+
+    let closed = AcpHarness::spawn(
+        home,
+        &workspace,
+        activation.gate.clone(),
+        CaptureModel::scripted(vec![]),
+        CaptureTools::default(),
+        false,
+    );
+    let closed_response = closed.signed_request(
+        30,
+        activation.frame(
+            30,
+            "session/new",
+            "fork-closed-b",
+            "fresh",
+            "none",
+            None,
+            None,
+            &workspace,
+        ),
+    );
+    let closed_id = closed_response["result"]["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    closed.shutdown();
+
+    let active = AcpHarness::spawn(
+        home,
+        &workspace,
+        activation.gate.clone(),
+        CaptureModel::scripted(vec![]),
+        CaptureTools::default(),
+        false,
+    );
+    let active_response = active.signed_request(
+        31,
+        activation.frame(
+            31,
+            "session/new",
+            "fork-active-a",
+            "fresh",
+            "none",
+            None,
+            None,
+            &workspace,
+        ),
+    );
+    let active_id = active_response["result"]["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(active_id, closed_id);
+    let sessions = home.join("sessions");
+    let before = std::fs::read_dir(&sessions)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("jsonl"))
+        .count();
+    let refused = active.request(
+        32,
+        "_wayland/session/fork",
+        serde_json::json!({"sessionId": closed_id}),
+    );
+    assert_eq!(
+        refused["error"]["data"]["nanoError"]["kind"].as_str(),
+        Some("session_fork_failed"),
+        "{refused}"
+    );
+    let after = std::fs::read_dir(&sessions)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("jsonl"))
+        .count();
+    assert_eq!(
+        after, before,
+        "refused foreign-target fork created a child journal"
+    );
+    active.shutdown();
+}
+
+#[test]
 fn acp_policy_append_failure_stops_before_model_tool_or_memory_effect() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
