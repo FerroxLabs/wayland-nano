@@ -5654,6 +5654,18 @@ where
                             // session forks under fork_journal's own lock.
                             let parent_owned =
                                 session.as_ref().is_some_and(|s| s.id == fork_session);
+                            if activation.is_some() && !parent_owned {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::SessionForkFailed,
+                                        error_presentation(NanoErrorKind::SessionForkFailed),
+                                        NanoErrorExtras::default(),
+                                    ),
+                                )?;
+                                continue;
+                            }
                             let fork_authority = match (
                                 activation.as_ref(),
                                 session.as_ref().and_then(|active| active.activation.as_ref()),
