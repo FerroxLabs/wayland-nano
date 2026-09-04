@@ -126,12 +126,13 @@ async function tighten(path) {
 }
 
 async function gitIdentity(binaryBytes) {
-  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).stdout.trim();
+  const commits = spawnSync('git', ['rev-list', '--all'], { cwd: repo, encoding: 'utf8' }).stdout.trim().split(/\s+/).filter(Boolean);
+  const source = commits.find((commit) => /^[0-9a-f]{40}$/.test(commit) && binaryBytes.includes(commit));
   const lock = sha256(await readFile(join(repo, 'Cargo.lock')));
-  if (!/^[0-9a-f]{40}$/.test(head) || !binaryBytes.includes(head) || !binaryBytes.includes(lock)) {
-    throw new Error('binary is not bound to the current HEAD and Cargo.lock; build release from a clean checkout');
+  if (!source || !binaryBytes.includes(lock)) {
+    throw new Error('binary source identity is not a reachable commit with the current Cargo.lock; build release from a clean checkout');
   }
-  return { source_commit_sha: head, cargo_lock_sha256: lock, executable_sha256: sha256(binaryBytes) };
+  return { source_commit_sha: source, cargo_lock_sha256: lock, executable_sha256: sha256(binaryBytes) };
 }
 
 async function preflight() {

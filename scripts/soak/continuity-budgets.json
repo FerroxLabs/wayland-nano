@@ -1,0 +1,22 @@
+{
+  "schema": "wayland.nano.continuity-budgets/v1",
+  "registered_at": "2026-09-05T00:00:00Z",
+  "basis": "03-05 smoke seed 1010 before receipt runs; ceilings include Windows cold-start variance while preserving mode discrimination",
+  "modes": {
+    "fresh": {
+      "median_turn_latency_ms_max": 250,
+      "total_tokens_max": 12000,
+      "quality_score_min": 0.9
+    },
+    "session_resume": {
+      "median_turn_latency_ms_max": 350,
+      "total_tokens_max": 12000,
+      "quality_score_min": 0.9
+    },
+    "memory_recall": {
+      "median_turn_latency_ms_max": 350,
+      "total_tokens_max": 12000,
+      "quality_score_min": 0.9
+    }
+  }
+}

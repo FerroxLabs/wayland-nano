@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const harness = join(here, 'continuity.mjs');
+const report = join(here, 'continuity-report.mjs');
 const repo = resolve(here, '..', '..');
 
 function releaseBinary() {
@@ -67,5 +68,24 @@ test('marked real-binary smoke evidence', async (t) => {
       assert.equal(drift.refusal_kind, 'resume_drift');
       assert.equal(drift.silent_fallback, false);
     });
+  });
+});
+
+test('report refuses evidence bound to a different budget hash', async () => {
+  await withTempDir(async (evidence) => {
+    const runDir = join(evidence, 'run-mismatch');
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, 'continuity-manifest.json'), `${JSON.stringify({
+      schema: 'wayland.nano.continuity-manifest/v1',
+      measurement_mode: 'smoke',
+      seed: 1010,
+      budgets: { sha256: '0'.repeat(64) },
+    })}\n`);
+    const result = spawnSync(process.execPath, [report, '--evidence-dir', evidence, '--out', join(evidence, 'report.md')], {
+      cwd: repo,
+      encoding: 'utf8',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /budget hash mismatch/);
   });
 });
