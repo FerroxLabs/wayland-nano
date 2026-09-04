@@ -1,16 +1,16 @@
 # Phase 3 continuity modes report
 
-Evidence class: **receipt**; seeded repetitions: **2**; budgets registered **2026-09-04T22:54:18Z** before receipt execution; frozen budget SHA-256: `a394961e053bce02b59f5d0a08adad854b1307817e4f7f931e99900e5332ba6d`; harness SHA-256: `df19ce9000ba0dcc8aad94113722123aa6201ff4518e2f5449d2147677ccb0f9`.
+Evidence class: **receipt**; seeded repetitions: **2**; budgets registered **2026-09-04T23:23:48Z** before receipt execution; frozen budget SHA-256: `00800d1a945985d296c3d1b60b33f221c2acd566146d456fbdb8292593aa11f3`; harness SHA-256: `3417673546e6ddafb81d24354385320b59e0cb8bdd0dee228c17cd652e6666f9`.
 
 This is a measurement report, not a merge gate. Desktop remains the authority that selects defaults.
 
 ## Measured results
 
-| mode | median turn latency (ms) | median total tokens | median quality | budget verdict |
-|---|---:|---:|---:|---|
-| fresh | 29.909 / ≤250 | 5104.50 / ≤8000 | 0.000 / ≥0 | PASS |
-| session_resume | 23.352 / ≤350 | 10204 / ≤16000 | 1.000 / ≥0.9 | PASS |
-| memory_recall | 31.263 / ≤350 | 11297 / ≤24000 | 0.950 / ≥0.9 | PASS |
+| mode | median turn latency (ms) | setup tokens | probe tokens | median quality | budget verdict |
+|---|---:|---:|---:|---:|---|
+| fresh | 25.876 / ≤250 | 0 | 5136 / ≤8000 | 0.000 / ≥0 | PASS |
+| session_resume | 21.814 / ≤350 | 5152.50 | 5136 / ≤8000 | 1.000 / ≥0.9 | PASS |
+| memory_recall | 31.434 / ≤350 | 0 | 11303 / ≤16000 | 0.950 / ≥0.9 | PASS |
 
 Typed resume-drift refusals: **8/8** (`resume_drift`, zero silent fallbacks).
 
@@ -24,9 +24,9 @@ Quality is causal request evidence from the fixed fixture battery. Fresh creates
 
 ## RECOMMENDATION
 
-For interactive ACP, default to **session_resume when a valid bound session exists**. It loaded the returned fork child, rejected 8/8 drift probes without fallback, and measured 1.000 quality at 10204 emitted tokens. With no resumable session, use **memory_recall only when project continuity is requested**; otherwise start fresh.
+For interactive ACP, default to **session_resume when a valid bound session exists**. It loaded the returned fork child, rejected 8/8 drift probes without fallback, and measured 1.000 quality at 5136 probe tokens after a separately reported 5152.50-token resumed-history baseline. With no resumable session, use **memory_recall only when project continuity is requested**; otherwise start fresh.
 
-For one-shot exec, default to **fresh for stateless work** and require an explicit continuity choice for memory-backed work. Fresh correctly exposed no remembered answer; memory_recall measured 0.950 quality. Memory recall did NOT beat session_resume on measured quality per emitted token (8.409e-5 vs 9.800e-5), so it remains an explicit continuity mode rather than a universal default.
+For one-shot exec, default to **fresh for stateless work** and require an explicit continuity choice for memory-backed work. Fresh correctly exposed no remembered answer; memory_recall measured 0.950 quality. Memory recall did NOT beat session_resume on measured quality per emitted token (8.405e-5 vs 1.947e-4), so it remains an explicit continuity mode rather than a universal default.
 
 These are recommendations from the measured fake-model chassis. Desktop selects and owns the actual defaults.
 
@@ -34,13 +34,13 @@ These are recommendations from the measured fake-model chassis. Desktop selects 
 
 | seed | binary sha256 | budget sha256 | harness sha256 | fixture sha256 | manifest sha256 | NDJSON sha256 |
 |---:|---|---|---|---|---|---|
-| 1010 | `148c138bacf121913f60551f2127f186ada28a5f2a7216e981e8da7340678b7d` | `a394961e053bce02b59f5d0a08adad854b1307817e4f7f931e99900e5332ba6d` | `df19ce9000ba0dcc8aad94113722123aa6201ff4518e2f5449d2147677ccb0f9` | `ad286c8ebd835667488089410b9b7bd84ecade71758b20ce678d97c3f9dda214` | `ab28e4c94bc5492dc7a17c93e52d782fe85e4e1034ad1997552d86f2bec78352` | `9e4fde7de5c7a0cf8ed30c4b50ace173467e3dcdcd63c0e19764aa677bdbee7e` |
-| 2020 | `148c138bacf121913f60551f2127f186ada28a5f2a7216e981e8da7340678b7d` | `a394961e053bce02b59f5d0a08adad854b1307817e4f7f931e99900e5332ba6d` | `df19ce9000ba0dcc8aad94113722123aa6201ff4518e2f5449d2147677ccb0f9` | `ad286c8ebd835667488089410b9b7bd84ecade71758b20ce678d97c3f9dda214` | `e8a0ec9d367fe9cb41e29758cf8fd6fdf4b97533d0bf56c8df3e2fe637e8da50` | `03a990e4519a64d12d0daad9252c1303f7e15b2ffc2c32224596a71beb98a062` |
+| 1010 | `fba0a81b552da7904e1a713e3bf9cbe6da5f88bd0debcc0ba984ef5c8b685933` | `00800d1a945985d296c3d1b60b33f221c2acd566146d456fbdb8292593aa11f3` | `3417673546e6ddafb81d24354385320b59e0cb8bdd0dee228c17cd652e6666f9` | `ad286c8ebd835667488089410b9b7bd84ecade71758b20ce678d97c3f9dda214` | `1fd7f201bc0d9972ee4296cb59f699b2dce1ca79d8466cb4e01ce13a0445eede` | `975d1d82bd564950a9c50686955bef594255c1cf91544cf5bf15431cd7f87bdb` |
+| 2020 | `fba0a81b552da7904e1a713e3bf9cbe6da5f88bd0debcc0ba984ef5c8b685933` | `00800d1a945985d296c3d1b60b33f221c2acd566146d456fbdb8292593aa11f3` | `3417673546e6ddafb81d24354385320b59e0cb8bdd0dee228c17cd652e6666f9` | `ad286c8ebd835667488089410b9b7bd84ecade71758b20ce678d97c3f9dda214` | `46fe0c267c822656c50717b28d8f2c46632ed70082e90ec28d7def76b9639574` | `1bcdb8fd9272a95c46d71a9d3be604b640bb55fabc103ee84ee48a67e5d94bf7` |
 
-- Seed 1010 manifest: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T225707234Z-receipt-1010-36100/continuity-manifest.json`
-- Seed 1010 NDJSON: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T225707234Z-receipt-1010-36100/continuity.ndjson`
-- Seed 2020 manifest: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T225706996Z-receipt-2020-40936/continuity-manifest.json`
-- Seed 2020 NDJSON: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T225706996Z-receipt-2020-40936/continuity.ndjson`
+- Seed 1010 manifest: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T232852661Z-receipt-1010-41300/continuity-manifest.json`
+- Seed 1010 NDJSON: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T232852661Z-receipt-1010-41300/continuity.ndjson`
+- Seed 2020 manifest: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T232852444Z-receipt-2020-39548/continuity-manifest.json`
+- Seed 2020 NDJSON: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T232852444Z-receipt-2020-39548/continuity.ndjson`
 
 ## Desktop consumption
 
