@@ -79,7 +79,7 @@ for (const manifestPath of await findManifests(evidenceRoot)) {
   const rows = String(ndjsonBytes).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   if (rows.length !== manifest.ndjson.rows) throw new Error(`NDJSON row count mismatch: ${manifestPath}`);
   for (const row of rows) {
-    if (row.seed !== manifest.seed || row.binary_sha256 !== manifest.binary.sha256 || row.budget_sha256 !== budgetHash || row.harness_sha256 !== harnessHash) {
+    if (row.seed !== manifest.seed || row.binary_sha256 !== manifest.binary.sha256 || row.budget_sha256 !== budgetHash || row.harness_sha256 !== harnessHash || row.task_battery_sha256 !== manifest.task_battery?.sha256) {
       throw new Error(`row binding mismatch: ${manifestPath}`);
     }
   }
@@ -96,16 +96,24 @@ for (const candidate of candidates.filter(({ manifest }) => manifest.measurement
 }
 const selected = [...selectedBySeed.values()].sort((left, right) => left.manifest.seed - right.manifest.seed);
 const scriptHashes = new Map();
+const driverProfiles = new Map();
 for (const { rows } of selected) {
   for (const row of rows.filter((entry) => entry.probe_kind === 'recall')) {
     const key = `${row.seed}\0${row.label}`;
     const hashes = scriptHashes.get(key) ?? new Set();
-    hashes.add(row.task_script_sha256);
+    hashes.add(row.driver_script_sha256);
     scriptHashes.set(key, hashes);
+    const profiles = driverProfiles.get(key) ?? new Set();
+    profiles.add(canonical(row.driver_profile));
+    driverProfiles.set(key, profiles);
   }
 }
 for (const [key, hashes] of scriptHashes) {
   if (hashes.size !== requiredModes.length) throw new Error(`causal task scripts missing modes: ${key}`);
+  if (driverProfiles.get(key)?.size !== 1) throw new Error(`fake usage or delay differs by mode: ${key}`);
+}
+if (new Set(selected.map(({ manifest }) => manifest.task_battery?.sha256)).size !== 1) {
+  throw new Error('task battery differs across seeds');
 }
 
 const modeResults = {};
@@ -115,21 +123,23 @@ for (const mode of requiredModes) {
     if (recall.length === 0) throw new Error(`evidence missing ${mode} recall rows`);
     return {
       latency: median(recall.map((row) => Number(row.latency_ms))),
-      tokens: recall.reduce((sum, row) => sum + Number(row.tokens?.total_tokens ?? 0), 0),
+      setupTokens: recall.reduce((sum, row) => sum + Number(row.tokens?.setup_tokens ?? 0), 0),
+      probeTokens: recall.reduce((sum, row) => sum + Number(row.tokens?.probe_tokens ?? 0), 0),
       quality: recall.filter((row) => row.quality_pass === true).length / recall.length,
       probes: recall.length,
     };
   });
   const measured = {
     median_turn_latency_ms: median(repetitions.map((row) => row.latency)),
-    median_total_tokens: median(repetitions.map((row) => row.tokens)),
+    median_setup_tokens: median(repetitions.map((row) => row.setupTokens)),
+    median_probe_tokens: median(repetitions.map((row) => row.probeTokens)),
     median_quality_score: median(repetitions.map((row) => row.quality)),
     probes_per_seed: repetitions[0].probes,
   };
   const budget = budgets.modes[mode];
   const checks = {
     latency: measured.median_turn_latency_ms <= budget.median_turn_latency_ms_max,
-    tokens: measured.median_total_tokens <= budget.total_tokens_max,
+    tokens: measured.median_probe_tokens <= budget.probe_tokens_max,
     quality: measured.median_quality_score >= budget.quality_score_min,
   };
   modeResults[mode] = { measured, budget, checks, pass: Object.values(checks).every(Boolean) };
@@ -139,8 +149,8 @@ const driftRows = selected.flatMap(({ rows }) => rows.filter((row) => row.mode =
 const driftCorrect = driftRows.filter((row) => row.quality_pass === true && row.refusal_kind === 'resume_drift' && row.silent_fallback === false).length;
 const session = modeResults.session_resume.measured;
 const memory = modeResults.memory_recall.measured;
-const memoryQualityPerToken = memory.median_quality_score / Math.max(1, memory.median_total_tokens);
-const sessionQualityPerToken = session.median_quality_score / Math.max(1, session.median_total_tokens);
+const memoryQualityPerToken = memory.median_quality_score / Math.max(1, memory.median_probe_tokens);
+const sessionQualityPerToken = session.median_quality_score / Math.max(1, session.median_probe_tokens);
 const memoryBeatsSession = memoryQualityPerToken > sessionQualityPerToken;
 const fmt = (value, digits = 2) => Number(value).toFixed(digits).replace(/\.00$/, '');
 
@@ -153,11 +163,11 @@ const lines = [
   '',
   '## Measured results',
   '',
-  '| mode | median turn latency (ms) | median total tokens | median quality | budget verdict |',
-  '|---|---:|---:|---:|---|',
+  '| mode | median turn latency (ms) | setup tokens | probe tokens | median quality | budget verdict |',
+  '|---|---:|---:|---:|---:|---|',
   ...requiredModes.map((mode) => {
     const result = modeResults[mode];
-    return `| ${mode} | ${fmt(result.measured.median_turn_latency_ms, 3)} / ≤${result.budget.median_turn_latency_ms_max} | ${fmt(result.measured.median_total_tokens)} / ≤${result.budget.total_tokens_max} | ${fmt(result.measured.median_quality_score, 3)} / ≥${result.budget.quality_score_min} | ${result.pass ? 'PASS' : 'FAIL'} |`;
+    return `| ${mode} | ${fmt(result.measured.median_turn_latency_ms, 3)} / ≤${result.budget.median_turn_latency_ms_max} | ${fmt(result.measured.median_setup_tokens)} | ${fmt(result.measured.median_probe_tokens)} / ≤${result.budget.probe_tokens_max} | ${fmt(result.measured.median_quality_score, 3)} / ≥${result.budget.quality_score_min} | ${result.pass ? 'PASS' : 'FAIL'} |`;
   }),
   '',
   `Typed resume-drift refusals: **${driftCorrect}/${driftRows.length}** (\`resume_drift\`, zero silent fallbacks).`,
@@ -173,7 +183,7 @@ const lines = [
   '',
   '## RECOMMENDATION',
   '',
-  `For interactive ACP, default to **session_resume when a valid bound session exists**. It loaded the returned fork child, rejected ${driftCorrect}/${driftRows.length} drift probes without fallback, and measured ${fmt(session.median_quality_score, 3)} quality at ${fmt(session.median_total_tokens)} emitted tokens. With no resumable session, use **memory_recall only when project continuity is requested**; otherwise start fresh.`,
+  `For interactive ACP, default to **session_resume when a valid bound session exists**. It loaded the returned fork child, rejected ${driftCorrect}/${driftRows.length} drift probes without fallback, and measured ${fmt(session.median_quality_score, 3)} quality at ${fmt(session.median_probe_tokens)} probe tokens after a separately reported ${fmt(session.median_setup_tokens)}-token resumed-history baseline. With no resumable session, use **memory_recall only when project continuity is requested**; otherwise start fresh.`,
   '',
   `For one-shot exec, default to **fresh for stateless work** and require an explicit continuity choice for memory-backed work. Fresh correctly exposed no remembered answer; memory_recall measured ${fmt(memory.median_quality_score, 3)} quality. Memory recall ${memoryBeatsSession ? 'did' : 'did NOT'} beat session_resume on measured quality per emitted token (${memoryQualityPerToken.toExponential(3)} vs ${sessionQualityPerToken.toExponential(3)}), so it remains an explicit continuity mode rather than a universal default.`,
   '',

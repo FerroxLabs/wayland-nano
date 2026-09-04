@@ -408,14 +408,20 @@ function scriptedUsage(random) {
   };
 }
 
-function assertRequestDirective(query, mode, present, random) {
+function assertRequestDirective(query, mode, present) {
+  const random = seededRandom(`probe:${query.label}`);
+  const usage = scriptedUsage(random);
+  const latencyMs = 1 + Math.floor(random() * 3);
   return {
-    kind: 'assert_request',
-    needle: query.expected_answer,
-    present,
-    text: `request assertion ${mode} ${query.label} ${present ? 'present' : 'absent'}`,
-    usage: scriptedUsage(random),
-    latency_ms: 1 + Math.floor(random() * 3),
+    directive: {
+      kind: 'assert_request',
+      needle: query.expected_answer,
+      present,
+      text: `request assertion ${mode} ${query.label} ${present ? 'present' : 'absent'}`,
+      usage,
+      latency_ms: latencyMs,
+    },
+    profile: { usage, latency_ms: latencyMs },
   };
 }
 
@@ -486,9 +492,20 @@ async function journalDigest(path) {
   return sha256(await readFile(path));
 }
 
-async function runCausalPrompt(acp, sessionId, query, mode, journalPath, taskScriptSha256, extra) {
+async function runCausalPrompt(
+  acp,
+  sessionId,
+  query,
+  mode,
+  journalPath,
+  taskBatterySha256,
+  driverScriptSha256,
+  driverProfile,
+  extra,
+) {
   const beforeIndex = acp.frames.length;
-  const sessionTokensBefore = sessionTokens(acp.frames, sessionId);
+  const observedBefore = sessionTokens(acp.frames, sessionId);
+  const sessionTokensBefore = observedBefore || extra.session_token_baseline || 0;
   const started = performance.now();
   const response = await acp.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: query.text }] });
   const latencyMs = performance.now() - started;
@@ -503,6 +520,9 @@ async function runCausalPrompt(acp, sessionId, query, mode, journalPath, taskScr
   const memoryToolCalls = frames.filter((frame) =>
     frame?.params?.update?.sessionUpdate === 'tool_call'
       && String(frame?.params?.update?.title ?? '').startsWith('memory_')).length;
+  const setupTokens = extra.setup_tokens ?? 0;
+  const { session_token_baseline: _baseline, setup_tokens: _setup, ...evidenceExtra } = extra;
+  const probeTokens = sessionTokensAfter - sessionTokensBefore;
   return {
     schema: 'wayland.nano.continuity-probe/v1',
     mode,
@@ -520,33 +540,36 @@ async function runCausalPrompt(acp, sessionId, query, mode, journalPath, taskScr
     memory_tool_calls: memoryToolCalls,
     quality_basis: 'actual_model_request_contains_fixture_answer',
     quality_pass: extra.expect_continuity && assertionMatched,
-    task_script_sha256: taskScriptSha256,
+    task_battery_sha256: taskBatterySha256,
+    driver_script_sha256: driverScriptSha256,
+    driver_profile: driverProfile,
     latency_ms: Number(latencyMs.toFixed(3)),
     tokens: {
       source: 'acp_budget_notice',
+      setup_tokens: setupTokens,
       session_tokens_before: sessionTokensBefore,
       session_tokens_after: sessionTokensAfter,
-      total_tokens: sessionTokensAfter - sessionTokensBefore,
+      probe_tokens: probeTokens,
+      total_tokens: probeTokens,
     },
     journal_sha256: await journalDigest(journalPath),
     refusal_kind: response?.error?.data?.nanoError?.kind ?? null,
-    ...extra,
+    ...evidenceExtra,
   };
 }
 
-async function measureFresh(home, workspace, keys, queries, runDir) {
+async function measureFresh(home, workspace, keys, queries, runDir, taskBatterySha256) {
   const rows = [];
   for (const [partition, partitionQueries] of groupQueries(queries)) {
     const [project, agent] = partition.split('\0');
-    const random = seededRandom(`measure:fresh:${project}:${agent}`);
     const script = join(runDir, `fresh-${project}-${agent}.jsonl`);
-    const taskScriptSha256 = await writeScript(script, partitionQueries.map((query) =>
-      assertRequestDirective(query, 'fresh', false, random)));
+    const probes = partitionQueries.map((query) => assertRequestDirective(query, 'fresh', false));
+    const driverScriptSha256 = await writeScript(script, probes.map((probe) => probe.directive));
     const { acp, sessionId } = await openActivatedSession(
       home, workspace, keys, script, project, agent, 'fresh');
     const journalPath = join(home, 'sessions', `${sessionId}.jsonl`);
-    for (const query of partitionQueries) {
-      rows.push(await runCausalPrompt(acp, sessionId, query, 'fresh', journalPath, taskScriptSha256, {
+    for (const [index, query] of partitionQueries.entries()) {
+      rows.push(await runCausalPrompt(acp, sessionId, query, 'fresh', journalPath, taskBatterySha256, driverScriptSha256, probes[index].profile, {
         request_assertion: 'absent',
         expect_continuity: false,
         persistent: false,
@@ -559,7 +582,7 @@ async function measureFresh(home, workspace, keys, queries, runDir) {
   return rows;
 }
 
-async function measureSessionResume(home, workspace, keys, queries, runDir) {
+async function measureSessionResume(home, workspace, keys, queries, runDir, taskBatterySha256) {
   const rows = [];
   for (const [partition, partitionQueries] of groupQueries(queries)) {
     const [project, agent] = partition.split('\0');
@@ -580,12 +603,14 @@ async function measureSessionResume(home, workspace, keys, queries, runDir) {
     if (!fork?.child_session_id || !fork?.resume_fingerprint || fork.parent_digest_before !== fork.parent_digest_after) {
       throw new Error(`activated fork failed: ${JSON.stringify(forkResponse)} ${parent.acp.stderr}`);
     }
+    const parentTokenBaseline = sessionTokens(parent.acp.frames, parent.sessionId);
+    if (parentTokenBaseline <= 0) throw new Error('resume parent emitted no token baseline');
     await parent.acp.close();
 
     const script = join(runDir, `session-resume-${project}-${agent}.jsonl`);
-    const random = seededRandom(`measure:session-resume:${project}:${agent}`);
-    const taskScriptSha256 = await writeScript(script, partitionQueries.map((query) =>
-      assertRequestDirective(query, 'session_resume', true, random)));
+    const probes = partitionQueries.map((query) =>
+      assertRequestDirective(query, 'session_resume', true));
+    const driverScriptSha256 = await writeScript(script, probes.map((probe) => probe.directive));
     const acp = spawnHost(home, workspace, script);
     await initializeHost(acp);
     const drift = await acp.signed(keys, 'session/load', {
@@ -608,8 +633,8 @@ async function measureSessionResume(home, workspace, keys, queries, runDir) {
     });
     if (!loaded.result) throw new Error(`fork child load refused: ${JSON.stringify(loaded)} ${acp.stderr}`);
     const journalPath = join(home, 'sessions', `${fork.child_session_id}.jsonl`);
-    for (const query of partitionQueries) {
-      rows.push(await runCausalPrompt(acp, fork.child_session_id, query, 'session_resume', journalPath, taskScriptSha256, {
+    for (const [index, query] of partitionQueries.entries()) {
+      rows.push(await runCausalPrompt(acp, fork.child_session_id, query, 'session_resume', journalPath, taskBatterySha256, driverScriptSha256, probes[index].profile, {
         request_assertion: 'present',
         expect_continuity: true,
         persistent: true,
@@ -617,6 +642,8 @@ async function measureSessionResume(home, workspace, keys, queries, runDir) {
         memory_seeded: false,
         loaded_session_id: fork.child_session_id,
         fork_child_session_id: fork.child_session_id,
+        session_token_baseline: index === 0 ? parentTokenBaseline : 0,
+        setup_tokens: index === 0 ? parentTokenBaseline : 0,
       }));
     }
     await acp.close();
@@ -624,19 +651,19 @@ async function measureSessionResume(home, workspace, keys, queries, runDir) {
   return rows;
 }
 
-async function measureMemoryRecall(home, workspace, keys, queries, runDir) {
+async function measureMemoryRecall(home, workspace, keys, queries, runDir, taskBatterySha256) {
   const rows = [];
   for (const [partition, partitionQueries] of groupQueries(queries)) {
     const [project, agent] = partition.split('\0');
     const script = join(runDir, `memory-recall-${project}-${agent}.jsonl`);
-    const random = seededRandom(`measure:memory-recall:${project}:${agent}`);
-    const taskScriptSha256 = await writeScript(script, partitionQueries.map((query) =>
-      assertRequestDirective(query, 'memory_recall', true, random)));
+    const probes = partitionQueries.map((query) =>
+      assertRequestDirective(query, 'memory_recall', true));
+    const driverScriptSha256 = await writeScript(script, probes.map((probe) => probe.directive));
     const { acp, sessionId } = await openActivatedSession(
       home, workspace, keys, script, project, agent, 'memory_recall');
     const journalPath = join(home, 'sessions', `${sessionId}.jsonl`);
-    for (const query of partitionQueries) {
-      rows.push(await runCausalPrompt(acp, sessionId, query, 'memory_recall', journalPath, taskScriptSha256, {
+    for (const [index, query] of partitionQueries.entries()) {
+      rows.push(await runCausalPrompt(acp, sessionId, query, 'memory_recall', journalPath, taskBatterySha256, driverScriptSha256, probes[index].profile, {
         request_assertion: 'present',
         expect_continuity: true,
         persistent: true,
@@ -668,6 +695,15 @@ for (const query of fixture.queries) {
 const queries = runMode === 'smoke'
   ? ['q01-deployment-a-a', 'q02-database-b-a', 'q07-port-a-b', 'q08-logs-b-b'].map((label) => fixture.queries.find((query) => query.label === label))
   : fixture.queries;
+const taskBattery = queries.map((query) => ({
+  label: query.label,
+  text: query.text,
+  project: query.project,
+  agent_id: query.agent_id,
+  relevant_ids: query.relevant_ids,
+  expected_answer_sha256: sha256(query.expected_answer),
+}));
+const taskBatterySha256 = sha256(canonical(taskBattery));
 let budgetSha = null;
 try { budgetSha = sha256(canonical(JSON.parse(await readFile(budgetsPath, 'utf8')))); } catch {}
 const harnessSha = await sourceHash(fileURLToPath(import.meta.url));
@@ -679,13 +715,13 @@ for (const mode of modes) {
   const keys = await bootstrapHome(home, artifact, mode === 'memory_recall');
   let rows;
   if (mode === 'fresh') {
-    rows = await measureFresh(home, workspace, keys, queries, runDir);
+    rows = await measureFresh(home, workspace, keys, queries, runDir, taskBatterySha256);
   } else {
     if (mode === 'memory_recall') {
       await seedCorpus(home, workspace, keys, fixture, runDir);
-      rows = await measureMemoryRecall(home, workspace, keys, queries, runDir);
+      rows = await measureMemoryRecall(home, workspace, keys, queries, runDir, taskBatterySha256);
     } else {
-      rows = await measureSessionResume(home, workspace, keys, queries, runDir);
+      rows = await measureSessionResume(home, workspace, keys, queries, runDir, taskBatterySha256);
     }
   }
   for (const row of rows) {
@@ -709,6 +745,7 @@ const manifest = {
   fixture: { path: relative(repo, fixturePath).replaceAll('\\', '/'), sha256: sha256(fixtureBytes), labels_modified: false },
   budgets: { path: 'scripts/soak/continuity-budgets.json', sha256: budgetSha },
   harness: { path: 'scripts/soak/continuity.mjs', sha256: harnessSha, hash_normalization: 'crlf-to-lf' },
+  task_battery: { sha256: taskBatterySha256, rows: taskBattery.length },
   causal_oracles: {
     fresh: 'nonpersistent request asserts fixture answer absent',
     session_resume: 'activated fork child request asserts replayed answer present',
