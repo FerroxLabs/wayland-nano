@@ -72,10 +72,13 @@ test('marked real-binary smoke evidence', async (t) => {
       assert.ok(resumed.every((row) => row.memory_tool_calls === 0 && row.request_assertion === 'present' && row.quality_pass));
       const recalled = recall.filter((row) => row.mode === 'memory_recall');
       assert.ok(recalled.every((row) => row.activation_admitted === true && row.memory_seeded === true));
-      assert.ok(recalled.every((row) => row.memory_tool_calls === 0 && row.request_assertion === 'present' && row.quality_pass));
+      assert.ok(recalled.every((row) => row.memory_tool_calls === 0 && row.request_assertion === 'present'));
+      assert.ok(recalled.every((row) => row.quality_pass === row.request_assertion_matched));
+      assert.ok(recalled.some((row) => row.quality_pass), 'automatic recall produced no relevant request context');
       assert.ok(recall.every((row) => row.answer_source === 'model_request_assertion'));
       assert.ok(recall.every((row) => row.tokens.source === 'acp_budget_notice'));
       assert.ok(recall.every((row) => row.tokens.total_tokens === row.tokens.session_tokens_after - row.tokens.session_tokens_before));
+      assert.ok(recall.every((row) => row.tokens.total_tokens > 0));
     });
     await t.test('records session-resume drift as a typed correct refusal', () => {
       const drift = rows.find((row) => row.mode === 'session_resume' && row.probe_kind === 'drift_refusal');

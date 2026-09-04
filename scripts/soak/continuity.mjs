@@ -174,7 +174,7 @@ function snapshot(keys) {
   };
 }
 
-async function bootstrapHome(home, artifact) {
+async function bootstrapHome(home, artifact, memoryEnabled) {
   const activation = join(home, 'activation');
   const keysDir = join(home, 'fixture-keys');
   await mkdir(activation, { recursive: true });
@@ -225,8 +225,8 @@ async function bootstrapHome(home, artifact) {
   await writeFile(join(activation, 'enablement.jsonl'), `${canonical(enablement)}\n`);
   await writeFile(join(activation, 'enablement.anchor'), sha256(canonical(enablement)));
   await writeFile(join(home, 'memory-policy.toml'), [
-    'enabled = true',
-    'write = "SessionAndProject"',
+    `enabled = ${memoryEnabled}`,
+    `write = "${memoryEnabled ? 'SessionAndProject' : 'Off'}"`,
     'read_scope = "SessionAndProject"',
     'embedding_backend = "HashedLocal"',
     'deletion = "Never"',
@@ -394,17 +394,39 @@ function seededRandom(scope) {
 }
 
 function toolDirective(name, input, random = () => 0) {
-  return { kind: 'tool_call', name, arguments: input, usage: { input_tokens: 320, output_tokens: 24 }, latency_ms: 1 + Math.floor(random() * 3) };
+  return { kind: 'tool_call', name, arguments: input, usage: scriptedUsage(random), latency_ms: 1 + Math.floor(random() * 3) };
 }
 
 function textDirective(text = 'continuity probe complete', random = () => 0) {
-  return { kind: 'text', text, usage: { input_tokens: 48, output_tokens: 8 }, latency_ms: 1 + Math.floor(random() * 3) };
+  return { kind: 'text', text, usage: scriptedUsage(random), latency_ms: 1 + Math.floor(random() * 3) };
 }
 
-async function openSession(home, workspace, keys, script, project, agent, strategy = 'fresh') {
-  const acp = spawnHost(home, workspace, script);
+function scriptedUsage(random) {
+  return {
+    input_tokens: 180 + Math.floor(random() * 121),
+    output_tokens: 12 + Math.floor(random() * 13),
+  };
+}
+
+function assertRequestDirective(query, mode, present, random) {
+  return {
+    kind: 'assert_request',
+    needle: query.expected_answer,
+    present,
+    text: `request assertion ${mode} ${query.label} ${present ? 'present' : 'absent'}`,
+    usage: scriptedUsage(random),
+    latency_ms: 1 + Math.floor(random() * 3),
+  };
+}
+
+async function initializeHost(acp) {
   const initialized = await acp.request('initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } } });
   if (!initialized.result) throw new Error(`initialize refused: ${JSON.stringify(initialized)} ${acp.stderr}`);
+}
+
+async function openActivatedSession(home, workspace, keys, script, project, agent, strategy = 'fresh') {
+  const acp = spawnHost(home, workspace, script);
+  await initializeHost(acp);
   const created = await acp.signed(keys, 'session/new', { strategy, cwd: workspace, project, agent });
   if (!created.result?.sessionId) throw new Error(`session/new refused: ${JSON.stringify(created)} ${acp.stderr}`);
   return {
@@ -433,7 +455,7 @@ async function seedCorpus(home, workspace, keys, fixture, runDir) {
       toolDirective('memory_propose', { kind, value }, random),
       textDirective(`seeded ${value.id}`, random),
     ]));
-    const { acp, sessionId } = await openSession(home, workspace, keys, script, project, agent);
+    const { acp, sessionId } = await openActivatedSession(home, workspace, keys, script, project, agent);
     for (const { value } of values) {
       const seeded = await acp.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: `Seed frozen fixture row ${value.id} for ${project}/${agent}.` }] });
       if (!seeded.result) throw new Error(`fixture seed refused ${project}/${agent}/${value.id}: ${JSON.stringify(seeded)} ${acp.stderr}`);
@@ -454,37 +476,35 @@ function groupQueries(queries) {
   return [...grouped].sort(([left], [right]) => left.localeCompare(right));
 }
 
-async function journalUsage(path) {
-  const text = await readFile(path, 'utf8');
-  const turns = text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
-    .filter((row) => row?.op?.type === 'turn_end');
-  const usage = turns.at(-1)?.op?.usage ?? {};
-  return {
-    input_tokens: Number(usage.input_tokens ?? 0),
-    output_tokens: Number(usage.output_tokens ?? 0),
-    total_tokens: Number(usage.input_tokens ?? 0) + Number(usage.output_tokens ?? 0),
-  };
+function sessionTokens(frames, sessionId) {
+  return [...frames].reverse().find((frame) =>
+    frame?.method === '_wayland/session/budget'
+      && frame?.params?.sessionId === sessionId
+      && Number.isSafeInteger(frame?.params?.session_tokens))?.params.session_tokens ?? 0;
 }
 
-async function runPrompt(acp, sessionId, query, mode, journalPath, seededIds, taskScriptSha256) {
-  const before = acp.frames.length;
+async function journalDigest(path) {
+  if (!path) return sha256(Buffer.alloc(0));
+  return sha256(await readFile(path));
+}
+
+async function runCausalPrompt(acp, sessionId, query, mode, journalPath, taskScriptSha256, extra) {
+  const beforeIndex = acp.frames.length;
+  const sessionTokensBefore = sessionTokens(acp.frames, sessionId);
   const started = performance.now();
   const response = await acp.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: query.text }] });
   const latencyMs = performance.now() - started;
-  if (!response.result) throw new Error(`${mode}/${query.label} prompt refused: ${JSON.stringify(response)} ${acp.stderr}`);
-  const frames = acp.frames.slice(before);
-  const outputs = frames
-    .filter((frame) => frame?.params?.update?.sessionUpdate === 'tool_call_update' && frame.params.update.status === 'completed')
-    .map((frame) => String(frame.params.update.rawOutput ?? ''));
-  const outputEvidence = outputs.join('\n');
-  const toolCompleted = outputs.some((output) => /^len:[1-9][0-9]*$/.test(output));
+  const frames = acp.frames.slice(beforeIndex);
+  const sessionTokensAfter = sessionTokens(acp.frames, sessionId);
   const answerObserved = frames
     .filter((frame) => frame?.params?.update?.sessionUpdate === 'agent_message_chunk')
     .map((frame) => String(frame.params.update.content?.text ?? ''))
     .join('');
-  const seededRelevant = query.relevant_ids.filter((id) => seededIds.has(id));
-  const answerMatch = answerObserved.includes(query.expected_answer);
-  const journalBytes = await readFile(journalPath);
+  const assertionMarker = `request assertion ${mode} ${query.label} ${extra.request_assertion}`;
+  const assertionMatched = Boolean(response.result) && answerObserved.includes(assertionMarker);
+  const memoryToolCalls = frames.filter((frame) =>
+    frame?.params?.update?.sessionUpdate === 'tool_call'
+      && String(frame?.params?.update?.title ?? '').startsWith('memory_')).length;
   return {
     schema: 'wayland.nano.continuity-probe/v1',
     mode,
@@ -496,101 +516,135 @@ async function runPrompt(acp, sessionId, query, mode, journalPath, seededIds, ta
     relevant_ids: query.relevant_ids,
     expected_answer_sha256: sha256(query.expected_answer),
     answer_observed_sha256: sha256(answerObserved),
-    answer_match: answerMatch,
-    seeded_relevant_ids: seededRelevant,
-    tool_completed_nonempty: toolCompleted,
-    retrieval_output_bytes: Buffer.byteLength(outputEvidence),
-    retrieval_output_sha256: sha256(outputEvidence),
-    quality_basis: 'partitioned_seed+nonempty_digest+fixture_answer',
-    quality_pass: seededRelevant.length === query.relevant_ids.length && toolCompleted && answerMatch,
+    answer_source: 'model_request_assertion',
+    request_assertion: extra.request_assertion,
+    request_assertion_matched: assertionMatched,
+    memory_tool_calls: memoryToolCalls,
+    quality_basis: 'actual_model_request_contains_fixture_answer',
+    quality_pass: extra.expect_continuity && assertionMatched,
     task_script_sha256: taskScriptSha256,
     latency_ms: Number(latencyMs.toFixed(3)),
-    tokens: await journalUsage(journalPath),
-    journal_sha256: sha256(journalBytes),
+    tokens: {
+      source: 'acp_budget_notice',
+      session_tokens_before: sessionTokensBefore,
+      session_tokens_after: sessionTokensAfter,
+      total_tokens: sessionTokensAfter - sessionTokensBefore,
+    },
+    journal_sha256: await journalDigest(journalPath),
+    refusal_kind: response?.error?.data?.nanoError?.kind ?? null,
+    ...extra,
   };
 }
 
-async function forkSession(home, sessionId) {
-  const output = spawnSync(binary, ['session', 'fork', sessionId], {
-    encoding: 'utf8',
-    windowsHide: true,
-    env: { ...process.env, NANO_HOME: home },
-  });
-  if (output.status !== 0) throw new Error(`session fork failed: ${output.stderr || output.stdout}`);
-  const result = JSON.parse(output.stdout.trim());
-  if (result.parent_digest_before !== result.parent_digest_after) throw new Error('session fork mutated its parent');
-  return result;
-}
-
-async function createResumeParent(home, workspace, keys, runDir, project, agent) {
-  const script = join(runDir, `resume-parent-${project}-${agent}.jsonl`);
-  const random = seededRandom(`resume-parent:${project}:${agent}`);
-  await writeScript(script, [textDirective('resume parent established', random)]);
-  const { acp, sessionId, fingerprint } = await openSession(home, workspace, keys, script, project, agent, 'fresh');
-  const response = await acp.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Establish the deterministic parent transcript.' }] });
-  if (!response.result || !fingerprint) throw new Error(`resume parent setup failed: ${JSON.stringify(response)}`);
-  await acp.close();
-  return { sessionId, fingerprint, fork: await forkSession(home, sessionId) };
-}
-
-async function measureMode(mode, home, workspace, keys, queries, runDir, binarySha) {
+async function measureFresh(home, workspace, keys, queries, runDir) {
   const rows = [];
-  const memoryRows = (await readFile(join(home, 'memory.jsonl'), 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  const seededIds = new Set(memoryRows.flatMap((row) => {
-    if (row?.op?.type === 'memory_write_fact') return [row.op.fact_id];
-    if (row?.op?.type === 'memory_write_decision') return [row.op.decision_id];
-    return [];
-  }));
   for (const [partition, partitionQueries] of groupQueries(queries)) {
     const [project, agent] = partition.split('\0');
-    const script = join(runDir, `${mode}-${project}-${agent}.jsonl`);
-    const random = seededRandom(`measure:${project}:${agent}`);
-    const taskScriptSha256 = await writeScript(script, partitionQueries.flatMap((query) => [
-      toolDirective('memory_recall', { query: query.text }, random),
-      textDirective(`fixture answer ${query.label}: ${query.expected_answer}`, random),
-    ]));
-    let acp;
-    let sessionId;
-    let parent = null;
-    if (mode === 'session_resume') {
-      parent = await createResumeParent(home, workspace, keys, runDir, project, agent);
-      acp = spawnHost(home, workspace, script);
-      const initialized = await acp.request('initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } } });
-      if (!initialized.result) throw new Error(`resume initialize refused: ${JSON.stringify(initialized)}`);
-      const loaded = await acp.signed(keys, 'session/load', {
-        strategy: 'session_resume',
-        sessionId: parent.sessionId,
-        fingerprint: parent.fingerprint,
-        cwd: workspace,
-        project,
-        agent,
-      });
-      if (!loaded.result) throw new Error(`session/load refused: ${JSON.stringify(loaded)} ${acp.stderr}`);
-      sessionId = parent.sessionId;
-      const driftHost = spawnHost(home, workspace, join(runDir, `resume-parent-${project}-${agent}.jsonl`));
-      const driftInit = await driftHost.request('initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } } });
-      if (!driftInit.result) throw new Error(`drift initialize refused: ${JSON.stringify(driftInit)}`);
-      const drift = await driftHost.signed(keys, 'session/load', {
-        strategy: 'session_resume', sessionId, fingerprint: '0'.repeat(64), cwd: workspace, project, agent,
-      });
-      const refusalKind = drift?.error?.data?.nanoError?.kind ?? null;
-      rows.push({
-        schema: 'wayland.nano.continuity-probe/v1', mode, seed, probe_kind: 'drift_refusal',
-        label: `drift-${project}-${agent}`, project, agent_id: agent,
-        quality_pass: refusalKind === 'resume_drift', refusal_kind: refusalKind,
-        silent_fallback: Boolean(drift.result), latency_ms: 0, tokens: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
-        journal_sha256: sha256(await readFile(join(home, 'sessions', `${sessionId}.jsonl`))),
-        fork: parent.fork,
-      });
-      await driftHost.close();
-    } else {
-      ({ acp, sessionId } = await openSession(home, workspace, keys, script, project, agent, mode));
-    }
+    const random = seededRandom(`measure:fresh:${project}:${agent}`);
+    const script = join(runDir, `fresh-${project}-${agent}.jsonl`);
+    const taskScriptSha256 = await writeScript(script, partitionQueries.map((query) =>
+      assertRequestDirective(query, 'fresh', false, random)));
+    const { acp, sessionId } = await openActivatedSession(
+      home, workspace, keys, script, project, agent, 'fresh');
     const journalPath = join(home, 'sessions', `${sessionId}.jsonl`);
     for (const query of partitionQueries) {
-      const row = await runPrompt(acp, sessionId, query, mode, journalPath, seededIds, taskScriptSha256);
-      row.binary_sha256 = binarySha;
-      rows.push(row);
+      rows.push(await runCausalPrompt(acp, sessionId, query, 'fresh', journalPath, taskScriptSha256, {
+        request_assertion: 'absent',
+        expect_continuity: false,
+        persistent: false,
+        activation_admitted: true,
+        memory_seeded: false,
+      }));
+    }
+    await acp.close();
+  }
+  return rows;
+}
+
+async function measureSessionResume(home, workspace, keys, queries, runDir) {
+  const rows = [];
+  for (const [partition, partitionQueries] of groupQueries(queries)) {
+    const [project, agent] = partition.split('\0');
+    const parentScript = join(runDir, `resume-parent-${project}-${agent}.jsonl`);
+    const parentRandom = seededRandom(`resume-parent:${project}:${agent}`);
+    await writeScript(parentScript, partitionQueries.map((query) =>
+      textDirective(query.expected_answer, parentRandom)));
+    const parent = await openActivatedSession(home, workspace, keys, parentScript, project, agent, 'fresh');
+    for (const query of partitionQueries) {
+      const response = await parent.acp.request('session/prompt', {
+        sessionId: parent.sessionId,
+        prompt: [{ type: 'text', text: query.text }],
+      });
+      if (!response.result) throw new Error(`resume parent prompt failed: ${JSON.stringify(response)}`);
+    }
+    const forkResponse = await parent.acp.request('_wayland/session/fork', { sessionId: parent.sessionId });
+    const fork = forkResponse.result;
+    if (!fork?.child_session_id || !fork?.resume_fingerprint || fork.parent_digest_before !== fork.parent_digest_after) {
+      throw new Error(`activated fork failed: ${JSON.stringify(forkResponse)} ${parent.acp.stderr}`);
+    }
+    await parent.acp.close();
+
+    const script = join(runDir, `session-resume-${project}-${agent}.jsonl`);
+    const random = seededRandom(`measure:session-resume:${project}:${agent}`);
+    const taskScriptSha256 = await writeScript(script, partitionQueries.map((query) =>
+      assertRequestDirective(query, 'session_resume', true, random)));
+    const acp = spawnHost(home, workspace, script);
+    await initializeHost(acp);
+    const drift = await acp.signed(keys, 'session/load', {
+      strategy: 'session_resume', sessionId: fork.child_session_id,
+      fingerprint: '0'.repeat(64), cwd: workspace, project, agent,
+    });
+    const refusalKind = drift?.error?.data?.nanoError?.kind ?? null;
+    rows.push({
+      schema: 'wayland.nano.continuity-probe/v1', mode: 'session_resume', seed,
+      probe_kind: 'drift_refusal', label: `drift-${project}-${agent}`, project, agent_id: agent,
+      quality_pass: refusalKind === 'resume_drift', refusal_kind: refusalKind,
+      silent_fallback: Boolean(drift.result), latency_ms: 0,
+      tokens: { source: 'acp_budget_notice', session_tokens_before: 0, session_tokens_after: 0, total_tokens: 0 },
+      journal_sha256: await journalDigest(join(home, 'sessions', `${fork.child_session_id}.jsonl`)),
+      fork_child_session_id: fork.child_session_id,
+    });
+    const loaded = await acp.signed(keys, 'session/load', {
+      strategy: 'session_resume', sessionId: fork.child_session_id,
+      fingerprint: fork.resume_fingerprint, cwd: workspace, project, agent,
+    });
+    if (!loaded.result) throw new Error(`fork child load refused: ${JSON.stringify(loaded)} ${acp.stderr}`);
+    const journalPath = join(home, 'sessions', `${fork.child_session_id}.jsonl`);
+    for (const query of partitionQueries) {
+      rows.push(await runCausalPrompt(acp, fork.child_session_id, query, 'session_resume', journalPath, taskScriptSha256, {
+        request_assertion: 'present',
+        expect_continuity: true,
+        persistent: true,
+        activation_admitted: true,
+        memory_seeded: false,
+        loaded_session_id: fork.child_session_id,
+        fork_child_session_id: fork.child_session_id,
+      }));
+    }
+    await acp.close();
+  }
+  return rows;
+}
+
+async function measureMemoryRecall(home, workspace, keys, queries, runDir) {
+  const rows = [];
+  for (const [partition, partitionQueries] of groupQueries(queries)) {
+    const [project, agent] = partition.split('\0');
+    const script = join(runDir, `memory-recall-${project}-${agent}.jsonl`);
+    const random = seededRandom(`measure:memory-recall:${project}:${agent}`);
+    const taskScriptSha256 = await writeScript(script, partitionQueries.map((query) =>
+      assertRequestDirective(query, 'memory_recall', true, random)));
+    const { acp, sessionId } = await openActivatedSession(
+      home, workspace, keys, script, project, agent, 'memory_recall');
+    const journalPath = join(home, 'sessions', `${sessionId}.jsonl`);
+    for (const query of partitionQueries) {
+      rows.push(await runCausalPrompt(acp, sessionId, query, 'memory_recall', journalPath, taskScriptSha256, {
+        request_assertion: 'present',
+        expect_continuity: true,
+        persistent: true,
+        activation_admitted: true,
+        memory_seeded: true,
+      }));
     }
     await acp.close();
   }
@@ -608,7 +662,7 @@ const fixtureBytes = await readFile(fixturePath);
 const fixture = JSON.parse(fixtureBytes);
 const fixtureRows = new Map([
   ...fixture.facts.map((row) => [row.id, `${row.subject} ${row.predicate} ${row.object}`]),
-  ...fixture.decisions.map((row) => [row.id, `${row.summary}: ${row.how_to_apply}`]),
+  ...fixture.decisions.map((row) => [row.id, `${row.summary} ${row.why} ${row.how_to_apply}`]),
 ]);
 for (const query of fixture.queries) {
   query.expected_answer = query.relevant_ids.map((id) => fixtureRows.get(id)).join(' | ');
@@ -623,9 +677,19 @@ const ndjsonPath = join(runDir, 'continuity.ndjson');
 const allRows = [];
 for (const mode of modes) {
   const home = join(runDir, `home-${mode}`);
-  const keys = await bootstrapHome(home, artifact);
-  await seedCorpus(home, workspace, keys, fixture, runDir);
-  const rows = await measureMode(mode, home, workspace, keys, queries, runDir, artifact.executable_sha256);
+  await mkdir(home, { recursive: true });
+  const keys = await bootstrapHome(home, artifact, mode === 'memory_recall');
+  let rows;
+  if (mode === 'fresh') {
+    rows = await measureFresh(home, workspace, keys, queries, runDir);
+  } else {
+    if (mode === 'memory_recall') {
+      await seedCorpus(home, workspace, keys, fixture, runDir);
+      rows = await measureMemoryRecall(home, workspace, keys, queries, runDir);
+    } else {
+      rows = await measureSessionResume(home, workspace, keys, queries, runDir);
+    }
+  }
   for (const row of rows) {
     row.binary_sha256 = artifact.executable_sha256;
     row.budget_sha256 = budgetSha;
@@ -647,6 +711,12 @@ const manifest = {
   fixture: { path: relative(repo, fixturePath).replaceAll('\\', '/'), sha256: sha256(fixtureBytes), labels_modified: false },
   budgets: { path: 'scripts/soak/continuity-budgets.json', sha256: budgetSha },
   harness: { path: 'scripts/soak/continuity.mjs', sha256: harnessSha, hash_normalization: 'crlf-to-lf' },
+  causal_oracles: {
+    fresh: 'nonpersistent request asserts fixture answer absent',
+    session_resume: 'activated fork child request asserts replayed answer present',
+    memory_recall: 'admitted automatic recall request asserts retrieved answer present',
+    token_source: 'ACP _wayland/session/budget notifications',
+  },
   ndjson: { path: relative(evidenceRoot, ndjsonPath).replaceAll('\\', '/'), sha256: sha256(ndjsonBytes), rows: allRows.length },
   modes,
   completed_at: iso(),
