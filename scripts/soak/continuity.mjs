@@ -728,6 +728,7 @@ for (const mode of modes) {
     row.binary_sha256 = artifact.executable_sha256;
     row.budget_sha256 = budgetSha;
     row.harness_sha256 = harnessSha;
+    row.task_battery_sha256 = taskBatterySha256;
     await appendFile(ndjsonPath, `${canonical(row)}\n`);
     allRows.push(row);
   }
