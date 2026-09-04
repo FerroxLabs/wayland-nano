@@ -1,6 +1,7 @@
 ---
 phase: 03-runtime-integrated-scoped-continuity
 plan: 04
+base_sha: 628901ab28409499ce0ac15e0264178e08c18af1
 subsystem: memory-migration
 tags: [memory, migration, journal, durability, quarantine]
 status: complete
@@ -27,7 +28,11 @@ key-files:
   modified:
     - crates/nano-cli/src/main.rs
     - crates/nano-cli/tests/activation_quarantine.rs
+    - crates/nano-memory/src/lib.rs
+    - crates/nano-memory/src/store.rs
     - crates/nano-memory/tests/corrective_regressions.rs
+    - .planning/phases/03-runtime-integrated-scoped-continuity/03-04-PLAN.md
+    - .planning/phases/03-runtime-integrated-scoped-continuity/03-VALIDATION.md
 key-decisions:
   - Migrate the quarantined Markdown store through an explicit operator command.
   - Treat every legacy entry as ModelInference because its original source is ambiguous.
@@ -69,10 +74,13 @@ The migration computes the deterministic contradiction outcome in an isolated st
 | Corrective GREEN | `9a5e149` | Closed all eight authority and evidence gaps. |
 | Recovery RED | `9641225` | Isolated forged resolver outcome, reserved op-id collision, mixed partial retry, and real child-process kill behavior. |
 | Recovery GREEN | `c3cb4c6` | Recomputed recovery at the journal position, strictly scanned legacy entries, preflighted op ids, and added the SIGKILL fault point. |
+| Transaction RED | `6305b45` | Exposed fully receipted outcome forgery, foreign/reserved receipt identities, and live-writer journal mutation. |
+| Transaction GREEN | `fe3dad6` | Moved migration snapshot, resolver, append, rebuild, and completion under canonical nano-memory writer ownership. |
+| Governance | `86aa734` | Recorded the approved store/lib transaction ownership and wave serialization. |
 
 ## Verification
 
-- `cargo test -p nano-cli --test memory_migration --test activation_quarantine -- --test-threads=1`: 25 passed.
+- `cargo test -p nano-cli --test memory_migration --test activation_quarantine -- --test-threads=1`: 29 passed.
 - `cargo test -p nano-cli --bin wayland-nano memory_migrate::tests -- --test-threads=1`: strict receipt/failure round-trip, unknown-field rejection, and canonical legacy filename grammar passed.
 - `cargo test -p nano-memory --test corrective_regressions --test durability --test mem_sec_cards -- --test-threads=1`: 21 passed, including the child-process kill-mid-write test and all six mem-sec cards plus summary.
 - `cargo test -p nano-session --test activation_legacy_replay -- --test-threads=1`: 1 passed; the legacy replay target was unchanged.
@@ -125,9 +133,17 @@ The migration computes the deterministic contradiction outcome in an isolated st
 - **Files modified:** `crates/nano-cli/src/memory_migrate.rs`, `crates/nano-cli/tests/memory_migration.rs`
 - **Commits:** `9641225`, `c3cb4c6`
 
+**6. [Rule 2 - Missing critical transaction boundary] Serialized migration under canonical store ownership**
+
+- **Found during:** Final independent transaction audit
+- **Issue:** Fully receipted existing migration writes were trusted without resolver recomputation, matching receipts could use foreign envelope ids, and the CLI appended journal rows before discovering a live canonical writer lock.
+- **Fix:** Add one nano-memory transaction API that acquires `memory.memory.lock` before journal inspection and retains it through exact-prefix recomputation of every existing migration write, exact receipt/id validation, journal-first appends, projection replacement, and completion. The CLI prepares candidates and renders receipts but never opens a bare journal writer.
+- **Files modified:** `crates/nano-memory/src/store.rs`, `crates/nano-memory/src/lib.rs`, `crates/nano-cli/src/memory_migrate.rs`, `crates/nano-cli/tests/memory_migration.rs`
+- **Commits:** `6305b45`, `fe3dad6`
+
 ## Desktop Generator Isolation
 
-The final local gate sets `NANO_ERROR_TABLE_DESKTOP_DIR` to a nonexistent path inside this worktree. The generator therefore omits only its optional sibling-Desktop mirrors, which belong to another repository/branch, while continuing to require and compare the Nano and shared canonical error tables. This is the documented generator isolation seam, not a skipped required target.
+The final local gate command is `CARGO_TARGET_DIR=F:/CargoTarget/wayland-nano-p3-migration-final NANO_ERROR_TABLE_DESKTOP_DIR=<worktree>/.tmp-desktop-absent just gate-all`. The lane-specific F-drive target prevents another worktree from replacing the test executable. The Desktop override omits only optional sibling-repository mirrors while continuing to require and compare the Nano and shared canonical error tables.
 
 ## Known Stubs
 
@@ -135,4 +151,4 @@ None.
 
 ## Self-Check: PASSED
 
-All created files and thirteen implementation/test commits exist. The implementation remains within the plan's five source/test paths plus this summary, and no tracked file was deleted.
+All created files and fifteen implementation/test commits exist. The implementation and approved ownership amendment remain within 03-04 scope, and no tracked file was deleted.
