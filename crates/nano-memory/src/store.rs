@@ -7,6 +7,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+const LEGACY_MIGRATION_COMPLETION_ID: &str = "legacy-migration-complete";
+
 pub struct MemoryStore {
     db: Connection,
     journal: JournalWriter,
@@ -356,6 +358,7 @@ impl MemoryStore {
         }
     }
     fn ensure_id_available(&self, id: &str) -> MemoryResult<()> {
+        validate_memory_record_id(id)?;
         let exists: i64 = self.db.query_row("SELECT EXISTS(SELECT 1 FROM facts WHERE id=?1 UNION SELECT 1 FROM episodes WHERE id=?1 UNION SELECT 1 FROM decisions WHERE id=?1 UNION SELECT 1 FROM procedures WHERE id=?1)",[id],|r|r.get(0))?;
         if exists != 0 {
             Err(MemoryError::InvalidValue {
@@ -852,6 +855,473 @@ fn next_op_id(path: &Path) -> MemoryResult<u64> {
         .unwrap_or(0))
 }
 
+#[derive(Debug, Clone)]
+pub struct LegacyMigrationWrite {
+    pub fact: FactWrite,
+    pub session_id: String,
+    pub receipt_message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LegacyMigrationCompletion {
+    pub agent_id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyMigrationResult {
+    pub ingested_ids: Vec<String>,
+    pub skipped_ids: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum LegacyMigrationError {
+    Memory(MemoryError),
+    AlreadyCompleted,
+    CompletionCollision,
+    InvalidJournal(String),
+}
+
+impl std::fmt::Display for LegacyMigrationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Memory(error) => write!(formatter, "{error}"),
+            Self::AlreadyCompleted => formatter.write_str("legacy migration already completed"),
+            Self::CompletionCollision => {
+                formatter.write_str("legacy migration completion collision")
+            }
+            Self::InvalidJournal(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for LegacyMigrationError {}
+
+impl From<MemoryError> for LegacyMigrationError {
+    fn from(error: MemoryError) -> Self {
+        Self::Memory(error)
+    }
+}
+
+impl From<std::io::Error> for LegacyMigrationError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Memory(MemoryError::Journal(error))
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "migration binds path, policy, identity, candidate, completion, and fault authorities independently"
+)]
+pub fn migrate_legacy_facts_with_fault_injection<F>(
+    nano_home: &Path,
+    journal_path: &Path,
+    policy: MemoryPolicy,
+    active_agent: &str,
+    configured_agents: ConfiguredAgents,
+    writes: &[LegacyMigrationWrite],
+    completion: Option<&LegacyMigrationCompletion>,
+    fault: F,
+) -> Result<LegacyMigrationResult, LegacyMigrationError>
+where
+    F: FnOnce() -> MemoryResult<()>,
+{
+    reject_network_path(nano_home)?;
+    validate_policy(&policy)?;
+    validate_active_agent(Some(active_agent), Some(&configured_agents))?;
+    for write in writes {
+        validate_partition(&write.fact.project, &write.fact.agent_id)?;
+        validate_recovery_partition(
+            &write.fact.project,
+            &write.fact.agent_id,
+            Some(&write.session_id),
+        )?;
+        if !configured_agents.contains(&write.fact.agent_id) {
+            return Err(MemoryError::UnconfiguredAgent(write.fact.agent_id.clone()).into());
+        }
+        if write.fact.source_trust != SourceTrust::ModelInference {
+            return Err(LegacyMigrationError::InvalidJournal(format!(
+                "legacy migration candidate {} is not ModelInference",
+                write.fact.id
+            )));
+        }
+    }
+
+    let db_path = memory_db_path(nano_home);
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let _target_lock = FileLock::try_acquire(&db_path.with_extension("memory.lock"))
+        .map_err(|error| MemoryError::Contention(error.to_string()))?;
+    let snapshot = read_journal(journal_path)?.envelopes;
+    for envelope in &snapshot {
+        if memory_write_record_id(&envelope.op) == Some(LEGACY_MIGRATION_COMPLETION_ID) {
+            return Err(LegacyMigrationError::InvalidJournal(
+                "legacy migration completion id is reserved from memory writes".into(),
+            ));
+        }
+    }
+    validate_migration_completion(&snapshot, completion)?;
+
+    let candidates = writes
+        .iter()
+        .map(|write| (write.fact.id.as_str(), write))
+        .collect::<HashMap<_, _>>();
+    if candidates.len() != writes.len() {
+        return Err(LegacyMigrationError::InvalidJournal(
+            "duplicate legacy migration candidate id".into(),
+        ));
+    }
+
+    for candidate in writes {
+        let canonical_id = migration_write_envelope_id(&candidate.fact.id);
+        let matching = snapshot
+            .iter()
+            .filter(|row| {
+                matches!(&row.op, Op::MemoryWriteFact { fact_id, .. }
+                    if fact_id == &candidate.fact.id)
+            })
+            .collect::<Vec<_>>();
+        if matching.len() > 1 || matching.first().is_some_and(|row| row.id != canonical_id) {
+            return Err(LegacyMigrationError::InvalidJournal(format!(
+                "candidate fact {} has noncanonical write authority",
+                candidate.fact.id
+            )));
+        }
+    }
+
+    let mut existing = HashMap::<String, (usize, &LegacyMigrationWrite, bool)>::new();
+    for (index, envelope) in snapshot.iter().enumerate() {
+        if !envelope.id.starts_with("legacy-migration-write-") {
+            continue;
+        }
+        let fact_id = match &envelope.op {
+            Op::MemoryWriteFact { fact_id, .. } => fact_id,
+            _ => {
+                return Err(LegacyMigrationError::InvalidJournal(format!(
+                    "reserved migration write id {} carries another op",
+                    envelope.id
+                )));
+            }
+        };
+        let candidate = candidates.get(fact_id.as_str()).copied().ok_or_else(|| {
+            LegacyMigrationError::InvalidJournal(format!(
+                "orphaned existing migration write {fact_id}"
+            ))
+        })?;
+        let expected = resolve_legacy_write_at_prefix(
+            &db_path,
+            &snapshot[..index],
+            &policy,
+            &configured_agents,
+            candidate,
+        )?;
+        if envelope.id != expected.id || envelope.op != expected.op {
+            return Err(LegacyMigrationError::InvalidJournal(format!(
+                "resolver outcome mismatch for existing migration write {fact_id}"
+            )));
+        }
+        let receipts = snapshot
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| migration_receipt_targets(row, candidate))
+            .collect::<Vec<_>>();
+        if receipts.len() > 1
+            || receipts
+                .first()
+                .is_some_and(|(_, receipt)| !migration_receipt_matches(receipt, candidate))
+            || receipts
+                .first()
+                .is_some_and(|(receipt_index, _)| *receipt_index != index + 1)
+        {
+            return Err(LegacyMigrationError::InvalidJournal(format!(
+                "invalid or noncausal migration receipt for {fact_id}"
+            )));
+        }
+        if existing
+            .insert(fact_id.clone(), (index, candidate, !receipts.is_empty()))
+            .is_some()
+        {
+            return Err(LegacyMigrationError::InvalidJournal(format!(
+                "duplicate existing migration write {fact_id}"
+            )));
+        }
+    }
+
+    for candidate in writes {
+        let write_id = migration_write_envelope_id(&candidate.fact.id);
+        if let Some(row) = snapshot.iter().find(|row| row.id == write_id)
+            && !matches!(&row.op, Op::MemoryWriteFact { fact_id, .. } if fact_id == &candidate.fact.id)
+        {
+            return Err(LegacyMigrationError::InvalidJournal(format!(
+                "authoritative envelope id collision for {}",
+                candidate.fact.id
+            )));
+        }
+        let receipt_id = migration_receipt_envelope_id(&candidate.fact.id);
+        if let Some(row) = snapshot.iter().find(|row| row.id == receipt_id)
+            && !migration_receipt_matches(row, candidate)
+        {
+            return Err(LegacyMigrationError::InvalidJournal(format!(
+                "invalid reserved migration receipt for {}",
+                candidate.fact.id
+            )));
+        }
+        let targeted = snapshot
+            .iter()
+            .filter(|row| migration_receipt_targets(row, candidate))
+            .collect::<Vec<_>>();
+        if targeted.len() > 1
+            || targeted
+                .first()
+                .is_some_and(|row| !migration_receipt_matches(row, candidate))
+        {
+            return Err(LegacyMigrationError::InvalidJournal(format!(
+                "invalid migration receipt identity for {}",
+                candidate.fact.id
+            )));
+        }
+    }
+
+    let unreceipted = existing
+        .iter()
+        .filter(|(_, (_, _, receipted))| !receipted)
+        .collect::<Vec<_>>();
+    if unreceipted.len() > 1 {
+        return Err(LegacyMigrationError::InvalidJournal(
+            "multiple unreceipted migration writes".into(),
+        ));
+    }
+    let torn_fact_id = if let Some((fact_id, (index, _, _))) = unreceipted.first() {
+        if *index + 1 != snapshot.len() {
+            return Err(LegacyMigrationError::InvalidJournal(format!(
+                "unreceipted migration write {fact_id} is not the journal tail"
+            )));
+        }
+        Some((*fact_id).clone())
+    } else {
+        None
+    };
+
+    let mut working = snapshot;
+    let mut writer = JournalWriter::open(journal_path)?;
+    let mut ingested_ids = Vec::new();
+    let mut skipped_ids = Vec::new();
+    if let Some(fact_id) = torn_fact_id {
+        let candidate = candidates[fact_id.as_str()];
+        let receipt = migration_receipt_envelope(candidate);
+        if !writer.append(&receipt)? {
+            return Err(LegacyMigrationError::InvalidJournal(format!(
+                "missing receipt for {fact_id} could not be repaired"
+            )));
+        }
+        working.push(receipt);
+        skipped_ids.push(fact_id);
+    }
+    for candidate in writes {
+        if existing.contains_key(&candidate.fact.id) {
+            if !skipped_ids.contains(&candidate.fact.id) {
+                skipped_ids.push(candidate.fact.id.clone());
+            }
+            continue;
+        }
+        let authoritative = resolve_legacy_write_at_prefix(
+            &db_path,
+            &working,
+            &policy,
+            &configured_agents,
+            candidate,
+        )?;
+        if !writer.append(&authoritative)? {
+            return Err(LegacyMigrationError::InvalidJournal(format!(
+                "authoritative envelope id collision for {}",
+                candidate.fact.id
+            )));
+        }
+        working.push(authoritative);
+        let receipt = migration_receipt_envelope(candidate);
+        if !writer.append(&receipt)? {
+            return Err(LegacyMigrationError::InvalidJournal(format!(
+                "migration receipt id collision for {}",
+                candidate.fact.id
+            )));
+        }
+        working.push(receipt);
+        ingested_ids.push(candidate.fact.id.clone());
+    }
+    drop(writer);
+    fault()?;
+    rebuild_from_journals_locked(
+        &db_path,
+        std::slice::from_ref(&journal_path.to_path_buf()),
+        policy,
+        configured_agents,
+    )?;
+    if let Some(completion) = completion {
+        let envelope = migration_completion_envelope(completion);
+        let appended = JournalWriter::open(journal_path)?.append(&envelope)?;
+        if !appended {
+            let exact = read_journal(journal_path)?
+                .envelopes
+                .into_iter()
+                .any(|row| row == envelope);
+            if !exact {
+                return Err(LegacyMigrationError::CompletionCollision);
+            }
+        }
+    }
+    Ok(LegacyMigrationResult {
+        ingested_ids,
+        skipped_ids,
+    })
+}
+
+fn migration_write_envelope_id(fact_id: &str) -> String {
+    format!("legacy-migration-write-{fact_id}")
+}
+
+fn migration_receipt_envelope_id(fact_id: &str) -> String {
+    format!("legacy-migration-receipt-{fact_id}")
+}
+
+fn migration_receipt_targets(envelope: &OpEnvelope, write: &LegacyMigrationWrite) -> bool {
+    matches!(&envelope.op, Op::MemoryWriteReceipt { write_id, agent_id, .. }
+        if write_id == &write.fact.id && agent_id == &write.fact.agent_id)
+}
+
+fn migration_receipt_matches(envelope: &OpEnvelope, write: &LegacyMigrationWrite) -> bool {
+    envelope.id == migration_receipt_envelope_id(&write.fact.id)
+        && matches!(&envelope.op, Op::MemoryWriteReceipt { write_id, agent_id, message }
+            if write_id == &write.fact.id
+                && agent_id == &write.fact.agent_id
+                && message == &write.receipt_message)
+}
+
+fn migration_receipt_envelope(write: &LegacyMigrationWrite) -> OpEnvelope {
+    OpEnvelope::new(
+        migration_receipt_envelope_id(&write.fact.id),
+        now(),
+        Op::MemoryWriteReceipt {
+            write_id: write.fact.id.clone(),
+            agent_id: write.fact.agent_id.clone(),
+            message: write.receipt_message.clone(),
+        },
+    )
+}
+
+fn migration_completion_envelope(completion: &LegacyMigrationCompletion) -> OpEnvelope {
+    OpEnvelope::new(
+        LEGACY_MIGRATION_COMPLETION_ID,
+        now(),
+        Op::MemoryWriteReceipt {
+            write_id: LEGACY_MIGRATION_COMPLETION_ID.into(),
+            agent_id: completion.agent_id.clone(),
+            message: completion.message.clone(),
+        },
+    )
+}
+
+fn validate_migration_completion(
+    snapshot: &[OpEnvelope],
+    completion: Option<&LegacyMigrationCompletion>,
+) -> Result<(), LegacyMigrationError> {
+    let Some(row) = snapshot
+        .iter()
+        .find(|row| row.id == LEGACY_MIGRATION_COMPLETION_ID)
+    else {
+        if snapshot.iter().any(|row| matches!(&row.op, Op::MemoryWriteReceipt { write_id, .. } if write_id == LEGACY_MIGRATION_COMPLETION_ID)) {
+            return Err(LegacyMigrationError::CompletionCollision);
+        }
+        return Ok(());
+    };
+    let Some(completion) = completion else {
+        return Err(LegacyMigrationError::AlreadyCompleted);
+    };
+    if row.op == migration_completion_envelope(completion).op {
+        Err(LegacyMigrationError::AlreadyCompleted)
+    } else {
+        Err(LegacyMigrationError::CompletionCollision)
+    }
+}
+
+fn resolve_legacy_write_at_prefix(
+    db_path: &Path,
+    prefix: &[OpEnvelope],
+    policy: &MemoryPolicy,
+    configured_agents: &ConfiguredAgents,
+    write: &LegacyMigrationWrite,
+) -> Result<OpEnvelope, LegacyMigrationError> {
+    let suffix = format!("migration-resolve-{}-{}", std::process::id(), now());
+    let scratch_db = db_path.with_extension(format!("{suffix}.db"));
+    let prefix_journal = db_path.with_extension(format!("{suffix}.prefix.jsonl"));
+    let output_journal = db_path.with_extension(format!("{suffix}.output.jsonl"));
+    let scratch = MigrationScratch::new(scratch_db, prefix_journal, output_journal);
+    let mut prefix_writer = JournalWriter::open(&scratch.prefix_journal)?;
+    for envelope in prefix {
+        prefix_writer.append(envelope)?;
+    }
+    drop(prefix_writer);
+    rebuild_from_journals(
+        &scratch.db,
+        std::slice::from_ref(&scratch.prefix_journal),
+        policy.clone(),
+        configured_agents.clone(),
+    )?;
+    let mut store = MemoryStore::open_at(
+        &scratch.db,
+        &scratch.output_journal,
+        policy.clone(),
+        &write.fact.agent_id,
+        configured_agents.clone(),
+    )?;
+    store.commit_mediated_fact(write.fact.clone())?;
+    drop(store);
+    let mut expected = read_journal(&scratch.output_journal)?
+        .envelopes
+        .into_iter()
+        .find(|row| matches!(&row.op, Op::MemoryWriteFact { fact_id, .. } if fact_id == &write.fact.id))
+        .ok_or_else(|| {
+            LegacyMigrationError::InvalidJournal(format!(
+                "resolver emitted no write for {}",
+                write.fact.id
+            ))
+        })?;
+    expected.id = migration_write_envelope_id(&write.fact.id);
+    if let Op::MemoryWriteFact { session_id, .. } = &mut expected.op {
+        *session_id = Some(write.session_id.clone());
+    }
+    Ok(expected)
+}
+
+struct MigrationScratch {
+    db: PathBuf,
+    prefix_journal: PathBuf,
+    output_journal: PathBuf,
+}
+
+impl MigrationScratch {
+    fn new(db: PathBuf, prefix_journal: PathBuf, output_journal: PathBuf) -> Self {
+        Self {
+            db,
+            prefix_journal,
+            output_journal,
+        }
+    }
+}
+
+impl Drop for MigrationScratch {
+    fn drop(&mut self) {
+        for path in [
+            self.db.clone(),
+            self.db.with_extension("memory.lock"),
+            self.prefix_journal.clone(),
+            self.output_journal.clone(),
+        ] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 pub fn rebuild_from_journals(
     db_path: &Path,
     journals: &[PathBuf],
@@ -868,6 +1338,15 @@ pub fn rebuild_from_journals(
     // original database by even one byte.
     let _target_lock = FileLock::try_acquire(&db_path.with_extension("memory.lock"))
         .map_err(|e| MemoryError::Contention(e.to_string()))?;
+    rebuild_from_journals_locked(db_path, journals, policy, configured_agents)
+}
+
+fn rebuild_from_journals_locked(
+    db_path: &Path,
+    journals: &[PathBuf],
+    policy: MemoryPolicy,
+    configured_agents: ConfiguredAgents,
+) -> MemoryResult<()> {
     let suffix = format!("rebuild-{}", std::process::id());
     let temp_db = db_path.with_extension(format!("{suffix}.db"));
     let temp_journal = db_path.with_extension(format!("{suffix}.jsonl"));
@@ -927,6 +1406,11 @@ fn rebuild_into_sibling(
 fn replay_journals_into_store(store: &mut MemoryStore, journals: &[PathBuf]) -> MemoryResult<()> {
     for path in journals {
         let report = read_journal(path)?;
+        for envelope in &report.envelopes {
+            if let Some(id) = memory_write_record_id(&envelope.op) {
+                validate_memory_record_id(id)?;
+            }
+        }
         let receipts: HashSet<(String, String)> = report
             .envelopes
             .iter()
@@ -1102,6 +1586,27 @@ fn replay_journals_into_store(store: &mut MemoryStore, journals: &[PathBuf]) -> 
         }
     }
     Ok(())
+}
+
+fn memory_write_record_id(op: &Op) -> Option<&str> {
+    match op {
+        Op::MemoryWriteFact { fact_id, .. } => Some(fact_id),
+        Op::MemoryWriteDecision { decision_id, .. } => Some(decision_id),
+        Op::MemoryWriteEpisode { episode_id, .. } => Some(episode_id),
+        Op::MemoryWriteProcedure { procedure_id, .. } => Some(procedure_id),
+        _ => None,
+    }
+}
+
+fn validate_memory_record_id(id: &str) -> MemoryResult<()> {
+    if id == LEGACY_MIGRATION_COMPLETION_ID {
+        Err(MemoryError::InvalidValue {
+            field: "memory id",
+            value: id.into(),
+        })
+    } else {
+        Ok(())
+    }
 }
 
 fn set_recovery_session(policy: &mut MemoryPolicy, session_id: Option<String>) {

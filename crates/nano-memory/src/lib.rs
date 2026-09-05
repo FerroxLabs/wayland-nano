@@ -10,7 +10,10 @@ mod types;
 pub use embed::{EMBEDDING_DIM, Embedder, HashedEmbedder};
 pub use mediation::{MemoryProposal, MemoryReceipt, ProposalKind};
 pub use resolver::{ContradictionResolution, ResolverCandidate, resolve_contradiction};
-pub use store::{MemoryStore, rebuild_from_journals};
+pub use store::{
+    LegacyMigrationCompletion, LegacyMigrationError, LegacyMigrationResult, LegacyMigrationWrite,
+    MemoryStore, migrate_legacy_facts_with_fault_injection, rebuild_from_journals,
+};
 pub use types::{
     AgentScope, ConfiguredAgents, DecisionWrite, DeletionRule, EmbedderChoice, EpisodeWrite,
     FactState, FactWrite, MemoryError, MemoryPolicy, MemoryResult, ProcedureWrite, ReadScope,

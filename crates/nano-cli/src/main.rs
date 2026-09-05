@@ -2,6 +2,7 @@
 
 mod doctor;
 mod host_mode;
+mod memory_migrate;
 
 use nano_cli::acp_mode;
 
@@ -115,6 +116,12 @@ fn main() {
             let mut out = std::io::stdout();
             nano_cli::activation::run_admin_command(&home, &args[2..], &mut out)
         }
+        Some("memory") => {
+            let home = nano_home();
+            let mut out = std::io::stdout();
+            let mut err = std::io::stderr();
+            memory_migrate::run(&home, &args[2..], &mut out, &mut err)
+        }
         // C11: session fork — clone a journal prefix under the SessionGuard.
         Some("session") if args.get(2).map(String::as_str) == Some("fork") => {
             let home = nano_home();
@@ -187,7 +194,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: wayland-nano doctor | protocol-host | acp-host | auth login|status|logout <server> | exec | session fork | sessions | rules | plugin | verify | goal | --version"
+                "usage: wayland-nano doctor | protocol-host | acp-host | auth login|status|logout <server> | exec | session fork | sessions | rules | plugin | verify | goal | memory migrate | --version"
             );
             2
         }

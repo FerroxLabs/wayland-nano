@@ -711,6 +711,38 @@ mod tests {
         crate::memory_policy::resolve(home).unwrap()
     }
 
+    async fn recall_for_identity(
+        home: &Path,
+        project: &str,
+        agent: &str,
+        policy: &MemoryPolicy,
+        configured: &ConfiguredAgents,
+    ) -> ToolOutcome {
+        let identity = crate::activation::AdmittedMemoryIdentity::test_only(project, agent);
+        let coordinator = Arc::new(
+            JournalCoordinator::open(home.join(format!("runtime-{project}-{agent}-session.jsonl")))
+                .unwrap(),
+        );
+        let seam = MemorySeam::open(
+            home,
+            "runtime-session",
+            identity,
+            policy,
+            configured,
+            true,
+            nano_activation::admission::AdmittedFallback::None,
+            coordinator,
+        )
+        .unwrap();
+        MemorySeamExecutor::new(&seam, &NoInner)
+            .execute(&ToolCall {
+                id: format!("recall-{project}-{agent}"),
+                name: "memory_recall".into(),
+                arguments: serde_json::json!({"query":"migrated seam sentinel"}),
+            })
+            .await
+    }
+
     #[tokio::test]
     async fn every_model_proposal_overwrites_foreign_partition_before_mediation() {
         let (_temp, seam) = seam();
@@ -863,6 +895,71 @@ mod tests {
         assert!(block.contains("needle own"));
         assert!(!block.contains("project leak"));
         assert!(!block.contains("agent leak"));
+    }
+
+    #[tokio::test]
+    async fn migrated_fact_is_visible_through_the_real_scoped_runtime_seam() {
+        let temp = tempfile::tempdir().unwrap();
+        let configured = ConfiguredAgents::try_from_ids(["bot-b".to_owned()]).unwrap();
+        let policy = MemoryPolicy::default();
+        let write = nano_memory::LegacyMigrationWrite {
+            fact: FactWrite {
+                id: "legacy-runtime-seam-proof".into(),
+                subject: "legacy-memory-entry".into(),
+                predicate: "runtime-seam-proof".into(),
+                object: "migrated seam sentinel".into(),
+                confidence: 1.0,
+                source_episode: None,
+                valid_from: "2026-01-02T03:04:05Z".into(),
+                valid_to: None,
+                source_trust: nano_memory::SourceTrust::ModelInference,
+                project: "project-a".into(),
+                agent_id: "main".into(),
+            },
+            session_id: "migration-session".into(),
+            receipt_message: "migrated runtime seam proof".into(),
+        };
+        nano_memory::migrate_legacy_facts_with_fault_injection(
+            temp.path(),
+            &temp.path().join("memory.jsonl"),
+            policy.clone(),
+            "main",
+            configured.clone(),
+            &[write],
+            None,
+            || Ok(()),
+        )
+        .unwrap();
+
+        let own = recall_for_identity(temp.path(), "project-a", "main", &policy, &configured).await;
+        assert!(own.ok, "{}", own.output);
+        assert!(
+            own.output.contains("migrated seam sentinel"),
+            "{}",
+            own.output
+        );
+
+        for (project, agent) in [("project-b", "main"), ("project-a", "bot-b")] {
+            let foreign =
+                recall_for_identity(temp.path(), project, agent, &policy, &configured).await;
+            assert!(foreign.ok, "{}", foreign.output);
+            assert!(
+                !foreign.output.contains("migrated seam sentinel"),
+                "{project}/{agent}: {}",
+                foreign.output
+            );
+        }
+
+        let mut user_only = policy;
+        user_only.min_tier = nano_memory::SourceTrust::User;
+        let below_tier =
+            recall_for_identity(temp.path(), "project-a", "main", &user_only, &configured).await;
+        assert!(below_tier.ok, "{}", below_tier.output);
+        assert!(
+            !below_tier.output.contains("migrated seam sentinel"),
+            "{}",
+            below_tier.output
+        );
     }
 
     #[test]

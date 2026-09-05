@@ -1,5 +1,6 @@
 use nano_memory::*;
-use nano_session::{JournalWriter, Op, OpEnvelope};
+use nano_session::{JournalWriter, Op, OpEnvelope, read_journal};
+use serde::Deserialize;
 
 fn configured() -> ConfiguredAgents {
     ConfiguredAgents::try_from_ids(["agent-a".to_owned(), "agent-b".to_owned()]).unwrap()
@@ -497,5 +498,303 @@ fn local_temp_paths_are_accepted_and_network_forms_are_refused() {
             Ok(_) => panic!("network path unexpectedly accepted: {}", path.display()),
         };
         assert!(matches!(error, MemoryError::NetworkFilesystem));
+    }
+}
+
+#[derive(Deserialize)]
+struct RecallFixture {
+    facts: Vec<FactWrite>,
+    decisions: Vec<DecisionWrite>,
+    queries: Vec<RecallQuery>,
+}
+
+#[derive(Deserialize)]
+struct RecallQuery {
+    text: String,
+    project: String,
+    agent_id: String,
+}
+
+fn recall_fixture() -> RecallFixture {
+    serde_json::from_str(include_str!(
+        "../../../gates/fixtures/memory-retrieval-recall-v1/fixture.json"
+    ))
+    .unwrap()
+}
+
+fn fixture_query_ids(store: &MemoryStore, fixture: &RecallFixture) -> Vec<Vec<String>> {
+    fixture
+        .queries
+        .iter()
+        .map(|query| {
+            store
+                .retrieve(&RetrieveQuery {
+                    text: query.text.clone(),
+                    project: query.project.clone(),
+                    agent_id: query.agent_id.clone(),
+                    agent_scope: AgentScope::Own,
+                    limit: 10,
+                    token_budget: 4_096,
+                    min_tier: SourceTrust::ModelInference,
+                })
+                .unwrap()
+                .into_iter()
+                .map(|hit| hit.id)
+                .collect()
+        })
+        .collect()
+}
+
+fn fixture_receipts(path: &std::path::Path) -> Vec<(String, String, String)> {
+    read_journal(path)
+        .unwrap()
+        .envelopes
+        .into_iter()
+        .filter_map(|entry| match entry.op {
+            Op::MemoryWriteReceipt {
+                write_id,
+                agent_id,
+                message,
+            } => Some((write_id, agent_id, message)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn dedicated_journal_rebuild_matches_live_fixture_queries_and_attribution() {
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = recall_fixture();
+    let live_db = temp.path().join("live.db");
+    let journal = temp.path().join("memory.jsonl");
+    let configured_agents =
+        ConfiguredAgents::try_from_ids(["bot-a".to_owned(), "bot-b".to_owned()]).unwrap();
+    let (expected_queries, expected_facts, expected_receipts);
+    {
+        let mut live = MemoryStore::open_at(
+            &live_db,
+            &journal,
+            MemoryPolicy::default(),
+            "main",
+            configured_agents.clone(),
+        )
+        .unwrap();
+        for decision in &fixture.decisions {
+            if decision.source_trust == SourceTrust::ModelInference {
+                live.commit_proposal(MemoryProposal {
+                    kind: ProposalKind::Decision(decision.clone()),
+                })
+                .unwrap();
+            } else {
+                live.write_decision(decision.clone()).unwrap();
+            }
+        }
+        for fact in &fixture.facts {
+            if fact.source_trust == SourceTrust::ModelInference {
+                live.commit_proposal(MemoryProposal {
+                    kind: ProposalKind::Fact(fact.clone()),
+                })
+                .unwrap();
+            } else {
+                live.write_fact(fact.clone()).unwrap();
+            }
+        }
+        expected_queries = fixture_query_ids(&live, &fixture);
+        expected_facts = live.current_facts().unwrap();
+        expected_receipts = fixture_receipts(&journal);
+    }
+    assert!(!expected_receipts.is_empty(), "fixture mediation receipts");
+
+    let rebuilt_db = temp.path().join("rebuilt.db");
+    rebuild_from_journals(
+        &rebuilt_db,
+        std::slice::from_ref(&journal),
+        MemoryPolicy::default(),
+        configured_agents.clone(),
+    )
+    .unwrap();
+    let rebuilt = MemoryStore::open_at(
+        &rebuilt_db,
+        &temp.path().join("inspect.jsonl"),
+        MemoryPolicy::default(),
+        "main",
+        configured_agents,
+    )
+    .unwrap();
+
+    let rebuilt_facts = rebuilt.current_facts().unwrap();
+    assert_eq!(rebuilt_facts, expected_facts);
+    for (rebuilt, expected) in rebuilt_facts.iter().zip(&expected_facts) {
+        assert_eq!(rebuilt.id, expected.id);
+        assert_eq!(rebuilt.valid_from, expected.valid_from);
+        assert_eq!(rebuilt.valid_to, expected.valid_to);
+        assert_eq!(rebuilt.source_trust, expected.source_trust);
+        assert_eq!(rebuilt.project, expected.project);
+        assert_eq!(rebuilt.agent_id, expected.agent_id);
+    }
+    assert_eq!(fixture_query_ids(&rebuilt, &fixture), expected_queries);
+    assert_eq!(fixture_receipts(&journal), expected_receipts);
+}
+
+#[test]
+fn completion_record_id_is_rejected_by_every_live_write_family() {
+    for kind in ["fact", "decision", "episode", "procedure"] {
+        let temp = tempfile::tempdir().unwrap();
+        let journal = temp.path().join("memory.jsonl");
+        let mut store = MemoryStore::open_at(
+            &temp.path().join("memory.db"),
+            &journal,
+            MemoryPolicy::default(),
+            "agent-a",
+            configured(),
+        )
+        .unwrap();
+        let error = match kind {
+            "fact" => store
+                .write_fact(fact("legacy-migration-complete", "reserved"))
+                .map(|_| ()),
+            "decision" => store.write_decision(DecisionWrite {
+                id: "legacy-migration-complete".into(),
+                summary: "reserved".into(),
+                why: "collision".into(),
+                how_to_apply: "never".into(),
+                tags: vec![],
+                source_episode: None,
+                valid_from: "1".into(),
+                valid_to: None,
+                source_trust: SourceTrust::User,
+                project: "project-a".into(),
+                agent_id: "agent-a".into(),
+            }),
+            "episode" => store.write_episode(EpisodeWrite {
+                id: "legacy-migration-complete".into(),
+                content: "reserved".into(),
+                source: "collision".into(),
+                source_product: "test".into(),
+                valid_from: "1".into(),
+                valid_to: None,
+                source_trust: SourceTrust::User,
+                project: "project-a".into(),
+                agent_id: "agent-a".into(),
+            }),
+            "procedure" => store.write_procedure(ProcedureWrite {
+                id: "legacy-migration-complete".into(),
+                title: "reserved".into(),
+                steps: "never".into(),
+                created_by: "collision".into(),
+                valid_from: "1".into(),
+                valid_to: None,
+                source_trust: SourceTrust::User,
+                project: "project-a".into(),
+                agent_id: "agent-a".into(),
+            }),
+            _ => unreachable!(),
+        }
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            MemoryError::InvalidValue {
+                field: "memory id",
+                ..
+            }
+        ));
+        assert!(
+            read_journal(&journal).unwrap().envelopes.is_empty(),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn completion_receipt_never_authorizes_reserved_ids_during_rebuild() {
+    let ops = [
+        Op::MemoryWriteFact {
+            fact_id: "legacy-migration-complete".into(),
+            subject: "reserved".into(),
+            predicate: "collision".into(),
+            object: "never authority".into(),
+            confidence_micros: 1_000_000,
+            source_episode: None,
+            valid_from: "1".into(),
+            valid_to: None,
+            source_trust: "ModelInference".into(),
+            project: "project-a".into(),
+            agent_id: "agent-a".into(),
+            session_id: None,
+            resolver_outcome: "coexist".into(),
+        },
+        Op::MemoryWriteDecision {
+            decision_id: "legacy-migration-complete".into(),
+            summary: "never authority".into(),
+            why: "reserved".into(),
+            how_to_apply: "never".into(),
+            tags: vec![],
+            source_episode: None,
+            valid_from: "1".into(),
+            valid_to: None,
+            source_trust: "ModelInference".into(),
+            project: "project-a".into(),
+            agent_id: "agent-a".into(),
+            session_id: None,
+        },
+        Op::MemoryWriteEpisode {
+            episode_id: "legacy-migration-complete".into(),
+            content: "never authority".into(),
+            source: "reserved".into(),
+            source_product: "test".into(),
+            valid_from: "1".into(),
+            valid_to: None,
+            source_trust: "ModelInference".into(),
+            project: "project-a".into(),
+            agent_id: "agent-a".into(),
+            session_id: None,
+        },
+        Op::MemoryWriteProcedure {
+            procedure_id: "legacy-migration-complete".into(),
+            title: "never authority".into(),
+            steps: "never".into(),
+            created_by: "reserved".into(),
+            valid_from: "1".into(),
+            valid_to: None,
+            source_trust: "ModelInference".into(),
+            project: "project-a".into(),
+            agent_id: "agent-a".into(),
+            session_id: None,
+        },
+    ];
+    for (index, op) in ops.into_iter().enumerate() {
+        let temp = tempfile::tempdir().unwrap();
+        let journal = temp.path().join("memory.jsonl");
+        let mut writer = JournalWriter::open(&journal).unwrap();
+        writer
+            .append(&OpEnvelope::new(format!("forged-{index}"), "1", op))
+            .unwrap();
+        writer
+            .append(&OpEnvelope::new(
+                "legacy-migration-complete",
+                "2",
+                Op::MemoryWriteReceipt {
+                    write_id: "legacy-migration-complete".into(),
+                    agent_id: "agent-a".into(),
+                    message: "normal completion-shaped receipt".into(),
+                },
+            ))
+            .unwrap();
+        drop(writer);
+
+        let error = rebuild_from_journals(
+            &temp.path().join("rebuilt.db"),
+            std::slice::from_ref(&journal),
+            MemoryPolicy::default(),
+            configured(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            MemoryError::InvalidValue {
+                field: "memory id",
+                ..
+            }
+        ));
     }
 }
