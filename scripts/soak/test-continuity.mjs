@@ -53,6 +53,7 @@ test('marked real-binary smoke evidence', async (t) => {
     const result = run(['--mode', 'smoke', '--seed', '1010', '--binary', releaseBinary(), '--evidence-dir', evidence]);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const latest = JSON.parse(await readFile(join(evidence, 'latest.json'), 'utf8'));
+    const manifest = JSON.parse(await readFile(resolve(evidence, latest.manifest), 'utf8'));
     const rows = (await readFile(resolve(evidence, latest.ndjson), 'utf8'))
       .trim().split('\n').map((line) => JSON.parse(line));
     await t.test('emits one hash-bound NDJSON row for every continuity mode', () => {
@@ -69,7 +70,7 @@ test('marked real-binary smoke evidence', async (t) => {
       }
       const fresh = recall.filter((row) => row.mode === 'fresh');
       assert.ok(fresh.every((row) => row.persistent === false && row.memory_tool_calls === 0));
-      assert.ok(fresh.every((row) => row.quality_pass === false && row.request_assertion === 'absent'));
+      assert.ok(fresh.every((row) => row.isolation_pass === true && row.quality_pass === false && row.request_assertion === 'absent'));
       const resumed = recall.filter((row) => row.mode === 'session_resume');
       assert.ok(resumed.every((row) => row.loaded_session_id === row.fork_child_session_id));
       assert.ok(resumed.every((row) => row.memory_tool_calls === 0 && row.request_assertion === 'present' && row.quality_pass));
@@ -82,8 +83,20 @@ test('marked real-binary smoke evidence', async (t) => {
       assert.ok(recall.every((row) => row.tokens.source === 'acp_budget_notice'));
       assert.ok(recall.every((row) => row.tokens.probe_tokens === row.tokens.session_tokens_after - row.tokens.session_tokens_before));
       assert.ok(recall.every((row) => row.tokens.probe_tokens > 0));
+      assert.ok(recall.every((row) => row.tokens.total_tokens === row.tokens.setup_tokens + row.tokens.probe_tokens));
       assert.equal(resumed.filter((row) => row.tokens.setup_tokens > 0).length, 4, 'one resume baseline per partition');
+      assert.equal(recalled.filter((row) => row.tokens.setup_tokens > 0).length, 4, 'one memory-seed setup charge per partition');
+      assert.ok(recalled.filter((row) => row.tokens.setup_tokens > 0).every((row) => row.tokens.setup_session_ids.length === 1));
       assert.ok(resumed.every((row) => row.tokens.session_tokens_before > 0));
+      for (const mode of ['fresh', 'session_resume', 'memory_recall']) {
+        const modeRows = recall.filter((row) => row.mode === mode);
+        const sum = (field) => modeRows.reduce((total, row) => total + row.tokens[field], 0);
+        assert.deepEqual(manifest.accounting[mode], {
+          setup_tokens: sum('setup_tokens'),
+          probe_tokens: sum('probe_tokens'),
+          total_tokens: sum('total_tokens'),
+        });
+      }
     });
     await t.test('records session-resume drift as a typed correct refusal', () => {
       const drift = rows.find((row) => row.mode === 'session_resume' && row.probe_kind === 'drift_refusal');
@@ -92,6 +105,15 @@ test('marked real-binary smoke evidence', async (t) => {
       assert.equal(drift.refusal_kind, 'resume_drift');
       assert.equal(drift.silent_fallback, false);
     });
+  });
+});
+
+test('fresh leakage invalidates the run before evidence selection', async () => {
+  await withTempDir(async (evidence) => {
+    const result = run(['--mode', 'smoke', '--seed', '1010', '--binary', releaseBinary(), '--evidence-dir', evidence, '--inject', 'fresh-leak']);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /fresh_leakage/);
+    assert.equal((await import('node:fs')).existsSync(join(evidence, 'latest.json')), false);
   });
 });
 
