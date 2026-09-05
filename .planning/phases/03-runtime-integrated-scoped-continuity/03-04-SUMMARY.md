@@ -40,7 +40,7 @@ key-decisions:
   - Preserve the dedicated memory journal as the only mutation authority and refuse migration after its completion receipt.
 metrics:
   tasks: 3
-  files: 6
+  files: 11
   completed: 2026-09-05
 ---
 
@@ -80,10 +80,13 @@ The migration computes the deterministic contradiction outcome in an isolated st
 | Governance | `86aa734` | Recorded the approved store/lib transaction ownership and wave serialization. |
 | Causality RED | `224b224` | Exposed foreign candidate authority, noncausal receipt ordering, and unstable per-entry result mapping. |
 | Causality GREEN | `535e122` | Required canonical candidate envelopes and causal receipts, bound results to source entries, and proved migrated data through the real scoped runtime seam. |
+| Torn-tail RED | `b935800` | Exposed recovery across an intervening row and sorted-candidate append before torn-write repair. |
+| Torn-tail GREEN | `ba7a03a` | Restricted repairable unreceipted authority to the journal tail and repaired it before every new candidate. |
+| Test-only ownership | `4e3b4f8` | Assigned the cfg(test) runtime-seam proof to 03-04 while retaining all production seam ownership in 03-03. |
 
 ## Verification
 
-- `cargo test -p nano-cli --test memory_migration --test activation_quarantine -- --test-threads=1`: 32 passed.
+- `cargo test -p nano-cli --test memory_migration --test activation_quarantine -- --test-threads=1`: 34 passed.
 - `cargo test -p nano-cli --bin wayland-nano memory_migrate::tests -- --test-threads=1`: strict receipt/failure round-trip, unknown-field rejection, and canonical legacy filename grammar passed.
 - `cargo test -p nano-cli --lib memory_seam::tests::migrated_fact_is_visible_through_the_real_scoped_runtime_seam -- --exact`: 1 passed; the migrated row was present only for its owning project/agent and absent for a foreign project, foreign agent, and a higher minimum tier.
 - `cargo test -p nano-memory --test corrective_regressions --test durability --test mem_sec_cards -- --test-threads=1`: 21 passed, including the child-process kill-mid-write test and all six mem-sec cards plus summary.
@@ -92,7 +95,7 @@ The migration computes the deterministic contradiction outcome in an isolated st
 - The CLI-level equivalence proof seeds the sealed fixture, invokes the real migration command, captures the resulting live database and migration receipts, deletes `memory.db`, rebuilds from `memory.jsonl`, and repeats every comparison including the migrated ModelInference row.
 - Mediation receipts are present before rebuild and byte-for-field identical afterward because rebuild never rewrites the authoritative journal.
 - A migration-specific child process is killed after the authoritative write and receipt are synced but before `memory.db` exists; rebuilding its journal produces the same facts and per-entry receipts as a completed control migration.
-- `just gate-all` passed at implementation commit `535e122` in the fresh isolated target `F:/CargoTarget/wayland-nano-p3-migration-final-f1f4`, including workspace format, clippy, tests, error-table generation checks, and contract generation checks.
+- `just gate-all` passed at branch head `4e3b4f8` in the fresh isolated target `F:/CargoTarget/wayland-nano-p3-migration-final-tail`, including workspace format, clippy, tests, error-table generation checks, and contract generation checks.
 
 ## Deviations from Plan
 
@@ -154,9 +157,25 @@ The migration computes the deterministic contradiction outcome in an isolated st
 - **Files modified:** `crates/nano-memory/src/store.rs`, `crates/nano-cli/src/memory_migrate.rs`, `crates/nano-cli/src/memory_seam.rs`, `crates/nano-cli/tests/memory_migration.rs`
 - **Commits:** `224b224`, `535e122`
 
+**8. [Rule 1/2 - Corrective audit] Restricted torn-write repair to a causal journal tail**
+
+- **Found during:** Final causal recovery audit
+- **Issue:** An unreceipted canonical migration write could be repaired after an unrelated intervening row, and a newly discovered earlier-sorted candidate could be appended before the torn candidate's receipt.
+- **Fix:** Preflight every candidate before mutation; permit exactly one unreceipted existing migration write only when it is the current journal tail; append its exact receipt immediately; then process new candidates. Intervening rows now return typed `JournalInvalid` with byte-identical journal and absent projection.
+- **Files modified:** `crates/nano-memory/src/store.rs`, `crates/nano-cli/tests/memory_migration.rs`
+- **Commits:** `b935800`, `ba7a03a`
+
+## Completion Receipt
+
+- Base: `628901ab28409499ce0ac15e0264178e08c18af1`
+- Implementation head: `ba7a03a`
+- Governance/gate head: `4e3b4f8`
+- Changed files from base: 11
+- Final gate: GREEN in `F:/CargoTarget/wayland-nano-p3-migration-final-tail`
+
 ## Desktop Generator Isolation
 
-The final local gate command is `CARGO_TARGET_DIR=F:/CargoTarget/wayland-nano-p3-migration-final-f1f4 NANO_ERROR_TABLE_DESKTOP_DIR=<worktree>/.tmp-desktop-absent just gate-all`. The lane-specific F-drive target prevents another worktree from replacing the test executable. The Desktop override omits only optional sibling-repository mirrors while continuing to require and compare the Nano and shared canonical error tables.
+The final local gate command is `CARGO_TARGET_DIR=F:/CargoTarget/wayland-nano-p3-migration-final-tail NANO_ERROR_TABLE_DESKTOP_DIR=<worktree>/.tmp-desktop-absent just gate-all`. The lane-specific F-drive target prevents another worktree from replacing the test executable. The Desktop override omits only optional sibling-repository mirrors while continuing to require and compare the Nano and shared canonical error tables.
 
 ## Known Stubs
 
@@ -164,4 +183,4 @@ None.
 
 ## Self-Check: PASSED
 
-All created files and seventeen implementation/test commits exist. The implementation and approved ownership amendment remain within 03-04 scope, and no tracked file was deleted.
+All 11 changed files and nineteen implementation/test commits exist. The implementation and approved ownership amendments remain within 03-04 scope, and no tracked file was deleted.
