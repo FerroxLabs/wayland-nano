@@ -7,6 +7,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+const LEGACY_MIGRATION_COMPLETION_ID: &str = "legacy-migration-complete";
+
 pub struct MemoryStore {
     db: Connection,
     journal: JournalWriter,
@@ -356,6 +358,7 @@ impl MemoryStore {
         }
     }
     fn ensure_id_available(&self, id: &str) -> MemoryResult<()> {
+        validate_memory_record_id(id)?;
         let exists: i64 = self.db.query_row("SELECT EXISTS(SELECT 1 FROM facts WHERE id=?1 UNION SELECT 1 FROM episodes WHERE id=?1 UNION SELECT 1 FROM decisions WHERE id=?1 UNION SELECT 1 FROM procedures WHERE id=?1)",[id],|r|r.get(0))?;
         if exists != 0 {
             Err(MemoryError::InvalidValue {
@@ -951,6 +954,13 @@ where
     let _target_lock = FileLock::try_acquire(&db_path.with_extension("memory.lock"))
         .map_err(|error| MemoryError::Contention(error.to_string()))?;
     let snapshot = read_journal(journal_path)?.envelopes;
+    for envelope in &snapshot {
+        if memory_write_record_id(&envelope.op) == Some(LEGACY_MIGRATION_COMPLETION_ID) {
+            return Err(LegacyMigrationError::InvalidJournal(
+                "legacy migration completion id is reserved from memory writes".into(),
+            ));
+        }
+    }
     validate_migration_completion(&snapshot, completion)?;
 
     let candidates = writes
@@ -1201,10 +1211,10 @@ fn migration_receipt_envelope(write: &LegacyMigrationWrite) -> OpEnvelope {
 
 fn migration_completion_envelope(completion: &LegacyMigrationCompletion) -> OpEnvelope {
     OpEnvelope::new(
-        "legacy-migration-complete",
+        LEGACY_MIGRATION_COMPLETION_ID,
         now(),
         Op::MemoryWriteReceipt {
-            write_id: "legacy-migration-complete".into(),
+            write_id: LEGACY_MIGRATION_COMPLETION_ID.into(),
             agent_id: completion.agent_id.clone(),
             message: completion.message.clone(),
         },
@@ -1217,9 +1227,9 @@ fn validate_migration_completion(
 ) -> Result<(), LegacyMigrationError> {
     let Some(row) = snapshot
         .iter()
-        .find(|row| row.id == "legacy-migration-complete")
+        .find(|row| row.id == LEGACY_MIGRATION_COMPLETION_ID)
     else {
-        if snapshot.iter().any(|row| matches!(&row.op, Op::MemoryWriteReceipt { write_id, .. } if write_id == "legacy-migration-complete")) {
+        if snapshot.iter().any(|row| matches!(&row.op, Op::MemoryWriteReceipt { write_id, .. } if write_id == LEGACY_MIGRATION_COMPLETION_ID)) {
             return Err(LegacyMigrationError::CompletionCollision);
         }
         return Ok(());
@@ -1396,6 +1406,11 @@ fn rebuild_into_sibling(
 fn replay_journals_into_store(store: &mut MemoryStore, journals: &[PathBuf]) -> MemoryResult<()> {
     for path in journals {
         let report = read_journal(path)?;
+        for envelope in &report.envelopes {
+            if let Some(id) = memory_write_record_id(&envelope.op) {
+                validate_memory_record_id(id)?;
+            }
+        }
         let receipts: HashSet<(String, String)> = report
             .envelopes
             .iter()
@@ -1571,6 +1586,27 @@ fn replay_journals_into_store(store: &mut MemoryStore, journals: &[PathBuf]) -> 
         }
     }
     Ok(())
+}
+
+fn memory_write_record_id(op: &Op) -> Option<&str> {
+    match op {
+        Op::MemoryWriteFact { fact_id, .. } => Some(fact_id),
+        Op::MemoryWriteDecision { decision_id, .. } => Some(decision_id),
+        Op::MemoryWriteEpisode { episode_id, .. } => Some(episode_id),
+        Op::MemoryWriteProcedure { procedure_id, .. } => Some(procedure_id),
+        _ => None,
+    }
+}
+
+fn validate_memory_record_id(id: &str) -> MemoryResult<()> {
+    if id == LEGACY_MIGRATION_COMPLETION_ID {
+        Err(MemoryError::InvalidValue {
+            field: "memory id",
+            value: id.into(),
+        })
+    } else {
+        Ok(())
+    }
 }
 
 fn set_recovery_session(policy: &mut MemoryPolicy, session_id: Option<String>) {
