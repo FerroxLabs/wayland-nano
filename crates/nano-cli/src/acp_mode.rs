@@ -5654,11 +5654,56 @@ where
                             // session forks under fork_journal's own lock.
                             let parent_owned =
                                 session.as_ref().is_some_and(|s| s.id == fork_session);
-                            match crate::session_cmds::session_fork_core(
+                            if activation.is_some() && !parent_owned {
+                                write_out(
+                                    &out,
+                                    &JsonRpcResponse::err_typed(
+                                        id,
+                                        NanoErrorKind::SessionForkFailed,
+                                        error_presentation(NanoErrorKind::SessionForkFailed),
+                                        NanoErrorExtras::default(),
+                                    ),
+                                )?;
+                                continue;
+                            }
+                            let fork_authority = match (
+                                activation.as_ref(),
+                                session.as_ref().and_then(|active| active.activation.as_ref()),
+                            ) {
+                                (Some(gate), Some(token)) => {
+                                    Some((gate.clone(), token.clone()))
+                                }
+                                (Some(_), None) => {
+                                    write_out(
+                                        &out,
+                                        &JsonRpcResponse::err_typed(
+                                            id,
+                                            NanoErrorKind::SessionForkFailed,
+                                            error_presentation(
+                                                NanoErrorKind::SessionForkFailed,
+                                            ),
+                                            NanoErrorExtras::default(),
+                                        ),
+                                    )?;
+                                    continue;
+                                }
+                                (None, _) => None,
+                            };
+                            match crate::session_cmds::session_fork_core_with_binding(
                                 config.sessions_dir,
                                 &fork_session,
                                 at_turn,
                                 parent_owned,
+                                |child_session_id| match &fork_authority {
+                                    Some((gate, token)) => gate
+                                        .bind_forked_session(
+                                            token,
+                                            &fork_session,
+                                            child_session_id,
+                                        )
+                                        .map(Some),
+                                    None => Ok(None),
+                                },
                             ) {
                                 Ok(result) => {
                                     write_out(&out, &JsonRpcResponse::ok(id, result))?

@@ -9,3 +9,7 @@ contracts/activation/**/*.json text eol=lf
 gates/mem-sec/gate.cjs text eol=lf
 crates/nano-model/data/*.json text eol=lf
 crates/nano-model/tests/golden/** -text
+scripts/soak/continuity*.mjs text eol=lf
+scripts/soak/continuity-budgets.json text eol=lf
+scripts/soak/evidence/continuity-receipt-causal-final/** text eol=lf
+docs/evidence/phase3/continuity-modes-report.md text eol=lf

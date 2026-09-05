@@ -42,6 +42,26 @@ pub fn session_fork_core(
     at_turn: Option<String>,
     parent_owned: bool,
 ) -> Result<serde_json::Value, String> {
+    session_fork_core_with_binding(sessions_dir, session_id, at_turn, parent_owned, |_| {
+        Ok(None)
+    })
+}
+
+/// Fork core plus the authenticated child-binding step. The child journal is
+/// created first under the parent lock; an activated caller then binds the
+/// child from the already-validated parent authority before success becomes
+/// visible. Any binding failure removes the child, so a half-authorized fork
+/// cannot later be loaded.
+pub fn session_fork_core_with_binding<F>(
+    sessions_dir: &Path,
+    session_id: &str,
+    at_turn: Option<String>,
+    parent_owned: bool,
+    bind_child: F,
+) -> Result<serde_json::Value, String>
+where
+    F: FnOnce(&str) -> Result<Option<String>, String>,
+{
     let parent = journal_path(sessions_dir, session_id)?;
     // fork_journal takes the OS journal lock itself for the whole
     // before-digest → copy → after-digest sequence — that IS the
@@ -64,6 +84,19 @@ pub fn session_fork_core(
         fork_journal(&parent, &child, &child_id, &at)
     }
     .map_err(|err| err.to_string())?;
+    let resume_fingerprint = match bind_child(&outcome.child_session_id) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            let rollback = std::fs::remove_file(&outcome.child_path);
+            if rollback.is_err() || outcome.child_path.exists() {
+                return Err(format!(
+                    "{error}; fork child rollback failed: {}",
+                    outcome.child_path.display()
+                ));
+            }
+            return Err(error);
+        }
+    };
     Ok(serde_json::json!({
         "child_session_id": outcome.child_session_id,
         "parent_digest_before": outcome.parent_digest_before,
@@ -71,6 +104,7 @@ pub fn session_fork_core(
         "imported_ops": outcome.imported_ops,
         "at_turn": at_turn,
         "closed_parent_goal": outcome.closed_parent_goal,
+        "resume_fingerprint": resume_fingerprint,
     }))
 }
 

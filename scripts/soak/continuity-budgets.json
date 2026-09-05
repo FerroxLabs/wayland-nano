@@ -1,0 +1,26 @@
+{
+  "schema": "wayland.nano.continuity-budgets/v1",
+  "registered_at": "2026-09-05T00:05:52Z",
+  "basis": "03-05 cross-researched accounting smoke seed 1010 at 76a52bb before replacement receipts; ceilings cover every ACP-emitted setup and probe token with setup attributed once per mode partition",
+  "allocation": "first_probe_row_per_mode_partition; total_tokens=setup_tokens+probe_tokens",
+  "modes": {
+    "fresh": {
+      "median_turn_latency_ms_max": 250,
+      "probe_tokens_max": 8000,
+      "total_tokens_max": 8000,
+      "quality_score_min": 0.0
+    },
+    "session_resume": {
+      "median_turn_latency_ms_max": 350,
+      "probe_tokens_max": 8000,
+      "total_tokens_max": 16000,
+      "quality_score_min": 0.9
+    },
+    "memory_recall": {
+      "median_turn_latency_ms_max": 350,
+      "probe_tokens_max": 16000,
+      "total_tokens_max": 40000,
+      "quality_score_min": 0.9
+    }
+  }
+}
