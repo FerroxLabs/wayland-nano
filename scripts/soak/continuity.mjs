@@ -26,6 +26,7 @@ for (let index = 2; index < process.argv.length; index += 2) {
 }
 const runMode = args.get('--mode') ?? 'smoke';
 const seed = Number(args.get('--seed') ?? 1010);
+const injection = args.get('--inject') ?? null;
 const targetDir = process.env.CARGO_TARGET_DIR ? resolve(process.env.CARGO_TARGET_DIR) : join(repo, 'target');
 const binary = resolve(args.get('--binary') ?? join(targetDir, 'release', process.platform === 'win32' ? 'wayland-nano.exe' : 'wayland-nano'));
 const evidenceRoot = resolve(args.get('--evidence-dir') ?? join(here, 'evidence'));
@@ -34,7 +35,10 @@ const budgetsPath = join(here, 'continuity-budgets.json');
 const modes = ['fresh', 'session_resume', 'memory_recall'];
 const activeHosts = new Set();
 
-if (!['smoke', 'ci', 'receipt'].includes(runMode) || !Number.isSafeInteger(seed) || seed < 0) {
+if (!['smoke', 'ci', 'receipt'].includes(runMode)
+  || !Number.isSafeInteger(seed)
+  || seed < 0
+  || (injection !== null && (process.env.CONTINUITY_TESTING !== '1' || injection !== 'fresh-leak'))) {
   console.error('usage: continuity.mjs --mode smoke|ci|receipt --seed <u32> [--binary <path>] [--evidence-dir <dir>]');
   process.exit(2);
 }
@@ -443,6 +447,7 @@ async function openActivatedSession(home, workspace, keys, script, project, agen
 }
 
 async function seedCorpus(home, workspace, keys, fixture, runDir) {
+  const setup = new Map();
   const rows = [
     ...fixture.facts.map((value) => ({ kind: 'fact', value })),
     ...fixture.decisions.map((value) => ({ kind: 'decision', value })),
@@ -466,8 +471,12 @@ async function seedCorpus(home, workspace, keys, fixture, runDir) {
     if (!seeded.result) throw new Error(`fixture seed refused ${project}/${agent}: ${JSON.stringify(seeded)} ${acp.stderr}`);
     const completed = acp.frames.filter((frame) => frame?.params?.update?.sessionUpdate === 'tool_call_update' && frame.params.update.status === 'completed');
     if (completed.length < values.length) throw new Error(`fixture seed incomplete ${project}/${agent}: ${completed.length}/${values.length}`);
+    const setupTokens = sessionTokens(acp.frames, sessionId);
+    if (setupTokens <= 0) throw new Error(`memory seed emitted no setup tokens: ${project}/${agent}`);
+    setup.set(partition, { setup_tokens: setupTokens, setup_session_ids: [sessionId] });
     await acp.close();
   }
+  return setup;
 }
 
 function groupQueries(queries) {
@@ -517,11 +526,22 @@ async function runCausalPrompt(
     .join('');
   const assertionMarker = `request assertion ${mode} ${query.label} ${extra.request_assertion}`;
   const assertionMatched = Boolean(response.result) && answerObserved.includes(assertionMarker);
+  const refusalKind = response?.error?.data?.nanoError?.kind ?? null;
+  if (mode === 'fresh' && (!assertionMatched || refusalKind !== null)) {
+    const failure = refusalKind === 'model_protocol' ? 'fresh_leakage' : 'fresh_protocol_refusal';
+    throw new Error(`${failure}: ${query.label}`);
+  }
   const memoryToolCalls = frames.filter((frame) =>
     frame?.params?.update?.sessionUpdate === 'tool_call'
       && String(frame?.params?.update?.title ?? '').startsWith('memory_')).length;
   const setupTokens = extra.setup_tokens ?? 0;
-  const { session_token_baseline: _baseline, setup_tokens: _setup, ...evidenceExtra } = extra;
+  const setupSessionIds = extra.setup_session_ids ?? [];
+  const {
+    session_token_baseline: _baseline,
+    setup_tokens: _setup,
+    setup_session_ids: _setupIds,
+    ...evidenceExtra
+  } = extra;
   const probeTokens = sessionTokensAfter - sessionTokensBefore;
   return {
     schema: 'wayland.nano.continuity-probe/v1',
@@ -537,6 +557,7 @@ async function runCausalPrompt(
     answer_source: 'model_request_assertion',
     request_assertion: extra.request_assertion,
     request_assertion_matched: assertionMatched,
+    isolation_pass: mode === 'fresh' ? true : null,
     memory_tool_calls: memoryToolCalls,
     quality_basis: 'actual_model_request_contains_fixture_answer',
     quality_pass: extra.expect_continuity && assertionMatched,
@@ -547,13 +568,14 @@ async function runCausalPrompt(
     tokens: {
       source: 'acp_budget_notice',
       setup_tokens: setupTokens,
+      setup_session_ids: setupSessionIds,
       session_tokens_before: sessionTokensBefore,
       session_tokens_after: sessionTokensAfter,
       probe_tokens: probeTokens,
-      total_tokens: probeTokens,
+      total_tokens: setupTokens + probeTokens,
     },
     journal_sha256: await journalDigest(journalPath),
-    refusal_kind: response?.error?.data?.nanoError?.kind ?? null,
+    refusal_kind: refusalKind,
     ...evidenceExtra,
   };
 }
@@ -569,7 +591,10 @@ async function measureFresh(home, workspace, keys, queries, runDir, taskBatteryS
       home, workspace, keys, script, project, agent, 'fresh');
     const journalPath = join(home, 'sessions', `${sessionId}.jsonl`);
     for (const [index, query] of partitionQueries.entries()) {
-      rows.push(await runCausalPrompt(acp, sessionId, query, 'fresh', journalPath, taskBatterySha256, driverScriptSha256, probes[index].profile, {
+      const promptQuery = injection === 'fresh-leak'
+        ? { ...query, text: `${query.text}\n${query.expected_answer}` }
+        : query;
+      rows.push(await runCausalPrompt(acp, sessionId, promptQuery, 'fresh', journalPath, taskBatterySha256, driverScriptSha256, probes[index].profile, {
         request_assertion: 'absent',
         expect_continuity: false,
         persistent: false,
@@ -623,7 +648,10 @@ async function measureSessionResume(home, workspace, keys, queries, runDir, task
       probe_kind: 'drift_refusal', label: `drift-${project}-${agent}`, project, agent_id: agent,
       quality_pass: refusalKind === 'resume_drift', refusal_kind: refusalKind,
       silent_fallback: Boolean(drift.result), latency_ms: 0,
-      tokens: { source: 'acp_budget_notice', session_tokens_before: 0, session_tokens_after: 0, total_tokens: 0 },
+      tokens: {
+        source: 'acp_budget_notice', setup_tokens: 0, setup_session_ids: [],
+        session_tokens_before: 0, session_tokens_after: 0, probe_tokens: 0, total_tokens: 0,
+      },
       journal_sha256: await journalDigest(join(home, 'sessions', `${fork.child_session_id}.jsonl`)),
       fork_child_session_id: fork.child_session_id,
     });
@@ -644,6 +672,7 @@ async function measureSessionResume(home, workspace, keys, queries, runDir, task
         fork_child_session_id: fork.child_session_id,
         session_token_baseline: index === 0 ? parentTokenBaseline : 0,
         setup_tokens: index === 0 ? parentTokenBaseline : 0,
+        setup_session_ids: index === 0 ? [parent.sessionId] : [],
       }));
     }
     await acp.close();
@@ -651,7 +680,15 @@ async function measureSessionResume(home, workspace, keys, queries, runDir, task
   return rows;
 }
 
-async function measureMemoryRecall(home, workspace, keys, queries, runDir, taskBatterySha256) {
+async function measureMemoryRecall(
+  home,
+  workspace,
+  keys,
+  queries,
+  runDir,
+  taskBatterySha256,
+  memorySetup,
+) {
   const rows = [];
   for (const [partition, partitionQueries] of groupQueries(queries)) {
     const [project, agent] = partition.split('\0');
@@ -663,12 +700,16 @@ async function measureMemoryRecall(home, workspace, keys, queries, runDir, taskB
       home, workspace, keys, script, project, agent, 'memory_recall');
     const journalPath = join(home, 'sessions', `${sessionId}.jsonl`);
     for (const [index, query] of partitionQueries.entries()) {
+      const setup = memorySetup.get(partition);
+      if (!setup) throw new Error(`memory setup accounting missing: ${project}/${agent}`);
       rows.push(await runCausalPrompt(acp, sessionId, query, 'memory_recall', journalPath, taskBatterySha256, driverScriptSha256, probes[index].profile, {
         request_assertion: 'present',
         expect_continuity: true,
         persistent: true,
         activation_admitted: true,
         memory_seeded: true,
+        setup_tokens: index === 0 ? setup.setup_tokens : 0,
+        setup_session_ids: index === 0 ? setup.setup_session_ids : [],
       }));
     }
     await acp.close();
@@ -677,6 +718,7 @@ async function measureMemoryRecall(home, workspace, keys, queries, runDir, taskB
 }
 
 const { bytes: binaryBytes, artifact } = await preflight();
+const startedAt = iso();
 await mkdir(evidenceRoot, { recursive: true });
 const stamp = new Date().toISOString().replace(/[-:.]/g, '');
 const runDir = join(evidenceRoot, `run-${stamp}-${runMode}-${seed}-${process.pid}`);
@@ -718,8 +760,9 @@ for (const mode of modes) {
     rows = await measureFresh(home, workspace, keys, queries, runDir, taskBatterySha256);
   } else {
     if (mode === 'memory_recall') {
-      await seedCorpus(home, workspace, keys, fixture, runDir);
-      rows = await measureMemoryRecall(home, workspace, keys, queries, runDir, taskBatterySha256);
+      const memorySetup = await seedCorpus(home, workspace, keys, fixture, runDir);
+      rows = await measureMemoryRecall(
+        home, workspace, keys, queries, runDir, taskBatterySha256, memorySetup);
     } else {
       rows = await measureSessionResume(home, workspace, keys, queries, runDir, taskBatterySha256);
     }
@@ -736,6 +779,20 @@ for (const mode of modes) {
   await rm(join(home, 'activation', 'receipt-signer.keyref'), { force: true });
 }
 const ndjsonBytes = await readFile(ndjsonPath);
+const accounting = Object.fromEntries(modes.map((mode) => {
+  const rows = allRows.filter((row) => row.mode === mode && row.probe_kind === 'recall');
+  const setupTokens = rows.reduce((sum, row) => sum + row.tokens.setup_tokens, 0);
+  const probeTokens = rows.reduce((sum, row) => sum + row.tokens.probe_tokens, 0);
+  const totalTokens = rows.reduce((sum, row) => sum + row.tokens.total_tokens, 0);
+  if (totalTokens !== setupTokens + probeTokens) {
+    throw new Error(`token accounting is not conserved: ${mode}`);
+  }
+  return [mode, {
+    setup_tokens: setupTokens,
+    probe_tokens: probeTokens,
+    total_tokens: totalTokens,
+  }];
+}));
 const manifest = {
   schema: 'wayland.nano.continuity-manifest/v1',
   measurement_mode: runMode,
@@ -752,10 +809,15 @@ const manifest = {
     session_resume: 'activated fork child request asserts replayed answer present',
     memory_recall: 'admitted automatic recall request asserts retrieved answer present',
     token_source: 'ACP _wayland/session/budget notifications',
+    setup_attribution: 'first_probe_row_per_mode_partition',
+    token_conservation: 'every emitted setup token is attributed once; total_tokens=setup_tokens+probe_tokens',
+    drift_tokens: 'excluded: refusal performs no model turn',
   },
   ndjson: { path: relative(evidenceRoot, ndjsonPath).replaceAll('\\', '/'), sha256: sha256(ndjsonBytes), rows: allRows.length },
   modes,
+  started_at: startedAt,
   completed_at: iso(),
+  accounting,
 };
 const manifestPath = join(runDir, 'continuity-manifest.json');
 await writeFile(manifestPath, `${canonical(manifest)}\n`);

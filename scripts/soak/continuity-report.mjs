@@ -68,6 +68,10 @@ for (const manifestPath of await findManifests(evidenceRoot)) {
   if (manifest.harness?.sha256 !== harnessHash) {
     throw new Error(`harness hash mismatch: ${posix(relative(repo, manifestPath))}`);
   }
+  if (manifest.measurement_mode === 'receipt'
+    && (!manifest.started_at || Date.parse(manifest.started_at) < Date.parse(budgets.registered_at))) {
+    throw new Error(`token ceilings were not preregistered: ${posix(relative(repo, manifestPath))}`);
+  }
   if (manifest.fixture?.sha256 !== fixtureHash || manifest.fixture?.labels_modified !== false) {
     throw new Error(`fixture hash mismatch: ${posix(relative(repo, manifestPath))}`);
   }
@@ -82,6 +86,27 @@ for (const manifestPath of await findManifests(evidenceRoot)) {
     if (row.seed !== manifest.seed || row.binary_sha256 !== manifest.binary.sha256 || row.budget_sha256 !== budgetHash || row.harness_sha256 !== harnessHash || row.task_battery_sha256 !== manifest.task_battery?.sha256) {
       throw new Error(`row binding mismatch: ${manifestPath}`);
     }
+    if (row.tokens?.total_tokens !== row.tokens?.setup_tokens + row.tokens?.probe_tokens) {
+      throw new Error(`setup accounting mismatch: ${manifestPath}`);
+    }
+  }
+  const recallRows = rows.filter((row) => row.probe_kind === 'recall');
+  if (recallRows.some((row) => row.mode === 'fresh'
+    && (row.isolation_pass !== true || row.request_assertion_matched !== true || row.refusal_kind !== null))) {
+    throw new Error(`fresh isolation invalid: ${manifestPath}`);
+  }
+  const accounting = Object.fromEntries(requiredModes.map((mode) => {
+    const modeRows = recallRows.filter((row) => row.mode === mode);
+    const setupTokens = modeRows.reduce((sum, row) => sum + row.tokens.setup_tokens, 0);
+    const probeTokens = modeRows.reduce((sum, row) => sum + row.tokens.probe_tokens, 0);
+    return [mode, {
+      setup_tokens: setupTokens,
+      probe_tokens: probeTokens,
+      total_tokens: setupTokens + probeTokens,
+    }];
+  }));
+  if (canonical(accounting) !== canonical(manifest.accounting)) {
+    throw new Error(`manifest setup accounting mismatch: ${manifestPath}`);
   }
   candidates.push({ manifestPath, manifest, manifestSha256: textSha256(manifestBytes), rows });
 }
@@ -125,6 +150,7 @@ for (const mode of requiredModes) {
       latency: median(recall.map((row) => Number(row.latency_ms))),
       setupTokens: recall.reduce((sum, row) => sum + Number(row.tokens?.setup_tokens ?? 0), 0),
       probeTokens: recall.reduce((sum, row) => sum + Number(row.tokens?.probe_tokens ?? 0), 0),
+      totalTokens: recall.reduce((sum, row) => sum + Number(row.tokens?.total_tokens ?? 0), 0),
       quality: recall.filter((row) => row.quality_pass === true).length / recall.length,
       probes: recall.length,
     };
@@ -133,6 +159,7 @@ for (const mode of requiredModes) {
     median_turn_latency_ms: median(repetitions.map((row) => row.latency)),
     median_setup_tokens: median(repetitions.map((row) => row.setupTokens)),
     median_probe_tokens: median(repetitions.map((row) => row.probeTokens)),
+    median_total_tokens: median(repetitions.map((row) => row.totalTokens)),
     median_quality_score: median(repetitions.map((row) => row.quality)),
     probes_per_seed: repetitions[0].probes,
   };
@@ -140,6 +167,7 @@ for (const mode of requiredModes) {
   const checks = {
     latency: measured.median_turn_latency_ms <= budget.median_turn_latency_ms_max,
     tokens: measured.median_probe_tokens <= budget.probe_tokens_max,
+    totalTokens: measured.median_total_tokens <= budget.total_tokens_max,
     quality: measured.median_quality_score >= budget.quality_score_min,
   };
   modeResults[mode] = { measured, budget, checks, pass: Object.values(checks).every(Boolean) };
@@ -147,6 +175,8 @@ for (const mode of requiredModes) {
 
 const driftRows = selected.flatMap(({ rows }) => rows.filter((row) => row.mode === 'session_resume' && row.probe_kind === 'drift_refusal'));
 const driftCorrect = driftRows.filter((row) => row.quality_pass === true && row.refusal_kind === 'resume_drift' && row.silent_fallback === false).length;
+const freshRows = selected.flatMap(({ rows }) => rows.filter((row) => row.mode === 'fresh' && row.probe_kind === 'recall'));
+const freshIsolation = freshRows.filter((row) => row.isolation_pass === true && row.request_assertion_matched === true && row.refusal_kind === null).length;
 const session = modeResults.session_resume.measured;
 const memory = modeResults.memory_recall.measured;
 const memoryQualityPerToken = memory.median_quality_score / Math.max(1, memory.median_probe_tokens);
@@ -163,27 +193,28 @@ const lines = [
   '',
   '## Measured results',
   '',
-  '| mode | median turn latency (ms) | setup tokens | probe tokens | median quality | budget verdict |',
-  '|---|---:|---:|---:|---:|---|',
+  '| mode | median turn latency (ms) | setup tokens | probe tokens | total tokens | median quality | budget verdict |',
+  '|---|---:|---:|---:|---:|---:|---|',
   ...requiredModes.map((mode) => {
     const result = modeResults[mode];
-    return `| ${mode} | ${fmt(result.measured.median_turn_latency_ms, 3)} / ≤${result.budget.median_turn_latency_ms_max} | ${fmt(result.measured.median_setup_tokens)} | ${fmt(result.measured.median_probe_tokens)} / ≤${result.budget.probe_tokens_max} | ${fmt(result.measured.median_quality_score, 3)} / ≥${result.budget.quality_score_min} | ${result.pass ? 'PASS' : 'FAIL'} |`;
+    return `| ${mode} | ${fmt(result.measured.median_turn_latency_ms, 3)} / ≤${result.budget.median_turn_latency_ms_max} | ${fmt(result.measured.median_setup_tokens)} | ${fmt(result.measured.median_probe_tokens)} / ≤${result.budget.probe_tokens_max} | ${fmt(result.measured.median_total_tokens)} / ≤${result.budget.total_tokens_max} | ${fmt(result.measured.median_quality_score, 3)} / ≥${result.budget.quality_score_min} | ${result.pass ? 'PASS' : 'FAIL'} |`;
   }),
   '',
   `Typed resume-drift refusals: **${driftCorrect}/${driftRows.length}** (\`resume_drift\`, zero silent fallbacks).`,
+  `Fresh isolation assertions: **${freshIsolation}/${freshRows.length}**; any leakage or protocol refusal invalidates the entire run before a manifest is selectable.`,
   '',
-  'Quality is causal request evidence from the fixed fixture battery. Fresh creates a new admitted session with memory disabled and the soak model proves the fixture answer is absent. Session resume forks an activated parent, loads the returned child id, and emits success only when the actual model request contains the replayed answer. Memory recall exposes no explicit memory tool call: its model emits success only when automatic scoped retrieval placed the fixture answer in the actual request. Missing or irrelevant retrieval therefore becomes a typed model-protocol failure and a failed quality row. Token totals come only from emitted `_wayland/session/budget` notifications.',
+  'Quality is causal request evidence from the fixed fixture battery. Fresh creates a new admitted session with memory disabled and separately proves the fixture answer is absent; that isolation oracle must pass even though fresh continuity quality is zero. Session resume forks an activated parent, loads the returned child id, and emits success only when the actual model request contains the replayed answer. Memory recall exposes no explicit memory tool call: its model emits success only when automatic scoped retrieval placed the fixture answer in the actual request. Missing or irrelevant retrieval therefore becomes a typed model-protocol failure and a failed quality row. Token totals come only from emitted `_wayland/session/budget` notifications. Setup is attributed once on the first probe row of each `(mode, project, agent_id)` partition, including all four memory-seed sessions; every row and manifest conserves `total = setup + probe`.',
   '',
   '## Budget verdicts',
   '',
   ...requiredModes.map((mode) => {
     const result = modeResults[mode];
-    return `- **${mode}: ${result.pass ? 'PASS' : 'FAIL'}** — latency ${result.checks.latency ? 'pass' : 'fail'}, tokens ${result.checks.tokens ? 'pass' : 'fail'}, quality ${result.checks.quality ? 'pass' : 'fail'}.`;
+    return `- **${mode}: ${result.pass ? 'PASS' : 'FAIL'}** — latency ${result.checks.latency ? 'pass' : 'fail'}, probe tokens ${result.checks.tokens ? 'pass' : 'fail'}, total tokens ${result.checks.totalTokens ? 'pass' : 'fail'}, quality ${result.checks.quality ? 'pass' : 'fail'}.`;
   }),
   '',
   '## RECOMMENDATION',
   '',
-  `For interactive ACP, default to **session_resume when a valid bound session exists**. It loaded the returned fork child, rejected ${driftCorrect}/${driftRows.length} drift probes without fallback, and measured ${fmt(session.median_quality_score, 3)} quality at ${fmt(session.median_probe_tokens)} probe tokens after a separately reported ${fmt(session.median_setup_tokens)}-token resumed-history baseline. With no resumable session, use **memory_recall only when project continuity is requested**; otherwise start fresh.`,
+  `For interactive ACP, default to **session_resume when a valid bound session exists**. It loaded the returned fork child, rejected ${driftCorrect}/${driftRows.length} drift probes without fallback, and measured ${fmt(session.median_quality_score, 3)} quality at ${fmt(session.median_probe_tokens)} probe tokens plus ${fmt(session.median_setup_tokens)} setup tokens (${fmt(session.median_total_tokens)} total). With no resumable session, use **memory_recall only when project continuity is requested**; otherwise start fresh.`,
   '',
   `For one-shot exec, default to **fresh for stateless work** and require an explicit continuity choice for memory-backed work. Fresh correctly exposed no remembered answer; memory_recall measured ${fmt(memory.median_quality_score, 3)} quality. Memory recall ${memoryBeatsSession ? 'did' : 'did NOT'} beat session_resume on measured quality per emitted token (${memoryQualityPerToken.toExponential(3)} vs ${sessionQualityPerToken.toExponential(3)}), so it remains an explicit continuity mode rather than a universal default.`,
   '',
