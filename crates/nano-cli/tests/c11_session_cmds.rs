@@ -3,6 +3,7 @@
 
 use nano_cli::session_cmds::{
     goal_set_core, goal_status_core, goal_transition_core, session_fork_core,
+    session_fork_core_with_binding,
 };
 use nano_session::op::Op;
 use nano_session::writer::JournalWriter;
@@ -80,6 +81,32 @@ fn session_fork_core_returns_digests_and_loadable_child() {
     assert_eq!(at["imported_ops"], 3); // begin + TurnBegin + TurnEnd
     assert!(session_fork_core(&sessions, "s1", Some("nope".into()), false).is_err());
     assert!(session_fork_core(&sessions, "no-such", None, false).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn failed_child_binding_removes_the_fork_journal() {
+    let dir = tmpdir("fork-bind-fail");
+    let sessions = dir.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    make_session(&sessions, "s1");
+
+    let error = session_fork_core_with_binding(&sessions, "s1", None, false, |_| {
+        Err("injected child-binding append failure".to_string())
+    })
+    .unwrap_err();
+    assert!(error.contains("injected child-binding append failure"));
+    let journals = std::fs::read_dir(&sessions)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("jsonl"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        journals.len(),
+        1,
+        "failed binding must leave no child journal"
+    );
+    assert_eq!(journals[0].file_name().to_string_lossy(), "s1.jsonl");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
