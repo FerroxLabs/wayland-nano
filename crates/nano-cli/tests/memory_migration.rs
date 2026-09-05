@@ -901,6 +901,184 @@ fn live_memory_writer_contention_refuses_before_journal_mutation() {
 }
 
 #[test]
+fn foreign_envelope_id_for_candidate_fact_is_refused_without_mutation() {
+    let home = tempfile::tempdir().unwrap();
+    write_policy(home.path(), true, "SessionAndProject");
+    let name = "2026-01-02T03-04-05-foreign-write.md";
+    let contents = b"foreign write envelope";
+    seed(home.path(), name, std::str::from_utf8(contents).unwrap());
+    let fact_id = fact_id_for(name, contents);
+    let journal_path = home.path().join("memory.jsonl");
+    JournalWriter::open(&journal_path)
+        .unwrap()
+        .append(&OpEnvelope::new(
+            "foreign-write-envelope",
+            "2026-01-02T03:04:05Z",
+            Op::MemoryWriteFact {
+                fact_id,
+                subject: "legacy-memory-entry".into(),
+                predicate: name.trim_end_matches(".md").into(),
+                object: std::str::from_utf8(contents).unwrap().into(),
+                confidence_micros: 1_000_000,
+                source_episode: None,
+                valid_from: "2026-01-02T03:04:05Z".into(),
+                valid_to: None,
+                source_trust: "ModelInference".into(),
+                project: "project-a".into(),
+                agent_id: "main".into(),
+                session_id: Some("migration-session".into()),
+                resolver_outcome: "coexist".into(),
+            },
+        ))
+        .unwrap();
+    let before = std::fs::read(&journal_path).unwrap();
+
+    let output = migrate_with_session(home.path(), "migration-session", None);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert_eq!(failure(&output).error_kind, WireFailureKind::JournalInvalid);
+    assert_eq!(std::fs::read(&journal_path).unwrap(), before);
+    assert!(!home.path().join("memory/memory.db").exists());
+}
+
+#[test]
+fn reordered_candidate_receipts_are_noncausal_and_refused() {
+    let home = tempfile::tempdir().unwrap();
+    write_policy(home.path(), true, "SessionAndProject");
+    let entries = [
+        ("2026-01-02T03-04-05-causal-a.md", b"causal a".as_slice()),
+        ("2026-01-03T03-04-05-causal-b.md", b"causal b".as_slice()),
+    ];
+    for (name, contents) in entries {
+        seed(home.path(), name, std::str::from_utf8(contents).unwrap());
+    }
+    let journal_path = home.path().join("memory.jsonl");
+    let mut writes = Vec::new();
+    let mut receipts = Vec::new();
+    for (index, (name, contents)) in entries.into_iter().enumerate() {
+        let fact_id = fact_id_for(name, contents);
+        let hash = format!("{:x}", Sha256::digest(contents));
+        writes.push(OpEnvelope::new(
+            format!("legacy-migration-write-{fact_id}"),
+            "2026-01-02T03:04:05Z",
+            Op::MemoryWriteFact {
+                fact_id: fact_id.clone(),
+                subject: "legacy-memory-entry".into(),
+                predicate: name.trim_end_matches(".md").into(),
+                object: std::str::from_utf8(contents).unwrap().into(),
+                confidence_micros: 1_000_000,
+                source_episode: None,
+                valid_from: if index == 0 {
+                    "2026-01-02T03:04:05Z".into()
+                } else {
+                    "2026-01-03T03:04:05Z".into()
+                },
+                valid_to: None,
+                source_trust: "ModelInference".into(),
+                project: "project-a".into(),
+                agent_id: "main".into(),
+                session_id: Some("migration-session".into()),
+                resolver_outcome: "coexist".into(),
+            },
+        ));
+        receipts.push(OpEnvelope::new(
+            format!("legacy-migration-receipt-{fact_id}"),
+            "2026-01-02T03:04:05Z",
+            Op::MemoryWriteReceipt {
+                write_id: fact_id,
+                agent_id: "main".into(),
+                message: format!("migrated legacy entry {hash} (sha256:{hash})"),
+            },
+        ));
+    }
+    // Both writes precede either receipt: replay's global receipt set would
+    // otherwise retroactively authorize a noncausal prefix.
+    let mut writer = JournalWriter::open(&journal_path).unwrap();
+    for row in [&writes[0], &writes[1], &receipts[0], &receipts[1]] {
+        writer.append(row).unwrap();
+    }
+    drop(writer);
+    let before = std::fs::read(&journal_path).unwrap();
+
+    let output = migrate_with_session(home.path(), "migration-session", None);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert_eq!(failure(&output).error_kind, WireFailureKind::JournalInvalid);
+    assert_eq!(std::fs::read(&journal_path).unwrap(), before);
+}
+
+#[test]
+fn refused_entry_sorting_never_relabels_an_ingested_candidate() {
+    let home = tempfile::tempdir().unwrap();
+    let refused_name = "0000-99-99T00-00-00-refused-first.md";
+    let accepted_name = "2026-01-02T03-04-05-valid-second.md";
+    seed(home.path(), refused_name, "fixable refused entry");
+    seed(home.path(), accepted_name, "valid entry");
+    let first = migrate(home.path(), None);
+    assert_eq!(first.status.code(), Some(3), "{first:?}");
+    let first_receipt = receipt(&first);
+    let refused = first_receipt
+        .entries
+        .iter()
+        .find(|entry| entry.name == refused_name)
+        .unwrap();
+    assert_eq!(refused.status, WireEntryStatus::Refused);
+    assert_eq!(
+        refused.error_kind,
+        Some(WireEntryErrorKind::InvalidTimestamp)
+    );
+    let accepted = first_receipt
+        .entries
+        .iter()
+        .find(|entry| entry.name == accepted_name)
+        .unwrap();
+    assert_eq!(accepted.status, WireEntryStatus::Ingested);
+    assert!(accepted.error_kind.is_none());
+    assert_eq!(
+        (
+            first_receipt.ingested,
+            first_receipt.skipped,
+            first_receipt.refused
+        ),
+        (1, 0, 1)
+    );
+
+    let corrected_name = "2026-01-01T00-00-00-corrected-first.md";
+    std::fs::rename(
+        home.path().join("memory").join(refused_name),
+        home.path().join("memory").join(corrected_name),
+    )
+    .unwrap();
+    let second = migrate(home.path(), None);
+    assert_eq!(second.status.code(), Some(0), "{second:?}");
+    let second_receipt = receipt(&second);
+    assert_eq!(
+        (
+            second_receipt.ingested,
+            second_receipt.skipped,
+            second_receipt.refused
+        ),
+        (1, 1, 0)
+    );
+    assert_eq!(
+        second_receipt
+            .entries
+            .iter()
+            .find(|entry| entry.name == accepted_name)
+            .unwrap()
+            .status,
+        WireEntryStatus::Skipped
+    );
+    assert_eq!(
+        second_receipt
+            .entries
+            .iter()
+            .find(|entry| entry.name == corrected_name)
+            .unwrap()
+            .status,
+        WireEntryStatus::Ingested
+    );
+}
+
+#[test]
 fn authoritative_envelope_id_collision_is_refused_before_receipt() {
     let home = tempfile::tempdir().unwrap();
     write_policy(home.path(), true, "SessionAndProject");
