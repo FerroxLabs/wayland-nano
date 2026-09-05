@@ -158,7 +158,7 @@ Complete-accounting correction:
 - `crates/nano-cli/tests/activation_memory_seam.rs` — proves exact child resume and fingerprint/project/principal drift refusals.
 - `crates/nano-cli/tests/c11_session_cmds.rs` — proves binding failure leaves no child journal.
 - `scripts/soak/continuity.mjs` — runs the causal three-mode battery and writes sealed evidence.
-- `scripts/soak/continuity-budgets.json` — records like-for-like probe budgets at `2026-09-04T23:23:48Z`, before final receipts; resume setup tokens are reported separately.
+- `scripts/soak/continuity-budgets.json` — records complete setup, probe, and total-token budgets at `2026-09-05T00:05:52Z`, before final receipts.
 - `scripts/soak/continuity-report.mjs` — validates every seal and renders measured medians and recommendations.
 - `scripts/soak/test-continuity.mjs` — tests preflight, causal mode invariants, emitted usage, child resume, drift refusal, and anti-tuning behavior.
 - `docs/evidence/phase3/continuity-modes-report.md` — final causal report.
