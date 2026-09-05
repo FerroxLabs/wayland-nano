@@ -1073,23 +1073,46 @@ where
         }
     }
 
+    let unreceipted = existing
+        .iter()
+        .filter(|(_, (_, _, receipted))| !receipted)
+        .collect::<Vec<_>>();
+    if unreceipted.len() > 1 {
+        return Err(LegacyMigrationError::InvalidJournal(
+            "multiple unreceipted migration writes".into(),
+        ));
+    }
+    let torn_fact_id = if let Some((fact_id, (index, _, _))) = unreceipted.first() {
+        if *index + 1 != snapshot.len() {
+            return Err(LegacyMigrationError::InvalidJournal(format!(
+                "unreceipted migration write {fact_id} is not the journal tail"
+            )));
+        }
+        Some((*fact_id).clone())
+    } else {
+        None
+    };
+
     let mut working = snapshot;
     let mut writer = JournalWriter::open(journal_path)?;
     let mut ingested_ids = Vec::new();
     let mut skipped_ids = Vec::new();
+    if let Some(fact_id) = torn_fact_id {
+        let candidate = candidates[fact_id.as_str()];
+        let receipt = migration_receipt_envelope(candidate);
+        if !writer.append(&receipt)? {
+            return Err(LegacyMigrationError::InvalidJournal(format!(
+                "missing receipt for {fact_id} could not be repaired"
+            )));
+        }
+        working.push(receipt);
+        skipped_ids.push(fact_id);
+    }
     for candidate in writes {
-        if let Some((_, _, receipted)) = existing.get(&candidate.fact.id) {
-            if !receipted {
-                let receipt = migration_receipt_envelope(candidate);
-                if !writer.append(&receipt)? {
-                    return Err(LegacyMigrationError::InvalidJournal(format!(
-                        "missing receipt for {} could not be repaired",
-                        candidate.fact.id
-                    )));
-                }
-                working.push(receipt);
+        if existing.contains_key(&candidate.fact.id) {
+            if !skipped_ids.contains(&candidate.fact.id) {
+                skipped_ids.push(candidate.fact.id.clone());
             }
-            skipped_ids.push(candidate.fact.id.clone());
             continue;
         }
         let authoritative = resolve_legacy_write_at_prefix(
