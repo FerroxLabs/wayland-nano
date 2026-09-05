@@ -83,19 +83,21 @@ The migration computes the deterministic contradiction outcome in an isolated st
 | Torn-tail RED | `b935800` | Exposed recovery across an intervening row and sorted-candidate append before torn-write repair. |
 | Torn-tail GREEN | `ba7a03a` | Restricted repairable unreceipted authority to the journal tail and repaired it before every new candidate. |
 | Test-only ownership | `4e3b4f8` | Assigned the cfg(test) runtime-seam proof to 03-04 while retaining all production seam ownership in 03-03. |
+| Reserved-ID RED | `1aa287a` | Exposed completion-receipt authorization of colliding Fact, Decision, Episode, and Procedure IDs before and after migration completion. |
+| Reserved-ID GREEN | `cdfcdfb` | Reserved the completion ID across live writes, migration preflight, and replay while preserving the normal completion receipt. |
 
 ## Verification
 
-- `cargo test -p nano-cli --test memory_migration --test activation_quarantine -- --test-threads=1`: 34 passed.
+- `cargo test -p nano-cli --test memory_migration --test activation_quarantine -- --test-threads=1`: 36 passed.
 - `cargo test -p nano-cli --bin wayland-nano memory_migrate::tests -- --test-threads=1`: strict receipt/failure round-trip, unknown-field rejection, and canonical legacy filename grammar passed.
 - `cargo test -p nano-cli --lib memory_seam::tests::migrated_fact_is_visible_through_the_real_scoped_runtime_seam -- --exact`: 1 passed; the migrated row was present only for its owning project/agent and absent for a foreign project, foreign agent, and a higher minimum tier.
-- `cargo test -p nano-memory --test corrective_regressions --test durability --test mem_sec_cards -- --test-threads=1`: 21 passed, including the child-process kill-mid-write test and all six mem-sec cards plus summary.
+- `cargo test -p nano-memory --test corrective_regressions --test durability --test mem_sec_cards -- --test-threads=1`: 23 passed, including four-family reserved-ID live/replay rejection, the child-process kill-mid-write test, and all six mem-sec cards plus summary.
 - `cargo test -p nano-session --test activation_legacy_replay -- --test-threads=1`: 1 passed; the legacy replay target was unchanged.
 - The sealed recall fixture proof compares all 20 ordered query result lists and all currently-valid facts after rebuilding from the dedicated journal, explicitly including validity, trust tier, project, and `agent_id`.
 - The CLI-level equivalence proof seeds the sealed fixture, invokes the real migration command, captures the resulting live database and migration receipts, deletes `memory.db`, rebuilds from `memory.jsonl`, and repeats every comparison including the migrated ModelInference row.
 - Mediation receipts are present before rebuild and byte-for-field identical afterward because rebuild never rewrites the authoritative journal.
 - A migration-specific child process is killed after the authoritative write and receipt are synced but before `memory.db` exists; rebuilding its journal produces the same facts and per-entry receipts as a completed control migration.
-- `just gate-all` passed at branch head `4e3b4f8` in the fresh isolated target `F:/CargoTarget/wayland-nano-p3-migration-final-tail`, including workspace format, clippy, tests, error-table generation checks, and contract generation checks.
+- `just gate-all` passed at branch head `cdfcdfb` in the fresh isolated target `F:/CargoTarget/wayland-nano-p3-migration-final-reserved`, including workspace format, clippy, tests, error-table generation checks, and contract generation checks.
 
 ## Deviations from Plan
 
@@ -165,17 +167,26 @@ The migration computes the deterministic contradiction outcome in an isolated st
 - **Files modified:** `crates/nano-memory/src/store.rs`, `crates/nano-cli/tests/memory_migration.rs`
 - **Commits:** `b935800`, `ba7a03a`
 
+**9. [Rule 1/2 - Corrective audit] Reserved the migration completion ID from memory data authority**
+
+- **Found during:** Final reserved-identifier authority audit
+- **Issue:** The normal completion receipt targets `legacy-migration-complete`; a ModelInference Fact, Decision, Episode, or Procedure with the same record ID could therefore become replay-authorized, including when appended after a valid completion.
+- **Fix:** Validate the reserved ID before every live store write, before migration completion inspection, and before replay builds its receipt authority set. Four-family live/replay matrices and pre-/post-completion migration rows now fail closed with typed invalid-ID/journal errors and no journal mutation; the normal completion and idempotent rerun rows remain green.
+- **Files modified:** `crates/nano-memory/src/store.rs`, `crates/nano-memory/tests/corrective_regressions.rs`, `crates/nano-cli/tests/memory_migration.rs`
+- **Commits:** `1aa287a`, `cdfcdfb`
+
 ## Completion Receipt
 
 - Base: `628901ab28409499ce0ac15e0264178e08c18af1`
-- Implementation head: `ba7a03a`
-- Governance/gate head: `4e3b4f8`
+- Implementation head: `cdfcdfb`
+- Governance head: `4e3b4f8`
+- Final gate head: `cdfcdfb`
 - Changed files from base: 11
-- Final gate: GREEN in `F:/CargoTarget/wayland-nano-p3-migration-final-tail`
+- Final gate: GREEN in `F:/CargoTarget/wayland-nano-p3-migration-final-reserved`
 
 ## Desktop Generator Isolation
 
-The final local gate command is `CARGO_TARGET_DIR=F:/CargoTarget/wayland-nano-p3-migration-final-tail NANO_ERROR_TABLE_DESKTOP_DIR=<worktree>/.tmp-desktop-absent just gate-all`. The lane-specific F-drive target prevents another worktree from replacing the test executable. The Desktop override omits only optional sibling-repository mirrors while continuing to require and compare the Nano and shared canonical error tables.
+The final local gate command is `CARGO_TARGET_DIR=F:/CargoTarget/wayland-nano-p3-migration-final-reserved NANO_ERROR_TABLE_DESKTOP_DIR=<worktree>/.tmp-desktop-absent just gate-all`. The lane-specific F-drive target prevents another worktree from replacing the test executable. The Desktop override omits only optional sibling-repository mirrors while continuing to require and compare the Nano and shared canonical error tables.
 
 ## Known Stubs
 
@@ -183,4 +194,4 @@ None.
 
 ## Self-Check: PASSED
 
-All 11 changed files and nineteen implementation/test commits exist. The implementation and approved ownership amendments remain within 03-04 scope, and no tracked file was deleted.
+All 11 changed files and twenty-one implementation/test commits exist. The implementation and approved ownership amendments remain within 03-04 scope, and no tracked file was deleted.
