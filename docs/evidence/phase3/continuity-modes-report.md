@@ -1,30 +1,31 @@
 # Phase 3 continuity modes report
 
-Evidence class: **receipt**; seeded repetitions: **2**; budgets registered **2026-09-04T23:23:48Z** before receipt execution; frozen budget SHA-256: `00800d1a945985d296c3d1b60b33f221c2acd566146d456fbdb8292593aa11f3`; harness SHA-256: `3417673546e6ddafb81d24354385320b59e0cb8bdd0dee228c17cd652e6666f9`.
+Evidence class: **receipt**; seeded repetitions: **2**; budgets registered **2026-09-05T00:05:52Z** before receipt execution; frozen budget SHA-256: `59e7924bebd93fd2ef3e9a65a4c0cb8177c382bc3484d0e6f8ad5fdabf8ff320`; harness SHA-256: `40fc1531154586fd0d2fdafe9791d9998bfe0cc0804a6a8508fce8f118610ad0`.
 
 This is a measurement report, not a merge gate. Desktop remains the authority that selects defaults.
 
 ## Measured results
 
-| mode | median turn latency (ms) | setup tokens | probe tokens | median quality | budget verdict |
-|---|---:|---:|---:|---:|---|
-| fresh | 25.876 / ≤250 | 0 | 5136 / ≤8000 | 0.000 / ≥0 | PASS |
-| session_resume | 21.814 / ≤350 | 5152.50 | 5136 / ≤8000 | 1.000 / ≥0.9 | PASS |
-| memory_recall | 31.434 / ≤350 | 0 | 11303 / ≤16000 | 0.950 / ≥0.9 | PASS |
+| mode | median turn latency (ms) | setup tokens | probe tokens | total tokens | median quality | budget verdict |
+|---|---:|---:|---:|---:|---:|---|
+| fresh | 63.012 / ≤250 | 0 | 5136 / ≤8000 | 5136 / ≤8000 | 0.000 / ≥0 | PASS |
+| session_resume | 60.009 / ≤350 | 5152.50 | 5136 / ≤8000 | 10288.50 / ≤16000 | 1.000 / ≥0.9 | PASS |
+| memory_recall | 31.614 / ≤350 | 16351 | 11303 / ≤16000 | 27654 / ≤40000 | 0.950 / ≥0.9 | PASS |
 
 Typed resume-drift refusals: **8/8** (`resume_drift`, zero silent fallbacks).
+Fresh isolation assertions: **40/40**; any leakage or protocol refusal invalidates the entire run before a manifest is selectable.
 
-Quality is causal request evidence from the fixed fixture battery. Fresh creates a new admitted session with memory disabled and the soak model proves the fixture answer is absent. Session resume forks an activated parent, loads the returned child id, and emits success only when the actual model request contains the replayed answer. Memory recall exposes no explicit memory tool call: its model emits success only when automatic scoped retrieval placed the fixture answer in the actual request. Missing or irrelevant retrieval therefore becomes a typed model-protocol failure and a failed quality row. Token totals come only from emitted `_wayland/session/budget` notifications.
+Quality is causal request evidence from the fixed fixture battery. Fresh creates a new admitted session with memory disabled and separately proves the fixture answer is absent; that isolation oracle must pass even though fresh continuity quality is zero. Session resume forks an activated parent, loads the returned child id, and emits success only when the actual model request contains the replayed answer. Memory recall exposes no explicit memory tool call: its model emits success only when automatic scoped retrieval placed the fixture answer in the actual request. Missing or irrelevant retrieval therefore becomes a typed model-protocol failure and a failed quality row. Token totals come only from emitted `_wayland/session/budget` notifications. Setup is attributed once on the first probe row of each `(mode, project, agent_id)` partition, including all four memory-seed sessions; every row and manifest conserves `total = setup + probe`.
 
 ## Budget verdicts
 
-- **fresh: PASS** — latency pass, tokens pass, quality pass.
-- **session_resume: PASS** — latency pass, tokens pass, quality pass.
-- **memory_recall: PASS** — latency pass, tokens pass, quality pass.
+- **fresh: PASS** — latency pass, probe tokens pass, total tokens pass, quality pass.
+- **session_resume: PASS** — latency pass, probe tokens pass, total tokens pass, quality pass.
+- **memory_recall: PASS** — latency pass, probe tokens pass, total tokens pass, quality pass.
 
 ## RECOMMENDATION
 
-For interactive ACP, default to **session_resume when a valid bound session exists**. It loaded the returned fork child, rejected 8/8 drift probes without fallback, and measured 1.000 quality at 5136 probe tokens after a separately reported 5152.50-token resumed-history baseline. With no resumable session, use **memory_recall only when project continuity is requested**; otherwise start fresh.
+For interactive ACP, default to **session_resume when a valid bound session exists**. It loaded the returned fork child, rejected 8/8 drift probes without fallback, and measured 1.000 quality at 5136 probe tokens plus 5152.50 setup tokens (10288.50 total). With no resumable session, use **memory_recall only when project continuity is requested**; otherwise start fresh.
 
 For one-shot exec, default to **fresh for stateless work** and require an explicit continuity choice for memory-backed work. Fresh correctly exposed no remembered answer; memory_recall measured 0.950 quality. Memory recall did NOT beat session_resume on measured quality per emitted token (8.405e-5 vs 1.947e-4), so it remains an explicit continuity mode rather than a universal default.
 
@@ -34,13 +35,13 @@ These are recommendations from the measured fake-model chassis. Desktop selects 
 
 | seed | binary sha256 | budget sha256 | harness sha256 | fixture sha256 | manifest sha256 | NDJSON sha256 |
 |---:|---|---|---|---|---|---|
-| 1010 | `fba0a81b552da7904e1a713e3bf9cbe6da5f88bd0debcc0ba984ef5c8b685933` | `00800d1a945985d296c3d1b60b33f221c2acd566146d456fbdb8292593aa11f3` | `3417673546e6ddafb81d24354385320b59e0cb8bdd0dee228c17cd652e6666f9` | `ad286c8ebd835667488089410b9b7bd84ecade71758b20ce678d97c3f9dda214` | `1fd7f201bc0d9972ee4296cb59f699b2dce1ca79d8466cb4e01ce13a0445eede` | `975d1d82bd564950a9c50686955bef594255c1cf91544cf5bf15431cd7f87bdb` |
-| 2020 | `fba0a81b552da7904e1a713e3bf9cbe6da5f88bd0debcc0ba984ef5c8b685933` | `00800d1a945985d296c3d1b60b33f221c2acd566146d456fbdb8292593aa11f3` | `3417673546e6ddafb81d24354385320b59e0cb8bdd0dee228c17cd652e6666f9` | `ad286c8ebd835667488089410b9b7bd84ecade71758b20ce678d97c3f9dda214` | `46fe0c267c822656c50717b28d8f2c46632ed70082e90ec28d7def76b9639574` | `1bcdb8fd9272a95c46d71a9d3be604b640bb55fabc103ee84ee48a67e5d94bf7` |
+| 1010 | `fba0a81b552da7904e1a713e3bf9cbe6da5f88bd0debcc0ba984ef5c8b685933` | `59e7924bebd93fd2ef3e9a65a4c0cb8177c382bc3484d0e6f8ad5fdabf8ff320` | `40fc1531154586fd0d2fdafe9791d9998bfe0cc0804a6a8508fce8f118610ad0` | `ad286c8ebd835667488089410b9b7bd84ecade71758b20ce678d97c3f9dda214` | `0c507e4bdd47108dcdd0c51eecce44a6142b0cf7c413967e10db6ca874c4b6b7` | `e94d95df8f19d660b2bb284cda902c67c1397645e6edf9db778dbc3a020f24f7` |
+| 2020 | `fba0a81b552da7904e1a713e3bf9cbe6da5f88bd0debcc0ba984ef5c8b685933` | `59e7924bebd93fd2ef3e9a65a4c0cb8177c382bc3484d0e6f8ad5fdabf8ff320` | `40fc1531154586fd0d2fdafe9791d9998bfe0cc0804a6a8508fce8f118610ad0` | `ad286c8ebd835667488089410b9b7bd84ecade71758b20ce678d97c3f9dda214` | `d51940957310c4d502f0e9236fa8f0659394445ff3348b156410acd08da5fbcd` | `1eb7c12a31d5c9f0891d9241e1ae79d6f91061825adbeb3df2be25fc319b9daa` |
 
-- Seed 1010 manifest: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T232852661Z-receipt-1010-41300/continuity-manifest.json`
-- Seed 1010 NDJSON: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T232852661Z-receipt-1010-41300/continuity.ndjson`
-- Seed 2020 manifest: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T232852444Z-receipt-2020-39548/continuity-manifest.json`
-- Seed 2020 NDJSON: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260904T232852444Z-receipt-2020-39548/continuity.ndjson`
+- Seed 1010 manifest: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260905T000637916Z-receipt-1010-8916/continuity-manifest.json`
+- Seed 1010 NDJSON: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260905T000637916Z-receipt-1010-8916/continuity.ndjson`
+- Seed 2020 manifest: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260905T000638217Z-receipt-2020-16516/continuity-manifest.json`
+- Seed 2020 NDJSON: `scripts/soak/evidence/continuity-receipt-causal-final/run-20260905T000638217Z-receipt-2020-16516/continuity.ndjson`
 
 ## Desktop consumption
 
