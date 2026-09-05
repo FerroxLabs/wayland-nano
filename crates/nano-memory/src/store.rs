@@ -963,6 +963,23 @@ where
         ));
     }
 
+    for candidate in writes {
+        let canonical_id = migration_write_envelope_id(&candidate.fact.id);
+        let matching = snapshot
+            .iter()
+            .filter(|row| {
+                matches!(&row.op, Op::MemoryWriteFact { fact_id, .. }
+                    if fact_id == &candidate.fact.id)
+            })
+            .collect::<Vec<_>>();
+        if matching.len() > 1 || matching.first().is_some_and(|row| row.id != canonical_id) {
+            return Err(LegacyMigrationError::InvalidJournal(format!(
+                "candidate fact {} has noncanonical write authority",
+                candidate.fact.id
+            )));
+        }
+    }
+
     let mut existing = HashMap::<String, (usize, &LegacyMigrationWrite, bool)>::new();
     for (index, envelope) in snapshot.iter().enumerate() {
         if !envelope.id.starts_with("legacy-migration-write-") {
@@ -996,15 +1013,19 @@ where
         }
         let receipts = snapshot
             .iter()
-            .filter(|row| migration_receipt_targets(row, candidate))
+            .enumerate()
+            .filter(|(_, row)| migration_receipt_targets(row, candidate))
             .collect::<Vec<_>>();
         if receipts.len() > 1
             || receipts
                 .first()
-                .is_some_and(|receipt| !migration_receipt_matches(receipt, candidate))
+                .is_some_and(|(_, receipt)| !migration_receipt_matches(receipt, candidate))
+            || receipts
+                .first()
+                .is_some_and(|(receipt_index, _)| *receipt_index != index + 1)
         {
             return Err(LegacyMigrationError::InvalidJournal(format!(
-                "invalid migration receipt identity for {fact_id}"
+                "invalid or noncausal migration receipt for {fact_id}"
             )));
         }
         if existing

@@ -260,6 +260,7 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
     for path in legacy_entries(&nano_home.join("memory"))? {
         match prepare_entry(&path, params) {
             Ok(entry) => {
+                let receipt_index = receipts.len();
                 receipts.push(EntryReceipt {
                     name: entry.name.clone(),
                     content_sha256: Some(entry.content_sha256.clone()),
@@ -267,7 +268,7 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
                     error_kind: None,
                     message: None,
                 });
-                accepted.push(entry);
+                accepted.push((receipt_index, entry));
             }
             Err(receipt) => receipts.push(receipt),
         }
@@ -285,7 +286,7 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
     }
     let writes = accepted
         .iter()
-        .map(|entry| LegacyMigrationWrite {
+        .map(|(_, entry)| LegacyMigrationWrite {
             fact: entry.fact.clone(),
             session_id: params.session_id.clone(),
             receipt_message: entry_receipt_message(&entry.content_sha256),
@@ -306,8 +307,8 @@ fn migrate(nano_home: &Path, params: &Params) -> Result<MigrationReceipt, Migrat
         migration_fault,
     )
     .map_err(map_migration_error)?;
-    for (entry, prepared) in receipts.iter_mut().zip(&accepted) {
-        entry.status = if result.skipped_ids.contains(&prepared.fact.id) {
+    for (receipt_index, prepared) in &accepted {
+        receipts[*receipt_index].status = if result.skipped_ids.contains(&prepared.fact.id) {
             EntryStatus::Skipped
         } else {
             EntryStatus::Ingested
