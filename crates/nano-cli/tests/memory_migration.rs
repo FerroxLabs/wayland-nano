@@ -448,6 +448,104 @@ fn retry_repairs_a_write_interrupted_before_its_receipt() {
 }
 
 #[test]
+fn unreceipted_migration_write_with_an_intervening_row_is_refused_unchanged() {
+    let home = tempfile::tempdir().unwrap();
+    seed(
+        home.path(),
+        "2026-01-02T03-04-05-intervening.md",
+        "intervening row marker",
+    );
+    let interrupted = migrate(
+        home.path(),
+        Some(("NANO_TEST_MEMORY_MIGRATE_STOP_AFTER_JOURNAL", "1")),
+    );
+    assert_eq!(interrupted.status.code(), Some(3), "{interrupted:?}");
+
+    let journal_path = home.path().join("memory.jsonl");
+    let write = read_journal(&journal_path)
+        .unwrap()
+        .envelopes
+        .into_iter()
+        .find(|entry| matches!(entry.op, Op::MemoryWriteFact { .. }))
+        .unwrap();
+    let mut bytes = serde_json::to_vec(&write).unwrap();
+    bytes.push(b'\n');
+    std::fs::write(&journal_path, bytes).unwrap();
+    JournalWriter::open(&journal_path)
+        .unwrap()
+        .append(&OpEnvelope::new(
+            "unrelated-after-torn-write",
+            "2026-01-02T03:04:06Z",
+            Op::MemoryWriteReceipt {
+                write_id: "unrelated".into(),
+                agent_id: "main".into(),
+                message: "unrelated journal row".into(),
+            },
+        ))
+        .unwrap();
+    let before = std::fs::read(&journal_path).unwrap();
+
+    let recovered = migrate(home.path(), None);
+    assert_eq!(recovered.status.code(), Some(3), "{recovered:?}");
+    assert_eq!(
+        failure(&recovered).error_kind,
+        WireFailureKind::JournalInvalid
+    );
+    assert_eq!(std::fs::read(&journal_path).unwrap(), before);
+    assert!(!home.path().join("memory/memory.db").exists());
+}
+
+#[test]
+fn torn_tail_is_repaired_before_an_earlier_sorted_new_candidate() {
+    let home = tempfile::tempdir().unwrap();
+    seed(
+        home.path(),
+        "2026-01-03T03-04-05-torn-later.md",
+        "torn candidate",
+    );
+    let interrupted = migrate(
+        home.path(),
+        Some(("NANO_TEST_MEMORY_MIGRATE_STOP_AFTER_JOURNAL", "1")),
+    );
+    assert_eq!(interrupted.status.code(), Some(3), "{interrupted:?}");
+
+    let journal_path = home.path().join("memory.jsonl");
+    let torn_write = read_journal(&journal_path)
+        .unwrap()
+        .envelopes
+        .into_iter()
+        .find(|entry| matches!(entry.op, Op::MemoryWriteFact { .. }))
+        .unwrap();
+    let torn_fact_id = match &torn_write.op {
+        Op::MemoryWriteFact { fact_id, .. } => fact_id.clone(),
+        _ => unreachable!(),
+    };
+    let mut bytes = serde_json::to_vec(&torn_write).unwrap();
+    bytes.push(b'\n');
+    std::fs::write(&journal_path, bytes).unwrap();
+    let earlier_name = "2026-01-02T03-04-05-new-earlier.md";
+    let earlier_contents = b"new earlier candidate";
+    seed(
+        home.path(),
+        earlier_name,
+        std::str::from_utf8(earlier_contents).unwrap(),
+    );
+    let earlier_fact_id = fact_id_for(earlier_name, earlier_contents);
+
+    let recovered = migrate(home.path(), None);
+    assert_eq!(recovered.status.code(), Some(0), "{recovered:?}");
+    let rows = read_journal(&journal_path).unwrap().envelopes;
+    let position = |id: &str| rows.iter().position(|row| row.id == id).unwrap();
+    let torn_write_index = position(&format!("legacy-migration-write-{torn_fact_id}"));
+    let torn_receipt_index = position(&format!("legacy-migration-receipt-{torn_fact_id}"));
+    let earlier_write_index = position(&format!("legacy-migration-write-{earlier_fact_id}"));
+    let earlier_receipt_index = position(&format!("legacy-migration-receipt-{earlier_fact_id}"));
+    assert_eq!(torn_receipt_index, torn_write_index + 1);
+    assert_eq!(earlier_receipt_index, earlier_write_index + 1);
+    assert!(torn_receipt_index < earlier_write_index);
+}
+
+#[test]
 fn completed_migration_refuses_rerun_and_post_migration_edits_are_invisible() {
     let home = tempfile::tempdir().unwrap();
     let name = "2026-01-02T03-04-05-stable.md";
