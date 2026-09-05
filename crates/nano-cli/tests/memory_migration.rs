@@ -134,6 +134,72 @@ fn configured() -> ConfiguredAgents {
     ConfiguredAgents::try_from_ids(std::iter::empty()).unwrap()
 }
 
+fn reserved_model_write(kind: &str, envelope_id: &str) -> OpEnvelope {
+    let common = (
+        "2026-01-02T03:04:05Z".to_owned(),
+        "project-a".to_owned(),
+        "main".to_owned(),
+        Some("migration-session".to_owned()),
+    );
+    let op = match kind {
+        "fact" => Op::MemoryWriteFact {
+            fact_id: "legacy-migration-complete".into(),
+            subject: "reserved".into(),
+            predicate: "collision".into(),
+            object: "must never become authority".into(),
+            confidence_micros: 1_000_000,
+            source_episode: None,
+            valid_from: common.0.clone(),
+            valid_to: None,
+            source_trust: "ModelInference".into(),
+            project: common.1.clone(),
+            agent_id: common.2.clone(),
+            session_id: common.3.clone(),
+            resolver_outcome: "coexist".into(),
+        },
+        "decision" => Op::MemoryWriteDecision {
+            decision_id: "legacy-migration-complete".into(),
+            summary: "must never become authority".into(),
+            why: "reserved collision".into(),
+            how_to_apply: "never".into(),
+            tags: vec![],
+            source_episode: None,
+            valid_from: common.0.clone(),
+            valid_to: None,
+            source_trust: "ModelInference".into(),
+            project: common.1.clone(),
+            agent_id: common.2.clone(),
+            session_id: common.3.clone(),
+        },
+        "episode" => Op::MemoryWriteEpisode {
+            episode_id: "legacy-migration-complete".into(),
+            content: "must never become authority".into(),
+            source: "reserved collision".into(),
+            source_product: "test".into(),
+            valid_from: common.0.clone(),
+            valid_to: None,
+            source_trust: "ModelInference".into(),
+            project: common.1.clone(),
+            agent_id: common.2.clone(),
+            session_id: common.3.clone(),
+        },
+        "procedure" => Op::MemoryWriteProcedure {
+            procedure_id: "legacy-migration-complete".into(),
+            title: "must never become authority".into(),
+            steps: "never".into(),
+            created_by: "reserved collision".into(),
+            valid_from: common.0,
+            valid_to: None,
+            source_trust: "ModelInference".into(),
+            project: common.1,
+            agent_id: common.2,
+            session_id: common.3,
+        },
+        _ => unreachable!(),
+    };
+    OpEnvelope::new(envelope_id, "2026-01-02T03:04:05Z", op)
+}
+
 fn inspect_facts(home: &Path) -> Vec<nano_memory::FactState> {
     let store = MemoryStore::open(
         home,
@@ -354,6 +420,70 @@ fn colliding_completion_envelope_cannot_claim_migration_closure() {
     );
     let report = read_journal(&journal_path).unwrap();
     assert_eq!(report.envelopes, [collision]);
+}
+
+#[test]
+fn completion_record_id_is_reserved_before_migration_for_every_write_family() {
+    for kind in ["fact", "decision", "episode", "procedure"] {
+        let home = tempfile::tempdir().unwrap();
+        write_policy(home.path(), true, "SessionAndProject");
+        seed(
+            home.path(),
+            "2026-01-03T03-04-05-legitimate.md",
+            "legitimate migration candidate",
+        );
+        let journal_path = home.path().join("memory.jsonl");
+        JournalWriter::open(&journal_path)
+            .unwrap()
+            .append(&reserved_model_write(kind, &format!("forged-{kind}")))
+            .unwrap();
+        let before = std::fs::read(&journal_path).unwrap();
+
+        let output = migrate_with_session(home.path(), "migration-session", None);
+        assert_eq!(output.status.code(), Some(3), "{kind}: {output:?}");
+        assert_eq!(failure(&output).error_kind, WireFailureKind::JournalInvalid);
+        assert_eq!(std::fs::read(&journal_path).unwrap(), before);
+        assert!(!home.path().join("memory/memory.db").exists());
+    }
+}
+
+#[test]
+fn reserved_write_appended_after_completion_is_rejected_by_migration_and_rebuild() {
+    let home = tempfile::tempdir().unwrap();
+    seed(
+        home.path(),
+        "2026-01-02T03-04-05-complete-first.md",
+        "normal completion",
+    );
+    let completed = migrate(home.path(), None);
+    assert_eq!(completed.status.code(), Some(0), "{completed:?}");
+    let journal_path = home.path().join("memory.jsonl");
+    JournalWriter::open(&journal_path)
+        .unwrap()
+        .append(&reserved_model_write("fact", "forged-after-completion"))
+        .unwrap();
+    let before = std::fs::read(&journal_path).unwrap();
+
+    let rerun = migrate_with_session(home.path(), "migration-session", None);
+    assert_eq!(rerun.status.code(), Some(3), "{rerun:?}");
+    assert_eq!(failure(&rerun).error_kind, WireFailureKind::JournalInvalid);
+    assert_eq!(std::fs::read(&journal_path).unwrap(), before);
+
+    std::fs::remove_file(home.path().join("memory/memory.db")).unwrap();
+    let rebuild = rebuild_from_journals(
+        &home.path().join("memory/memory.db"),
+        std::slice::from_ref(&journal_path),
+        MemoryPolicy::default(),
+        configured(),
+    );
+    assert!(matches!(
+        rebuild,
+        Err(nano_memory::MemoryError::InvalidValue {
+            field: "memory id",
+            ..
+        })
+    ));
+    assert_eq!(std::fs::read(&journal_path).unwrap(), before);
 }
 
 #[test]

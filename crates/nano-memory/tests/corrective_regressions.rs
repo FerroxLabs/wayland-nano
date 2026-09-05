@@ -635,3 +635,166 @@ fn dedicated_journal_rebuild_matches_live_fixture_queries_and_attribution() {
     assert_eq!(fixture_query_ids(&rebuilt, &fixture), expected_queries);
     assert_eq!(fixture_receipts(&journal), expected_receipts);
 }
+
+#[test]
+fn completion_record_id_is_rejected_by_every_live_write_family() {
+    for kind in ["fact", "decision", "episode", "procedure"] {
+        let temp = tempfile::tempdir().unwrap();
+        let journal = temp.path().join("memory.jsonl");
+        let mut store = MemoryStore::open_at(
+            &temp.path().join("memory.db"),
+            &journal,
+            MemoryPolicy::default(),
+            "agent-a",
+            configured(),
+        )
+        .unwrap();
+        let error = match kind {
+            "fact" => store
+                .write_fact(fact("legacy-migration-complete", "reserved"))
+                .map(|_| ()),
+            "decision" => store.write_decision(DecisionWrite {
+                id: "legacy-migration-complete".into(),
+                summary: "reserved".into(),
+                why: "collision".into(),
+                how_to_apply: "never".into(),
+                tags: vec![],
+                source_episode: None,
+                valid_from: "1".into(),
+                valid_to: None,
+                source_trust: SourceTrust::User,
+                project: "project-a".into(),
+                agent_id: "agent-a".into(),
+            }),
+            "episode" => store.write_episode(EpisodeWrite {
+                id: "legacy-migration-complete".into(),
+                content: "reserved".into(),
+                source: "collision".into(),
+                source_product: "test".into(),
+                valid_from: "1".into(),
+                valid_to: None,
+                source_trust: SourceTrust::User,
+                project: "project-a".into(),
+                agent_id: "agent-a".into(),
+            }),
+            "procedure" => store.write_procedure(ProcedureWrite {
+                id: "legacy-migration-complete".into(),
+                title: "reserved".into(),
+                steps: "never".into(),
+                created_by: "collision".into(),
+                valid_from: "1".into(),
+                valid_to: None,
+                source_trust: SourceTrust::User,
+                project: "project-a".into(),
+                agent_id: "agent-a".into(),
+            }),
+            _ => unreachable!(),
+        }
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            MemoryError::InvalidValue {
+                field: "memory id",
+                ..
+            }
+        ));
+        assert!(
+            read_journal(&journal).unwrap().envelopes.is_empty(),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn completion_receipt_never_authorizes_reserved_ids_during_rebuild() {
+    let ops = [
+        Op::MemoryWriteFact {
+            fact_id: "legacy-migration-complete".into(),
+            subject: "reserved".into(),
+            predicate: "collision".into(),
+            object: "never authority".into(),
+            confidence_micros: 1_000_000,
+            source_episode: None,
+            valid_from: "1".into(),
+            valid_to: None,
+            source_trust: "ModelInference".into(),
+            project: "project-a".into(),
+            agent_id: "agent-a".into(),
+            session_id: None,
+            resolver_outcome: "coexist".into(),
+        },
+        Op::MemoryWriteDecision {
+            decision_id: "legacy-migration-complete".into(),
+            summary: "never authority".into(),
+            why: "reserved".into(),
+            how_to_apply: "never".into(),
+            tags: vec![],
+            source_episode: None,
+            valid_from: "1".into(),
+            valid_to: None,
+            source_trust: "ModelInference".into(),
+            project: "project-a".into(),
+            agent_id: "agent-a".into(),
+            session_id: None,
+        },
+        Op::MemoryWriteEpisode {
+            episode_id: "legacy-migration-complete".into(),
+            content: "never authority".into(),
+            source: "reserved".into(),
+            source_product: "test".into(),
+            valid_from: "1".into(),
+            valid_to: None,
+            source_trust: "ModelInference".into(),
+            project: "project-a".into(),
+            agent_id: "agent-a".into(),
+            session_id: None,
+        },
+        Op::MemoryWriteProcedure {
+            procedure_id: "legacy-migration-complete".into(),
+            title: "never authority".into(),
+            steps: "never".into(),
+            created_by: "reserved".into(),
+            valid_from: "1".into(),
+            valid_to: None,
+            source_trust: "ModelInference".into(),
+            project: "project-a".into(),
+            agent_id: "agent-a".into(),
+            session_id: None,
+        },
+    ];
+    for (index, op) in ops.into_iter().enumerate() {
+        let temp = tempfile::tempdir().unwrap();
+        let journal = temp.path().join("memory.jsonl");
+        let mut writer = JournalWriter::open(&journal).unwrap();
+        writer
+            .append(&OpEnvelope::new(format!("forged-{index}"), "1", op))
+            .unwrap();
+        writer
+            .append(&OpEnvelope::new(
+                "legacy-migration-complete",
+                "2",
+                Op::MemoryWriteReceipt {
+                    write_id: "legacy-migration-complete".into(),
+                    agent_id: "agent-a".into(),
+                    message: "normal completion-shaped receipt".into(),
+                },
+            ))
+            .unwrap();
+        drop(writer);
+
+        let error = rebuild_from_journals(
+            &temp.path().join("rebuilt.db"),
+            std::slice::from_ref(&journal),
+            MemoryPolicy::default(),
+            configured(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            MemoryError::InvalidValue {
+                field: "memory id",
+                ..
+            }
+        ));
+    }
+}
